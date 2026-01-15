@@ -89,21 +89,11 @@ Claude: ✓ Task created with worktree isolation
 4. Worktree is cleaned up after successful push
 5. You review the PR at your convenience
 
-**Configuration:**
-```json
-{
-  "execution": {
-    "command": "Refactor deprecated API calls",
-    "worktree": {
-      "enabled": true,
-      "branchPrefix": "claude-task/",
-      "remoteName": "origin"
-    }
-  }
-}
-```
+**What happens:**
+- `branchPrefix: "claude-task/"` → branches named like `claude-task/task-abc123-1234567890`
+- `remoteName: "origin"` → pushes to your default remote
 
-If push fails, the worktree is kept locally for manual review.
+If push fails (no remote, auth issues), the worktree is kept at `~/.worktrees/` for manual review.
 
 ## Features
 
@@ -115,18 +105,33 @@ If push fails, the worktree is kept locally for manual review.
 - **Native schedulers** — reliable, survives restarts
 - **Auto-cleanup** — one-time tasks delete themselves after running
 
-## Commands
+## Usage
 
-These slash commands are available for direct access, but you can also just ask Claude naturally.
+After installing the plugin, just talk to Claude:
 
-| Command | Description |
-|---------|-------------|
-| `/scheduler:schedule-add` | Create a new scheduled task |
-| `/scheduler:schedule-list` | View all scheduled tasks |
-| `/scheduler:schedule-remove <id>` | Remove a scheduled task |
-| `/scheduler:schedule-status` | Check scheduler health |
-| `/scheduler:schedule-run <id>` | Run a task immediately |
-| `/scheduler:schedule-logs [id]` | View execution history |
+```
+"Schedule a code review every weekday at 9am"
+"Show me my scheduled tasks"
+"Remove the daily-review task"
+"Run the security-scan task now"
+```
+
+Claude understands what you want and handles everything.
+
+### Slash Commands
+
+You can also use direct commands:
+
+| Command | What it does |
+|---------|--------------|
+| `/schedule-add` | Create a new scheduled task |
+| `/schedule-list` | Show all your scheduled tasks |
+| `/schedule-remove daily-review` | Remove a task by name or ID |
+| `/schedule-run daily-review` | Run a task immediately |
+| `/schedule-logs` | View execution history |
+| `/schedule-status` | Check if scheduler is healthy |
+
+> **Note:** If you have multiple plugins, use `/scheduler:schedule-add` (with the plugin prefix).
 
 ## Examples
 

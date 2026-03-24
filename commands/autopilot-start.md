@@ -11,8 +11,17 @@ You are starting the DevSpec Autopilot. Follow the autopilot skill instructions 
 ## Steps
 
 1. Call `get_project_summary` to fetch project settings including autopilot configuration
-2. If autopilot is not enabled in settings, warn the user and stop
-3. Enter the polling loop as defined in the autopilot skill (skills/autopilot/SKILL.md)
-4. Report status after each cycle
+2. If autopilot is not enabled in settings, output a warning and stop:
+   ```
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     ◆  DEVSPEC AUTOPILOT  ▸  DISABLED
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     Autopilot is not enabled in project settings.
+     Enable it in DevSpec project settings to use this feature.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ```
+3. Output the startup banner as defined in the skill's Output Formatting section
+4. Enter the polling loop as defined in the autopilot skill (skills/autopilot/SKILL.md)
+5. Follow ALL formatting rules from the skill — use Unicode symbols, compact status lines, and timestamps
 
 The autopilot will continue running until you receive `/autopilot:stop` or the session ends.

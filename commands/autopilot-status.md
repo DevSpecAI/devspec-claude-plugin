@@ -6,11 +6,26 @@ allowed-tools: Read, mcp__devspec__get_action_items, mcp__devspec__get_project_s
 
 # Autopilot Status
 
-Show the current autopilot status:
+Fetch current state and output in this format:
 
-1. Whether the autopilot is running or stopped
-2. Current project and target branch
-3. Number of queued action items (call `get_action_items` with `agent_status: 'queued'`)
-4. Number of items in progress (call `get_action_items` with `agent_status: 'in_progress'`)
-5. Last action taken (if any)
-6. Autopilot settings summary (poll interval, auto-merge, idle detection)
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ◆  DEVSPEC AUTOPILOT  ▸  {RUNNING/STOPPED}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  target: {branch}  ·  interval: {N}s
+  push: {on/off}  ·  merge: {on/off}
+
+  Queue:        {N} items ready
+  In progress:  {N} items
+  Completed:    {N} items (this session)
+  Failed:       {N} items (this session)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Data sources:
+1. Call `get_project_summary` for settings
+2. Call `get_action_items` with `agent_status: 'queued'` for queue count
+3. Call `get_action_items` with `agent_status: 'in_progress'` for active count
+4. Use tracked session state for completed/failed counts (if autopilot is running)
+
+Make all API calls in parallel.

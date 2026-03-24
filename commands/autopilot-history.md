@@ -6,8 +6,30 @@ allowed-tools: Read, mcp__devspec__get_action_items
 
 # Autopilot History
 
-Show recent autopilot execution history:
+Fetch completed and failed items, then output in this format:
 
-1. Query action items with `agent_status` of 'completed' or 'failed' to show recent autopilot activity
-2. Display a table with: action item title, status (completed/failed), branch name, timestamp, and any error messages
-3. Show aggregate stats: total runs, success count, failure count
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ◆  DEVSPEC AUTOPILOT  ▸  HISTORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ✓ "Fix login timeout handling"
+    fix/action-item-a1b2c3d4 · merged · 2h ago
+
+  ✓ "Add input validation to /api/upload"
+    fix/action-item-e5f6g7h8 · merged · 5h ago
+
+  ✗ "Refactor auth middleware"
+    fix/action-item-i9j0k1l2 · failed: Merge conflict on staging · 1d ago
+
+  ━━ 3 total · 2 completed · 1 failed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Data sources:
+1. Call `get_action_items` with `agent_status: 'completed'` and `agent_status: 'failed'` in parallel
+2. Use `✓` for completed, `✗` for failed
+3. Show branch name, merge status, and relative time
+4. For failed items, include the `agent_error` message
+5. Show aggregate stats at the bottom
+6. Sort by most recent first

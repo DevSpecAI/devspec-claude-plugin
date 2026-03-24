@@ -1,209 +1,156 @@
 import { z } from 'zod';
-/**
- * Cron-based schedule trigger
- */
-export declare const CronTriggerSchema: z.ZodObject<{
-    type: z.ZodLiteral<"cron">;
-    expression: z.ZodString;
-    timezone: z.ZodDefault<z.ZodOptional<z.ZodString>>;
+export declare const AgentStatusSchema: z.ZodEnum<["planning", "queued", "in_progress", "completed", "failed"]>;
+export type AgentStatus = z.infer<typeof AgentStatusSchema>;
+export declare const ActionItemSchema: z.ZodObject<{
+    id: z.ZodString;
+    title: z.ZodString;
+    description: z.ZodNullable<z.ZodString>;
+    status: z.ZodString;
+    type: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    priority: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    agent_ready: z.ZodBoolean;
+    agent_status: z.ZodNullable<z.ZodEnum<["planning", "queued", "in_progress", "completed", "failed"]>>;
+    agent_claimed_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    agent_error: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    agent_branch: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    agent_commit_sha: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    project_id: z.ZodOptional<z.ZodString>;
+    created_at: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    type: "cron";
-    expression: string;
-    timezone: string;
+    status: string;
+    id: string;
+    title: string;
+    description: string | null;
+    agent_ready: boolean;
+    agent_status: "planning" | "queued" | "in_progress" | "completed" | "failed" | null;
+    type?: string | null | undefined;
+    priority?: string | null | undefined;
+    agent_claimed_at?: string | null | undefined;
+    agent_error?: string | null | undefined;
+    agent_branch?: string | null | undefined;
+    agent_commit_sha?: string | null | undefined;
+    project_id?: string | undefined;
+    created_at?: string | undefined;
 }, {
-    type: "cron";
-    expression: string;
-    timezone?: string | undefined;
+    status: string;
+    id: string;
+    title: string;
+    description: string | null;
+    agent_ready: boolean;
+    agent_status: "planning" | "queued" | "in_progress" | "completed" | "failed" | null;
+    type?: string | null | undefined;
+    priority?: string | null | undefined;
+    agent_claimed_at?: string | null | undefined;
+    agent_error?: string | null | undefined;
+    agent_branch?: string | null | undefined;
+    agent_commit_sha?: string | null | undefined;
+    project_id?: string | undefined;
+    created_at?: string | undefined;
 }>;
-export type CronTrigger = z.infer<typeof CronTriggerSchema>;
-/**
- * Union of all trigger types (extensible for future file-watch, git-hook)
- */
-export declare const TriggerConfigSchema: z.ZodDiscriminatedUnion<"type", [z.ZodObject<{
-    type: z.ZodLiteral<"cron">;
-    expression: z.ZodString;
-    timezone: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-}, "strip", z.ZodTypeAny, {
-    type: "cron";
-    expression: string;
-    timezone: string;
-}, {
-    type: "cron";
-    expression: string;
-    timezone?: string | undefined;
-}>]>;
-export type TriggerConfig = z.infer<typeof TriggerConfigSchema>;
-/**
- * Configuration for running tasks in isolated git worktrees or jj workspaces
- */
-export declare const WorktreeConfigSchema: z.ZodObject<{
-    /**
-     * Whether to run the task in an isolated worktree/workspace
-     */
+export type ActionItem = z.infer<typeof ActionItemSchema>;
+export declare const AutopilotSettingsSchema: z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
-    /**
-     * Base path where worktrees are created (default: sibling .worktrees dir)
-     * Must contain only safe filesystem characters.
-     */
-    basePath: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
-    /**
-     * Prefix for branch names (default: 'claude-task/')
-     * Must be a valid git ref prefix.
-     */
-    branchPrefix: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-    /**
-     * Remote name for pushing (default: 'origin')
-     * Must be a valid git remote name.
-     */
-    remoteName: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
+    target_branch: z.ZodDefault<z.ZodString>;
+    auto_push: z.ZodDefault<z.ZodBoolean>;
+    auto_merge: z.ZodDefault<z.ZodBoolean>;
+    branch_prefix: z.ZodDefault<z.ZodString>;
+    commit_message_prefix: z.ZodDefault<z.ZodString>;
+    custom_instructions: z.ZodDefault<z.ZodString>;
+    test_commands: z.ZodDefault<z.ZodObject<{
+        unit: z.ZodDefault<z.ZodString>;
+        e2e: z.ZodDefault<z.ZodString>;
+        typecheck: z.ZodDefault<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        unit: string;
+        e2e: string;
+        typecheck: string;
+    }, {
+        unit?: string | undefined;
+        e2e?: string | undefined;
+        typecheck?: string | undefined;
+    }>>;
+    protected_paths: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
+    idle_detection: z.ZodDefault<z.ZodBoolean>;
+    poll_interval_seconds: z.ZodDefault<z.ZodNumber>;
+    stale_claim_timeout_minutes: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     enabled: boolean;
-    branchPrefix: string;
-    remoteName: string;
-    basePath?: string | undefined;
+    target_branch: string;
+    auto_push: boolean;
+    auto_merge: boolean;
+    branch_prefix: string;
+    commit_message_prefix: string;
+    custom_instructions: string;
+    test_commands: {
+        unit: string;
+        e2e: string;
+        typecheck: string;
+    };
+    protected_paths: string[];
+    idle_detection: boolean;
+    poll_interval_seconds: number;
+    stale_claim_timeout_minutes: number;
 }, {
     enabled?: boolean | undefined;
-    basePath?: string | undefined;
-    branchPrefix?: string | undefined;
-    remoteName?: string | undefined;
+    target_branch?: string | undefined;
+    auto_push?: boolean | undefined;
+    auto_merge?: boolean | undefined;
+    branch_prefix?: string | undefined;
+    commit_message_prefix?: string | undefined;
+    custom_instructions?: string | undefined;
+    test_commands?: {
+        unit?: string | undefined;
+        e2e?: string | undefined;
+        typecheck?: string | undefined;
+    } | undefined;
+    protected_paths?: string[] | undefined;
+    idle_detection?: boolean | undefined;
+    poll_interval_seconds?: number | undefined;
+    stale_claim_timeout_minutes?: number | undefined;
 }>;
-export type WorktreeConfig = z.infer<typeof WorktreeConfigSchema>;
-/**
- * What to execute when triggered
- */
-export declare const ExecutionConfigSchema: z.ZodObject<{
-    /**
-     * The Claude prompt or slash command to execute
-     * Examples: "/review-code" or "Review the changes in the last commit"
-     */
-    command: z.ZodString;
-    /**
-     * Working directory for execution (relative to project root or absolute)
-     */
-    workingDirectory: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-    /**
-     * Maximum execution time in seconds
-     */
-    timeout: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-    /**
-     * Environment variables to set during execution
-     */
-    env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-    /**
-     * Run with --dangerously-skip-permissions for fully autonomous execution
-     * Required for tasks that need to edit files, run commands, etc.
-     */
-    skipPermissions: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
-    /**
-     * Worktree/workspace configuration for isolated execution
-     */
-    worktree: z.ZodOptional<z.ZodObject<{
-        /**
-         * Whether to run the task in an isolated worktree/workspace
-         */
-        enabled: z.ZodDefault<z.ZodBoolean>;
-        /**
-         * Base path where worktrees are created (default: sibling .worktrees dir)
-         * Must contain only safe filesystem characters.
-         */
-        basePath: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
-        /**
-         * Prefix for branch names (default: 'claude-task/')
-         * Must be a valid git ref prefix.
-         */
-        branchPrefix: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-        /**
-         * Remote name for pushing (default: 'origin')
-         * Must be a valid git remote name.
-         */
-        remoteName: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-    }, "strip", z.ZodTypeAny, {
-        enabled: boolean;
-        branchPrefix: string;
-        remoteName: string;
-        basePath?: string | undefined;
-    }, {
-        enabled?: boolean | undefined;
-        basePath?: string | undefined;
-        branchPrefix?: string | undefined;
-        remoteName?: string | undefined;
-    }>>;
+export type AutopilotSettings = z.infer<typeof AutopilotSettingsSchema>;
+export declare const DEFAULT_AUTOPILOT_SETTINGS: AutopilotSettings;
+export declare const CycleResultSchema: z.ZodObject<{
+    action: z.ZodEnum<["idle", "claimed", "completed", "failed", "planning_done", "claim_lost", "mcp_error", "stopped"]>;
+    actionItemId: z.ZodOptional<z.ZodString>;
+    actionItemTitle: z.ZodOptional<z.ZodString>;
+    commitSha: z.ZodOptional<z.ZodString>;
+    branchName: z.ZodOptional<z.ZodString>;
+    error: z.ZodOptional<z.ZodString>;
+    durationMs: z.ZodOptional<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
-    command: string;
-    workingDirectory: string;
-    timeout: number;
-    skipPermissions: boolean;
-    env?: Record<string, string> | undefined;
-    worktree?: {
-        enabled: boolean;
-        branchPrefix: string;
-        remoteName: string;
-        basePath?: string | undefined;
-    } | undefined;
+    action: "completed" | "failed" | "idle" | "claimed" | "planning_done" | "claim_lost" | "mcp_error" | "stopped";
+    actionItemId?: string | undefined;
+    actionItemTitle?: string | undefined;
+    commitSha?: string | undefined;
+    branchName?: string | undefined;
+    error?: string | undefined;
+    durationMs?: number | undefined;
 }, {
-    command: string;
-    workingDirectory?: string | undefined;
-    timeout?: number | undefined;
-    env?: Record<string, string> | undefined;
-    skipPermissions?: boolean | undefined;
-    worktree?: {
-        enabled?: boolean | undefined;
-        basePath?: string | undefined;
-        branchPrefix?: string | undefined;
-        remoteName?: string | undefined;
-    } | undefined;
+    action: "completed" | "failed" | "idle" | "claimed" | "planning_done" | "claim_lost" | "mcp_error" | "stopped";
+    actionItemId?: string | undefined;
+    actionItemTitle?: string | undefined;
+    commitSha?: string | undefined;
+    branchName?: string | undefined;
+    error?: string | undefined;
+    durationMs?: number | undefined;
 }>;
-export type ExecutionConfig = z.infer<typeof ExecutionConfigSchema>;
-/**
- * Status of task execution
- */
+export type CycleResult = z.infer<typeof CycleResultSchema>;
+export interface AutopilotState {
+    running: boolean;
+    projectId: string;
+    settings: AutopilotSettings;
+    cycleCount: number;
+    lastCycleResult: CycleResult | null;
+}
 export declare const ExecutionStatusSchema: z.ZodEnum<["success", "failure", "timeout", "skipped", "running"]>;
 export type ExecutionStatus = z.infer<typeof ExecutionStatusSchema>;
-/**
- * Record of a single task execution
- */
-export declare const ExecutionRecordSchema: z.ZodObject<{
-    id: z.ZodString;
-    taskId: z.ZodString;
-    startedAt: z.ZodString;
-    completedAt: z.ZodOptional<z.ZodString>;
-    status: z.ZodEnum<["success", "failure", "timeout", "skipped", "running"]>;
-    triggeredBy: z.ZodString;
-    duration: z.ZodOptional<z.ZodNumber>;
-    output: z.ZodOptional<z.ZodString>;
-    error: z.ZodOptional<z.ZodString>;
-    exitCode: z.ZodOptional<z.ZodNumber>;
-}, "strip", z.ZodTypeAny, {
-    status: "timeout" | "success" | "failure" | "skipped" | "running";
-    id: string;
-    taskId: string;
-    startedAt: string;
-    triggeredBy: string;
-    completedAt?: string | undefined;
-    duration?: number | undefined;
-    output?: string | undefined;
-    error?: string | undefined;
-    exitCode?: number | undefined;
-}, {
-    status: "timeout" | "success" | "failure" | "skipped" | "running";
-    id: string;
-    taskId: string;
-    startedAt: string;
-    triggeredBy: string;
-    completedAt?: string | undefined;
-    duration?: number | undefined;
-    output?: string | undefined;
-    error?: string | undefined;
-    exitCode?: number | undefined;
-}>;
-export type ExecutionRecord = z.infer<typeof ExecutionRecordSchema>;
-/**
- * Extended execution record for history tracking across all projects
- * Includes denormalized task info for efficient querying without loading task configs
- */
 export declare const ExecutionHistoryRecordSchema: z.ZodObject<{
     id: z.ZodString;
-    taskId: z.ZodString;
+    actionItemId: z.ZodOptional<z.ZodString>;
+    actionItemTitle: z.ZodOptional<z.ZodString>;
+    agentStatus: z.ZodOptional<z.ZodString>;
+    project: z.ZodString;
     startedAt: z.ZodString;
     completedAt: z.ZodOptional<z.ZodString>;
     status: z.ZodEnum<["success", "failure", "timeout", "skipped", "running"]>;
@@ -211,569 +158,41 @@ export declare const ExecutionHistoryRecordSchema: z.ZodObject<{
     duration: z.ZodOptional<z.ZodNumber>;
     output: z.ZodOptional<z.ZodString>;
     error: z.ZodOptional<z.ZodString>;
-    exitCode: z.ZodOptional<z.ZodNumber>;
-} & {
-    taskName: z.ZodString;
-    project: z.ZodString;
-    cronExpression: z.ZodOptional<z.ZodString>;
     worktreePath: z.ZodOptional<z.ZodString>;
     worktreeBranch: z.ZodOptional<z.ZodString>;
     worktreePushed: z.ZodOptional<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
-    status: "timeout" | "success" | "failure" | "skipped" | "running";
+    status: "success" | "failure" | "timeout" | "skipped" | "running";
     id: string;
-    taskId: string;
+    project: string;
     startedAt: string;
     triggeredBy: string;
-    taskName: string;
-    project: string;
+    actionItemId?: string | undefined;
+    actionItemTitle?: string | undefined;
+    error?: string | undefined;
+    agentStatus?: string | undefined;
     completedAt?: string | undefined;
     duration?: number | undefined;
     output?: string | undefined;
-    error?: string | undefined;
-    exitCode?: number | undefined;
-    cronExpression?: string | undefined;
     worktreePath?: string | undefined;
     worktreeBranch?: string | undefined;
     worktreePushed?: boolean | undefined;
 }, {
-    status: "timeout" | "success" | "failure" | "skipped" | "running";
+    status: "success" | "failure" | "timeout" | "skipped" | "running";
     id: string;
-    taskId: string;
+    project: string;
     startedAt: string;
     triggeredBy: string;
-    taskName: string;
-    project: string;
+    actionItemId?: string | undefined;
+    actionItemTitle?: string | undefined;
+    error?: string | undefined;
+    agentStatus?: string | undefined;
     completedAt?: string | undefined;
     duration?: number | undefined;
     output?: string | undefined;
-    error?: string | undefined;
-    exitCode?: number | undefined;
-    cronExpression?: string | undefined;
     worktreePath?: string | undefined;
     worktreeBranch?: string | undefined;
     worktreePushed?: boolean | undefined;
 }>;
 export type ExecutionHistoryRecord = z.infer<typeof ExecutionHistoryRecordSchema>;
-/**
- * Complete scheduled task definition
- */
-export declare const ScheduledTaskSchema: z.ZodObject<{
-    /**
-     * Unique identifier for this task
-     */
-    id: z.ZodString;
-    /**
-     * Human-readable name
-     */
-    name: z.ZodString;
-    /**
-     * Detailed description of what this task does
-     */
-    description: z.ZodOptional<z.ZodString>;
-    /**
-     * Whether the task is currently enabled
-     */
-    enabled: z.ZodDefault<z.ZodBoolean>;
-    /**
-     * Trigger configuration
-     */
-    trigger: z.ZodDiscriminatedUnion<"type", [z.ZodObject<{
-        type: z.ZodLiteral<"cron">;
-        expression: z.ZodString;
-        timezone: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-    }, "strip", z.ZodTypeAny, {
-        type: "cron";
-        expression: string;
-        timezone: string;
-    }, {
-        type: "cron";
-        expression: string;
-        timezone?: string | undefined;
-    }>]>;
-    /**
-     * Execution configuration
-     */
-    execution: z.ZodObject<{
-        /**
-         * The Claude prompt or slash command to execute
-         * Examples: "/review-code" or "Review the changes in the last commit"
-         */
-        command: z.ZodString;
-        /**
-         * Working directory for execution (relative to project root or absolute)
-         */
-        workingDirectory: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-        /**
-         * Maximum execution time in seconds
-         */
-        timeout: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-        /**
-         * Environment variables to set during execution
-         */
-        env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-        /**
-         * Run with --dangerously-skip-permissions for fully autonomous execution
-         * Required for tasks that need to edit files, run commands, etc.
-         */
-        skipPermissions: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
-        /**
-         * Worktree/workspace configuration for isolated execution
-         */
-        worktree: z.ZodOptional<z.ZodObject<{
-            /**
-             * Whether to run the task in an isolated worktree/workspace
-             */
-            enabled: z.ZodDefault<z.ZodBoolean>;
-            /**
-             * Base path where worktrees are created (default: sibling .worktrees dir)
-             * Must contain only safe filesystem characters.
-             */
-            basePath: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
-            /**
-             * Prefix for branch names (default: 'claude-task/')
-             * Must be a valid git ref prefix.
-             */
-            branchPrefix: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-            /**
-             * Remote name for pushing (default: 'origin')
-             * Must be a valid git remote name.
-             */
-            remoteName: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-        }, "strip", z.ZodTypeAny, {
-            enabled: boolean;
-            branchPrefix: string;
-            remoteName: string;
-            basePath?: string | undefined;
-        }, {
-            enabled?: boolean | undefined;
-            basePath?: string | undefined;
-            branchPrefix?: string | undefined;
-            remoteName?: string | undefined;
-        }>>;
-    }, "strip", z.ZodTypeAny, {
-        command: string;
-        workingDirectory: string;
-        timeout: number;
-        skipPermissions: boolean;
-        env?: Record<string, string> | undefined;
-        worktree?: {
-            enabled: boolean;
-            branchPrefix: string;
-            remoteName: string;
-            basePath?: string | undefined;
-        } | undefined;
-    }, {
-        command: string;
-        workingDirectory?: string | undefined;
-        timeout?: number | undefined;
-        env?: Record<string, string> | undefined;
-        skipPermissions?: boolean | undefined;
-        worktree?: {
-            enabled?: boolean | undefined;
-            basePath?: string | undefined;
-            branchPrefix?: string | undefined;
-            remoteName?: string | undefined;
-        } | undefined;
-    }>;
-    /**
-     * Tags for organization
-     */
-    tags: z.ZodDefault<z.ZodOptional<z.ZodArray<z.ZodString, "many">>>;
-    /**
-     * Creation timestamp
-     */
-    createdAt: z.ZodString;
-    /**
-     * Last modification timestamp
-     */
-    updatedAt: z.ZodString;
-}, "strip", z.ZodTypeAny, {
-    enabled: boolean;
-    id: string;
-    name: string;
-    trigger: {
-        type: "cron";
-        expression: string;
-        timezone: string;
-    };
-    execution: {
-        command: string;
-        workingDirectory: string;
-        timeout: number;
-        skipPermissions: boolean;
-        env?: Record<string, string> | undefined;
-        worktree?: {
-            enabled: boolean;
-            branchPrefix: string;
-            remoteName: string;
-            basePath?: string | undefined;
-        } | undefined;
-    };
-    tags: string[];
-    createdAt: string;
-    updatedAt: string;
-    description?: string | undefined;
-}, {
-    id: string;
-    name: string;
-    trigger: {
-        type: "cron";
-        expression: string;
-        timezone?: string | undefined;
-    };
-    execution: {
-        command: string;
-        workingDirectory?: string | undefined;
-        timeout?: number | undefined;
-        env?: Record<string, string> | undefined;
-        skipPermissions?: boolean | undefined;
-        worktree?: {
-            enabled?: boolean | undefined;
-            basePath?: string | undefined;
-            branchPrefix?: string | undefined;
-            remoteName?: string | undefined;
-        } | undefined;
-    };
-    createdAt: string;
-    updatedAt: string;
-    enabled?: boolean | undefined;
-    description?: string | undefined;
-    tags?: string[] | undefined;
-}>;
-export type ScheduledTask = z.infer<typeof ScheduledTaskSchema>;
-/**
- * Global settings for the scheduler
- */
-export declare const SchedulerSettingsSchema: z.ZodObject<{
-    /**
-     * Default timezone for cron tasks
-     */
-    defaultTimezone: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-    /**
-     * Log retention in days
-     */
-    logRetentionDays: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-    /**
-     * Maximum executions to keep in history per task
-     */
-    maxExecutionHistory: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-}, "strip", z.ZodTypeAny, {
-    defaultTimezone: string;
-    logRetentionDays: number;
-    maxExecutionHistory: number;
-}, {
-    defaultTimezone?: string | undefined;
-    logRetentionDays?: number | undefined;
-    maxExecutionHistory?: number | undefined;
-}>;
-export type SchedulerSettings = z.infer<typeof SchedulerSettingsSchema>;
-/**
- * Complete schedules.json file schema
- */
-export declare const SchedulesConfigSchema: z.ZodObject<{
-    /**
-     * Schema version for migrations
-     */
-    version: z.ZodLiteral<1>;
-    /**
-     * Array of scheduled tasks
-     */
-    tasks: z.ZodArray<z.ZodObject<{
-        /**
-         * Unique identifier for this task
-         */
-        id: z.ZodString;
-        /**
-         * Human-readable name
-         */
-        name: z.ZodString;
-        /**
-         * Detailed description of what this task does
-         */
-        description: z.ZodOptional<z.ZodString>;
-        /**
-         * Whether the task is currently enabled
-         */
-        enabled: z.ZodDefault<z.ZodBoolean>;
-        /**
-         * Trigger configuration
-         */
-        trigger: z.ZodDiscriminatedUnion<"type", [z.ZodObject<{
-            type: z.ZodLiteral<"cron">;
-            expression: z.ZodString;
-            timezone: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-        }, "strip", z.ZodTypeAny, {
-            type: "cron";
-            expression: string;
-            timezone: string;
-        }, {
-            type: "cron";
-            expression: string;
-            timezone?: string | undefined;
-        }>]>;
-        /**
-         * Execution configuration
-         */
-        execution: z.ZodObject<{
-            /**
-             * The Claude prompt or slash command to execute
-             * Examples: "/review-code" or "Review the changes in the last commit"
-             */
-            command: z.ZodString;
-            /**
-             * Working directory for execution (relative to project root or absolute)
-             */
-            workingDirectory: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-            /**
-             * Maximum execution time in seconds
-             */
-            timeout: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-            /**
-             * Environment variables to set during execution
-             */
-            env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-            /**
-             * Run with --dangerously-skip-permissions for fully autonomous execution
-             * Required for tasks that need to edit files, run commands, etc.
-             */
-            skipPermissions: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
-            /**
-             * Worktree/workspace configuration for isolated execution
-             */
-            worktree: z.ZodOptional<z.ZodObject<{
-                /**
-                 * Whether to run the task in an isolated worktree/workspace
-                 */
-                enabled: z.ZodDefault<z.ZodBoolean>;
-                /**
-                 * Base path where worktrees are created (default: sibling .worktrees dir)
-                 * Must contain only safe filesystem characters.
-                 */
-                basePath: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
-                /**
-                 * Prefix for branch names (default: 'claude-task/')
-                 * Must be a valid git ref prefix.
-                 */
-                branchPrefix: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-                /**
-                 * Remote name for pushing (default: 'origin')
-                 * Must be a valid git remote name.
-                 */
-                remoteName: z.ZodEffects<z.ZodDefault<z.ZodOptional<z.ZodString>>, string, string | undefined>;
-            }, "strip", z.ZodTypeAny, {
-                enabled: boolean;
-                branchPrefix: string;
-                remoteName: string;
-                basePath?: string | undefined;
-            }, {
-                enabled?: boolean | undefined;
-                basePath?: string | undefined;
-                branchPrefix?: string | undefined;
-                remoteName?: string | undefined;
-            }>>;
-        }, "strip", z.ZodTypeAny, {
-            command: string;
-            workingDirectory: string;
-            timeout: number;
-            skipPermissions: boolean;
-            env?: Record<string, string> | undefined;
-            worktree?: {
-                enabled: boolean;
-                branchPrefix: string;
-                remoteName: string;
-                basePath?: string | undefined;
-            } | undefined;
-        }, {
-            command: string;
-            workingDirectory?: string | undefined;
-            timeout?: number | undefined;
-            env?: Record<string, string> | undefined;
-            skipPermissions?: boolean | undefined;
-            worktree?: {
-                enabled?: boolean | undefined;
-                basePath?: string | undefined;
-                branchPrefix?: string | undefined;
-                remoteName?: string | undefined;
-            } | undefined;
-        }>;
-        /**
-         * Tags for organization
-         */
-        tags: z.ZodDefault<z.ZodOptional<z.ZodArray<z.ZodString, "many">>>;
-        /**
-         * Creation timestamp
-         */
-        createdAt: z.ZodString;
-        /**
-         * Last modification timestamp
-         */
-        updatedAt: z.ZodString;
-    }, "strip", z.ZodTypeAny, {
-        enabled: boolean;
-        id: string;
-        name: string;
-        trigger: {
-            type: "cron";
-            expression: string;
-            timezone: string;
-        };
-        execution: {
-            command: string;
-            workingDirectory: string;
-            timeout: number;
-            skipPermissions: boolean;
-            env?: Record<string, string> | undefined;
-            worktree?: {
-                enabled: boolean;
-                branchPrefix: string;
-                remoteName: string;
-                basePath?: string | undefined;
-            } | undefined;
-        };
-        tags: string[];
-        createdAt: string;
-        updatedAt: string;
-        description?: string | undefined;
-    }, {
-        id: string;
-        name: string;
-        trigger: {
-            type: "cron";
-            expression: string;
-            timezone?: string | undefined;
-        };
-        execution: {
-            command: string;
-            workingDirectory?: string | undefined;
-            timeout?: number | undefined;
-            env?: Record<string, string> | undefined;
-            skipPermissions?: boolean | undefined;
-            worktree?: {
-                enabled?: boolean | undefined;
-                basePath?: string | undefined;
-                branchPrefix?: string | undefined;
-                remoteName?: string | undefined;
-            } | undefined;
-        };
-        createdAt: string;
-        updatedAt: string;
-        enabled?: boolean | undefined;
-        description?: string | undefined;
-        tags?: string[] | undefined;
-    }>, "many">;
-    /**
-     * Global settings
-     */
-    settings: z.ZodOptional<z.ZodObject<{
-        /**
-         * Default timezone for cron tasks
-         */
-        defaultTimezone: z.ZodDefault<z.ZodOptional<z.ZodString>>;
-        /**
-         * Log retention in days
-         */
-        logRetentionDays: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-        /**
-         * Maximum executions to keep in history per task
-         */
-        maxExecutionHistory: z.ZodDefault<z.ZodOptional<z.ZodNumber>>;
-    }, "strip", z.ZodTypeAny, {
-        defaultTimezone: string;
-        logRetentionDays: number;
-        maxExecutionHistory: number;
-    }, {
-        defaultTimezone?: string | undefined;
-        logRetentionDays?: number | undefined;
-        maxExecutionHistory?: number | undefined;
-    }>>;
-}, "strip", z.ZodTypeAny, {
-    version: 1;
-    tasks: {
-        enabled: boolean;
-        id: string;
-        name: string;
-        trigger: {
-            type: "cron";
-            expression: string;
-            timezone: string;
-        };
-        execution: {
-            command: string;
-            workingDirectory: string;
-            timeout: number;
-            skipPermissions: boolean;
-            env?: Record<string, string> | undefined;
-            worktree?: {
-                enabled: boolean;
-                branchPrefix: string;
-                remoteName: string;
-                basePath?: string | undefined;
-            } | undefined;
-        };
-        tags: string[];
-        createdAt: string;
-        updatedAt: string;
-        description?: string | undefined;
-    }[];
-    settings?: {
-        defaultTimezone: string;
-        logRetentionDays: number;
-        maxExecutionHistory: number;
-    } | undefined;
-}, {
-    version: 1;
-    tasks: {
-        id: string;
-        name: string;
-        trigger: {
-            type: "cron";
-            expression: string;
-            timezone?: string | undefined;
-        };
-        execution: {
-            command: string;
-            workingDirectory?: string | undefined;
-            timeout?: number | undefined;
-            env?: Record<string, string> | undefined;
-            skipPermissions?: boolean | undefined;
-            worktree?: {
-                enabled?: boolean | undefined;
-                basePath?: string | undefined;
-                branchPrefix?: string | undefined;
-                remoteName?: string | undefined;
-            } | undefined;
-        };
-        createdAt: string;
-        updatedAt: string;
-        enabled?: boolean | undefined;
-        description?: string | undefined;
-        tags?: string[] | undefined;
-    }[];
-    settings?: {
-        defaultTimezone?: string | undefined;
-        logRetentionDays?: number | undefined;
-        maxExecutionHistory?: number | undefined;
-    } | undefined;
-}>;
-export type SchedulesConfig = z.infer<typeof SchedulesConfigSchema>;
-/**
- * Create an empty schedules config
- */
-export declare function createEmptyConfig(): SchedulesConfig;
-/**
- * Generate a new task ID
- */
-export declare function generateTaskId(): string;
-/**
- * Create a new scheduled task with defaults
- */
-export declare function createTask(name: string, cronExpression: string, command: string, options?: Partial<{
-    description: string;
-    workingDirectory: string;
-    timeout: number;
-    timezone: string;
-    tags: string[];
-    skipPermissions: boolean;
-}>): ScheduledTask;
 //# sourceMappingURL=types.d.ts.map

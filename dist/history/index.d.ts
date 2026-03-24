@@ -1,4 +1,4 @@
-import { ExecutionHistoryRecord, ExecutionStatus } from '../types.js';
+import type { ExecutionHistoryRecord, ExecutionStatus } from '../types.js';
 /**
  * Get the execution history file path
  */
@@ -10,8 +10,10 @@ export declare function recordExecution(record: ExecutionHistoryRecord): Promise
 /**
  * Create a new execution history record
  */
-export declare function createHistoryRecord(taskId: string, taskName: string, project: string, triggeredBy: string, options?: {
-    cronExpression?: string;
+export declare function createHistoryRecord(project: string, triggeredBy: string, options?: {
+    actionItemId?: string;
+    actionItemTitle?: string;
+    agentStatus?: string;
     worktreePath?: string;
     worktreeBranch?: string;
 }): ExecutionHistoryRecord;
@@ -22,13 +24,12 @@ export declare function completeHistoryRecord(record: ExecutionHistoryRecord, re
     status: ExecutionStatus;
     output?: string;
     error?: string;
-    exitCode?: number;
     worktreePushed?: boolean;
 }): ExecutionHistoryRecord;
 export interface HistoryQueryOptions {
     limit?: number;
     status?: ExecutionStatus | ExecutionStatus[];
-    taskName?: string;
+    actionItemTitle?: string;
     project?: string;
     since?: Date;
 }
@@ -57,36 +58,6 @@ export declare function getExecutionStats(options?: {
  * Clean up old history entries
  */
 export declare function cleanupOldHistory(retentionDays?: number): Promise<number>;
-/**
- * Scanned execution from log files
- */
-export interface ScannedExecution {
-    taskId: string;
-    executedAt: Date;
-    status: 'success' | 'failure' | 'unknown';
-    logPath: string;
-    errorLogPath?: string;
-    logSize: number;
-    errorSize: number;
-    project?: string;
-    command?: string;
-    isOneTime: boolean;
-    worktreePath?: string;
-    worktreeBranch?: string;
-    worktreePushed?: boolean;
-}
-/**
- * Scan log files to reconstruct execution history
- * This is the primary method - works with existing launchd executions
- */
-export declare function scanExecutionLogs(options?: {
-    limit?: number;
-    status?: 'success' | 'failure' | 'unknown';
-}): Promise<ScannedExecution[]>;
-/**
- * Get a single scanned execution by task ID
- */
-export declare function getScannedExecutionByTaskId(taskId: string): Promise<ScannedExecution | undefined>;
 /**
  * Read the content of a log file
  */

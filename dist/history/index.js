@@ -1,8 +1,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
-import { ExecutionHistoryRecordSchema, } from '../types.js';
-import { getGlobalConfigDir, getLogsDir } from '../config.js';
+import { ExecutionHistoryRecordSchema } from '../types.js';
+import { getGlobalConfigDir } from '../config.js';
 /**
  * Get the execution history file path
  */
@@ -27,16 +27,16 @@ export async function recordExecution(record) {
 /**
  * Create a new execution history record
  */
-export function createHistoryRecord(taskId, taskName, project, triggeredBy, options = {}) {
+export function createHistoryRecord(project, triggeredBy, options = {}) {
     return {
         id: crypto.randomUUID(),
-        taskId,
-        taskName,
+        actionItemId: options.actionItemId,
+        actionItemTitle: options.actionItemTitle,
+        agentStatus: options.agentStatus,
         project,
         startedAt: new Date().toISOString(),
         status: 'running',
         triggeredBy,
-        cronExpression: options.cronExpression,
         worktreePath: options.worktreePath,
         worktreeBranch: options.worktreeBranch,
     };
@@ -55,7 +55,6 @@ export function completeHistoryRecord(record, result) {
         duration: endTime - startTime,
         output: result.output,
         error: result.error,
-        exitCode: result.exitCode,
         worktreePushed: result.worktreePushed,
     };
 }
@@ -88,9 +87,9 @@ export async function getRecentExecutions(options = {}) {
             : [options.status];
         records = records.filter((r) => statuses.includes(r.status));
     }
-    if (options.taskName) {
-        const searchTerm = options.taskName.toLowerCase();
-        records = records.filter((r) => r.taskName.toLowerCase().includes(searchTerm));
+    if (options.actionItemTitle) {
+        const searchTerm = options.actionItemTitle.toLowerCase();
+        records = records.filter((r) => (r.actionItemTitle ?? '').toLowerCase().includes(searchTerm));
     }
     if (options.project) {
         const searchTerm = options.project.toLowerCase();
@@ -184,135 +183,9 @@ export async function cleanupOldHistory(retentionDays = 30) {
     }
     return removed;
 }
-/**
- * Get LaunchAgents directory path (macOS)
- */
-function getLaunchAgentsDir() {
-    return path.join(os.homedir(), 'Library', 'LaunchAgents');
-}
-/**
- * Try to extract metadata from plist file if it exists
- */
-async function getPlistMetadata(taskId) {
-    const launchAgentsDir = getLaunchAgentsDir();
-    // Try both regular and one-time plist names
-    const plistNames = [
-        `com.claude.schedule.${taskId}.plist`,
-        `com.claude.schedule.once.${taskId}.plist`,
-    ];
-    for (const plistName of plistNames) {
-        const plistPath = path.join(launchAgentsDir, plistName);
-        try {
-            if (await fs.pathExists(plistPath)) {
-                const content = await fs.readFile(plistPath, 'utf-8');
-                // Extract WorkingDirectory
-                const workDirMatch = content.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/);
-                const project = workDirMatch?.[1];
-                // Extract command from ProgramArguments (look for -p flag)
-                const cmdMatch = content.match(/-p<\/string>\s*<string>([^<]+)<\/string>/);
-                const command = cmdMatch?.[1];
-                return { project, command };
-            }
-        }
-        catch {
-            // Ignore plist read errors
-        }
-    }
-    return null;
-}
-/**
- * Scan log files to reconstruct execution history
- * This is the primary method - works with existing launchd executions
- */
-export async function scanExecutionLogs(options = {}) {
-    const logsDir = getLogsDir();
-    if (!(await fs.pathExists(logsDir))) {
-        return [];
-    }
-    const files = await fs.readdir(logsDir);
-    const executions = [];
-    // Group files by task ID
-    const logFiles = new Map();
-    for (const file of files) {
-        if (file.endsWith('.error.log')) {
-            const taskId = file.replace('.error.log', '');
-            const existing = logFiles.get(taskId) || {};
-            existing.error = file;
-            logFiles.set(taskId, existing);
-        }
-        else if (file.endsWith('.log')) {
-            const taskId = file.replace('.log', '');
-            const existing = logFiles.get(taskId) || {};
-            existing.log = file;
-            logFiles.set(taskId, existing);
-        }
-    }
-    // Process each task's logs
-    for (const [taskId, logPaths] of logFiles.entries()) {
-        if (!logPaths.log)
-            continue; // Need at least the main log
-        const logPath = path.join(logsDir, logPaths.log);
-        const errorLogPath = logPaths.error ? path.join(logsDir, logPaths.error) : undefined;
-        try {
-            const logStats = await fs.stat(logPath);
-            const logSize = logStats.size;
-            let errorSize = 0;
-            if (errorLogPath && await fs.pathExists(errorLogPath)) {
-                const errorStats = await fs.stat(errorLogPath);
-                errorSize = errorStats.size;
-            }
-            // Determine status based on error log content
-            let status = 'unknown';
-            if (errorSize > 0 && errorLogPath) {
-                // Check if error log contains actual errors (not just warnings)
-                const errorContent = await fs.readFile(errorLogPath, 'utf-8');
-                const hasRealError = errorContent.toLowerCase().includes('error') ||
-                    errorContent.includes('Exit code') ||
-                    errorContent.includes('failed');
-                status = hasRealError ? 'failure' : 'success';
-            }
-            else if (logSize > 0) {
-                status = 'success';
-            }
-            // Get metadata from plist if available
-            const metadata = await getPlistMetadata(taskId);
-            const execution = {
-                taskId,
-                executedAt: logStats.mtime,
-                status,
-                logPath,
-                errorLogPath,
-                logSize,
-                errorSize,
-                project: metadata?.project,
-                command: metadata?.command,
-                isOneTime: taskId.startsWith('once.'),
-            };
-            executions.push(execution);
-        }
-        catch {
-            // Skip files we can't read
-            continue;
-        }
-    }
-    // Sort by execution time (most recent first)
-    executions.sort((a, b) => b.executedAt.getTime() - a.executedAt.getTime());
-    // Apply status filter
-    let filtered = executions;
-    if (options.status) {
-        filtered = executions.filter(e => e.status === options.status);
-    }
-    // Apply limit
-    const limit = options.limit ?? 20;
-    return filtered.slice(0, limit);
-}
-/**
- * Get a single scanned execution by task ID
- */
-export async function getScannedExecutionByTaskId(taskId) {
-    const executions = await scanExecutionLogs({ limit: 1000 });
-    return executions.find(e => e.taskId === taskId);
-}
+// =============================================================================
+// Log Content Reading
+// =============================================================================
 /**
  * Read the content of a log file
  */

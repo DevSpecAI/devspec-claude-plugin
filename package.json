@@ -1,7 +1,7 @@
 {
-  "name": "claude-code-scheduler",
-  "version": "0.2.0",
-  "description": "Schedule recurring Claude Code tasks with cron expressions",
+  "name": "claude-code-devspec-autopilot",
+  "version": "0.1.0",
+  "description": "Claude Code plugin that automatically picks up agent-ready action items from DevSpec, implements them, tests them, and pushes to a target branch",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,15 +9,13 @@
     "dist",
     ".claude-plugin",
     "commands",
-    "skills",
-    "templates",
-    "examples"
+    "skills"
   ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "node node_modules/typescript/bin/tsc",
+    "dev": "node node_modules/typescript/bin/tsc --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"
@@ -25,29 +23,18 @@
   "keywords": [
     "claude",
     "claude-code",
-    "scheduler",
-    "cron",
+    "devspec",
+    "autopilot",
     "automation",
-    "launchd",
-    "crontab",
-    "task-scheduler"
+    "mcp",
+    "action-items"
   ],
   "author": "",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/jshchnz/claude-code-scheduler.git"
-  },
-  "bugs": {
-    "url": "https://github.com/jshchnz/claude-code-scheduler/issues"
-  },
-  "homepage": "https://github.com/jshchnz/claude-code-scheduler#readme",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "croner": "^8.1.2",
-    "cronstrue": "^2.52.0",
     "execa": "^9.5.2",
     "fs-extra": "^11.2.0",
     "zod": "^3.24.1"

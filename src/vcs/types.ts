@@ -40,8 +40,32 @@ export interface WorktreeResult {
   commitSha?: string;
   /** Whether changes were pushed */
   pushed: boolean;
+  /** Whether changes were merged to target branch */
+  merged?: boolean;
   /** Error message if failed */
   error?: string;
   /** Whether there were any changes to commit */
   hadChanges: boolean;
+}
+
+/**
+ * Parameters for merging to target branch
+ */
+export interface MergeToTargetParams {
+  /** Worktree context with branch info */
+  ctx: WorktreeContext;
+  /** Target branch to merge into */
+  targetBranch: string;
+  /** Remote name (default: origin) */
+  remote?: string;
+}
+
+/**
+ * Check if any changed files match protected path patterns
+ */
+export interface ProtectedPathCheckParams {
+  /** Working directory to check */
+  workingDir: string;
+  /** Glob patterns for protected paths */
+  protectedPaths: string[];
 }

@@ -9,6 +9,8 @@ import type {
   WorktreeContext,
   CreateWorktreeParams,
   WorktreeResult,
+  MergeToTargetParams,
+  ProtectedPathCheckParams,
 } from './types.js';
 
 export * from './types.js';
@@ -159,4 +161,85 @@ export async function removeWorktree(ctx: WorktreeContext): Promise<void> {
  */
 export async function worktreeExists(ctx: WorktreeContext): Promise<boolean> {
   return fs.pathExists(ctx.worktreePath);
+}
+
+/**
+ * Merge a worktree branch into a target branch.
+ * Fetches latest target, checks out target, merges feature branch, pushes.
+ * On conflict, returns error instead of force-pushing.
+ */
+export async function mergeToTarget(params: MergeToTargetParams): Promise<WorktreeResult> {
+  const { ctx, targetBranch, remote = 'origin' } = params;
+  const { mainRepoPath, branchName } = ctx;
+
+  try {
+    // Fetch latest target branch
+    await execa('git', ['fetch', remote, targetBranch], { cwd: mainRepoPath });
+
+    // Merge feature branch into target (using main repo, not worktree)
+    await execa('git', ['checkout', targetBranch], { cwd: mainRepoPath });
+    await execa('git', ['merge', branchName, '--no-ff', '-m', `Merge ${branchName} into ${targetBranch}`], {
+      cwd: mainRepoPath,
+    });
+    await execa('git', ['push', remote, targetBranch], { cwd: mainRepoPath });
+
+    return { success: true, pushed: true, merged: true, hadChanges: true };
+  } catch (error) {
+    // Abort merge if in progress
+    try {
+      await execa('git', ['merge', '--abort'], { cwd: mainRepoPath });
+    } catch {
+      // Ignore — merge abort may fail if no merge in progress
+    }
+    // Restore original branch
+    try {
+      await execa('git', ['checkout', '-'], { cwd: mainRepoPath });
+    } catch {
+      // Best effort
+    }
+    return {
+      success: false,
+      pushed: false,
+      merged: false,
+      hadChanges: true,
+      error: `Merge failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Check if any staged/changed files match protected path patterns.
+ * Returns list of violations.
+ */
+export async function validateProtectedPaths(params: ProtectedPathCheckParams): Promise<string[]> {
+  const { workingDir, protectedPaths } = params;
+
+  if (!protectedPaths.length) return [];
+
+  const { stdout } = await execa('git', ['diff', '--name-only', '--cached'], { cwd: workingDir });
+  const { stdout: unstaged } = await execa('git', ['diff', '--name-only'], { cwd: workingDir });
+
+  const allChanged = [...new Set([...stdout.split('\n'), ...unstaged.split('\n')].filter(Boolean))];
+
+  const violations: string[] = [];
+  for (const file of allChanged) {
+    for (const pattern of protectedPaths) {
+      // Simple glob matching: support * and ** patterns
+      const regex = new RegExp(
+        '^' +
+        pattern
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*\*/g, '___GLOBSTAR___')
+          .replace(/\*/g, '[^/]*')
+          .replace(/___GLOBSTAR___/g, '.*') +
+        '$'
+      );
+      if (regex.test(file)) {
+        violations.push(`Protected path violation: ${file} matches pattern ${pattern}`);
+        break;
+      }
+    }
+  }
+
+  return violations;
 }

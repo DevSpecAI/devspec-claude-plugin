@@ -4,33 +4,6 @@ export * from './types.js';
 // Config utilities
 export * from './config.js';
 
-// Scheduler implementations
-export {
-  BaseScheduler,
-  SchedulerError,
-  getScheduler,
-  getPlatformName,
-  getSchedulerName,
-  isPlatformSupported,
-} from './schedulers/index.js';
-
-// Cron utilities
-export {
-  validateCron,
-  getNextRuns,
-  getNextRun,
-  naturalLanguageToCron,
-  CRON_PRESETS,
-} from './cron/parser.js';
-
-export {
-  cronToHuman,
-  cronToHumanVerbose,
-  formatDate,
-  formatDuration,
-  formatTimeAgo,
-} from './cron/humanizer.js';
-
 // Logging utilities
 export {
   ensureLogsDir,
@@ -54,12 +27,9 @@ export {
   cleanupOldHistory,
   formatProjectPath,
   getStatusIcon,
-  // Log file scanning (primary method)
-  scanExecutionLogs,
-  getScannedExecutionByTaskId,
   readLogContent,
 } from './history/index.js';
-export type { HistoryQueryOptions, ScannedExecution } from './history/index.js';
+export type { HistoryQueryOptions } from './history/index.js';
 
 // Git worktree utilities
 export {
@@ -70,11 +40,15 @@ export {
   commitAndPush,
   removeWorktree,
   worktreeExists,
+  mergeToTarget,
+  validateProtectedPaths,
 } from './vcs/index.js';
 export type {
   WorktreeContext,
   CreateWorktreeParams,
   WorktreeResult,
+  MergeToTargetParams,
+  ProtectedPathCheckParams,
 } from './vcs/types.js';
 
 // Shell utilities
@@ -86,3 +60,41 @@ export {
   GIT_REMOTE_PATTERN,
   SAFE_PATH_PATTERN,
 } from './utils/shell.js';
+
+// Autopilot modules
+export {
+  buildPrompt,
+  buildPlanningPrompt,
+} from './autopilot/prompt.js';
+
+export {
+  prepareExecution,
+  preparePlanningExecution,
+  createSuccessResult,
+  createFailureResult,
+  createPlanningDoneResult,
+  createIdleResult,
+  createClaimLostResult,
+  createMcpErrorResult,
+} from './autopilot/executor.js';
+
+export {
+  createLoopContext,
+  recordCycle,
+  shouldContinue,
+  formatCycleResult,
+  formatStatus,
+} from './autopilot/loop.js';
+
+// MCP client helpers
+export {
+  generateBranchName,
+  buildFetchQueuedArgs,
+  buildClaimArgs,
+  buildReportSuccessArgs,
+  buildReportFailureArgs,
+  buildAddNoteArgs,
+  buildAddCommitRefArgs,
+  isStaleClaimAt,
+  buildStaleFailArgs,
+} from './mcp/client.js';

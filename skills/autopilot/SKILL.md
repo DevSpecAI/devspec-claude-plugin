@@ -82,6 +82,8 @@ When processing a queued item, output step-by-step progress:
     ✓ Claimed → fix/action-item-a1b2c3d4
     ▹ Creating worktree...
     ✓ Worktree ready
+    ▹ Linking dependencies...
+    ✓ node_modules linked
     ▹ Implementing changes...
     ✓ 3 files changed (+42 / -11)
     ▹ Running typecheck...
@@ -198,28 +200,34 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    git worktree add <worktree_path> -b <branch_name>
    ```
 
-3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions.
+3. **LINK DEPENDENCIES**: Symlink `node_modules` from the main repo into the worktree to avoid a full `npm install`. Use a directory junction on Windows, symlink on Unix:
+   ```bash
+   cmd //c "mklink /J \"<worktree_path>\node_modules\" \"<main_repo>\node_modules\"" 2>/dev/null || ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules" 2>/dev/null
+   ```
+   If the symlink/junction fails, fall back to `npm install --ignore-scripts` in the worktree. Do NOT fail the item over a dependency linking issue.
 
-4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
+4. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions.
 
-5. **TEST**: Run all configured test commands in the worktree:
+5. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
+
+6. **TEST**: Run all configured test commands in the worktree:
    - Unit: `{test_commands.unit}` (if configured)
    - E2E: `{test_commands.e2e}` (if configured)
    - Typecheck: `{test_commands.typecheck}` (if configured)
    If tests fail due to your changes, fail the item. If tests fail due to pre-existing issues, note in implementation notes but continue.
 
-6. **COMMIT**: Stage and commit changes:
+7. **COMMIT**: Stage and commit changes:
    ```bash
    git add -A
    git commit -m "{commit_message_prefix} {action_item_title}"
    ```
 
-7. **PUSH**: If auto_push is enabled:
+8. **PUSH**: If auto_push is enabled:
    ```bash
    git push -u origin <branch_name>
    ```
 
-8. **MERGE**: If auto_merge is enabled, merge to target branch:
+9. **MERGE**: If auto_merge is enabled, merge to target branch:
    ```bash
    git checkout {target_branch}
    git merge <branch_name> --no-ff
@@ -227,14 +235,14 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    ```
    If merge conflicts arise, fail the item with a clear error.
 
-9. **REPORT SUCCESS**: Call `update_action_item` with:
-   - agent_status: 'completed'
-   - commit_sha: <sha>
-   - status: 'done'
-   Call `add_implementation_note` summarizing what was changed.
-   Call `add_commit_reference` with the commit SHA.
+10. **REPORT SUCCESS**: Call `update_action_item` with:
+    - agent_status: 'completed'
+    - commit_sha: <sha>
+    - status: 'done'
+    Call `add_implementation_note` summarizing what was changed.
+    Call `add_commit_reference` with the commit SHA.
 
-10. **CLEANUP**: Remove the worktree:
+11. **CLEANUP**: Remove the worktree:
     ```bash
     git worktree remove <worktree_path> --force
     ```

@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import type { AutopilotSettings, AutopilotState, CycleResult } from './types.js';
 import { DEFAULT_AUTOPILOT_SETTINGS, AutopilotSettingsSchema } from './types.js';
@@ -37,6 +38,9 @@ export function initAutopilotState(projectId: string, settings: AutopilotSetting
     settings,
     cycleCount: 0,
     lastCycleResult: null,
+    sessionId: crypto.randomUUID(),
+    machineHostname: os.hostname(),
+    tasksCompleted: 0,
   };
   return autopilotState;
 }
@@ -45,6 +49,9 @@ export function updateCycleResult(result: CycleResult): void {
   if (autopilotState) {
     autopilotState.cycleCount++;
     autopilotState.lastCycleResult = result;
+    if (result.action === 'completed') {
+      autopilotState.tasksCompleted++;
+    }
   }
 }
 

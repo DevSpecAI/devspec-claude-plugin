@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat
 ---
 
 # DevSpec Autopilot
@@ -156,6 +156,7 @@ When the autopilot is stopped:
    - poll_interval_seconds: 60
    - stale_claim_timeout_minutes: 30
 4. Output the startup banner (see Output Formatting above)
+5. **Send initial heartbeat**: Call `send_heartbeat` with `status: 'idle'`, `session_id` (a UUID generated once at startup and reused for the entire session), `machine_hostname` (from `os.hostname()`), `cycle_count: 0`, `tasks_completed: 0`. Wrap in try/catch — log failures but never halt startup.
 
 ## Polling Loop
 
@@ -257,7 +258,19 @@ If any step fails:
 4. Output failure markers (see formatting)
 5. **STOP the cycle** — do not skip to the next item
 
-### 4. Wait
+### 4. Send Heartbeat
+After processing (or after determining idle), call `send_heartbeat` with:
+- `session_id`: the same UUID from startup
+- `machine_hostname`: the same hostname from startup
+- `status`: `'idle'` if no task was claimed this cycle, `'working'` if a task was claimed and is still in progress
+- `cycle_count`: total cycles completed so far
+- `tasks_completed`: total items that reached 'completed' so far
+- `current_task_id` and `current_task_title`: set if status is 'working', omit otherwise
+- `last_error`: the error message if the last cycle failed, omit otherwise
+
+**CRITICAL**: Wrap the `send_heartbeat` call in try/catch. Heartbeat failures MUST NOT interrupt the polling loop. Log the error and continue.
+
+### 5. Wait
 Wait `poll_interval_seconds` before starting the next cycle. Use `sleep` via the Bash tool with `run_in_background: true` to avoid a visible `(No output)` line — you will be notified when the sleep completes, then start the next cycle.
 
 ## State Tracking
@@ -268,6 +281,13 @@ Track these values internally across cycles for the stop summary:
 - `items_failed`: items that reached 'failed'
 - `items_planned`: items that had plans written
 - `start_time`: when the autopilot started
+
+## Graceful Shutdown
+
+When the autopilot is stopped (via `/autopilot:stop` or any other signal):
+1. Complete the current cycle if one is in progress
+2. Call `send_heartbeat` with `status: 'offline'` to immediately remove this runner from the dashboard. Wrap in try/catch — if it fails, the server will time out the runner automatically.
+3. Output the stop summary
 
 ## Safety Rules
 

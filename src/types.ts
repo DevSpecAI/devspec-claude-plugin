@@ -86,6 +86,26 @@ export interface AutopilotState {
   settings: AutopilotSettings;
   cycleCount: number;
   lastCycleResult: CycleResult | null;
+  sessionId: string;
+  machineHostname: string;
+  tasksCompleted: number;
+}
+
+// =============================================================================
+// Heartbeat (sent to DevSpec via MCP send_heartbeat tool)
+// =============================================================================
+
+export type RunnerStatus = 'idle' | 'working' | 'offline';
+
+export interface HeartbeatPayload {
+  session_id: string;
+  machine_hostname: string;
+  status: RunnerStatus;
+  current_task_id?: string;
+  current_task_title?: string;
+  cycle_count?: number;
+  tasks_completed?: number;
+  last_error?: string;
 }
 
 // =============================================================================

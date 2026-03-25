@@ -12,8 +12,8 @@
  * 4. Repeat until stopped
  */
 
-import type { AutopilotSettings, CycleResult } from '../types.js';
-import { isAutopilotRunning, updateCycleResult } from '../config.js';
+import type { AutopilotSettings, CycleResult, HeartbeatPayload, RunnerStatus } from '../types.js';
+import { isAutopilotRunning, updateCycleResult, getAutopilotState } from '../config.js';
 
 // =============================================================================
 // Loop State
@@ -84,6 +84,59 @@ function formatDuration(ms?: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60000).toFixed(1)}m`;
+}
+
+/**
+ * Build a heartbeat payload from the current loop context and cycle result.
+ * Used by the skill to call the send_heartbeat MCP tool after each cycle.
+ */
+export function buildHeartbeatPayload(
+  ctx: LoopContext,
+  result: CycleResult,
+): HeartbeatPayload {
+  const state = getAutopilotState();
+
+  // Determine runner status from the cycle result
+  let status: RunnerStatus = 'idle';
+  if (result.action === 'claimed' || result.action === 'completed' || result.action === 'failed') {
+    // If we just claimed, we're working. If completed/failed, back to idle.
+    status = result.action === 'claimed' ? 'working' : 'idle';
+  }
+
+  const payload: HeartbeatPayload = {
+    session_id: state?.sessionId ?? '',
+    machine_hostname: state?.machineHostname ?? '',
+    status,
+    cycle_count: ctx.cycleCount,
+    tasks_completed: state?.tasksCompleted ?? 0,
+  };
+
+  // Include current task info if working
+  if (status === 'working' && result.actionItemId) {
+    payload.current_task_id = result.actionItemId;
+    payload.current_task_title = result.actionItemTitle;
+  }
+
+  // Include last error if the cycle failed
+  if (result.action === 'failed' && result.error) {
+    payload.last_error = result.error;
+  }
+
+  return payload;
+}
+
+/**
+ * Build a heartbeat payload for startup (status: idle) or shutdown (status: offline).
+ */
+export function buildLifecycleHeartbeat(status: 'idle' | 'offline'): HeartbeatPayload {
+  const state = getAutopilotState();
+  return {
+    session_id: state?.sessionId ?? '',
+    machine_hostname: state?.machineHostname ?? '',
+    status,
+    cycle_count: state?.cycleCount ?? 0,
+    tasks_completed: state?.tasksCompleted ?? 0,
+  };
 }
 
 /**

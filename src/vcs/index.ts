@@ -46,6 +46,28 @@ export function getWorktreeBasePath(mainRepoPath: string, basePath?: string): st
 }
 
 /**
+ * Symlink/junction node_modules from the main repo into a worktree.
+ * Uses 'junction' type on Windows (works without admin privileges)
+ * and a regular directory symlink on other platforms.
+ * Silently skips if the main repo has no node_modules.
+ */
+async function linkNodeModules(mainRepoPath: string, worktreePath: string): Promise<void> {
+  const source = path.join(mainRepoPath, 'node_modules');
+  const target = path.join(worktreePath, 'node_modules');
+
+  if (!(await fs.pathExists(source))) {
+    return; // Nothing to link
+  }
+
+  try {
+    const type = process.platform === 'win32' ? 'junction' : 'dir';
+    await fs.symlink(source, target, type);
+  } catch {
+    // Non-fatal — the skill prompt has a fallback to npm install
+  }
+}
+
+/**
  * Create a git worktree
  */
 export async function createWorktree(params: CreateWorktreeParams): Promise<WorktreeContext> {
@@ -68,6 +90,10 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Work
   await execa('git', ['worktree', 'add', worktreePath, '-b', branchName], {
     cwd: mainRepoPath,
   });
+
+  // Link node_modules from main repo into worktree (junction on Windows, symlink on Unix).
+  // This avoids a full npm install and ensures the worktree can run typecheck/tests.
+  await linkNodeModules(mainRepoPath, worktreePath);
 
   return {
     mainRepoPath,

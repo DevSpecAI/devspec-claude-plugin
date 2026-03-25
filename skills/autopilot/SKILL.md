@@ -196,39 +196,34 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
 #### If agent_status = 'queued' (Full Execution)
 1. **CLAIM**: Call `update_action_item` with `agent_status: 'in_progress'` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. If claim fails (race condition), skip to next cycle.
 
-2. **BRANCH**: Create an isolated git worktree:
+2. **BRANCH + LINK DEPENDENCIES** *(single step — do NOT split)*: Create an isolated git worktree AND link `node_modules` in one command. Without the link, typecheck and tests WILL fail:
    ```bash
-   git worktree add <worktree_path> -b <branch_name>
+   git worktree add <worktree_path> -b <branch_name> && (cmd //c "mklink /J \"<worktree_path>\node_modules\" \"<main_repo>\node_modules\"" 2>/dev/null || ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules" 2>/dev/null || npm install --ignore-scripts --prefix "<worktree_path>")
    ```
+   This creates the worktree, then links `node_modules` via directory junction (Windows) or symlink (Unix), falling back to `npm install` if both fail. Do NOT proceed to implementation without confirming `node_modules` exists in the worktree.
 
-3. **LINK DEPENDENCIES**: Symlink `node_modules` from the main repo into the worktree to avoid a full `npm install`. Use a directory junction on Windows, symlink on Unix:
-   ```bash
-   cmd //c "mklink /J \"<worktree_path>\node_modules\" \"<main_repo>\node_modules\"" 2>/dev/null || ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules" 2>/dev/null
-   ```
-   If the symlink/junction fails, fall back to `npm install --ignore-scripts` in the worktree. Do NOT fail the item over a dependency linking issue.
+3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions.
 
-4. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions.
+4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 
-5. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
-
-6. **TEST**: Run all configured test commands in the worktree:
+5. **TEST**: Run all configured test commands in the worktree:
    - Unit: `{test_commands.unit}` (if configured)
    - E2E: `{test_commands.e2e}` (if configured)
    - Typecheck: `{test_commands.typecheck}` (if configured)
    If tests fail due to your changes, fail the item. If tests fail due to pre-existing issues, note in implementation notes but continue.
 
-7. **COMMIT**: Stage and commit changes:
+6. **COMMIT**: Stage and commit changes:
    ```bash
    git add -A
    git commit -m "{commit_message_prefix} {action_item_title}"
    ```
 
-8. **PUSH**: If auto_push is enabled:
+7. **PUSH**: If auto_push is enabled:
    ```bash
    git push -u origin <branch_name>
    ```
 
-9. **MERGE**: If auto_merge is enabled, merge to target branch:
+8. **MERGE**: If auto_merge is enabled, merge to target branch:
    ```bash
    git checkout {target_branch}
    git merge <branch_name> --no-ff
@@ -236,14 +231,14 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    ```
    If merge conflicts arise, fail the item with a clear error.
 
-10. **REPORT SUCCESS**: Call `update_action_item` with:
+9. **REPORT SUCCESS**: Call `update_action_item` with:
     - agent_status: 'completed'
     - commit_sha: <sha>
     - status: 'done'
     Call `add_implementation_note` summarizing what was changed.
     Call `add_commit_reference` with the commit SHA.
 
-11. **CLEANUP**: Remove the worktree:
+10. **CLEANUP**: Remove the worktree:
     ```bash
     git worktree remove <worktree_path> --force
     ```

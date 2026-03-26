@@ -12,8 +12,168 @@ import type {
   MergeToTargetParams,
   ProtectedPathCheckParams,
 } from './types.js';
+import type { RepositoryInfo } from '../types.js';
 
 export * from './types.js';
+
+// ---------------------------------------------------------------------------
+// URL Normalization (009-runner-repo-guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a git remote URL to canonical `host/owner/repo` format.
+ */
+export function normalizeRepoUrl(url: string): string {
+  let result = url.trim();
+
+  // SSH shorthand: git@host:owner/repo.git → host/owner/repo
+  const sshMatch = result.match(/^[\w.-]+@([\w.-]+):(.+)$/);
+  if (sshMatch) {
+    result = `${sshMatch[1]}/${sshMatch[2]}`;
+  } else {
+    result = result.replace(/^(?:https?|ssh|git):\/\//, '');
+    result = result.replace(/^[^@]+@/, '');
+    result = result.replace(/:\d+(?=\/)/, '');
+  }
+
+  result = result.replace(/\.git$/, '');
+  result = result.replace(/\/+$/, '');
+
+  const slashIdx = result.indexOf('/');
+  if (slashIdx > 0) {
+    result = result.slice(0, slashIdx).toLowerCase() + result.slice(slashIdx);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace Repository Collection (009-runner-repo-guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect repository info for the root repo and immediate child directories.
+ * Excludes worktree directories (where .git is a file, not a directory).
+ */
+export async function collectWorkspaceRepos(
+  rootPath: string,
+  worktreeBasePath?: string,
+): Promise<RepositoryInfo[]> {
+  const repos: RepositoryInfo[] = [];
+
+  // Collect root repo
+  const rootInfo = await getRepoInfo(rootPath, path.basename(rootPath));
+  if (rootInfo) {
+    repos.push(rootInfo);
+  }
+
+  // Scan immediate children for .git directories
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const childPath = path.join(rootPath, entry.name);
+
+    // Exclude worktree base directory
+    if (worktreeBasePath && childPath.startsWith(worktreeBasePath)) continue;
+
+    const gitPath = path.join(childPath, '.git');
+    if (!(await fs.pathExists(gitPath))) continue;
+
+    // Exclude worktree checkouts (where .git is a file pointing to main repo)
+    const gitStat = await fs.stat(gitPath);
+    if (gitStat.isFile()) continue;
+
+    const info = await getRepoInfo(childPath, entry.name);
+    if (info) {
+      repos.push(info);
+    }
+  }
+
+  return repos;
+}
+
+async function getRepoInfo(repoPath: string, name: string): Promise<RepositoryInfo | null> {
+  try {
+    // Get remote URL (skip repos with no remote)
+    const { stdout: remoteUrl } = await execa('git', ['remote', 'get-url', 'origin'], {
+      cwd: repoPath,
+    });
+    if (!remoteUrl.trim()) return null;
+
+    // Get current branch (empty if detached)
+    let branch: string | null = null;
+    let detached = false;
+    try {
+      const { stdout: branchOut } = await execa('git', ['branch', '--show-current'], {
+        cwd: repoPath,
+      });
+      branch = branchOut.trim() || null;
+      detached = !branch;
+    } catch {
+      detached = true;
+    }
+
+    // Get short SHA
+    const { stdout: sha } = await execa('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: repoPath,
+    });
+
+    return {
+      name,
+      remote_url: remoteUrl.trim(),
+      normalized_url: normalizeRepoUrl(remoteUrl.trim()),
+      branch,
+      detached,
+      short_sha: sha.trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Re-read branch and SHA for previously discovered repos.
+ * The directory scan + remote URL lookup is expensive and rarely changes,
+ * but branch/SHA can change at any time (user switches branch in another terminal).
+ * This function is fast — just two git commands per repo.
+ */
+export async function refreshRepoBranches(
+  rootPath: string,
+  repos: RepositoryInfo[],
+): Promise<RepositoryInfo[]> {
+  const refreshed: RepositoryInfo[] = [];
+  for (const repo of repos) {
+    const repoPath = repo.name === path.basename(rootPath)
+      ? rootPath
+      : path.join(rootPath, repo.name);
+    try {
+      let branch: string | null = null;
+      let detached = false;
+      try {
+        const { stdout: branchOut } = await execa('git', ['branch', '--show-current'], {
+          cwd: repoPath,
+        });
+        branch = branchOut.trim() || null;
+        detached = !branch;
+      } catch {
+        detached = true;
+      }
+      const { stdout: sha } = await execa('git', ['rev-parse', '--short', 'HEAD'], {
+        cwd: repoPath,
+      });
+      refreshed.push({
+        ...repo,
+        branch,
+        detached,
+        short_sha: sha.trim(),
+      });
+    } catch {
+      refreshed.push(repo); // keep stale data if git fails
+    }
+  }
+  return refreshed;
+}
 
 /**
  * Check if path is a git repository

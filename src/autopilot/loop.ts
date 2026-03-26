@@ -12,8 +12,46 @@
  * 4. Repeat until stopped
  */
 
-import type { AutopilotSettings, CycleResult, HeartbeatPayload, RunnerStatus } from '../types.js';
+import type { AutopilotSettings, CycleResult, HeartbeatPayload, HeartbeatResponse, RepositoryInfo, RunnerStatus } from '../types.js';
 import { isAutopilotRunning, updateCycleResult, getAutopilotState } from '../config.js';
+import { collectWorkspaceRepos, refreshRepoBranches } from '../vcs/index.js';
+
+// =============================================================================
+// Repository Info Cache
+// =============================================================================
+
+let cachedRepos: RepositoryInfo[] | null = null;
+let cacheTimestamp = 0;
+const REPO_CACHE_TTL_MS = 30_000; // 30 seconds — for the directory scan only
+
+/**
+ * Get workspace repositories with up-to-date branch/SHA info.
+ *
+ * The full directory scan + remote URL lookup is cached (30s TTL) since
+ * repos rarely appear/disappear. But branch and SHA are ALWAYS re-read
+ * fresh because the user may switch branches in another terminal.
+ */
+async function getCachedWorkspaceRepos(): Promise<RepositoryInfo[]> {
+  const now = Date.now();
+  const cwd = process.cwd();
+
+  // Full scan: only when cache is cold or expired
+  if (!cachedRepos || now - cacheTimestamp >= REPO_CACHE_TTL_MS) {
+    try {
+      cachedRepos = await collectWorkspaceRepos(cwd);
+      cacheTimestamp = now;
+    } catch {
+      if (!cachedRepos) cachedRepos = [];
+    }
+  }
+
+  // Always refresh branch/SHA — these are fast git commands
+  try {
+    return await refreshRepoBranches(cwd, cachedRepos);
+  } catch {
+    return cachedRepos;
+  }
+}
 
 // =============================================================================
 // Loop State
@@ -49,6 +87,62 @@ export function recordCycle(ctx: LoopContext, result: CycleResult): void {
  */
 export function shouldContinue(): boolean {
   return isAutopilotRunning();
+}
+
+// =============================================================================
+// Validation Gating (009-runner-repo-guard)
+// =============================================================================
+
+let gated = false;
+let gateReason: string | null = null;
+
+/**
+ * Process the heartbeat response from the server and update the gating flag.
+ *
+ * If the server reports `branch_mismatch` or `repo_not_found`, the runner is
+ * gated and should skip work-claiming until the issue is resolved. When the
+ * state is `aligned` or `manual_override`, the gate is cleared.
+ */
+export function processHeartbeatResponse(response: HeartbeatResponse): void {
+  const state = response.validation_state;
+
+  if (state === 'branch_mismatch' || state === 'repo_not_found') {
+    gated = true;
+    gateReason =
+      response.validation_details?.message ??
+      `Validation failed: ${state}`;
+    console.warn(`[autopilot] Runner gated — ${gateReason}`);
+  } else {
+    // 'aligned', 'manual_override', or undefined (no validation configured)
+    if (gated) {
+      console.info('[autopilot] Runner gate cleared — validation passed.');
+    }
+    gated = false;
+    gateReason = null;
+  }
+}
+
+/**
+ * Returns true if the runner is currently gated by a validation failure
+ * and should NOT claim new work items.
+ */
+export function isGated(): boolean {
+  return gated;
+}
+
+/**
+ * Returns the reason the runner is gated, or null if not gated.
+ */
+export function getGateReason(): string | null {
+  return gateReason;
+}
+
+/**
+ * Reset gating state (e.g. on session start).
+ */
+export function resetGate(): void {
+  gated = false;
+  gateReason = null;
 }
 
 /**
@@ -90,10 +184,10 @@ function formatDuration(ms?: number): string {
  * Build a heartbeat payload from the current loop context and cycle result.
  * Used by the skill to call the send_heartbeat MCP tool after each cycle.
  */
-export function buildHeartbeatPayload(
+export async function buildHeartbeatPayload(
   ctx: LoopContext,
   result: CycleResult,
-): HeartbeatPayload {
+): Promise<HeartbeatPayload> {
   const state = getAutopilotState();
 
   // Determine runner status from the cycle result
@@ -103,12 +197,16 @@ export function buildHeartbeatPayload(
     status = result.action === 'claimed' ? 'working' : 'idle';
   }
 
+  // Collect workspace repository info (cached, TTL 30s)
+  const repositories = await getCachedWorkspaceRepos();
+
   const payload: HeartbeatPayload = {
     session_id: state?.sessionId ?? '',
     machine_hostname: state?.machineHostname ?? '',
     status,
     cycle_count: ctx.cycleCount,
     tasks_completed: state?.tasksCompleted ?? 0,
+    repositories,
   };
 
   // Include current task info if working
@@ -128,14 +226,19 @@ export function buildHeartbeatPayload(
 /**
  * Build a heartbeat payload for startup (status: idle) or shutdown (status: offline).
  */
-export function buildLifecycleHeartbeat(status: 'idle' | 'offline'): HeartbeatPayload {
+export async function buildLifecycleHeartbeat(status: 'idle' | 'offline'): Promise<HeartbeatPayload> {
   const state = getAutopilotState();
+
+  // Collect workspace repository info (cached, TTL 30s)
+  const repositories = await getCachedWorkspaceRepos();
+
   return {
     session_id: state?.sessionId ?? '',
     machine_hostname: state?.machineHostname ?? '',
     status,
     cycle_count: state?.cycleCount ?? 0,
     tasks_completed: state?.tasksCompleted ?? 0,
+    repositories,
   };
 }
 

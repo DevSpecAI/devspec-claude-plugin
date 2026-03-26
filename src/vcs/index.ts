@@ -62,8 +62,9 @@ async function linkNodeModules(mainRepoPath: string, worktreePath: string): Prom
   try {
     const type = process.platform === 'win32' ? 'junction' : 'dir';
     await fs.symlink(source, target, type);
-  } catch {
-    // Non-fatal — the skill prompt has a fallback to npm install
+  } catch (err) {
+    // Non-fatal — the skill prompt will skip tests if node_modules is unavailable
+    console.warn(`[vcs] Failed to link node_modules: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

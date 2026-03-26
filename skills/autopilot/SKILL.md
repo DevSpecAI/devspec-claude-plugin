@@ -283,6 +283,8 @@ Then call `send_heartbeat` with:
 
 **CRITICAL**: Wrap the `send_heartbeat` call in try/catch. Heartbeat failures MUST NOT interrupt the polling loop. Log the error and continue.
 
+If the heartbeat response includes `validation_state` of `branch_mismatch` or `repo_not_found`, **do NOT attempt to fix it** — do not checkout branches, do not switch repos, do not modify local git state. Simply skip work-claiming for this cycle and continue heartbeating. The user resolves mismatches via the DevSpec dashboard.
+
 ### 5. Wait
 Wait `poll_interval_seconds` before starting the next cycle. Use `sleep` via the Bash tool with `run_in_background: true` to avoid a visible `(No output)` line — you will be notified when the sleep completes, then start the next cycle.
 
@@ -308,6 +310,7 @@ When the autopilot is stopped (via `/autopilot:stop` or any other signal):
 - **Never** force-push to any branch
 - **Never** push directly to protected branches (unless explicitly configured as the target)
 - **Never** modify files matching the configured `protected_paths` patterns
+- **Never** switch branches, checkout, or modify the local git state of the workspace — if a branch mismatch is detected via the heartbeat response, just report it and continue heartbeating. The user resolves mismatches via the DevSpec dashboard, NOT the autopilot.
 - **One item per cycle** — if it fails, stop and report. Next cycle picks up the next item.
 - **Document everything** — all autonomous decisions go into implementation notes
 - If the action item is too vague, ambiguous, or requires human judgment, fail it with error "Requires human judgment" rather than guessing

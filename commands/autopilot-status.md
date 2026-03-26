@@ -1,31 +1,34 @@
 ---
 name: autopilot-status
 description: Show the current state of the DevSpec autopilot
-allowed-tools: Read, mcp__devspec__get_action_items, mcp__devspec__get_project_summary
+allowed-tools: mcp__devspec__get_action_items, mcp__devspec__get_project_summary
 ---
 
 # Autopilot Status
 
-Fetch current state and output in this format:
+Fetch current state and output a compact status panel. Make all API calls in parallel.
+
+## Steps
+
+1. Call `get_project_summary` for settings, `get_action_items` with `agent_ready: true, agent_status: 'queued'` for queue count, and `get_action_items` with `agent_status: 'in_progress'` for active count — **all in parallel**
+2. Output:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ◆  DEVSPEC AUTOPILOT  ▸  {RUNNING/STOPPED}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ◆  DEVSPEC AUTOPILOT  ▸  {ONLINE/OFFLINE}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   target: {branch}  ·  interval: {N}s
   push: {on/off}  ·  merge: {on/off}
 
-  Queue:        {N} items ready
-  In progress:  {N} items
-  Completed:    {N} items (this session)
-  Failed:       {N} items (this session)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  queued:       {N} items
+  in progress:  {N} items
+  completed:    {N} items (this session)
+  failed:       {N} items (this session)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Data sources:
-1. Call `get_project_summary` for settings
-2. Call `get_action_items` with `agent_status: 'queued'` for queue count
-3. Call `get_action_items` with `agent_status: 'in_progress'` for active count
-4. Use tracked session state for completed/failed counts (if autopilot is running)
+## Rules
 
-Make all API calls in parallel.
+- Use `on`/`off` for booleans
+- Use tracked session state for completed/failed counts (if autopilot is running)
+- Do NOT output filler text before or after the banner

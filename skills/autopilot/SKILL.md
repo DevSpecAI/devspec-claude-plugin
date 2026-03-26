@@ -194,15 +194,31 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
 8. **DO NOT** create branches, modify code, or commit
 
 #### If agent_status = 'queued' (Full Execution)
-1. **CLAIM**: Call `update_action_item` with `agent_status: 'in_progress'` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. If claim fails (race condition), skip to next cycle.
 
-2. **BRANCH + LINK DEPENDENCIES** *(single step — do NOT split)*: Create an isolated git worktree AND link `node_modules` in one command. Without the link, typecheck and tests WILL fail:
+> **Execution Heartbeats**: Task execution can exceed the heartbeat timeout (2× poll interval). To stay visible on the dashboard, send a `send_heartbeat` call with `status: 'working'`, `current_task_id`, `current_task_title`, `cycle_count`, and `tasks_completed` at these points during execution:
+> - After CLAIM (step 1)
+> - After IMPLEMENT (step 3)
+> - After TEST (step 5)
+>
+> Wrap every heartbeat in try/catch — failures must never interrupt execution.
+
+1. **CLAIM**: Call `update_action_item` with `agent_status: 'in_progress'` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. If claim fails (race condition), skip to next cycle. Then send a `working` heartbeat (see Execution Heartbeats above).
+
+2. **BRANCH + LINK DEPENDENCIES** *(single step — do NOT split)*: Create an isolated git worktree AND link `node_modules`. Without the link, typecheck and tests WILL fail:
    ```bash
-   git worktree add <worktree_path> -b <branch_name> && (cmd //c "mklink /J \"<worktree_path>\node_modules\" \"<main_repo>\node_modules\"" 2>/dev/null || ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules" 2>/dev/null || npm install --ignore-scripts --prefix "<worktree_path>")
+   git worktree add <worktree_path> -b <branch_name>
    ```
-   This creates the worktree, then links `node_modules` via directory junction (Windows) or symlink (Unix), falling back to `npm install` if both fail. Do NOT proceed to implementation without confirming `node_modules` exists in the worktree.
+   Then link `node_modules` using Node.js (works cross-platform, handles spaces in paths):
+   ```bash
+   node -e "require('fs').symlinkSync('<main_repo>/node_modules', '<worktree_path>/node_modules', 'junction')"
+   ```
+   Verify the link was created:
+   ```bash
+   ls "<worktree_path>/node_modules" >/dev/null 2>&1 && echo "node_modules linked" || echo "WARNING: node_modules link failed"
+   ```
+   If linking fails, do NOT spiral trying workarounds. Note it in implementation notes and skip test commands that require `node_modules` — proceed with implementation and commit.
 
-3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions.
+3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. After implementation is complete, send a `working` heartbeat (see Execution Heartbeats above).
 
 4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 
@@ -210,7 +226,9 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    - Unit: `{test_commands.unit}` (if configured)
    - E2E: `{test_commands.e2e}` (if configured)
    - Typecheck: `{test_commands.typecheck}` (if configured)
-   If tests fail due to your changes, fail the item. If tests fail due to pre-existing issues, note in implementation notes but continue.
+   If tests fail due to your changes, fail the item. If tests fail due to pre-existing issues (e.g., missing `node_modules`, pre-existing type errors), note in implementation notes but continue.
+   **IMPORTANT**: If `node_modules` is not available in the worktree, skip test commands that depend on it. Do NOT spend time trying to install dependencies or find alternative paths to `tsc`. Note the skip in implementation notes and move on.
+   After tests complete, send a `working` heartbeat (see Execution Heartbeats above).
 
 6. **COMMIT**: Stage and commit changes:
    ```bash

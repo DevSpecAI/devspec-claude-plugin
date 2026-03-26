@@ -156,7 +156,12 @@ When the autopilot is stopped:
    - poll_interval_seconds: 60
    - stale_claim_timeout_minutes: 30
 4. Output the startup banner (see Output Formatting above)
-5. **Send initial heartbeat**: Call `send_heartbeat` with `status: 'idle'`, `session_id` (a UUID generated once at startup and reused for the entire session), `machine_hostname` (from `os.hostname()`), `cycle_count: 0`, `tasks_completed: 0`. Wrap in try/catch — log failures but never halt startup.
+5. **Collect repository info**: Run this bash command to discover workspace repositories and their branches:
+   ```bash
+   cd "<workspace_root>" && git remote get-url origin 2>/dev/null && git rev-parse --short HEAD 2>/dev/null && git branch --show-current 2>/dev/null
+   ```
+   For each child directory that contains a `.git` directory (not a `.git` file — skip those, they are worktrees), run the same commands. Build a `repositories` array where each entry has: `name` (directory name), `remote_url` (raw URL), `normalized_url` (strip protocol/auth/port/.git suffix, lowercase host — e.g. `git@github.com:org/repo.git` → `github.com/org/repo`), `branch` (current branch or null if detached), `detached` (boolean), `short_sha` (short commit hash). Skip directories with no remote.
+6. **Send initial heartbeat**: Call `send_heartbeat` with `status: 'idle'`, `session_id` (a UUID generated once at startup and reused for the entire session), `machine_hostname` (from `os.hostname()`), `cycle_count: 0`, `tasks_completed: 0`, `repositories` (from step 5). Wrap in try/catch — log failures but never halt startup.
 
 ## Polling Loop
 
@@ -272,7 +277,9 @@ If any step fails:
 5. **STOP the cycle** — do not skip to the next item
 
 ### 4. Send Heartbeat
-After processing (or after determining idle), call `send_heartbeat` with:
+**Before sending**, refresh the repository branch info by re-running `git branch --show-current` and `git rev-parse --short HEAD` for each repo discovered at startup. This is fast (two commands per repo) and ensures branch changes made in other terminals are picked up immediately. Update the `repositories` array with the fresh branch and SHA values.
+
+Then call `send_heartbeat` with:
 - `session_id`: the same UUID from startup
 - `machine_hostname`: the same hostname from startup
 - `status`: `'idle'` if no task was claimed this cycle, `'working'` if a task was claimed and is still in progress
@@ -280,6 +287,7 @@ After processing (or after determining idle), call `send_heartbeat` with:
 - `tasks_completed`: total items that reached 'completed' so far
 - `current_task_id` and `current_task_title`: set if status is 'working', omit otherwise
 - `last_error`: the error message if the last cycle failed, omit otherwise
+- `repositories`: the refreshed repository array (with up-to-date branches)
 
 **CRITICAL**: Wrap the `send_heartbeat` call in try/catch. Heartbeat failures MUST NOT interrupt the polling loop. Log the error and continue.
 

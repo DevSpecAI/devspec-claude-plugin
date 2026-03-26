@@ -17,8 +17,7 @@ Fetch current state and output a compact status panel. Make all API calls in par
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   ◆  DEVSPEC AUTOPILOT  ▸  {ONLINE/OFFLINE}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  target: {branch}  ·  interval: {N}s
-  push: {on/off}  ·  merge: {on/off}
+  interval: {N}s  ·  push: {on/off}  ·  merge: {on/off}
 
   queued:       {N} items
   in progress:  {N} items

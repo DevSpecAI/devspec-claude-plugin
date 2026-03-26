@@ -41,7 +41,6 @@ export type ActionItem = z.infer<typeof ActionItemSchema>;
 
 export const AutopilotSettingsSchema = z.object({
   enabled: z.boolean().default(false),
-  target_branch: z.string().default('staging'),
   auto_push: z.boolean().default(true),
   auto_merge: z.boolean().default(true),
   branch_prefix: z.string().default('fix/action-item-'),
@@ -106,6 +105,43 @@ export interface HeartbeatPayload {
   cycle_count?: number;
   tasks_completed?: number;
   last_error?: string;
+  repositories?: RepositoryInfo[];
+}
+
+// ---------------------------------------------------------------------------
+// Repository Info (sent in heartbeat for validation — 009-runner-repo-guard)
+// ---------------------------------------------------------------------------
+
+export interface RepositoryInfo {
+  name: string;
+  remote_url: string;
+  normalized_url: string;
+  branch: string | null;
+  detached: boolean;
+  short_sha: string;
+}
+
+export type ValidationState =
+  | 'aligned'
+  | 'branch_mismatch'
+  | 'repo_not_found'
+  | 'manual_override';
+
+export interface HeartbeatResponse {
+  status: string;
+  runner_id: string;
+  timestamp: string;
+  validation_state?: ValidationState;
+  validation_details?: {
+    expected_repos: Array<{ url: string; branch: string }>;
+    mismatched_repos: Array<{
+      url: string;
+      expected_branch: string;
+      actual_branch: string | null;
+    }>;
+    missing_repos: string[];
+    message: string;
+  };
 }
 
 // =============================================================================

@@ -31,7 +31,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   host: DESKTOP-RS6M104  ·  session: fdd...88cb
   repo: DevSpecV2 → main (7abccf0)
-  target: staging  ·  interval: 60s
+  interval: 60s
   push: on  ·  merge: on  ·  prefix: [autopilot]
   tests: typecheck
   protected: package.json, package-lock.json, .env*
@@ -59,7 +59,7 @@ That's it — one line. No "No queued items" message, no "next check in 60s". Th
 **Idle cycle with branch change detected:**
 ```
 ▸ Cycle 4 · idle                                   12:35:05 PM
-  ↻ Branch changed: main → staging (f8ca5de)
+  ↻ Branch changed: main → feature-x (f8ca5de)
 ```
 
 **Active cycle (work found):**
@@ -71,7 +71,7 @@ That's it — one line. No "No queued items" message, no "next check in 60s". Th
     ✓ 3 files changed (+42 / -11)
     ✓ Typecheck passed
     ✓ Pushed → fix/action-item-a1b2c3d4
-    ✓ Merged to staging (abc1234)
+    ✓ Merged to main (abc1234)
     ✓ Worktree cleaned up
   ━━ done · 23s
 ```
@@ -140,7 +140,6 @@ When the autopilot is stopped:
 1. Call `get_project_summary` to fetch project settings
 2. Read the `autopilot` field from the response for configuration
 3. If autopilot is not enabled or settings are missing, use defaults:
-   - target_branch: staging
    - auto_push: true
    - auto_merge: true
    - branch_prefix: fix/action-item-
@@ -152,6 +151,7 @@ When the autopilot is stopped:
    HOSTNAME=$(hostname); UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || node -e "console.log(require('crypto').randomUUID())"); echo "HOST:$HOSTNAME"; echo "UUID:$UUID"; cd "<workspace_root>" && REMOTE=$(git remote get-url origin 2>/dev/null) && SHA=$(git rev-parse --short HEAD 2>/dev/null) && BRANCH=$(git branch --show-current 2>/dev/null) && echo "REPO:<dirname>|$REMOTE|$BRANCH|$SHA"; for d in */; do if [ -d "$d/.git" ] && [ ! -f "$d/.git" ]; then cd "$d" && R=$(git remote get-url origin 2>/dev/null) && S=$(git rev-parse --short HEAD 2>/dev/null) && B=$(git branch --show-current 2>/dev/null) && [ -n "$R" ] && echo "REPO:${d%/}|$R|$B|$S"; cd ..; fi; done
    ```
    Parse the output to extract hostname, UUID, and build the `repositories` array. For each REPO line: `name` = first field, `remote_url` = second field, `branch` = third field (empty = detached), `short_sha` = fourth field. Compute `normalized_url` by stripping protocol/auth/port/.git suffix, lowercase host (e.g. `git@github.com:org/repo.git` → `github.com/org/repo`). Set `detached = true` if branch is empty.
+   **Store the branch of the primary repo as `startup_branch`** — this is the branch the runner started on and will be used as the merge target during execution (step 8). For single-repo setups, this is the branch from the workspace root. For multi-repo setups, use the branch of the first discovered repo.
 5. **Output the startup banner** (see Output Formatting above) — this should appear BEFORE the first heartbeat
 6. **Send initial heartbeat**: Call `send_heartbeat` with `status: 'idle'`, `session_id` (the UUID from step 4), `machine_hostname` (from step 4), `cycle_count: 0`, `tasks_completed: 0`, `repositories` (from step 4). Wrap in try/catch — log failures but never halt startup.
 
@@ -238,13 +238,13 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    git push -u origin <branch_name>
    ```
 
-8. **MERGE**: If auto_merge is enabled, merge to target branch:
+8. **MERGE**: If auto_merge is enabled, merge to the branch the runner started on:
    ```bash
-   git checkout {target_branch}
+   git checkout {startup_branch}
    git merge <branch_name> --no-ff
-   git push origin {target_branch}
+   git push origin {startup_branch}
    ```
-   If merge conflicts arise, fail the item with a clear error.
+   `{startup_branch}` is the branch discovered during startup repo collection (step 4) and stored as a session variable. If merge conflicts arise, fail the item with a clear error.
 
 9. **REPORT SUCCESS**: Call `update_action_item` with:
     - agent_status: 'completed'

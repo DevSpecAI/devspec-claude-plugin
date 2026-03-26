@@ -35,7 +35,6 @@ export function prepareExecution(
   commitMessagePrefix: string;
   testCommands: string[];
   protectedPaths: string[];
-  targetBranch: string;
   autoPush: boolean;
   autoMerge: boolean;
 } {
@@ -50,7 +49,6 @@ export function prepareExecution(
     commitMessagePrefix: settings.commit_message_prefix,
     testCommands,
     protectedPaths: settings.protected_paths,
-    targetBranch: settings.target_branch,
     autoPush: settings.auto_push,
     autoMerge: settings.auto_merge,
   };

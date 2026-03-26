@@ -252,7 +252,6 @@ export function formatStatus(ctx: LoopContext, running: boolean): string {
     `**Cycles completed**: ${ctx.cycleCount}`,
     `**Uptime**: ${formatDuration(uptime)}`,
     `**Poll interval**: ${ctx.settings.poll_interval_seconds}s`,
-    `**Target branch**: ${ctx.settings.target_branch}`,
     `**Auto-push**: ${ctx.settings.auto_push}`,
     `**Auto-merge**: ${ctx.settings.auto_merge}`,
     `**Idle detection**: ${ctx.settings.idle_detection ? 'on' : 'off'}`,

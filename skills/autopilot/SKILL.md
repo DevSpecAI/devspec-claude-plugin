@@ -215,7 +215,7 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    ```
    If linking fails, do NOT spiral trying workarounds. Note it in implementation notes and skip test commands that require `node_modules` — proceed with implementation and commit.
 
-3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. After implementation is complete, send a `working` heartbeat (see Execution Heartbeats above).
+3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. **ALWAYS read a file before editing it** — the Edit tool will reject edits to unread files, so read first to avoid wasted tool calls. After implementation is complete, send a `working` heartbeat (see Execution Heartbeats above).
 
 4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 
@@ -223,15 +223,23 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    - Unit: `{test_commands.unit}` (if configured)
    - E2E: `{test_commands.e2e}` (if configured)
    - Typecheck: `{test_commands.typecheck}` (if configured)
+
+   **Windows worktree compatibility**: In worktrees with symlinked/junction `node_modules`, `npm run` scripts and `npx` often fail because `.bin` shims don't resolve through junctions on Windows. If a test command fails with "not recognized", "not found", or similar PATH errors, **retry using the direct node path**:
+   - For `tsc`: `node ./node_modules/typescript/bin/tsc --noEmit`
+   - For other binaries: `node ./node_modules/.bin/<command>` or `node ./node_modules/<package>/bin/<command>`
+   Do NOT retry more than once per command — if the direct path also fails, treat it as a real failure.
+
    If tests fail due to your changes, fail the item. If tests fail due to pre-existing issues (e.g., missing `node_modules`, pre-existing type errors), note in implementation notes but continue.
-   **IMPORTANT**: If `node_modules` is not available in the worktree, skip test commands that depend on it. Do NOT spend time trying to install dependencies or find alternative paths to `tsc`. Note the skip in implementation notes and move on.
+   **IMPORTANT**: If `node_modules` is not available in the worktree, skip test commands that depend on it. Do NOT spend time trying to install dependencies. Note the skip in implementation notes and move on.
    After tests complete, send a `working` heartbeat (see Execution Heartbeats above).
 
-6. **COMMIT**: Stage and commit changes:
+6. **COMMIT**: Stage and commit only the files you changed — never use `git add -A` which can stage unintended files:
    ```bash
-   git add -A
+   git diff --name-only
+   git add <file1> <file2> ...
    git commit -m "{commit_message_prefix} {action_item_title}"
    ```
+   Use the output of `git diff --name-only` (which you already ran in step 4) to know exactly which files to stage.
 
 7. **PUSH**: If auto_push is enabled:
    ```bash

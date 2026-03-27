@@ -278,17 +278,24 @@ export async function commitAndPush(
   let hadChanges = false;
 
   try {
-    // Stage all changes
-    await execa('git', ['add', '-A'], { cwd: worktreePath });
+    // Discover changed files explicitly (avoid staging unintended files with -A)
+    const { stdout: diffFiles } = await execa('git', ['diff', '--name-only'], { cwd: worktreePath });
+    const { stdout: untrackedFiles } = await execa(
+      'git', ['ls-files', '--others', '--exclude-standard'],
+      { cwd: worktreePath },
+    );
 
-    // Check if there are staged changes
-    const { stdout: status } = await execa('git', ['status', '--porcelain'], {
-      cwd: worktreePath,
-    });
+    const changedFiles = [
+      ...diffFiles.split('\n').filter(Boolean),
+      ...untrackedFiles.split('\n').filter(Boolean),
+    ];
 
-    if (!status.trim()) {
+    if (changedFiles.length === 0) {
       return { success: true, pushed: false, hadChanges: false };
     }
+
+    // Stage only the specific changed files
+    await execa('git', ['add', ...changedFiles], { cwd: worktreePath });
 
     // Now we know there are changes
     hadChanges = true;

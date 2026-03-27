@@ -43,7 +43,7 @@ export const AutopilotSettingsSchema = z.object({
   enabled: z.boolean().default(false),
   auto_push: z.boolean().default(true),
   auto_merge: z.boolean().default(true),
-  branch_prefix: z.string().default('fix/action-item-'),
+  branch_prefix: z.string().default('autopilot/action-item-'),
   commit_message_prefix: z.string().default('[autopilot] '),
   custom_instructions: z.string().default(''),
   test_commands: z.object({

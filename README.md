@@ -78,7 +78,7 @@ Open your project in DevSpec, go to **Settings**, and scroll to **Autopilot Conf
 | Target Branch | `staging` | Branch to merge completed work into |
 | Auto-push | on | Push feature branches to remote |
 | Auto-merge | on | Merge feature branches into target branch |
-| Branch Prefix | `fix/action-item-` | Prefix for feature branch names |
+| Branch Prefix | `autopilot/action-item-` | Prefix for feature branch names |
 | Commit Prefix | `[autopilot] ` | Prefix for commit messages |
 | Test Commands | (empty) | Unit, E2E, and typecheck commands to run |
 | Protected Paths | (empty) | Files the agent must never modify (glob patterns) |

@@ -66,11 +66,11 @@ That's it — one line. No "No queued items" message, no "next check in 60s". Th
 ```
 ▸ Cycle 5 · working                                12:36:05 PM
   ◆ "Fix login timeout handling"
-    ✓ Claimed → fix/action-item-a1b2c3d4
+    ✓ Claimed → autopilot/action-item-a1b2c3d4
     ✓ Worktree ready · node_modules linked
     ✓ 3 files changed (+42 / -11)
     ✓ Typecheck passed
-    ✓ Pushed → fix/action-item-a1b2c3d4
+    ✓ Pushed → autopilot/action-item-a1b2c3d4
     ✓ Merged to main (abc1234)
     ✓ Worktree cleaned up
   ━━ done · 23s
@@ -88,7 +88,7 @@ That's it — one line. No "No queued items" message, no "next check in 60s". Th
 ```
 ▸ Cycle 7 · failed                                 12:38:05 PM
   ◆ "Refactor auth middleware"
-    ✓ Claimed → fix/action-item-i9j0k1l2
+    ✓ Claimed → autopilot/action-item-i9j0k1l2
     ✓ Worktree ready · node_modules linked
     ✓ 5 files changed (+89 / -34)
     ✗ Typecheck failed — 2 errors in src/auth/handler.ts
@@ -142,7 +142,7 @@ When the autopilot is stopped:
 3. If autopilot is not enabled or settings are missing, use defaults:
    - auto_push: true
    - auto_merge: true
-   - branch_prefix: fix/action-item-
+   - branch_prefix: autopilot/action-item-
    - commit_message_prefix: [autopilot]
    - poll_interval_seconds: 60
    - stale_claim_timeout_minutes: 30

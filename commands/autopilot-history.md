@@ -26,13 +26,13 @@ Fetch completed and failed items, then output a clean formatted list.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   ✓ "Fix login timeout handling"
-    fix/action-item-a1b2c3d4 · merged · 2h ago
+    autopilot/action-item-a1b2c3d4 · merged · 2h ago
 
   ✓ "Add input validation to /api/upload"
-    fix/action-item-e5f6g7h8 · merged · 5h ago
+    autopilot/action-item-e5f6g7h8 · merged · 5h ago
 
   ✗ "Refactor auth middleware"
-    fix/action-item-i9j0k1l2 · failed: Merge conflict · 1d ago
+    autopilot/action-item-i9j0k1l2 · failed: Merge conflict · 1d ago
 
   ━━ 3 total · 2 completed · 1 failed
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

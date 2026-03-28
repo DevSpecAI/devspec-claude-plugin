@@ -62,6 +62,14 @@ That's it — one line. No "No queued items" message, no "next check in 60s". Th
   ↻ Branch changed: main → feature-x (f8ca5de)
 ```
 
+**Gated cycle (validation mismatch — work skipped, heartbeat continues):**
+```
+▸ Cycle 2 · idle (gated)                            12:34:05 PM
+  ⚠ Branch mismatch: DevSpecV2 on staging, project expects main
+```
+
+One line + warning. Do NOT add commentary, suggestions, or questions. The loop continues to the next cycle automatically.
+
 **Active cycle (work found):**
 ```
 ▸ Cycle 5 · working                                12:36:05 PM
@@ -291,7 +299,7 @@ Then call `send_heartbeat` with:
 
 **CRITICAL**: Wrap the `send_heartbeat` call in try/catch. Heartbeat failures MUST NOT interrupt the polling loop. Log the error and continue.
 
-If the heartbeat response includes `validation_state` of `branch_mismatch` or `repo_not_found`, **do NOT attempt to fix it** — do not checkout branches, do not switch repos, do not modify local git state. Simply skip work-claiming for this cycle and continue heartbeating. The user resolves mismatches via the DevSpec dashboard.
+If the heartbeat response includes `validation_state` of `branch_mismatch` or `repo_not_found`, **do NOT attempt to fix it** — do not checkout branches, do not switch repos, do not modify local git state. Output the **gated cycle** format (see Output Formatting), then proceed **immediately to step 5 (Wait)** and continue the loop. Do NOT stop, do NOT ask the user anything, do NOT output suggestions or commentary. The user resolves mismatches via the DevSpec dashboard — the gate clears automatically on the next heartbeat once aligned.
 
 ### 5. Wait
 Wait `poll_interval_seconds` before starting the next cycle. Use `sleep` via the Bash tool with `run_in_background: true` to avoid a visible `(No output)` line — you will be notified when the sleep completes, then start the next cycle.
@@ -319,6 +327,7 @@ When the autopilot is stopped (via `/autopilot:stop` or any other signal):
 - **Never** push directly to protected branches (unless explicitly configured as the target)
 - **Never** modify files matching the configured `protected_paths` patterns
 - **Never** switch branches, checkout, or modify the local git state of the workspace — if a branch mismatch is detected via the heartbeat response, just report it and continue heartbeating. The user resolves mismatches via the DevSpec dashboard, NOT the autopilot.
+- **Never stop the loop due to validation gating** — when gated (branch mismatch or repo not found), continue cycling and heartbeating indefinitely. Output the gated cycle format and proceed to Wait. The gate clears automatically when the user fixes the mismatch via the DevSpec dashboard.
 - **One item per cycle** — if it fails, stop and report. Next cycle picks up the next item.
 - **Document everything** — all autonomous decisions go into implementation notes
 - If the action item is too vague, ambiguous, or requires human judgment, fail it with error "Requires human judgment" rather than guessing

@@ -270,13 +270,15 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    ```
    `{startup_branch}` is the branch discovered during startup repo collection (step 4) and stored as a session variable. If merge conflicts arise, fail the item with a clear error.
 
-9. **REPORT SUCCESS** — three MCP calls, in this exact order:
+9. **REPORT SUCCESS** — four MCP calls, in this exact order:
 
     **a)** `add_implementation_note` — **MANDATORY, never skip.** Summarize what was changed: which files were modified/created, what the changes do, and any decisions made. This is the audit trail the project owner reviews. If you skip this call, the work appears undocumented in the dashboard.
 
-    **b)** `add_commit_reference` — with the commit SHA and commit message.
+    **b)** `add_implementation_note` (second call) — **MANDATORY, never skip.** Write a user-friendly changelog-style summary of the change. This should be written for end users, not developers — explain *what changed* and *why it matters* in plain language, similar to a release note. Keep it concise (2-4 sentences). Prefix the content with `**Changelog:**` so it's distinguishable from the technical note.
 
-    **c)** `update_action_item` — with agent_status: 'completed', commit_sha, status: 'done', agent_merged: true/false.
+    **c)** `add_commit_reference` — with the commit SHA and commit message.
+
+    **d)** `update_action_item` — with agent_status: 'completed', commit_sha, status: 'done', agent_merged: true/false.
 
 10. **CLEANUP**: Remove the worktree:
     ```bash

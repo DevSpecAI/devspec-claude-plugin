@@ -270,12 +270,13 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    ```
    `{startup_branch}` is the branch discovered during startup repo collection (step 4) and stored as a session variable. If merge conflicts arise, fail the item with a clear error.
 
-9. **REPORT SUCCESS**: Call `update_action_item` with:
-    - agent_status: 'completed'
-    - commit_sha: <sha>
-    - status: 'done'
-    Call `add_implementation_note` summarizing what was changed.
-    Call `add_commit_reference` with the commit SHA.
+9. **REPORT SUCCESS** — three MCP calls, in this exact order:
+
+    **a)** `add_implementation_note` — **MANDATORY, never skip.** Summarize what was changed: which files were modified/created, what the changes do, and any decisions made. This is the audit trail the project owner reviews. If you skip this call, the work appears undocumented in the dashboard.
+
+    **b)** `add_commit_reference` — with the commit SHA and commit message.
+
+    **c)** `update_action_item` — with agent_status: 'completed', commit_sha, status: 'done', agent_merged: true/false.
 
 10. **CLEANUP**: Remove the worktree:
     ```bash
@@ -286,8 +287,8 @@ Output step-by-step progress for each phase (see formatting).
 
 ### 3. Handle Failures
 If any step fails:
-1. Call `update_action_item` with `agent_status: 'failed'` and `agent_error: <description>`
-2. Call `add_implementation_note` documenting what was attempted and why it failed
+1. Call `add_implementation_note` documenting what was attempted and why it failed — **MANDATORY, never skip even on failure**
+2. Call `update_action_item` with `agent_status: 'failed'` and `agent_error: <description>`
 3. Clean up the worktree if it was created
 4. Output failure markers (see formatting)
 5. **STOP the cycle** — do not skip to the next item

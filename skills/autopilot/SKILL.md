@@ -171,6 +171,9 @@ When the autopilot is stopped:
 
 Repeat the following until stopped:
 
+### 0. Start-of-Cycle Heartbeat
+Send a `send_heartbeat` call with `status: 'idle'` (same payload as the end-of-cycle heartbeat from the previous cycle, but with a fresh timestamp). This keeps the runner visible on the dashboard during the work-fetching and claiming phase. Wrap in try/catch — failures must never interrupt the cycle.
+
 ### 1. Fetch Work (Three Targeted Calls, In Parallel)
 Make exactly THREE `get_action_items` calls **in parallel** — all return tiny payloads:
 1. `agent_status: 'in_progress'` — for stale claim detection

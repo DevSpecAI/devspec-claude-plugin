@@ -209,6 +209,11 @@ export async function buildHeartbeatPayload(
     repositories,
   };
 
+  // Include git_user_email for runner identity attribution
+  if (state?.gitUserEmail) {
+    payload.git_user_email = state.gitUserEmail;
+  }
+
   // Include current task info if working
   if (status === 'working' && result.actionItemId) {
     payload.current_task_id = result.actionItemId;
@@ -232,7 +237,7 @@ export async function buildLifecycleHeartbeat(status: 'idle' | 'offline'): Promi
   // Collect workspace repository info (cached, TTL 30s)
   const repositories = await getCachedWorkspaceRepos();
 
-  return {
+  const payload: HeartbeatPayload = {
     session_id: state?.sessionId ?? '',
     machine_hostname: state?.machineHostname ?? '',
     status,
@@ -240,6 +245,12 @@ export async function buildLifecycleHeartbeat(status: 'idle' | 'offline'): Promi
     tasks_completed: state?.tasksCompleted ?? 0,
     repositories,
   };
+
+  if (state?.gitUserEmail) {
+    payload.git_user_email = state.gitUserEmail;
+  }
+
+  return payload;
 }
 
 /**

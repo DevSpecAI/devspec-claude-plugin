@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
+import { execSync } from 'child_process';
 import type { AutopilotSettings, AutopilotState, CycleResult } from './types.js';
 import { DEFAULT_AUTOPILOT_SETTINGS, AutopilotSettingsSchema } from './types.js';
 
@@ -32,6 +33,15 @@ export function getAutopilotState(): AutopilotState | null {
 }
 
 export function initAutopilotState(projectId: string, settings: AutopilotSettings): AutopilotState {
+  // Read git user.email once at startup for runner identity attribution
+  let gitUserEmail: string | null = null;
+  try {
+    const email = execSync('git config user.email', { encoding: 'utf8', timeout: 5000 }).trim();
+    if (email) gitUserEmail = email;
+  } catch {
+    // Silently ignore — server handles null gracefully
+  }
+
   autopilotState = {
     running: true,
     projectId,
@@ -41,6 +51,7 @@ export function initAutopilotState(projectId: string, settings: AutopilotSetting
     sessionId: crypto.randomUUID(),
     machineHostname: os.hostname(),
     tasksCompleted: 0,
+    gitUserEmail,
   };
   return autopilotState;
 }

@@ -88,6 +88,7 @@ export interface AutopilotState {
   sessionId: string;
   machineHostname: string;
   tasksCompleted: number;
+  gitUserEmail: string | null;
 }
 
 // =============================================================================
@@ -105,6 +106,7 @@ export interface HeartbeatPayload {
   cycle_count?: number;
   tasks_completed?: number;
   last_error?: string;
+  git_user_email?: string;
   repositories?: RepositoryInfo[];
 }
 

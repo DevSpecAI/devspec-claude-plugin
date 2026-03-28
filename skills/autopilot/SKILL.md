@@ -35,6 +35,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
   push: on  ·  merge: on  ·  prefix: [autopilot]
   tests: typecheck
   protected: package.json, package-lock.json, .env*
+  instructions: on (3 lines)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -44,6 +45,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
 - Show each discovered repo with its branch and short SHA: `repo: Name → branch (sha)`
 - If multiple repos, show one `repo:` line per repo
 - Use "ONLINE" not "STARTING" — the banner appears after setup is done
+- Show `instructions: on (N lines)` if custom_instructions is set, `instructions: off` if empty/missing. Line count = number of non-empty lines in the custom_instructions string.
 
 ### Cycle Output
 
@@ -154,6 +156,8 @@ When the autopilot is stopped:
    - commit_message_prefix: [autopilot]
    - poll_interval_seconds: 60
    - stale_claim_timeout_minutes: 30
+   - custom_instructions: "" (empty)
+   **Store `custom_instructions`** from the autopilot settings as a session variable. These are project-owner-defined instructions that MUST be followed during every execution cycle (Layer 2 of the prompt). If the field is empty or missing, skip Layer 2.
 4. **Collect all startup info in ONE bash call** — hostname, session UUID, and repo discovery all in a single command to minimize visible tool calls:
    ```bash
    HOSTNAME=$(hostname); UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || node -e "console.log(require('crypto').randomUUID())"); echo "HOST:$HOSTNAME"; echo "UUID:$UUID"; cd "<workspace_root>" && REMOTE=$(git remote get-url origin 2>/dev/null) && SHA=$(git rev-parse --short HEAD 2>/dev/null) && BRANCH=$(git branch --show-current 2>/dev/null) && echo "REPO:<dirname>|$REMOTE|$BRANCH|$SHA"; for d in */; do if [ -d "$d/.git" ] && [ ! -f "$d/.git" ]; then cd "$d" && R=$(git remote get-url origin 2>/dev/null) && S=$(git rev-parse --short HEAD 2>/dev/null) && B=$(git branch --show-current 2>/dev/null) && [ -n "$R" ] && echo "REPO:${d%/}|$R|$B|$S"; cd ..; fi; done
@@ -223,7 +227,11 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
    ```
    If linking fails, do NOT spiral trying workarounds. Note it in implementation notes and skip test commands that require `node_modules` — proceed with implementation and commit.
 
-3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. **ALWAYS read a file before editing it** — the Edit tool will reject edits to unread files, so read first to avoid wasted tool calls. After implementation is complete, send a `working` heartbeat (see Execution Heartbeats above).
+3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. **ALWAYS read a file before editing it** — the Edit tool will reject edits to unread files, so read first to avoid wasted tool calls.
+
+   **Custom Instructions (Layer 2):** If `custom_instructions` was set during startup, you MUST follow those instructions throughout implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
+
+   After implementation is complete, send a `working` heartbeat (see Execution Heartbeats above).
 
 4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 

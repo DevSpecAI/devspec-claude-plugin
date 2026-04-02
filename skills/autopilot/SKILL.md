@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status
 ---
 
 # DevSpec Autopilot
@@ -154,7 +154,7 @@ When the autopilot is stopped:
    - auto_merge: true
    - branch_prefix: autopilot/action-item-
    - commit_message_prefix: [autopilot]
-   - poll_interval_seconds: 60
+   - poll_interval_seconds: 3600
    - stale_claim_timeout_minutes: 30
    - custom_instructions: "" (empty)
    **Store `custom_instructions`** from the autopilot settings as a session variable. These are project-owner-defined instructions that MUST be followed during every execution cycle (Layer 2 of the prompt). If the field is empty or missing, skip Layer 2.
@@ -315,8 +315,32 @@ Then call `send_heartbeat` with:
 
 If the heartbeat response includes `validation_state` of `branch_mismatch` or `repo_not_found`, **do NOT attempt to fix it** — do not checkout branches, do not switch repos, do not modify local git state. Output the **gated cycle** format (see Output Formatting), then proceed **immediately to step 5 (Wait)** and continue the loop. Do NOT stop, do NOT ask the user anything, do NOT output suggestions or commentary. The user resolves mismatches via the DevSpec dashboard — the gate clears automatically on the next heartbeat once aligned.
 
-### 5. Wait
-Wait `poll_interval_seconds` before starting the next cycle. Use `sleep` via the Bash tool with `run_in_background: true` to avoid a visible `(No output)` line — you will be notified when the sleep completes, then start the next cycle.
+### 5. Wait (Drain-Then-Sleep with Adaptive Wake)
+
+This step uses two strategies to balance responsiveness with efficiency:
+
+**A. Drain mode** — if this cycle processed work (completed, failed, or planning_done):
+  - Reset `consecutive_idle_checks` to 0
+  - **Skip sleep entirely** — go directly back to step 1
+  - This drains the entire queue without sleeping between items
+
+**B. Adaptive idle sleep** — if this cycle was idle (no queued or planning items found):
+  - Increment `consecutive_idle_checks`
+  - Compute sleep duration based on how long the runner has been idle:
+    * `consecutive_idle_checks` ≤ 10 (~first 5 minutes): sleep **30 seconds**
+    * `consecutive_idle_checks` 11–60 (~5–30 minutes): sleep **2 minutes**
+    * `consecutive_idle_checks` > 60 (30+ minutes): sleep **5 minutes**
+  - Sleep via Bash with `run_in_background: true`
+  - After waking, call `check_queue_status` (lightweight — returns only counts, no item details):
+    * If `has_items` is true: output wake line (see formatting), reset `consecutive_idle_checks` to 0, go to step 1
+    * If `has_items` is false: go back to the top of step 5B (sleep again at the current tier)
+  - **Heartbeats during idle**: Send a `send_heartbeat` (status: `'idle'`) every **3rd** idle check to stay visible on the dashboard without excessive calls. Always wrap in try/catch.
+
+**Wake output format** (when `check_queue_status` finds items):
+```
+▸ Cycle {N} · woke                                  {time}
+  ↻ Queue check: {count} item(s) available — resuming
+```
 
 ## State Tracking
 
@@ -326,6 +350,7 @@ Track these values internally across cycles for the stop summary:
 - `items_failed`: items that reached 'failed'
 - `items_planned`: items that had plans written
 - `start_time`: when the autopilot started
+- `consecutive_idle_checks`: number of consecutive idle checks since last work (reset on any work cycle)
 
 ## Graceful Shutdown
 

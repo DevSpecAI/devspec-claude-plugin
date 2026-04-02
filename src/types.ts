@@ -53,7 +53,7 @@ export const AutopilotSettingsSchema = z.object({
   }).default({}),
   protected_paths: z.array(z.string()).default([]),
   idle_detection: z.boolean().default(false),
-  poll_interval_seconds: z.number().positive().default(60),
+  poll_interval_seconds: z.number().positive().default(3600),
   stale_claim_timeout_minutes: z.number().positive().default(30),
 });
 export type AutopilotSettings = z.infer<typeof AutopilotSettingsSchema>;

@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status
 ---
 
 # DevSpec Autopilot
@@ -31,7 +31,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   host: DESKTOP-RS6M104  ·  session: fdd...88cb
   repo: DevSpecV2 → main (7abccf0)
-  interval: 60s
+  idle: 30s → 2m → 5m
   push: on  ·  merge: on  ·  prefix: [autopilot]
   tests: typecheck
   protected: package.json, package-lock.json, .env*
@@ -141,7 +141,7 @@ When the autopilot is stopped:
 - **Never use markdown headers** (`##`, `###`) in cycle output — use the Unicode symbols above
 - **One blank line** between cycles, no more
 - **Include timestamps** on cycle headers so the user can see cadence at a glance
-- **Minimize response size over call count** — 3 tiny `⎿ []` lines are far better than 1 call returning 15k+ tokens. ALWAYS combine `agent_ready` with `agent_status` filters. NEVER use `agent_ready: true` alone or `status: 'open'` without agent filters — these return all matching items with full descriptions and will fill context within a few cycles.
+- **Minimize response size** — use `get_next_work_item()` for queued items (returns one item) instead of `get_action_items` (returns all items). NEVER use `agent_ready: true` alone or `status: 'open'` without agent filters — these return all matching items with full descriptions and will fill context within a few cycles.
 - **Background waits** — use `run_in_background: true` on sleep commands so they don't show `(No output)` inline
 - **No narration** — do not say "Now I'll check for work", "Sending heartbeat", "Waiting for next cycle", etc. Just do it silently and show the formatted result.
 
@@ -154,7 +154,6 @@ When the autopilot is stopped:
    - auto_merge: true
    - branch_prefix: autopilot/action-item-
    - commit_message_prefix: [autopilot]
-   - poll_interval_seconds: 3600
    - stale_claim_timeout_minutes: 30
    - custom_instructions: "" (empty)
    **Store `custom_instructions`** from the autopilot settings as a session variable. These are project-owner-defined instructions that MUST be followed during every execution cycle (Layer 2 of the prompt). If the field is empty or missing, skip Layer 2.
@@ -171,50 +170,41 @@ When the autopilot is stopped:
 
 Repeat the following until stopped:
 
-### 0. Start-of-Cycle Heartbeat
-Send a `send_heartbeat` call with `status: 'idle'` (same payload as the end-of-cycle heartbeat from the previous cycle, but with a fresh timestamp). This keeps the runner visible on the dashboard during the work-fetching and claiming phase. Wrap in try/catch — failures must never interrupt the cycle.
+### 1. Fetch Work
 
-### 1. Fetch Work (Three Targeted Calls, In Parallel)
-Make exactly THREE `get_action_items` calls **in parallel** — all return tiny payloads:
-1. `agent_status: 'in_progress'` — for stale claim detection
-2. `agent_ready: true, agent_status: 'queued'` — queued work ready for execution
-3. `agent_status: 'planning'` — items needing plan generation
+**Always** call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
+
+**First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`:
+1. `get_action_items({ agent_status: 'in_progress' })` — stale claim detection
+2. `get_action_items({ agent_status: 'planning' })` — items needing plan generation
+
+During drain mode (`consecutive_idle_checks === 0`), only `get_next_work_item()` runs. Stale claims can't appear while this runner is actively working, and planning items wait until the drain completes.
 
 **IMPORTANT — Context Budget Rules:**
-- ALWAYS combine `agent_ready` with `agent_status` filters. Using `agent_ready: true` alone returns ALL agent-ready items (including completed/done) with full descriptions — easily 15k+ tokens.
+- ALWAYS use `get_next_work_item()` for queued work — it returns ONE item with full context (description, ai_instructions, affected_files, related items). NEVER use `get_action_items` to fetch queued items — with 15+ items in the queue it returns all descriptions and easily exceeds 90k+ characters, overflowing the MCP tool result limit.
 - NEVER call `get_action_items` with `status: 'open'` and no agent filters — returns ALL open items, same problem.
-- Each of the three targeted calls above typically returns `[]` or 1-2 items. This is the correct tradeoff: 3 small tool-call lines vs 1 massive response that fills context.
 
 From the results:
-- **Stale claims**: items from call 1 where `agent_claimed_at` is older than `stale_claim_timeout_minutes`. For each, call `update_action_item` to set `agent_status: 'failed'` with `agent_error: 'Stale claim: process may have crashed'`.
-- **Queued work**: items from call 2
-- **Planning work**: items from call 3
+- **Stale claims** (when checked): items where `agent_claimed_at` is older than `stale_claim_timeout_minutes`. For each, call `update_action_item` to set `agent_status: 'failed'` with `agent_error: 'Stale claim: process may have crashed'`.
+- **Queued work**: the item from `get_next_work_item()` (or none if the queue is empty)
+- **Planning work** (when checked): items needing plan generation
 
-If no queued or planning items found, output idle status (see formatting) and wait `poll_interval_seconds` before next cycle.
+If no queued or planning items found, output idle status (see formatting) and go to step 5 (Wait).
 
 ### 2. Process ONE Item
-Pick the oldest queued or planning item. Process based on its `agent_status`:
+Pick ONE item to process. **Queued items always take priority over planning items.** Only process a planning item if no queued items are available. Within the same status, pick the oldest item first. Process based on its `agent_status`:
 
 #### If agent_status = 'planning' (Analysis Only)
-1. Call `update_action_item` to claim it (agent_status: 'in_progress' — this is for tracking only)
-2. Read and analyze the action item description
-3. Read relevant codebase files to understand context
-4. Write a detailed implementation plan
-5. Call `add_implementation_note` with the proposed plan, linking to the action item
-6. Call `update_action_item` to set agent_status back to 'planning' (plan written, awaiting human review)
-7. Output planning completion (see formatting)
-8. **DO NOT** create branches, modify code, or commit
+1. Read and analyze the action item description
+2. Read relevant codebase files to understand context
+3. Write a detailed implementation plan
+4. Call `add_implementation_note` with the proposed plan, linking to the action item
+5. Output planning completion (see formatting)
+6. **DO NOT** create branches, modify code, commit, or change the item's `agent_status` — the item stays in `planning` state for human review
 
 #### If agent_status = 'queued' (Full Execution)
 
-> **Execution Heartbeats**: Task execution can exceed the heartbeat timeout (2× poll interval). To stay visible on the dashboard, send a `send_heartbeat` call with `status: 'working'`, `current_task_id`, `current_task_title`, `cycle_count`, and `tasks_completed` at these points during execution:
-> - After CLAIM (step 1)
-> - After IMPLEMENT (step 3)
-> - After TEST (step 5)
->
-> Wrap every heartbeat in try/catch — failures must never interrupt execution.
-
-1. **CLAIM**: Call `update_action_item` with `agent_status: 'in_progress'` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. If claim fails (race condition), skip to next cycle. Then send a `working` heartbeat (see Execution Heartbeats above).
+1. **CLAIM**: Call `claim_work_item` with `action_item_id` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. This is an atomic transition (queued → in_progress) — if the item is no longer queued (another agent claimed it), the call fails. On failure, skip to the next cycle.
 
 2. **BRANCH + LINK DEPENDENCIES** *(single step — do NOT split)*: Create an isolated git worktree AND link `node_modules`. Without the link, typecheck and tests WILL fail:
    ```bash
@@ -234,7 +224,7 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
 
    **Custom Instructions (Layer 2):** If `custom_instructions` was set during startup, you MUST follow those instructions throughout implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
 
-   After implementation is complete, send a `working` heartbeat (see Execution Heartbeats above).
+   After implementation is complete, send a `send_heartbeat` with `status: 'working'`, `current_task_id`, and `current_task_title` to maintain dashboard visibility during the longest phase. Wrap in try/catch — failures must never interrupt execution.
 
 4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 
@@ -250,7 +240,6 @@ Pick the oldest queued or planning item. Process based on its `agent_status`:
 
    If tests fail due to your changes, fail the item. If tests fail due to pre-existing issues (e.g., missing `node_modules`, pre-existing type errors), note in implementation notes but continue.
    **IMPORTANT**: If `node_modules` is not available in the worktree, skip test commands that depend on it. Do NOT spend time trying to install dependencies. Note the skip in implementation notes and move on.
-   After tests complete, send a `working` heartbeat (see Execution Heartbeats above).
 
 6. **COMMIT**: Stage and commit only the files you changed — never use `git add -A` which can stage unintended files:
    ```bash

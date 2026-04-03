@@ -16,16 +16,22 @@ import type { AutopilotSettings } from '../types.js';
 // =============================================================================
 
 /**
- * Describes the MCP call to fetch queued/planning action items.
- * Claude executes: get_action_items({ agent_ready: true, agent_status: 'queued' })
+ * Describes the MCP call to fetch planning action items.
+ * Claude executes: get_action_items({ agent_status: 'planning' })
+ *
+ * For queued items, use get_next_work_item() instead — it returns a single
+ * item with full context, avoiding the 90k+ char overflow that
+ * get_action_items({ agent_ready: true, agent_status: 'queued' }) causes
+ * when many items are in the queue.
  */
-export interface FetchQueuedItemsParams {
-  agentStatus: 'queued' | 'planning';
+export interface FetchPlanningItemsParams {
+  agentStatus: 'planning';
 }
 
 /**
- * Describes the MCP call to claim an action item.
- * Claude executes: update_action_item({ action_item_id, agent_status: 'in_progress', agent_branch })
+ * Describes the MCP call to atomically claim a queued action item.
+ * Claude executes: claim_work_item({ action_item_id, agent_branch })
+ * Transitions queued → in_progress. Fails if item is no longer queued.
  */
 export interface ClaimItemParams {
   actionItemId: string;
@@ -85,7 +91,14 @@ export interface ProjectSummary {
 // Helper: Build MCP tool call args
 // =============================================================================
 
-export function buildFetchQueuedArgs(params: FetchQueuedItemsParams) {
+export function buildFetchPlanningArgs() {
+  return {
+    agent_status: 'planning',
+  };
+}
+
+/** @deprecated Use get_next_work_item() MCP tool instead — avoids bulk-fetching all queued items */
+export function buildFetchQueuedArgs(params: { agentStatus: 'queued' | 'planning' }) {
   return {
     agent_ready: true,
     agent_status: params.agentStatus,
@@ -96,7 +109,6 @@ export function buildFetchQueuedArgs(params: FetchQueuedItemsParams) {
 export function buildClaimArgs(params: ClaimItemParams) {
   return {
     action_item_id: params.actionItemId,
-    agent_status: 'in_progress',
     agent_branch: params.agentBranch,
   };
 }
@@ -144,7 +156,7 @@ export function generateBranchName(actionItemId: string, branchPrefix: string): 
 /**
  * Describes the stale claim detection flow.
  * Claude executes:
- * 1. get_action_items({ agent_status: 'in_progress' })
+ * 1. get_action_items({ agent_status: 'in_progress' }) — one of the three parallel fetch calls
  * 2. For each item where agent_claimed_at is older than timeoutMinutes:
  *    update_action_item({ action_item_id, agent_status: 'failed', agent_error: 'Stale claim: process may have crashed' })
  */

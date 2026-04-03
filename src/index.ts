@@ -89,6 +89,7 @@ export {
 // MCP client helpers
 export {
   generateBranchName,
+  buildFetchPlanningArgs,
   buildFetchQueuedArgs,
   buildClaimArgs,
   buildReportSuccessArgs,

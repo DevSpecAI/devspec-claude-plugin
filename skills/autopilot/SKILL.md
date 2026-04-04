@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__complete_work_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status
 ---
 
 # DevSpec Autopilot
@@ -92,6 +92,14 @@ One line + warning. Do NOT add commentary, suggestions, or questions. The loop c
   ◇ "Add rate limiting to /api/upload"
     ✓ Plan written — awaiting review
   ━━ done · 8s
+```
+
+**Review cycle:**
+```
+▸ Cycle 7 · review                                  12:39:05 PM
+  ◇ "Implement payment retry logic"
+    ✓ Review submitted — feedback injected into session
+  ━━ done · 12s
 ```
 
 **Failed cycle:**
@@ -189,10 +197,12 @@ From the results:
 - **Queued work**: the item from `get_next_work_item()` (or none if the queue is empty)
 - **Planning work** (when checked): items needing plan generation
 
-If no queued or planning items found, output idle status (see formatting) and go to step 5 (Wait).
+**Review items** (when checked on first cycle after idle): also call `get_action_items({ agent_status: 'under_human_review' })` in parallel to check for items needing plan review.
+
+If no queued, review, or planning items found, output idle status (see formatting) and go to step 5 (Wait).
 
 ### 2. Process ONE Item
-Pick ONE item to process. **Queued items always take priority over planning items.** Only process a planning item if no queued items are available. Within the same status, pick the oldest item first. Process based on its `agent_status`:
+Pick ONE item to process. **Priority order: queued > under_human_review > planning.** Only process a lower-priority item if no higher-priority items are available. Within the same status, pick the oldest item first. Process based on its `agent_status`:
 
 #### If agent_status = 'planning' (Analysis Only)
 1. Read and analyze the action item description
@@ -201,6 +211,18 @@ Pick ONE item to process. **Queued items always take priority over planning item
 4. Call `add_implementation_note` with the proposed plan, linking to the action item
 5. Output planning completion (see formatting)
 6. **DO NOT** create branches, modify code, commit, or change the item's `agent_status` — the item stays in `planning` state for human review
+
+#### If agent_status = 'under_human_review' (Review Mode)
+1. Read the full action item description — this IS the plan to review
+2. Call `get_session_transcript` with the item's `source_session_id` to read the conversation that produced the plan
+3. Read ALL relevant codebase files referenced in the plan. Be thorough — this is a review
+4. Analyze critically: flag risks, missing edge cases, conflicts with existing patterns, unsafe migrations, simpler alternatives
+5. Call `submit_plan_review` with:
+   - `summary`: one paragraph overall assessment — is the plan sound? What is the biggest risk?
+   - `recommendations`: specific recommendations, each referencing a file/function/decision
+   - `questions`: specific blocking questions the team must answer
+6. Output review completion (see formatting)
+7. **DO NOT** create branches, modify code, commit, or create worktrees — this is review-only
 
 #### If agent_status = 'queued' (Full Execution)
 
@@ -262,15 +284,29 @@ Pick ONE item to process. **Queued items always take priority over planning item
    ```
    `{startup_branch}` is the branch discovered during startup repo collection (step 4) and stored as a session variable. If merge conflicts arise, fail the item with a clear error.
 
-9. **REPORT SUCCESS** — four MCP calls, in this exact order:
+9. **REPORT SUCCESS** — three MCP calls, in this exact order:
 
     **a)** `add_implementation_note` — **MANDATORY, never skip.** Summarize what was changed: which files were modified/created, what the changes do, and any decisions made. This is the audit trail the project owner reviews. If you skip this call, the work appears undocumented in the dashboard.
 
-    **b)** `add_implementation_note` (second call) — **MANDATORY, never skip.** Write a user-friendly changelog-style summary of the change. This should be written for end users, not developers — explain *what changed* and *why it matters* in plain language, similar to a release note. Keep it concise (2-4 sentences). Prefix the content with `**Changelog:**` so it's distinguishable from the technical note.
+    **b)** `add_commit_reference` — with the commit SHA and commit message.
 
-    **c)** `add_commit_reference` — with the commit SHA and commit message.
-
-    **d)** `update_action_item` — with agent_status: 'completed', commit_sha, status: 'done', agent_merged: true/false.
+    **c)** `complete_work_item` — **MANDATORY fields**, never skip any of these:
+      - `action_item_id`: the action item ID
+      - `commit_sha`: the final commit SHA
+      - `agent_merged`: true/false
+      - `completion_note`: technical summary of what was done
+      - `completion_summary`: **MANDATORY.** A concise, end-user-friendly changelog-style summary (2-4 sentences). Written for non-developers — explain *what changed* and *why it matters* in plain language. Use markdown for formatting. Example:
+        ```
+        Added a "Testing" page to projects where testers can review completed work items with deployment status and testing instructions. Project members can now be assigned the new "Tester" role, which grants access to this page. The testing briefs are grouped by date and show deployment status alongside each item.
+        ```
+      - `testing_notes`: **MANDATORY.** Step-by-step instructions a tester can follow to manually verify the change. Use markdown with numbered steps. Be specific — reference exact URLs, UI elements, and expected outcomes. For non-user-facing changes (refactors, infra), describe how to verify correctness (e.g. "Run `npm run typecheck` and confirm zero errors"). Example:
+        ```
+        1. Navigate to **Project → Members** and invite a user with the "Tester" role
+        2. Log in as that user and verify the **Testing** nav item appears in the project sidebar
+        3. Click **Testing** and verify completed action items appear grouped by date
+        4. Expand an item and verify testing notes and description are shown
+        5. Click "View action item" and confirm it links to the correct detail page
+        ```
 
 10. **CLEANUP**: Remove the worktree:
     ```bash
@@ -308,7 +344,7 @@ If the heartbeat response includes `validation_state` of `branch_mismatch` or `r
 
 This step uses two strategies to balance responsiveness with efficiency:
 
-**A. Drain mode** — if this cycle processed work (completed, failed, or planning_done):
+**A. Drain mode** — if this cycle processed work (completed, failed, planning_done, or review_done):
   - Reset `consecutive_idle_checks` to 0
   - **Skip sleep entirely** — go directly back to step 1
   - This drains the entire queue without sleeping between items

@@ -290,16 +290,17 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
     **b)** `add_commit_reference` — with the commit SHA and commit message.
 
-    **c)** `complete_work_item` — **MANDATORY fields**, never skip any of these:
+    **c)** `complete_work_item` — **ALL fields below are MANDATORY**, never skip any:
       - `action_item_id`: the action item ID
       - `commit_sha`: the final commit SHA
       - `agent_merged`: true/false
+      - `affected_files`: list of files changed, from `git diff --name-only`. Always include this — it tells reviewers the blast radius at a glance.
       - `completion_note`: technical summary of what was done
-      - `completion_summary`: **MANDATORY.** A concise, end-user-friendly changelog-style summary (2-4 sentences). Written for non-developers — explain *what changed* and *why it matters* in plain language. Use markdown for formatting. Example:
+      - `completion_summary`: A concise, end-user-friendly changelog-style summary (2-4 sentences). Written for non-developers — explain *what changed* and *why it matters* in plain language. Use markdown for formatting. Example:
         ```
         Added a "Testing" page to projects where testers can review completed work items with deployment status and testing instructions. Project members can now be assigned the new "Tester" role, which grants access to this page. The testing briefs are grouped by date and show deployment status alongside each item.
         ```
-      - `testing_notes`: **MANDATORY.** Step-by-step instructions a tester can follow to manually verify the change. Use markdown with numbered steps. Be specific — reference exact URLs, UI elements, and expected outcomes. For non-user-facing changes (refactors, infra), describe how to verify correctness (e.g. "Run `npm run typecheck` and confirm zero errors"). Example:
+      - `testing_notes`: Step-by-step instructions a tester can follow to manually verify the change. Use markdown with numbered steps. Be specific — reference exact URLs, UI elements, and expected outcomes. For non-user-facing changes (refactors, infra), describe how to verify correctness (e.g. "Run `npm run typecheck` and confirm zero errors"). Example:
         ```
         1. Navigate to **Project → Members** and invite a user with the "Tester" role
         2. Log in as that user and verify the **Testing** nav item appears in the project sidebar
@@ -307,6 +308,12 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
         4. Expand an item and verify testing notes and description are shown
         5. Click "View action item" and confirm it links to the correct detail page
         ```
+      - `usage_notes`: Where users can find this feature in the UI (e.g. "Navigate to Settings → Integrations → GitHub"). Set to empty string for non-user-facing work (refactors, infra, invisible bug fixes).
+      - `verification_report`: Structured assessment of the change:
+        - `verification_type`: `"automated"` if all checks passed, `"human_required"` if tests couldn't cover it, `"partial"` if some checks passed but human review is still needed
+        - `automated_checks_passed`: list of checks that passed, e.g. `["typecheck", "unit tests"]`. Include every test command that was run and passed. If a check was skipped (e.g. node_modules unavailable), do not include it.
+        - `human_review_needed`: list of things a human should verify and why, e.g. `["Visual layout of the new testing page — no automated visual regression tests", "Role-based access — requires logging in as different roles"]`. Be specific about *what* and *why*.
+        - `confidence`: 0.0–1.0 score. 0.9+ = straightforward change with passing tests. 0.7–0.9 = tests pass but change is complex or touches critical paths. Below 0.7 = significant uncertainty.
 
 10. **CLEANUP**: Remove the worktree:
     ```bash

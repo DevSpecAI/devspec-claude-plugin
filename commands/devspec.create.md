@@ -15,7 +15,7 @@ Create a new action item in DevSpec without leaving the terminal.
    - `description`: optional — detailed description
    - `type`: optional, default `task` (accept: `bug`, `feature`, `improvement`, `task`, `query`)
    - `priority`: optional, default not set (accept: `low`, `medium`, `high`, `critical`)
-   - `agent_ready`: optional, default `false` — set to `true` if user says "for autopilot" or "agent-ready"
+   - `agent_ready`: optional, default `true` — set to `false` if user says "not for autopilot" or "manual"
 
 2. If no title is provided, ask the user for one.
 
@@ -41,4 +41,4 @@ Create a new action item in DevSpec without leaving the terminal.
 
 - Do NOT output filler text before or after the confirmation
 - Keep output compact
-- If user mentions "autopilot", "agent", or "queue it", set `agent_ready: true`
+- If user mentions "manual", "not for agent", or "no autopilot", set `agent_ready: false`

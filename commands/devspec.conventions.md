@@ -1,5 +1,5 @@
 ---
-name: devspec-conventions
+name: devspec.conventions
 description: List coding conventions and standards from DevSpec
 allowed-tools: mcp__devspec__get_conventions
 ---

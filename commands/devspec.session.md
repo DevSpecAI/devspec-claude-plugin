@@ -1,5 +1,5 @@
 ---
-name: devspec-session
+name: devspec.session
 description: List recent DevSpec sessions or load a session transcript
 allowed-tools: mcp__devspec__get_recent_sessions, mcp__devspec__get_session_transcript
 ---

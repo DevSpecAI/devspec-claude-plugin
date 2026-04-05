@@ -1,5 +1,5 @@
 ---
-name: devspec-search
+name: devspec.search
 description: Search DevSpec code index and project knowledge base
 allowed-tools: mcp__devspec__search_index, mcp__devspec__search_memories
 ---

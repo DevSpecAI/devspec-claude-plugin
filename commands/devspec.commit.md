@@ -1,5 +1,5 @@
 ---
-name: devspec-commit
+name: devspec.commit
 description: Generate a deployment-tracked commit message and execute git commit
 allowed-tools: mcp__devspec__generate_commit_message, Bash
 ---

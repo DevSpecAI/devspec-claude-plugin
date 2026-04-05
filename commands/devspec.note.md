@@ -1,5 +1,5 @@
 ---
-name: devspec-note
+name: devspec.note
 description: Add an implementation note to a DevSpec action item
 allowed-tools: mcp__devspec__add_implementation_note
 ---

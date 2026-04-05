@@ -1,5 +1,5 @@
 ---
-name: autopilot-status
+name: autopilot.status
 description: Show the current state of the DevSpec autopilot
 allowed-tools: mcp__devspec__get_action_items, mcp__devspec__get_project_summary
 ---

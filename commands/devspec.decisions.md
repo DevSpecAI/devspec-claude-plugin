@@ -1,5 +1,5 @@
 ---
-name: devspec-decisions
+name: devspec.decisions
 description: List architectural decisions recorded in DevSpec
 allowed-tools: mcp__devspec__get_decisions
 ---

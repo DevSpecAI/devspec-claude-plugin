@@ -1,5 +1,5 @@
 ---
-name: autopilot-stop
+name: autopilot.stop
 description: Stop the DevSpec autopilot polling loop after the current cycle completes
 ---
 

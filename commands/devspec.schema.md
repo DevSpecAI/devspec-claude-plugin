@@ -1,5 +1,5 @@
 ---
-name: devspec-schema
+name: devspec.schema
 description: View the connected database schema from DevSpec
 allowed-tools: mcp__devspec__get_database_schema
 ---

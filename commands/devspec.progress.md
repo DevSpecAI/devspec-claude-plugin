@@ -1,5 +1,5 @@
 ---
-name: devspec-progress
+name: devspec.progress
 description: Report progress on a DevSpec action item
 allowed-tools: mcp__devspec__report_progress
 ---

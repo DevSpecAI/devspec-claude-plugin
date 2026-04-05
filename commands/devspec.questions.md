@@ -1,5 +1,5 @@
 ---
-name: devspec-questions
+name: devspec.questions
 description: List unresolved questions flagged in DevSpec sessions
 allowed-tools: mcp__devspec__get_unresolved_questions
 ---

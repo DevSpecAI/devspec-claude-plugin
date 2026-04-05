@@ -1,5 +1,5 @@
 ---
-name: devspec-history
+name: devspec.history
 description: View the full traceability timeline of a DevSpec action item
 allowed-tools: mcp__devspec__get_action_item_history
 ---

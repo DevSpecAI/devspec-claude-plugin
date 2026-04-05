@@ -1,5 +1,5 @@
 ---
-name: devspec-context
+name: devspec.context
 description: Load all project knowledge from DevSpec into the conversation
 allowed-tools: mcp__devspec__get_decisions, mcp__devspec__get_conventions, mcp__devspec__get_resources, mcp__devspec__get_unresolved_questions
 ---

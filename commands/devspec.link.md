@@ -1,5 +1,5 @@
 ---
-name: devspec-link
+name: devspec.link
 description: Link a git commit to a DevSpec action item
 allowed-tools: mcp__devspec__add_commit_reference
 ---

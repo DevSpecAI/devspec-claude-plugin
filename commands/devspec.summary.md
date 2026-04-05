@@ -1,5 +1,5 @@
 ---
-name: devspec-summary
+name: devspec.summary
 description: Show a project overview from DevSpec
 allowed-tools: mcp__devspec__get_project_summary
 ---

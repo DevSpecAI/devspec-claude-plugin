@@ -1,5 +1,5 @@
 ---
-name: devspec-create
+name: devspec.create
 description: Create an action item in DevSpec from the terminal
 allowed-tools: mcp__devspec__create_action_item
 ---

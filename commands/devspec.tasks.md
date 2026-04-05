@@ -1,5 +1,5 @@
 ---
-name: devspec-tasks
+name: devspec.tasks
 description: List open action items from DevSpec
 allowed-tools: mcp__devspec__get_action_items
 ---

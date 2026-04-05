@@ -1,5 +1,5 @@
 ---
-name: devspec-resources
+name: devspec.resources
 description: List project resources (ADRs, guides, runbooks) from DevSpec
 allowed-tools: mcp__devspec__get_resources
 ---

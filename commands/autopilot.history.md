@@ -1,5 +1,5 @@
 ---
-name: autopilot-history
+name: autopilot.history
 description: Show recent autopilot execution history
 allowed-tools: Bash, mcp__devspec__get_action_items
 ---

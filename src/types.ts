@@ -10,6 +10,7 @@ export const AgentStatusSchema = z.enum([
   'in_progress',
   'completed',
   'failed',
+  'under_human_review',
 ]);
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 
@@ -65,7 +66,7 @@ export const DEFAULT_AUTOPILOT_SETTINGS: AutopilotSettings = AutopilotSettingsSc
 // =============================================================================
 
 export const CycleResultSchema = z.object({
-  action: z.enum(['idle', 'claimed', 'completed', 'failed', 'planning_done', 'claim_lost', 'mcp_error', 'stopped']),
+  action: z.enum(['idle', 'claimed', 'completed', 'failed', 'planning_done', 'review_done', 'claim_lost', 'mcp_error', 'stopped']),
   actionItemId: z.string().optional(),
   actionItemTitle: z.string().optional(),
   commitSha: z.string().optional(),

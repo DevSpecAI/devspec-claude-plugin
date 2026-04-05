@@ -11,7 +11,7 @@
  */
 
 import type { ActionItem, AutopilotSettings, CycleResult } from '../types.js';
-import { buildPrompt, buildPlanningPrompt } from './prompt.js';
+import { buildPrompt, buildPlanningPrompt, buildReviewPrompt } from './prompt.js';
 import { generateBranchName } from '../mcp/client.js';
 
 // =============================================================================
@@ -113,6 +113,35 @@ export function createPlanningDoneResult(
 ): CycleResult {
   return {
     action: 'planning_done',
+    actionItemId: item.id,
+    actionItemTitle: item.title,
+    durationMs,
+  };
+}
+
+/**
+ * Prepare a review-mode execution: read plan + transcript + codebase → structured feedback → stop.
+ * No worktree, no code changes, no commits.
+ */
+export function prepareReviewExecution(
+  item: ActionItem,
+  settings: AutopilotSettings,
+): {
+  prompt: string;
+} {
+  const prompt = buildReviewPrompt(item, settings);
+  return { prompt };
+}
+
+/**
+ * Create a review-done cycle result.
+ */
+export function createReviewDoneResult(
+  item: ActionItem,
+  durationMs: number,
+): CycleResult {
+  return {
+    action: 'review_done',
     actionItemId: item.id,
     actionItemTitle: item.title,
     durationMs,

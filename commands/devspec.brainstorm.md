@@ -1,0 +1,106 @@
+---
+name: devspec.brainstorm
+description: Brainstorm on a DevSpec action item to refine scope, approach, and edge cases
+allowed-tools: mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item
+---
+
+# DevSpec Brainstorm
+
+Interactively brainstorm on an action item to sharpen its scope, surface edge cases, and explore implementation approaches — then save the results back to DevSpec.
+
+## Steps
+
+1. **Resolve the action item.** Extract an action item identifier from the user's input (ID, partial ID, or title keywords).
+   - If an ID (or partial ID) is provided, call `get_action_items(status: "all")` and match by ID prefix.
+   - If keywords are provided instead, call `get_action_items(status: "all")` and match by title. If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
+   - If nothing is provided, ask the user for an action item name or ID.
+   - If no match is found, output: `✗ No action item found matching: {input}`
+
+2. **Load context.** Once resolved, call in parallel:
+   - `get_action_item_history(action_item_id)` — prior notes, commits, status changes
+   - `search_memories(query: "<action item title>")` — related decisions, conventions, risks
+
+3. **Present the item.** Output a compact summary:
+   ```
+   ━━━ Brainstorm ━━━
+   Title:    {title}
+   ID:       {id (first 8 chars)}
+   Type:     {type}
+   Status:   {status}
+   Priority: {priority or "not set"}
+   ──────────────────
+   {description or "No description"}
+   ━━━━━━━━━━━━━━━━━━
+   ```
+   If there are prior implementation notes or related memories, mention them briefly (e.g., "2 prior notes, 1 related decision").
+
+4. **Brainstorming loop.** Ask up to 5 targeted questions, one at a time, drawn from this taxonomy (pick the most impactful gaps first):
+
+   **Scope & Intent**
+   - What is the core problem this solves? Who benefits?
+   - What is explicitly out of scope?
+
+   **Approach & Alternatives**
+   - What implementation strategies exist? Tradeoffs?
+   - Are there existing patterns in the codebase to follow or avoid?
+
+   **Data & State**
+   - What data changes, migrations, or new entities are needed?
+   - What state transitions or side effects are involved?
+
+   **Edge Cases & Failure Modes**
+   - What happens when inputs are invalid or missing?
+   - What are the concurrency, rate-limit, or timeout concerns?
+
+   **Dependencies & Integration**
+   - What other systems, APIs, or action items does this depend on?
+   - What will break or need updating downstream?
+
+   **Acceptance & Verification**
+   - How do we know this is done? What does a tester verify?
+   - What metrics or logs should confirm success?
+
+   For each question:
+   - **Analyze the context** and provide a recommended answer with brief reasoning.
+   - Format: `**Suggested:** <your proposal> — <1-sentence reasoning>`
+   - Then ask: `Agree, adjust, or provide your own answer.`
+   - If the user replies "yes", "agree", or "suggested", accept your proposal.
+   - If the user says "skip", move to the next question.
+   - Record each accepted answer in working memory.
+
+   Stop the loop when:
+   - 5 questions asked, OR
+   - User signals done ("done", "good", "that's it", "stop"), OR
+   - All high-impact areas are covered
+
+5. **Compile brainstorm summary.** After the loop, synthesize all accepted answers into a structured markdown note:
+
+   ```markdown
+   ## Brainstorm Summary
+
+   **Scope:** <1-2 sentences>
+   **Approach:** <chosen strategy + key tradeoffs>
+   **Edge Cases:** <bullet list of identified risks>
+   **Acceptance Criteria:** <bullet list of verifiable conditions>
+   **Open Questions:** <anything unresolved, if any>
+   ```
+
+   Present this summary to the user.
+
+6. **Save to DevSpec.** Ask: `Save this brainstorm to the action item in DevSpec?`
+   - If yes: call `add_implementation_note(action_item_id, content: <compiled summary>)` and output:
+     ```
+     ✓ Brainstorm saved
+       Item:  {id (first 8 chars)} — {title}
+       Note:  {note_id or "linked"}
+     ```
+   - If no: output `↻ Brainstorm not saved — summary is above if you need it later.`
+
+## Rules
+
+- Do NOT output filler text before or after structured output
+- Keep questions sharp and specific to the action item — no generic prompts
+- Never reveal the full question queue in advance
+- If the action item already has rich context (detailed description, many notes), focus questions on gaps rather than re-covering known ground
+- Respect early termination signals from the user
+- Maximum 5 questions per session

@@ -41,6 +41,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
    - **Interactive mode:** If nothing is provided, ask the user for an action item name or ID.
    - **Unattended mode:** If nothing is provided, output `✗ No action item specified` and stop.
    - If no match is found, output: `✗ No action item found matching: {input}`
+   - **CRITICAL:** Once resolved, store the **complete UUID** (e.g. `f43c187c-23e0-4764-885f-ef3a733d08df`) in working memory as `resolved_action_item_id`. Never truncate, pad, or reconstruct this value — always use the exact string returned by the API in every subsequent tool call.
 
 5. **Load context.** Once resolved, call in parallel:
    - `get_action_item_history(action_item_id)` — prior notes, commits, status changes
@@ -50,7 +51,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
    ```
    ━━━ Work ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    Title:    {title}
-   ID:       {id (first 8 chars)}
+   ID:       {first 8 chars of id}  (display only — full UUID stored in working memory)
    Type:     {type}
    Status:   {status}
    Priority: {priority or "not set"}

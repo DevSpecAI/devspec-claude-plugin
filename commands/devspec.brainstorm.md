@@ -15,6 +15,7 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    - If keywords are provided instead, call `get_action_items(status: "all")` and match by title. If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
    - If nothing is provided, ask the user for an action item name or ID.
    - If no match is found, output: `✗ No action item found matching: {input}`
+   - **CRITICAL:** Once resolved, store the **complete UUID** (e.g. `f43c187c-23e0-4764-885f-ef3a733d08df`) in working memory as `resolved_action_item_id`. Never truncate, pad, or reconstruct this value — always use the exact string returned by the API.
 
 2. **Load context.** Once resolved, call in parallel:
    - `get_action_item_history(action_item_id)` — prior notes, commits, status changes
@@ -24,7 +25,7 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    ```
    ━━━ Brainstorm ━━━
    Title:    {title}
-   ID:       {id (first 8 chars)}
+   ID:       {first 8 chars of id}  (display only — full UUID stored in working memory)
    Type:     {type}
    Status:   {status}
    Priority: {priority or "not set"}
@@ -88,10 +89,12 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    Present this summary to the user.
 
 6. **Save to DevSpec.** Ask: `Save this brainstorm to the action item in DevSpec?`
-   - If yes: call `add_implementation_note(action_item_id, content: <compiled summary>)` and output:
+   - If yes: call `add_implementation_note(action_item_id: <resolved_action_item_id>, content: <compiled summary>)`.
+     Use the **full UUID** from `resolved_action_item_id` stored in step 1 — never reconstruct or pad the ID.
+     Then output:
      ```
      ✓ Brainstorm saved
-       Item:  {id (first 8 chars)} — {title}
+       Item:  {first 8 chars of id} — {title}
        Note:  {note_id or "linked"}
      ```
    - If no: output `↻ Brainstorm not saved — summary is above if you need it later.`

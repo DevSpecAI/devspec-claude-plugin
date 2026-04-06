@@ -135,7 +135,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
     Determine the merge target: use `target_branch` from settings if set and non-empty, otherwise use `starting_branch` (the branch recorded in step 3).
     ```bash
     git checkout {merge_target}
-    git merge {branch_name} --no-ff
+    git merge {branch_name} --no-ff --no-edit
     git push origin {merge_target}
     ```
     If merge conflicts arise, fail the item with a descriptive error. Leave the branch pushed so the developer can resolve manually.

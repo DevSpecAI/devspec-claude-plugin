@@ -372,7 +372,7 @@ export async function mergeToTarget(params: MergeToTargetParams): Promise<Worktr
 
     // Merge feature branch into target (using main repo, not worktree)
     await execa('git', ['checkout', targetBranch], { cwd: mainRepoPath });
-    await execa('git', ['merge', branchName, '--no-ff', '-m', `Merge ${branchName} into ${targetBranch}`], {
+    await execa('git', ['merge', branchName, '--no-ff', '--no-edit', '-m', `Merge ${branchName} into ${targetBranch}`], {
       cwd: mainRepoPath,
     });
     await execa('git', ['push', remote, targetBranch], { cwd: mainRepoPath });

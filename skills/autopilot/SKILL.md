@@ -279,7 +279,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 8. **MERGE**: If auto_merge is enabled, merge to the branch the runner started on:
    ```bash
    git checkout {startup_branch}
-   git merge <branch_name> --no-ff
+   git merge <branch_name> --no-ff --no-edit
    git push origin {startup_branch}
    ```
    `{startup_branch}` is the branch discovered during startup repo collection (step 4) and stored as a session variable. If merge conflicts arise, fail the item with a clear error.

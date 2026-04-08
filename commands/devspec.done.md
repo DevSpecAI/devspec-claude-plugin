@@ -31,6 +31,9 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
    - `type`: Infer from commits (`fix` → `bug`, `feat` → `feature`, `refactor` → `improvement`, default `task`)
    - `priority`: Infer from scope — single file fix → `low`, multi-file feature → `medium`, critical/breaking → `high`
    - `tags`: Infer 2-4 relevant tags from changed files and commit messages (e.g., `ui`, `api`, `auth`, `layout`, `database`)
+   - `browser_test_task`: Machine-executable test steps for an AI browser agent. Use `@{{url}}` as a placeholder for the deployment URL. Describe navigation, clicks, and expected outcomes. Example: "Navigate to @{{url}}/projects and verify the new button appears, click it, confirm the modal opens." Set to empty string for non-UI work (backend, infra, refactors)
+   - `testability_verdict`: One of `ready`, `needs_setup`, or `not_suitable`. `ready` = change is visible by simply navigating to a page. `needs_setup` = visible in browser but requires specific app/DB state first. `not_suitable` = cannot be browser-tested (backend-only, infra, logging)
+   - `testability_rationale`: Brief explanation of why this verdict was chosen
 
 4. **Immediately call `record_completed_work`** (do NOT wait for confirmation) with:
    - `title`, `description`, `implementation_summary` (required)
@@ -41,10 +44,16 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
    UPDATE action_items
    SET completion_summary = '{completion_summary}',
        testing_notes = '{testing_notes}',
-       usage_notes = '{usage_notes}'
+       usage_notes = '{usage_notes}',
+       browser_test_task = '{browser_test_task}',
+       testability_assessment = '{testability_assessment_json}'
    WHERE id = '{action_item_id}';
    ```
-   Use proper SQL escaping (double any single quotes in values).
+   Where `testability_assessment_json` is a JSON object:
+   ```json
+   {"verdict": "{testability_verdict}", "confidence": 80, "rationale": "{testability_rationale}", "assessed_at": "{ISO timestamp}", "assessed_by_model": "runner"}
+   ```
+   Use proper SQL escaping (double any single quotes in values). Cast the JSON: `testability_assessment = '{...}'::jsonb`
 
 6. **Output a brief summary** — no filler, just the result:
    ```

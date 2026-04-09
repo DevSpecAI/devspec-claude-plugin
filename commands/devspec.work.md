@@ -83,7 +83,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
      - Ask: `Agree, adjust, or provide your own answer.`
      - Accept on "yes"/"agree"/"suggested", skip on "skip"
    - Stop when 5 questions asked, user signals done, or all high-impact areas are covered
-   - Compile a brainstorm summary and save it via `add_implementation_note(action_item_id, content: <summary>)`
+   - Compile a brainstorm summary and save it via `add_implementation_note(action_item_id, content: <summary>)`. Use markdown formatting — bullet lists, **bold** for key decisions, `code` for file/function names.
    - Output: `✓ Brainstorm saved`
 
 10. **If no**, proceed directly to Phase 3.
@@ -103,7 +103,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
     **Custom Instructions:** If `custom_instructions` is set in the loaded settings, you MUST follow those instructions during implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
 
     During implementation, whenever you complete a significant milestone (e.g., finished a major component, wired up an integration, completed a migration):
-    - Call `add_implementation_note(action_item_id, content: <what was done and why>)` to keep a running log
+    - Call `add_implementation_note(action_item_id, content: <what was done and why>)` to keep a running log. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names. Never write as a single prose paragraph.
 
 14. **Test.** After implementation:
     - Run `npm run lint` if available (continue on failure but note it)
@@ -144,7 +144,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
 
 18. **Report completion.** Call these in order:
 
-    **a)** `add_implementation_note` — final summary of what was changed: which files were modified/created, what the changes do, and any decisions made.
+    **a)** `add_implementation_note` — final summary of what was changed: which files were modified/created, what the changes do, and any decisions made. **MUST use markdown formatting** — bullet lists, `**bold**` for key terms, `` `code` `` for file/function names, and blank lines between sections. Never write as a single prose paragraph.
 
     **b)** `add_commit_reference` — with the commit SHA and message.
 

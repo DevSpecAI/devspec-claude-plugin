@@ -89,7 +89,7 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    Present this summary to the user.
 
 6. **Save to DevSpec.** Ask: `Save this brainstorm to the action item in DevSpec?`
-   - If yes: call `add_implementation_note(action_item_id: <resolved_action_item_id>, content: <compiled summary>)`.
+   - If yes: call `add_implementation_note(action_item_id: <resolved_action_item_id>, content: <compiled summary>)`. Use markdown formatting — headers, bullet lists, **bold** for key decisions, `code` for technical terms.
      Use the **full UUID** from `resolved_action_item_id` stored in step 1 — never reconstruct or pad the ID.
      Then output:
      ```

@@ -38,7 +38,8 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
 4. **Immediately call `record_completed_work`** (do NOT wait for confirmation) with:
    - `title`, `description`, `implementation_summary` (required)
    - `type`, `priority`, `tags`, `commits`, `affected_files`, `branch`
-   - `provider`: always pass `"claude_code"` — this stamps the API token so DevSpec shows the correct logo
+   - `provider`: always pass `"claude_code"`
+   - `completion_mode`: always pass `"logged"`
 
 5. Extract the action item ID from the response. Then call **`mcp__supabase__execute_sql`** to set the fields that `record_completed_work` does not support:
    ```sql

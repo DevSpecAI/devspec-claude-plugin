@@ -21,7 +21,7 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
 3. **If recent commits exist**, auto-generate ALL of these fields from the git history. Do NOT ask the user for input — infer everything:
    - `title`: Summarize the work in one line (imperative tense requirement, e.g., "Add user profile page" not "Added user profile page")
    - `description`: 2-3 sentences describing what was needed (imperative/future tense, as if written before the work)
-   - `implementation_summary`: What was actually done, decisions made, trade-offs (past tense)
+   - `implementation_summary`: What was actually done, decisions made, trade-offs (past tense). **MUST use markdown formatting** — use `**bold**` for key terms, bullet lists (`-`) for distinct changes, inline `` `code` `` for file/function names, and blank lines between sections. Never write as a single prose paragraph.
    - `completion_summary`: User-friendly changelog entry (2-4 sentences). Written for end users, not developers
    - `testing_notes`: Numbered step-by-step manual testing instructions in markdown. Include what to click, what page to visit, and expected results. Specific enough for a non-developer tester
    - `usage_notes`: Where users can find this feature in the UI and how to use it. Written for end users

@@ -208,7 +208,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 1. Read and analyze the action item description
 2. Read relevant codebase files to understand context
 3. Write a detailed implementation plan
-4. Call `add_implementation_note` with the proposed plan, linking to the action item
+4. Call `add_implementation_note` with the proposed plan, linking to the action item. Use markdown formatting — headers, bullet lists, **bold** for key decisions, `code` for file/function names.
 5. Output planning completion (see formatting)
 6. **DO NOT** create branches, modify code, commit, or change the item's `agent_status` — the item stays in `planning` state for human review
 
@@ -286,7 +286,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
 9. **REPORT SUCCESS** — three MCP calls, in this exact order:
 
-    **a)** `add_implementation_note` — **MANDATORY, never skip.** Summarize what was changed: which files were modified/created, what the changes do, and any decisions made. This is the audit trail the project owner reviews. If you skip this call, the work appears undocumented in the dashboard.
+    **a)** `add_implementation_note` — **MANDATORY, never skip.** Summarize what was changed: which files were modified/created, what the changes do, and any decisions made. This is the audit trail the project owner reviews. If you skip this call, the work appears undocumented in the dashboard. **MUST use markdown formatting** — bullet lists, `**bold**` for key terms, `` `code` `` for file/function names, and blank lines between sections. Never write as a single prose paragraph.
 
     **b)** `add_commit_reference` — with the commit SHA and commit message.
 
@@ -324,7 +324,7 @@ Output step-by-step progress for each phase (see formatting).
 
 ### 3. Handle Failures
 If any step fails:
-1. Call `add_implementation_note` documenting what was attempted and why it failed — **MANDATORY, never skip even on failure**
+1. Call `add_implementation_note` documenting what was attempted and why it failed — **MANDATORY, never skip even on failure**. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names.
 2. Call `update_action_item` with `agent_status: 'failed'` and `agent_error: <description>`
 3. Clean up the worktree if it was created
 4. Output failure markers (see formatting)

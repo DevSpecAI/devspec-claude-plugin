@@ -172,6 +172,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
         - `automated_checks_passed`: list of checks that passed, e.g. `["typecheck", "unit tests"]`. Include every test command that was run and passed. If a check was skipped (e.g. node_modules unavailable), do not include it.
         - `human_review_needed`: list of things a human should verify and why, e.g. `["Visual layout of the new testing page — no automated visual regression tests", "Role-based access — requires logging in as different roles"]`. Be specific about *what* and *why*.
         - `confidence`: 0.0-1.0 score. 0.9+ = straightforward change with passing tests. 0.7-0.9 = tests pass but change is complex or touches critical paths. Below 0.7 = significant uncertainty.
+      - `provider`: always pass `"claude_code"` — identifies this work as completed by Claude Code
 
 19. **Update extra fields** via `mcp__supabase__execute_sql`:
     ```sql

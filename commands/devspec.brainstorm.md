@@ -35,7 +35,7 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    ```
    If there are prior implementation notes or related memories, mention them briefly (e.g., "2 prior notes, 1 related decision").
 
-4. **Brainstorming loop.** Ask up to 5 targeted questions, one at a time, drawn from this taxonomy (pick the most impactful gaps first):
+4. **Brainstorming loop.** Ask questions in **rounds of 5**, drawn from this taxonomy (pick the most impactful gaps first):
 
    **Scope & Intent**
    - What is the core problem this solves? Who benefits?
@@ -69,10 +69,14 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    - If the user says "skip", move to the next question.
    - Record each accepted answer in working memory.
 
-   Stop the loop when:
-   - 5 questions asked, OR
-   - User signals done ("done", "good", "that's it", "stop"), OR
-   - All high-impact areas are covered
+   **After each round of 5 questions:**
+   - If you believe all high-impact areas have been covered and there are no remaining meaningful questions to ask, end the loop automatically and tell the user: `All key areas covered — wrapping up brainstorm.`
+   - Otherwise, ask: `Continue brainstorming? (y/n)`
+     - If **yes**: ask another round of up to 5 questions, continuing from the taxonomy areas not yet covered or diving deeper into areas that need more exploration.
+     - If **no**: end the loop.
+   - This continues indefinitely until the user declines or all areas are exhausted.
+
+   **Early exit:** At any point during a round, if the user signals done ("done", "good", "that's it", "stop"), end the loop immediately.
 
 5. **Compile brainstorm summary.** After the loop, synthesize all accepted answers into a structured markdown note:
 
@@ -106,4 +110,4 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
 - Never reveal the full question queue in advance
 - If the action item already has rich context (detailed description, many notes), focus questions on gaps rather than re-covering known ground
 - Respect early termination signals from the user
-- Maximum 5 questions per session
+- Questions are asked in rounds of 5 — no hard cap on total questions

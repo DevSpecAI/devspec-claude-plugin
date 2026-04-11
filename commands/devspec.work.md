@@ -68,8 +68,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
 
 8. **Interactive mode — ask once:** `Brainstorm before starting? (y/n)`
 
-9. **If yes**, run the brainstorm loop:
-   - Ask up to 5 targeted questions, one at a time, drawn from this taxonomy (pick the most impactful gaps first):
+9. **If yes**, run the brainstorm loop in **rounds of 5 questions**, drawn from this taxonomy (pick the most impactful gaps first):
 
      **Scope & Intent** — What is the core problem? What is out of scope?
      **Approach & Alternatives** — Implementation strategies? Existing patterns to follow?
@@ -82,7 +81,13 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
      - Provide a suggested answer: `**Suggested:** <proposal> — <1-sentence reasoning>`
      - Ask: `Agree, adjust, or provide your own answer.`
      - Accept on "yes"/"agree"/"suggested", skip on "skip"
-   - Stop when 5 questions asked, user signals done, or all high-impact areas are covered
+   - **After each round of 5 questions:**
+     - If all high-impact areas are covered and no meaningful questions remain, end the loop automatically: `All key areas covered — wrapping up brainstorm.`
+     - Otherwise, ask: `Continue brainstorming? (y/n)`
+       - If **yes**: ask another round of up to 5 questions, covering taxonomy areas not yet explored or diving deeper.
+       - If **no**: end the loop.
+     - This continues indefinitely until the user declines or all areas are exhausted.
+   - **Early exit:** If the user signals done at any point ("done", "good", "that's it", "stop"), end the loop immediately.
    - Compile a brainstorm summary and save it via `add_implementation_note(action_item_id, content: <summary>)`. Use markdown formatting — bullet lists, **bold** for key decisions, `code` for file/function names.
    - Output: `✓ Brainstorm saved`
 

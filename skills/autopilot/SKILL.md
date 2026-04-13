@@ -368,7 +368,7 @@ This step uses two strategies to balance responsiveness with efficiency:
   - After waking, call `check_queue_status` (lightweight — returns only counts, no item details):
     * If `has_items` is true: output wake line (see formatting), reset `consecutive_idle_checks` to 0, go to step 1
     * If `has_items` is false: go back to the top of step 5B (sleep again at the current tier)
-  - **Heartbeats during idle**: Send a `send_heartbeat` (status: `'idle'`) every **3rd** idle check to stay visible on the dashboard without excessive calls. Always wrap in try/catch.
+  - **Heartbeats during idle**: Send a `send_heartbeat` (status: `'idle'`) every **2nd** idle check to stay visible on the dashboard. At the deepest idle tier (5-min sleeps) this means a heartbeat every 10 minutes, well within the server's 16-minute online cutoff. Always wrap in try/catch.
 
 **Wake output format** (when `check_queue_status` finds items):
 ```

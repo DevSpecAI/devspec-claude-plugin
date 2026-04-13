@@ -12,6 +12,9 @@ dist/
 .env.*
 !.env.example
 
+# MCP client config (contains tokens)
+.mcp.json
+
 # OS files
 .DS_Store
 Thumbs.db

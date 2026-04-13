@@ -28,20 +28,20 @@ If something goes wrong, it marks the item as failed with a clear error so you c
 
 ### Option 1: Local Install (development)
 
-```bash
-# Build the plugin
-cd claude-code-scheduler
-npm install
-npm run build
+The plugin is pure commands + skills (markdown), so no build step is required to use it. Point Claude Code at the repo as a local marketplace:
 
-# In Claude Code, install from local path
-/install-plugin /absolute/path/to/claude-code-scheduler
 ```
+/plugin marketplace add /absolute/path/to/claude-code-devspec-autopilot
+/plugin install devspec-autopilot
+```
+
+Restart Claude Code after install so the commands and skills register.
 
 ### Option 2: From Marketplace (once published)
 
 ```
 /plugin marketplace add claude-code-devspec-autopilot
+/plugin install devspec-autopilot
 ```
 
 ## Setup
@@ -56,7 +56,7 @@ In your project's `.mcp.json` or Claude Code MCP settings, add:
 {
   "mcpServers": {
     "devspec": {
-      "type": "url",
+      "type": "http",
       "url": "https://your-devspec-instance.com/api/mcp",
       "headers": {
         "Authorization": "Bearer dvs_your_api_token_here"
@@ -67,6 +67,8 @@ In your project's `.mcp.json` or Claude Code MCP settings, add:
 ```
 
 The token needs **read_write** scope for the project you want the autopilot to work on.
+
+> **Security note:** `.mcp.json` contains a bearer token. If it lives at a project root that is a git repo, add `.mcp.json` to `.gitignore` before committing, or place the config in your user-scope Claude settings (`~/.claude.json`) instead.
 
 ### 2. Configure Autopilot Settings in DevSpec
 

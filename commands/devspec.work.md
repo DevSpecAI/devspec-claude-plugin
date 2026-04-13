@@ -47,7 +47,26 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
    - `get_action_item_history(action_item_id)` — prior notes, commits, status changes
    - `search_memories(query: "<action item title>")` — related decisions, conventions, risks
 
-6. **Present the item:**
+6. **Handle non-queued statuses.** After loading the history, check the item's current status:
+
+   - **`awaiting_verification`**: Scan the history for verification feedback (entries with type `verification_failed`, `feedback`, or `comment` that were added *after* the most recent `completed` event). If feedback exists that indicates something is broken or missing:
+     - Present the feedback prominently:
+       ```
+       ⚠ Verification feedback found:
+       {feedback content}
+       ```
+     - **Interactive mode:** Ask `Address this feedback? (y/n)`
+     - **Unattended mode:** Proceed automatically to fix the issues
+     - If proceeding, treat the feedback as additional requirements and continue to Phase 3 (skip brainstorm). The item does NOT need to be re-claimed — it is already in progress.
+     - If no actionable feedback exists, inform the user the item is awaiting verification with no outstanding issues and stop.
+
+   - **`done`**: Same as `awaiting_verification` — check for post-completion feedback. If none, inform the user and stop.
+
+   - **`in_progress`** (claimed by another agent): Output `✗ Item is currently being worked on by another agent` and stop. If claimed by this agent in a prior session, proceed.
+
+   - **`queued`** or **`ready`**: Proceed normally to Step 7.
+
+7. **Present the item:**
    ```
    ━━━ Work ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    Title:    {title}
@@ -64,11 +83,11 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
 
 ### Phase 2 — Brainstorm (Optional)
 
-7. **Unattended mode:** Skip this entire phase — proceed directly to Phase 3.
+8. **Unattended mode:** Skip this entire phase — proceed directly to Phase 3.
 
-8. **Interactive mode — ask once:** `Brainstorm before starting? (y/n)`
+9. **Interactive mode — ask once:** `Brainstorm before starting? (y/n)`
 
-9. **If yes**, run the brainstorm loop in **rounds of 5 questions**, drawn from this taxonomy (pick the most impactful gaps first):
+10. **If yes**, run the brainstorm loop in **rounds of 5 questions**, drawn from this taxonomy (pick the most impactful gaps first):
 
      **Scope & Intent** — What is the core problem? What is out of scope?
      **Approach & Alternatives** — Implementation strategies? Existing patterns to follow?
@@ -91,31 +110,31 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
    - Compile a brainstorm summary and save it via `add_implementation_note(action_item_id, content: <summary>)`. Use markdown formatting — bullet lists, **bold** for key decisions, `code` for file/function names.
    - Output: `✓ Brainstorm saved`
 
-10. **If no**, proceed directly to Phase 3.
+11. **If no**, proceed directly to Phase 3.
 
 ### Phase 3 — Implement
 
-11. **Claim the item.** Call `claim_work_item(action_item_id)`. If the claim fails (already claimed by another agent), output `✗ Item already claimed` and stop.
+12. **Claim the item.** Call `claim_work_item(action_item_id)`. If the claim fails (already claimed by another agent), output `✗ Item already claimed` and stop. If the item was already claimed by this agent (e.g., returning to fix verification feedback), skip this step.
 
-12. **Create a branch** using the `branch_prefix` from loaded settings:
+13. **Create a branch** (skip if returning to an existing branch for verification feedback — just check out the existing branch instead). Use the `branch_prefix` from loaded settings:
     ```bash
     git checkout -b {branch_prefix}{id_first_8_chars}
     ```
     If `branch_prefix` is empty, fall back to `work/action-item-`.
 
-13. **Implement the changes.** Follow the action item description and any `ai_instructions`. Read existing files before editing. Follow existing code conventions. If the action item has brainstorm notes or prior implementation notes, use them to guide implementation.
+14. **Implement the changes.** Follow the action item description and any `ai_instructions`. Read existing files before editing. Follow existing code conventions. If the action item has brainstorm notes or prior implementation notes, use them to guide implementation. If returning to address verification feedback, focus specifically on the issues raised in the feedback.
 
     **Custom Instructions:** If `custom_instructions` is set in the loaded settings, you MUST follow those instructions during implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
 
     During implementation, whenever you complete a significant milestone (e.g., finished a major component, wired up an integration, completed a migration):
     - Call `add_implementation_note(action_item_id, content: <what was done and why>)` to keep a running log. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names. Never write as a single prose paragraph.
 
-14. **Test.** After implementation:
+15. **Test.** After implementation:
     - Run `npm run lint` if available (continue on failure but note it)
     - Run `npm test` if available (continue on failure but note it)
     - Run any test commands mentioned in the action item's `ai_instructions`
 
-15. **Commit.** Stage only the files you changed — never use `git add -A`:
+16. **Commit.** Stage only the files you changed — never use `git add -A`:
     ```bash
     git diff --name-only
     git add <file1> <file2> ...
@@ -131,12 +150,12 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
     ```
     The `[devspec:<id>]` tag in the message is what the deployment webhook uses to track deployments — do NOT construct the message yourself.
 
-16. **Push** (if auto_push is enabled or implied by auto_merge):
+17. **Push** (if auto_push is enabled or implied by auto_merge):
     ```bash
     git push -u origin {branch_name}
     ```
 
-17. **Merge** (if auto_merge is enabled):
+18. **Merge** (if auto_merge is enabled):
     Determine the merge target: use `target_branch` from settings if set and non-empty, otherwise use `starting_branch` (the branch recorded in step 3).
     ```bash
     git checkout {merge_target}
@@ -147,7 +166,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
 
 ### Phase 4 — Done
 
-18. **Report completion.** Call these in order:
+19. **Report completion.** Call these in order:
 
     **a)** `add_implementation_note` — final summary of what was changed: which files were modified/created, what the changes do, and any decisions made. **MUST use markdown formatting** — bullet lists, `**bold**` for key terms, `` `code` `` for file/function names, and blank lines between sections. Never write as a single prose paragraph.
 
@@ -180,7 +199,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
       - `provider`: always pass `"claude_code"`
       - `completion_mode`: always pass `"assisted"`
 
-19. **Update extra fields** via `mcp__supabase__execute_sql`:
+20. **Update extra fields** via `mcp__supabase__execute_sql`:
     ```sql
     UPDATE action_items
     SET completion_summary = '{completion_summary}',
@@ -190,7 +209,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
     ```
     Use proper SQL escaping (double any single quotes in values).
 
-20. **Output the result:**
+21. **Output the result:**
     ```
     ━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     ✓ {title}

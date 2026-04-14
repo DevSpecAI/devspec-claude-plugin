@@ -26,23 +26,35 @@ If something goes wrong, it marks the item as failed with a clear error so you c
 
 ## Install
 
-### Option 1: Local Install (development)
+**Recommended: install as a local marketplace.** This is currently the easiest way to get the plugin — it installs persistently, so you launch Claude Code normally (no `--plugin-dir` flag), and updates to the plugin are picked up live from disk.
 
-The plugin is pure commands + skills (markdown), so no build step is required to use it. Point Claude Code at the repo as a local marketplace:
+### 1. Clone this repo anywhere on your machine
+
+```bash
+git clone https://github.com/DevSpecAI/claude-code-devspec-autopilot.git
+```
+
+### 2. Register it as a marketplace and install
+
+The repo already ships its own `.claude-plugin/marketplace.json`, so you can point Claude Code straight at the cloned directory. Inside Claude Code, run:
 
 ```
 /plugin marketplace add /absolute/path/to/claude-code-devspec-autopilot
-/plugin install devspec-autopilot
+/plugin install devspec-autopilot@devspec-autopilot-marketplace
+/reload-plugins
 ```
 
-Restart Claude Code after install so the commands and skills register.
+That's it. From now on, just launch Claude Code with `claude` and the `/autopilot:*` and `/devspec:*` commands will be available everywhere.
 
-### Option 2: From Marketplace (once published)
+> **Path with spaces?** Inside the Claude Code REPL, `/plugin marketplace add` takes the rest of the line as the path — no quoting needed.
 
-```
-/plugin marketplace add claude-code-devspec-autopilot
-/plugin install devspec-autopilot
-```
+### Updating
+
+Because the marketplace source is a local path, `git pull` in the cloned repo is all you need to update. Run `/reload-plugins` (or restart Claude Code) to pick up changes.
+
+### Coming soon
+
+We're planning to publish this to the official Claude Code plugin marketplace so installation will be a single command. Until then, the local-marketplace flow above is the supported path.
 
 ## Setup
 

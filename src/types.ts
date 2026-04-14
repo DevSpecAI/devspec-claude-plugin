@@ -33,6 +33,8 @@ export const ActionItemSchema = z.object({
   agent_commit_sha: z.string().nullable().optional(),
   project_id: z.string().uuid().optional(),
   created_at: z.string().optional(),
+  lifecycle_state: z.string().nullable().optional(),
+  attention_reason: z.string().nullable().optional(),
 });
 export type ActionItem = z.infer<typeof ActionItemSchema>;
 

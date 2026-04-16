@@ -1,7 +1,7 @@
 ---
 name: devspec.done
 description: Just finished some work? Log it to DevSpec — commits, testing notes, and all
-allowed-tools: mcp__devspec__record_completed_work, mcp__supabase__execute_sql, Bash
+allowed-tools: mcp__devspec__record_completed_work, Bash
 ---
 
 # DevSpec Done
@@ -38,26 +38,13 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
 4. **Immediately call `record_completed_work`** (do NOT wait for confirmation) with:
    - `title`, `description`, `implementation_summary` (required)
    - `type`, `priority`, `tags`, `commits`, `affected_files`, `branch`
+   - `completion_summary`, `testing_notes`, `usage_notes`
+   - `browser_test_task`
+   - `testability_verdict`, `testability_rationale`
    - `provider`: always pass `"claude_code"`
    - `completion_mode`: always pass `"logged"`
 
-5. Extract the action item ID from the response. Then call **`mcp__supabase__execute_sql`** to set the fields that `record_completed_work` does not support:
-   ```sql
-   UPDATE action_items
-   SET completion_summary = '{completion_summary}',
-       testing_notes = '{testing_notes}',
-       usage_notes = '{usage_notes}',
-       browser_test_task = '{browser_test_task}',
-       testability_assessment = '{testability_assessment_json}'
-   WHERE id = '{action_item_id}';
-   ```
-   Where `testability_assessment_json` is a JSON object:
-   ```json
-   {"verdict": "{testability_verdict}", "confidence": 80, "rationale": "{testability_rationale}", "assessed_at": "{ISO timestamp}", "assessed_by_model": "runner"}
-   ```
-   Use proper SQL escaping (double any single quotes in values). Cast the JSON: `testability_assessment = '{...}'::jsonb`
-
-6. **Output a brief summary** — no filler, just the result:
+5. **Output a brief summary** — no filler, just the result:
    ```
    ✓ Recorded: {title}
      {id (first 8)} · {type} · {priority} · {tags}
@@ -70,7 +57,7 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
 - Do NOT ask about priority, tags, type, or any other field — infer everything from git history
 - The user can edit the action item afterward if anything needs changing
 - You MUST use `record_completed_work` — do NOT use `create_action_item`, `update_action_item`, or raw SQL to create the action item
-- The only SQL you may run is the follow-up UPDATE for `completion_summary`, `testing_notes`, and `usage_notes`
+- Do NOT use direct SQL or Supabase MCP — all updates go through DevSpec MCP tools
 - Write the title and description as a **requirement** (imperative tense), not as a past-tense summary
 - The completion_summary should be written for end users, not developers
 - The testing_notes MUST be numbered step-by-step instructions a non-developer can follow

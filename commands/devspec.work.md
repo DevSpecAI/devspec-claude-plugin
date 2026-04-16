@@ -1,7 +1,7 @@
 ---
 name: devspec.work
 description: Pick up a DevSpec action item by name, optionally brainstorm, implement it, push/merge per settings, and mark it done. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__complete_work_item, mcp__devspec__generate_commit_message, mcp__supabase__execute_sql
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__complete_work_item, mcp__devspec__generate_commit_message
 ---
 
 # DevSpec Work
@@ -202,17 +202,7 @@ Pick up a specific action item, optionally brainstorm on it, implement the chang
       - `provider`: always pass `"claude_code"`
       - `completion_mode`: always pass `"assisted"`
 
-20. **Update extra fields** via `mcp__supabase__execute_sql`:
-    ```sql
-    UPDATE action_items
-    SET completion_summary = '{completion_summary}',
-        testing_notes = '{testing_notes}',
-        usage_notes = '{usage_notes}'
-    WHERE id = '{action_item_id}';
-    ```
-    Use proper SQL escaping (double any single quotes in values).
-
-21. **Output the result:**
+20. **Output the result:**
     ```
     ━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     ✓ {title}

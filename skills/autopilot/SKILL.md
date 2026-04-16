@@ -36,7 +36,8 @@ On startup, after fetching config and collecting repo info, output exactly this 
   tests: typecheck
   protected: package.json, package-lock.json, .env*
   instructions: on (3 lines)
-  assigned: me
+  created_by: me
+  drain: on
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -47,7 +48,8 @@ On startup, after fetching config and collecting repo info, output exactly this 
 - If multiple repos, show one `repo:` line per repo
 - Use "ONLINE" not "STARTING" — the banner appears after setup is done
 - Show `instructions: on (N lines)` if custom_instructions is set, `instructions: off` if empty/missing. Line count = number of non-empty lines in the custom_instructions string.
-- Show `assigned: me` when session was started with `--mine`, or `assigned: <short_id>` (first 8 chars of the UUID) when started with `--assigned=<user_id>`. Omit the line entirely when no assignment filter is set.
+- Show `created_by: me` when session was started with `--mine`, or `created_by: <short_id>` (first 8 chars of the UUID) when started with `--created-by=<user_id>`. Omit the line entirely when no creator filter is set.
+- Show `drain: on` when session was started with `--drain`. Omit the line when drain mode is off (default).
 
 ### Cycle Output
 
@@ -184,7 +186,7 @@ Repeat the following until stopped:
 
 **Always** call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
 
-If the session was started with an assignment filter (see `/autopilot:start` arguments), pass it on every call: `get_next_work_item({ assigned_to: <assigned_to_filter> })`. The server resolves `"me"` to the authenticated caller's user ID and narrows the queue to items assigned directly to that user (the default shared pool is excluded).
+If the session was started with a creator filter (see `/autopilot.start` arguments), pass it on every call: `get_next_work_item({ created_by: <created_by_filter> })`. The server resolves `"me"` to the authenticated caller's user ID and narrows the queue to items whose `user_id` matches — i.e. items that user created.
 
 **First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`:
 1. `get_action_items({ agent_status: 'in_progress' })` — stale claim detection
@@ -362,7 +364,12 @@ This step uses two strategies to balance responsiveness with efficiency:
   - **Skip sleep entirely** — go directly back to step 1
   - This drains the entire queue without sleeping between items
 
-**B. Adaptive idle sleep** — if this cycle was idle (no queued or planning items found):
+**B. Drain-then-exit** — if this cycle was idle AND the session was started with `--drain` (`drain_on_empty === true`):
+  - Do NOT sleep, do NOT call `check_queue_status`, do NOT heartbeat again
+  - Follow the Graceful Shutdown sequence below (send_heartbeat offline, then stop summary)
+  - This lets `--drain` sessions fire-and-forget: process everything currently queued, then exit cleanly
+
+**C. Adaptive idle sleep** — if this cycle was idle (no queued or planning items found) and `drain_on_empty` is false:
   - Increment `consecutive_idle_checks`
   - Compute sleep duration based on how long the runner has been idle:
     * `consecutive_idle_checks` ≤ 10 (~first 5 minutes): sleep **30 seconds**

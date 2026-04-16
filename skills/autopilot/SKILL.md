@@ -36,6 +36,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
   tests: typecheck
   protected: package.json, package-lock.json, .env*
   instructions: on (3 lines)
+  assigned: me
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -46,6 +47,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
 - If multiple repos, show one `repo:` line per repo
 - Use "ONLINE" not "STARTING" — the banner appears after setup is done
 - Show `instructions: on (N lines)` if custom_instructions is set, `instructions: off` if empty/missing. Line count = number of non-empty lines in the custom_instructions string.
+- Show `assigned: me` when session was started with `--mine`, or `assigned: <short_id>` (first 8 chars of the UUID) when started with `--assigned=<user_id>`. Omit the line entirely when no assignment filter is set.
 
 ### Cycle Output
 
@@ -181,6 +183,8 @@ Repeat the following until stopped:
 ### 1. Fetch Work
 
 **Always** call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
+
+If the session was started with an assignment filter (see `/autopilot:start` arguments), pass it on every call: `get_next_work_item({ assigned_to: <assigned_to_filter> })`. The server resolves `"me"` to the authenticated caller's user ID and narrows the queue to items assigned directly to that user (the default shared pool is excluded).
 
 **First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`:
 1. `get_action_items({ agent_status: 'in_progress' })` — stale claim detection

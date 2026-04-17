@@ -14,27 +14,27 @@ These rules apply throughout Phase 3 (Implement). Every commit passes the pre-co
 
 ### Reuse Before Build (before writing any code)
 
-1. Read the root `CLAUDE.md` and any `CLAUDE.md` in the directory you are about to modify. These are project conventions, not suggestions.
-2. Search the codebase for existing implementations of what you are about to build. Grep/glob for component names, prompt builders, tool registries, config modules, card/UI components, state machines, and type definitions related to the work.
-3. Identify the canonical location: config/settings modules own configurable values; shared component files own shared UI; a prompt builder owns prompts; a single tool registry owns tools. Edit there.
-4. If you are about to create a parallel implementation — a second prompt builder, a second toolset, a second card component, a second chat pipeline, a second state machine for the same thing — **STOP**. Either extend the existing implementation, or (in unattended mode) fail the item with error `"Requires human judgment: would duplicate <existing thing>, extension blocked by <specific reason>"`. In interactive mode, ask the user before proceeding. Never ship a parallel implementation silently.
+1. Read project documentation: any `CLAUDE.md`, `README`, `CONTRIBUTING`, or architectural notes at the repo root and in the directory you are about to modify. These are project conventions, not suggestions.
+2. Search the codebase for existing implementations of what you are about to build. Grep/glob for similar names, adjacent utilities, shared modules, and the established pattern for the kind of problem you are solving.
+3. Identify the canonical location for what you are changing. Projects usually have one established place for configurable values, one for shared utilities, and one for each cross-cutting concern. Edit there rather than creating a new location.
+4. If you are about to create a parallel implementation of something the codebase already has — a duplicate utility, a second version of a shared component, a reimplementation of an existing flow — **STOP**. Either extend the existing implementation, or (in unattended mode) fail the item with error `"Requires human judgment: would duplicate <existing thing>, extension blocked by <specific reason>"`. In interactive mode, ask the user before proceeding. Never ship a parallel implementation silently.
 
 ### Forbidden Patterns
 
-- **Hardcoded values** (model names, timeouts, provider choices, limits, feature flags, system prompts) that an existing config module already owns. If a config exists for this concern, write the value there and read from it — never inline.
-- **Silent error suppression**: no empty `catch {}`, no `.catch(() => null)`, no `try/except: pass`, no swallowing errors to "make the test pass." If you must swallow, log and add a one-line comment explaining why.
-- **Type escape hatches without justification**: no `any`, `@ts-ignore`, `@ts-expect-error`, `# type: ignore` without a one-line comment explaining why the type system is wrong.
+- **Hardcoded values** (timeouts, limits, retry counts, URLs, version/model strings, provider choices, default parameters, feature flags) that an existing config/settings system already owns. If a config exists for this concern, write the value there and read from it — never inline.
+- **Silent error suppression**: no catch/except/rescue blocks that swallow the error without logging and without a clear justification. No "just make the test pass" catches. If you must swallow, log and add a one-line comment explaining why.
+- **Type, compiler, or linter escape hatches without justification**: disabling type checks, using unsafe casts, ignoring linter rules, suppressing warnings. Always add a one-line comment explaining why the tool is wrong.
 - **Placeholder work**: no `TODO: implement later`, no stub functions that only log, no disabled or feature-flagged paths the action item did not request.
-- **Duplicating utilities**: if the project has helpers for formatting, state transitions, API calls, evidence parsing, etc., use them. Do not re-implement a helper that already exists.
+- **Duplicating utilities**: if the project has helpers for common concerns (formatting, validation, API access, parsing, state transitions, etc.), use them. Do not re-implement a helper that already exists.
 
 ### Pre-Commit Self-Critique (mandatory before every commit in step 16)
 
 Before staging and running `git commit`, read your staged diff end-to-end with `git diff --staged` and ask honestly:
 
 1. Did I reuse the existing pattern, or did I build a parallel one?
-2. Is any value I hardcoded also owned by a config module? If so, does the config drive the runtime default, or did I introduce drift?
+2. Is any value I hardcoded also owned by a config/settings system? If so, does the config drive the runtime default, or did I introduce drift?
 3. Did I swallow any errors silently? If yes, is there a log and a comment explaining why?
-4. Did I use `any`/`@ts-ignore`/equivalent without explaining why?
+4. Did I use any type, compiler, or linter escape hatches without explaining why?
 5. Did I leave TODOs, stubs, or "for now" paths that were not in the action item?
 6. If a reviewer with no context saw this diff, what is the first thing they would flag?
 

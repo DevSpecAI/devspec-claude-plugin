@@ -234,6 +234,8 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
 1. **CLAIM**: Call `claim_work_item` with `action_item_id` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. This is an atomic transition (queued → in_progress) — if the item is no longer queued (another agent claimed it), the call fails. On failure, skip to the next cycle.
 
+   **Brief context (when the item belongs to a brief):** If the claimed item has `parent_action_item_id` set on it, immediately call `get_action_item_siblings({ action_item_id: <claimed_id> })` and read the returned `parent` (brief title + description) and `siblings` (titles + statuses + completion summaries). Use this to understand the broader feature before starting work — especially to spot files or concerns that an in-progress sibling is already handling, so your changes don't conflict with sibling work. If `parent` is null, skip this step (it's a flat item).
+
 2. **BRANCH + LINK DEPENDENCIES** *(single step — do NOT split)*: Create an isolated git worktree AND link `node_modules`. Without the link, typecheck and tests WILL fail:
    ```bash
    git worktree add <worktree_path> -b <branch_name>

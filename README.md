@@ -112,13 +112,34 @@ In Claude Code:
 /autopilot:start
 ```
 
+By default, the autopilot picks up items **assigned to you** plus the **unassigned grab-bag pool** — items the team hasn't earmarked for anyone yet. Items assigned exclusively to other people are left alone unless you opt in with `--all` (shared-queue mode) or `--assigned-to=<user_id>` (run on a specific teammate's queue).
+
+Common variations:
+
+```bash
+# Default: assigned to you + unassigned, never stops on idle
+/autopilot:start
+
+# Default filter, but stop after the queue drains
+/autopilot:start --drain
+
+# Legacy shared-queue mode — every queued item the caller can see
+/autopilot:start --all
+
+# Run on a specific teammate's queue (assigned to them + unassigned)
+/autopilot:start --assigned-to=<user_id>
+
+# Author-based filter (orthogonal to assignee — stacks if both are set)
+/autopilot:start --created-by=<user_id>
+```
+
 The autopilot enters a polling loop. It checks for queued items every 60 seconds (configurable), processes one per cycle, and reports results back to DevSpec.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/autopilot:start` | Start the polling loop |
+| `/autopilot:start` | Start the polling loop (default: assigned to you + unassigned) |
 | `/autopilot:stop` | Stop after the current cycle completes |
 | `/autopilot:status` | Show current state, queued item count, settings |
 | `/autopilot:history` | Show recent runs with success/failure stats |

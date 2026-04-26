@@ -36,7 +36,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
   tests: typecheck
   protected: package.json, package-lock.json, .env*
   instructions: on (3 lines)
-  created_by: me
+  filter: assigned to you (+ unassigned)
   drain: on
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
@@ -48,7 +48,11 @@ On startup, after fetching config and collecting repo info, output exactly this 
 - If multiple repos, show one `repo:` line per repo
 - Use "ONLINE" not "STARTING" — the banner appears after setup is done
 - Show `instructions: on (N lines)` if custom_instructions is set, `instructions: off` if empty/missing. Line count = number of non-empty lines in the custom_instructions string.
-- Show `created_by: me` when session was started with `--mine`, or `created_by: <short_id>` (first 8 chars of the UUID) when started with `--created-by=<user_id>`. Omit the line entirely when no creator filter is set.
+- Show the assignee filter on the `filter:` line (action item ownership v1):
+  - Default / `--mine`: `filter: assigned to you (+ unassigned)`
+  - `--assigned-to=<uuid>`: `filter: assigned to <short_id> (+ unassigned)`
+  - `--all`: `filter: shared queue (no filter)`
+- When `created_by_filter` is set (via `--created-by=<uuid>`), include an additional `created_by: <short_id>` line after `filter:`. Omit it when no creator filter is set.
 - Show `drain: on` when session was started with `--drain`. Omit the line when drain mode is off (default).
 
 ### Cycle Output
@@ -218,7 +222,22 @@ Repeat the following until stopped:
 
 **Always** call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
 
-If the session was started with a creator filter (see `/autopilot.start` arguments), pass it on every call: `get_next_work_item({ created_by: <created_by_filter> })`. The server resolves `"me"` to the authenticated caller's user ID and narrows the queue to items whose `user_id` matches — i.e. items that user created.
+Pass the resolved filter values from `/autopilot.start` on **every** call:
+
+```ts
+get_next_work_item({
+  // Action item ownership v1 — the autopilot default. "me" matches items
+  // assigned to the caller OR with no assignees (the grab-bag pool).
+  // Omit only when --all was passed (shared-queue mode).
+  ...(assigned_to_filter !== null ? { assigned_to: assigned_to_filter } : {}),
+  // Optional, layered filter for items authored by a specific user.
+  ...(created_by_filter !== null ? { created_by: created_by_filter } : {}),
+})
+```
+
+When both filters are set, the server requires both to match (additive). The default loop runs with `assigned_to: "me"` and no `created_by`, so it picks up items assigned to the caller plus the unassigned grab-bag pool — never items assigned exclusively to other users. To override the assignee gate without `--all`, the operator must pass an explicit `--assigned-to=<uuid>`.
+
+**Force-claim policy**: the autopilot loop **MUST NOT** pass `force: true` on `claim_work_item`. If `claim_work_item` rejects with an "assigned to other users" error (sibling `360b1202` introduced this guard), treat it as a normal claim rejection: log it and move on to the next item. The next pickup will skip the same item via the assignee filter, so this is a self-healing condition once `assigned_to` is set correctly.
 
 **First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`:
 1. `get_action_items({ agent_status: 'in_progress' })` — stale claim detection

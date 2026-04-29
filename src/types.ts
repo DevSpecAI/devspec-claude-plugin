@@ -7,10 +7,10 @@ import { z } from 'zod';
 export const AgentStatusSchema = z.enum([
   'planning',
   'queued',
-  'in_progress',
-  'completed',
+  'implementing',
+  'finished',
   'failed',
-  'under_human_review',
+  'reporting',
 ]);
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 
@@ -22,11 +22,11 @@ export const ActionItemSchema = z.object({
   id: z.string().uuid(),
   title: z.string(),
   description: z.string().nullable(),
-  status: z.string(),
+  lifecycle: z.string(),
   type: z.string().nullable().optional(),
   priority: z.string().nullable().optional(),
   agent_ready: z.boolean(),
-  agent_status: AgentStatusSchema.nullable(),
+  agent_activity: AgentStatusSchema.nullable(),
   agent_claimed_at: z.string().nullable().optional(),
   agent_error: z.string().nullable().optional(),
   agent_branch: z.string().nullable().optional(),
@@ -166,7 +166,7 @@ export const ExecutionHistoryRecordSchema = z.object({
   id: z.string().uuid(),
   actionItemId: z.string().optional(),
   actionItemTitle: z.string().optional(),
-  agentStatus: z.string().optional(),
+  agentActivity: z.string().optional(),
   project: z.string(),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime().optional(),

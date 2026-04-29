@@ -10,12 +10,12 @@ Fetch completed and failed items, then output a clean formatted list.
 
 ## Steps
 
-1. Call `get_action_items` with `agent_status: 'completed'` and `get_action_items` with `agent_status: 'failed'` **in parallel**
+1. Call `get_action_items` with `agent_activity: 'completed'` and `get_action_items` with `agent_activity: 'failed'` **in parallel**
 2. If the completed items response is too large (saved to a file), read the file with the Bash tool
 3. Combine all items, sort by most recent first
 4. Calculate relative timestamps properly: use the `agent_claimed_at` field (ISO 8601 string). Compute elapsed time using a Bash one-liner if needed:
    ```bash
-   node -e "const items = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); items.forEach(i => { const ms = Date.now() - new Date(i.agent_claimed_at).getTime(); const h = Math.floor(ms/3600000); const m = Math.floor((ms%3600000)/60000); console.log(h > 24 ? Math.floor(h/24)+'d ago' : h > 0 ? h+'h ago' : m+'m ago', '|', i.agent_status === 'completed' ? 'ok' : 'fail', '|', i.agent_branch || 'no-branch', '|', i.title); })"
+   node -e "const items = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); items.forEach(i => { const ms = Date.now() - new Date(i.agent_claimed_at).getTime(); const h = Math.floor(ms/3600000); const m = Math.floor((ms%3600000)/60000); console.log(h > 24 ? Math.floor(h/24)+'d ago' : h > 0 ? h+'h ago' : m+'m ago', '|', i.agent_activity === 'completed' ? 'ok' : 'fail', '|', i.agent_branch || 'no-branch', '|', i.title); })"
    ```
    **CRITICAL**: Do NOT use string manipulation or regex to parse dates. Do NOT produce "NaN" timestamps. Always use `Date` constructor on the ISO string.
 5. Output the formatted history:

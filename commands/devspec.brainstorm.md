@@ -18,7 +18,7 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    - **CRITICAL:** Once resolved, store the **complete UUID** (e.g. `f43c187c-23e0-4764-885f-ef3a733d08df`) in working memory as `resolved_action_item_id`. Never truncate, pad, or reconstruct this value — always use the exact string returned by the API.
 
 2. **Load context.** Once resolved, call in parallel:
-   - `get_action_item_history(action_item_id)` — prior notes, commits, status changes
+   - `get_action_item_history(action_item_id)` — prior notes, commits, lifecycle changes
    - `search_memories(query: "<action item title>")` — related decisions, conventions, risks
 
 3. **Present the item.** Output a compact summary:
@@ -27,7 +27,7 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
    Title:    {title}
    ID:       {first 8 chars of id}  (display only — full UUID stored in working memory)
    Type:     {type}
-   Status:   {status}
+   Lifecycle: {lifecycle}
    Priority: {priority or "not set"}
    ──────────────────
    {description or "No description"}

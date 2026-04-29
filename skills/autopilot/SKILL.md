@@ -157,7 +157,7 @@ When the autopilot is stopped:
 - **Never use markdown headers** (`##`, `###`) in cycle output — use the Unicode symbols above
 - **One blank line** between cycles, no more
 - **Include timestamps** on cycle headers so the user can see cadence at a glance
-- **Minimize response size** — use `get_next_work_item()` for queued items (returns one item) instead of `get_action_items` (returns all items). NEVER use `agent_ready: true` alone or `status: 'open'` without agent filters — these return all matching items with full descriptions and will fill context within a few cycles.
+- **Minimize response size** — use `get_next_work_item()` for queued items (returns one item) instead of `get_action_items` (returns all items). NEVER use `agent_ready: true` alone or `lifecycle: 'open'` without agent filters — these return all matching items with full descriptions and will fill context within a few cycles.
 - **Background waits** — use `run_in_background: true` on sleep commands so they don't show `(No output)` inline
 - **No narration** — do not say "Now I'll check for work", "Sending heartbeat", "Waiting for next cycle", etc. Just do it silently and show the formatted result.
 
@@ -191,7 +191,7 @@ These rules apply to every execution cycle. They are non-negotiable — every cy
 1. Read project documentation: any `CLAUDE.md`, `README`, `CONTRIBUTING`, or architectural notes at the repo root and in the directory you are about to modify. These are project conventions, not suggestions.
 2. Search the codebase for existing implementations of what you are about to build. Grep/glob for similar names, adjacent utilities, shared modules, and the established pattern for the kind of problem you are solving.
 3. Identify the canonical location for what you are changing. Projects usually have one established place for configurable values, one for shared utilities, and one for each cross-cutting concern. Edit there rather than creating a new location.
-4. If you are about to create a parallel implementation of something the codebase already has — a duplicate utility, a second version of a shared component, a reimplementation of an existing flow — **STOP**. Either extend the existing implementation, or call `update_action_item` with `agent_status: 'failed'` and error `"Requires human judgment: would duplicate <existing thing>, extension blocked by <specific reason>"`. Never ship a parallel implementation silently.
+4. If you are about to create a parallel implementation of something the codebase already has — a duplicate utility, a second version of a shared component, a reimplementation of an existing flow — **STOP**. Either extend the existing implementation, or call `update_action_item` with `agent_activity: 'failed'` and error `"Requires human judgment: would duplicate <existing thing>, extension blocked by <specific reason>"`. Never ship a parallel implementation silently.
 
 ### Forbidden Patterns
 
@@ -240,36 +240,36 @@ When both filters are set, the server requires both to match (additive). The def
 **Force-claim policy**: the autopilot loop **MUST NOT** pass `force: true` on `claim_work_item`. If `claim_work_item` rejects with an "assigned to other users" error (sibling `360b1202` introduced this guard), treat it as a normal claim rejection: log it and move on to the next item. The next pickup will skip the same item via the assignee filter, so this is a self-healing condition once `assigned_to` is set correctly.
 
 **First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`:
-1. `get_action_items({ agent_status: 'in_progress' })` — stale claim detection
-2. `get_action_items({ agent_status: 'planning' })` — items needing plan generation
+1. `get_action_items({ agent_activity: 'in_progress' })` — stale claim detection
+2. `get_action_items({ agent_activity: 'planning' })` — items needing plan generation
 
 During drain mode (`consecutive_idle_checks === 0`), only `get_next_work_item()` runs. Stale claims can't appear while this runner is actively working, and planning items wait until the drain completes.
 
 **IMPORTANT — Context Budget Rules:**
 - ALWAYS use `get_next_work_item()` for queued work — it returns ONE item with full context (description, ai_instructions, affected_files, related items). NEVER use `get_action_items` to fetch queued items — with 15+ items in the queue it returns all descriptions and easily exceeds 90k+ characters, overflowing the MCP tool result limit.
-- NEVER call `get_action_items` with `status: 'open'` and no agent filters — returns ALL open items, same problem.
+- NEVER call `get_action_items` with `lifecycle: 'open'` and no agent filters — returns ALL open items, same problem.
 
 From the results:
-- **Stale claims** (when checked): items where `agent_claimed_at` is older than `stale_claim_timeout_minutes`. For each, call `update_action_item` to set `agent_status: 'failed'` with `agent_error: 'Stale claim: process may have crashed'`.
+- **Stale claims** (when checked): items where `agent_claimed_at` is older than `stale_claim_timeout_minutes`. For each, call `update_action_item` to set `agent_activity: 'failed'` with `agent_error: 'Stale claim: process may have crashed'`.
 - **Queued work**: the item from `get_next_work_item()` (or none if the queue is empty)
 - **Planning work** (when checked): items needing plan generation
 
-**Review items** (when checked on first cycle after idle): also call `get_action_items({ agent_status: 'under_human_review' })` in parallel to check for items needing plan review.
+**Review items** (when checked on first cycle after idle): also call `get_action_items({ agent_activity: 'under_human_review' })` in parallel to check for items needing plan review.
 
 If no queued, review, or planning items found, output idle status (see formatting) and go to step 5 (Wait).
 
 ### 2. Process ONE Item
-Pick ONE item to process. **Priority order: queued > under_human_review > planning.** Only process a lower-priority item if no higher-priority items are available. Within the same status, pick the oldest item first. Process based on its `agent_status`:
+Pick ONE item to process. **Priority order: queued > under_human_review > planning.** Only process a lower-priority item if no higher-priority items are available. Within the same status, pick the oldest item first. Process based on its `agent_activity`:
 
-#### If agent_status = 'planning' (Analysis Only)
+#### If agent_activity = 'planning' (Analysis Only)
 1. Read and analyze the action item description
 2. Read relevant codebase files to understand context
 3. Write a detailed implementation plan
 4. Call `add_implementation_note` with the proposed plan, linking to the action item. Use markdown formatting — headers, bullet lists, **bold** for key decisions, `code` for file/function names.
 5. Output planning completion (see formatting)
-6. **DO NOT** create branches, modify code, commit, or change the item's `agent_status` — the item stays in `planning` state for human review
+6. **DO NOT** create branches, modify code, commit, or change the item's `agent_activity` — the item stays in `planning` state for human review
 
-#### If agent_status = 'under_human_review' (Review Mode)
+#### If agent_activity = 'under_human_review' (Review Mode)
 1. Read the full action item description — this IS the plan to review
 2. Call `get_session_transcript` with the item's `source_session_id` to read the conversation that produced the plan
 3. Read ALL relevant codebase files referenced in the plan. Be thorough — this is a review
@@ -281,7 +281,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 6. Output review completion (see formatting)
 7. **DO NOT** create branches, modify code, commit, or create worktrees — this is review-only
 
-#### If agent_status = 'queued' (Full Execution)
+#### If agent_activity = 'queued' (Full Execution)
 
 1. **CLAIM**: Call `claim_work_item` with `action_item_id` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. This is an atomic transition (queued → in_progress) — if the item is no longer queued (another agent claimed it), the call fails. On failure, skip to the next cycle.
 
@@ -386,7 +386,7 @@ Output step-by-step progress for each phase (see formatting).
 ### 3. Handle Failures
 If any step fails:
 1. Call `add_implementation_note` documenting what was attempted and why it failed — **MANDATORY, never skip even on failure**. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names.
-2. Call `update_action_item` with `agent_status: 'failed'` and `agent_error: <description>`
+2. Call `update_action_item` with `agent_activity: 'failed'` and `agent_error: <description>`
 3. Clean up the worktree if it was created
 4. Output failure markers (see formatting)
 5. **STOP the cycle** — do not skip to the next item

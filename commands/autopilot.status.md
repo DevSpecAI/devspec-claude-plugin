@@ -10,7 +10,7 @@ Fetch current state and output a compact status panel. Make all API calls in par
 
 ## Steps
 
-1. Call `get_project_summary` for settings, `get_action_items` with `agent_ready: true, agent_status: 'queued'` for queue count, and `get_action_items` with `agent_status: 'in_progress'` for active count — **all in parallel**
+1. Call `get_project_summary` for settings, `get_action_items` with `agent_ready: true, agent_activity: 'queued'` for queue count, and `get_action_items` with `agent_activity: 'in_progress'` for active count — **all in parallel**
 2. Output:
 
 ```

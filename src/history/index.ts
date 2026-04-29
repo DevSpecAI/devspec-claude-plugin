@@ -45,7 +45,7 @@ export function createHistoryRecord(
   options: {
     actionItemId?: string;
     actionItemTitle?: string;
-    agentStatus?: string;
+    agentActivity?: string;
     worktreePath?: string;
     worktreeBranch?: string;
   } = {}
@@ -54,7 +54,7 @@ export function createHistoryRecord(
     id: crypto.randomUUID(),
     actionItemId: options.actionItemId,
     actionItemTitle: options.actionItemTitle,
-    agentStatus: options.agentStatus,
+    agentActivity: options.agentActivity,
     project,
     startedAt: new Date().toISOString(),
     status: 'running',

@@ -17,15 +17,15 @@ import type { AutopilotSettings } from '../types.js';
 
 /**
  * Describes the MCP call to fetch planning action items.
- * Claude executes: get_action_items({ agent_status: 'planning' })
+ * Claude executes: get_action_items({ agent_activity: 'planning' })
  *
  * For queued items, use get_next_work_item() instead — it returns a single
  * item with full context, avoiding the 90k+ char overflow that
- * get_action_items({ agent_ready: true, agent_status: 'queued' }) causes
+ * get_action_items({ agent_ready: true, agent_activity: 'queued' }) causes
  * when many items are in the queue.
  */
 export interface FetchPlanningItemsParams {
-  agentStatus: 'planning';
+  agentActivity: 'planning';
 }
 
 /**
@@ -40,17 +40,17 @@ export interface ClaimItemParams {
 
 /**
  * Describes the MCP call to report success.
- * Claude executes: update_action_item({ action_item_id, agent_status: 'completed', commit_sha })
+ * Claude executes: update_action_item({ action_item_id, agent_activity: 'completed', commit_sha })
  */
 export interface ReportSuccessParams {
   actionItemId: string;
   commitSha: string;
-  status?: 'done';
+  lifecycle?: 'done';
 }
 
 /**
  * Describes the MCP call to report failure.
- * Claude executes: update_action_item({ action_item_id, agent_status: 'failed', agent_error })
+ * Claude executes: update_action_item({ action_item_id, agent_activity: 'failed', agent_error })
  */
 export interface ReportFailureParams {
   actionItemId: string;
@@ -93,7 +93,7 @@ export interface ProjectSummary {
 
 export function buildFetchPlanningArgs() {
   return {
-    agent_status: 'planning',
+    agent_activity: 'planning',
   };
 }
 
@@ -101,8 +101,8 @@ export function buildFetchPlanningArgs() {
 export function buildFetchQueuedArgs(params: { agentStatus: 'queued' | 'planning' }) {
   return {
     agent_ready: true,
-    agent_status: params.agentStatus,
-    status: 'open',
+    agent_activity: params.agentStatus,
+    lifecycle: 'open',
   };
 }
 
@@ -116,16 +116,16 @@ export function buildClaimArgs(params: ClaimItemParams) {
 export function buildReportSuccessArgs(params: ReportSuccessParams) {
   return {
     action_item_id: params.actionItemId,
-    agent_status: 'completed',
+    agent_activity: 'completed',
     commit_sha: params.commitSha,
-    status: params.status ?? 'done',
+    lifecycle: params.lifecycle ?? 'done',
   };
 }
 
 export function buildReportFailureArgs(params: ReportFailureParams) {
   return {
     action_item_id: params.actionItemId,
-    agent_status: 'failed',
+    agent_activity: 'failed',
     agent_error: params.agentError,
   };
 }
@@ -156,9 +156,9 @@ export function generateBranchName(actionItemId: string, branchPrefix: string): 
 /**
  * Describes the stale claim detection flow.
  * Claude executes:
- * 1. get_action_items({ agent_status: 'in_progress' }) — one of the three parallel fetch calls
+ * 1. get_action_items({ agent_activity: 'in_progress' }) — one of the three parallel fetch calls
  * 2. For each item where agent_claimed_at is older than timeoutMinutes:
- *    update_action_item({ action_item_id, agent_status: 'failed', agent_error: 'Stale claim: process may have crashed' })
+ *    update_action_item({ action_item_id, agent_activity: 'failed', agent_error: 'Stale claim: process may have crashed' })
  */
 export interface DetectStaleClaimsParams {
   timeoutMinutes: number;
@@ -177,7 +177,7 @@ export function isStaleClaimAt(claimedAt: string | null | undefined, timeoutMinu
 export function buildStaleFailArgs(actionItemId: string) {
   return {
     action_item_id: actionItemId,
-    agent_status: 'failed',
+    agent_activity: 'failed',
     agent_error: 'Stale claim: process may have crashed',
   };
 }

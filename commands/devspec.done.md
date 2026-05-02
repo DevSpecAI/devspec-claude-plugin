@@ -42,7 +42,6 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
    - `browser_test_task`
    - `testability_verdict`, `testability_rationale`
    - `provider`: always pass `"claude_code"`
-   - `completion_mode`: always pass `"logged"`
 
 5. **Output a brief summary** — no filler, just the result:
    ```

@@ -190,7 +190,7 @@ The autopilot assembles its instructions from three layers:
 
 ### In DevSpec
 
-- Action items show agent status badges (queued, in progress, completed, failed)
+- Action items show agent activity badges (queued, claimed, implementing, reporting, finished, failed)
 - Completed items link to the branch and commit
 - Failed items show the error with a Retry button
 - The **Autopilot Runs** dashboard shows success rate, timing, and run history

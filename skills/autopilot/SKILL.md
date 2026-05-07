@@ -54,6 +54,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
   - `--all`: `filter: shared queue (no filter)`
 - When `created_by_filter` is set (via `--created-by=<uuid>`), include an additional `created_by: <short_id>` line after `filter:`. Omit it when no creator filter is set.
 - Show `drain: on` when session was started with `--drain`. Omit the line when drain mode is off (default).
+- Show `mode: targeted (N items specified)` when session was started with `--items=...` (i.e. `item_id_queue` was non-empty at startup). Omit the line in normal mode. The `drain: on` line will also appear because targeted mode implies drain.
 
 ### Cycle Output
 
@@ -220,7 +221,14 @@ Repeat the following until stopped:
 
 ### 1. Fetch Work
 
-**Always** call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
+**Targeted mode** (`item_id_queue` is non-empty — session was started with `--items=...`):
+1. Pop the first UUID from `item_id_queue` in FIFO order.
+2. **Skip** the `get_next_work_item()` call entirely — the popped UUID *is* the next item. Proceed directly to step 2 (Process ONE Item) and claim it via `claim_work_item({ action_item_id: <popped_uuid>, agent_branch: ... })`. The claim response returns the item's full context (title, description, ai_instructions) for use during implementation.
+3. If the claim is rejected (item is no longer `queued`, was already implemented, was dismissed, or is assigned exclusively to another user), log it as a normal claim rejection and continue to the next UUID — do NOT pass `force: true`.
+4. After popping, if `item_id_queue` is now empty, set `drain_on_empty = true` so the loop exits via the Wait step's drain-then-exit branch once this item finishes (success or failure).
+5. Skip the stale-claim and planning-item parallel checks while `item_id_queue` is non-empty — same rationale as drain mode (the runner is processing a fixed list and will exit cleanly when done).
+
+**Default mode** (`item_id_queue` is empty): always call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
 
 Pass the resolved filter values from `/autopilot.start` on **every** call:
 

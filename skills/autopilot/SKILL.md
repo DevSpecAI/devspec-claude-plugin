@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__complete_work_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__complete_work_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__search_memories
 ---
 
 # DevSpec Autopilot
@@ -295,6 +295,8 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
    **Brief context (when the item belongs to a brief):** If the claimed item has `parent_action_item_id` set on it, immediately call `get_action_item_siblings({ action_item_id: <claimed_id> })` and read the returned `parent` (brief title + description) and `siblings` (titles + statuses + completion summaries). Use this to understand the broader feature before starting work — especially to spot files or concerns that an in-progress sibling is already handling, so your changes don't conflict with sibling work. If `parent` is null, skip this step (it's a flat item).
 
+   **Memory context (MANDATORY — never skip):** Before any file reading or implementation, call `search_memories({ query: "<action item title>" })` to retrieve related architecture decisions, coding conventions, known risks, and team preferences. Run it **in parallel** with the `get_action_item_siblings` call above when the item belongs to a brief. Treat the returned memories as **hard constraints**: if a memory records a convention (e.g. "always use Zod for validation") or an architectural decision, your implementation MUST follow it. Memories are the institutional knowledge layer that Dev (the conversation agent) retrieves on every turn — the autonomous loop must not run blind to it. This mirrors the mandatory pre-implementation context step in the interactive `/devspec:work` command.
+
 2. **BRANCH + LINK DEPENDENCIES** *(single step — do NOT split)*: Create an isolated git worktree AND link `node_modules`. Without the link, typecheck and tests WILL fail:
    ```bash
    git worktree add <worktree_path> -b <branch_name>
@@ -309,7 +311,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
    ```
    If linking fails, do NOT spiral trying workarounds. Note it in implementation notes and skip test commands that require `node_modules` — proceed with implementation and commit.
 
-3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. **ALWAYS read a file before editing it** — the Edit tool will reject edits to unread files, so read first to avoid wasted tool calls.
+3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. **Review the `search_memories` results from the claim phase before touching any files — treat recorded decisions and conventions as hard constraints.** **ALWAYS read a file before editing it** — the Edit tool will reject edits to unread files, so read first to avoid wasted tool calls.
 
    **Custom Instructions (Layer 2):** If `custom_instructions` was set during startup, you MUST follow those instructions throughout implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
 

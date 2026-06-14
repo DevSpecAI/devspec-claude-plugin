@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__complete_work_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__search_memories
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__record_implementation, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__search_memories
 ---
 
 # DevSpec Autopilot
@@ -359,7 +359,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
     **b)** `add_commit_reference` — with the commit SHA and commit message.
 
-    **c)** `complete_work_item` — **ALL fields below are MANDATORY**, never skip any:
+    **c)** `record_implementation` — **ALL fields below are MANDATORY**, never skip any:
       - `action_item_id`: the action item ID
       - `commit_sha`: the final commit SHA
       - `agent_merged`: true/false

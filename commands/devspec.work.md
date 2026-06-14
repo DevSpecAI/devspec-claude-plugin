@@ -1,7 +1,7 @@
 ---
 name: devspec.work
 description: Pick up a DevSpec action item by name, optionally brainstorm, implement it, push/merge per settings, and mark it done. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__complete_work_item, mcp__devspec__generate_commit_message
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
 # DevSpec Work
@@ -207,7 +207,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
     **b)** `add_commit_reference` — with the commit SHA and message.
 
-    **c)** `complete_work_item` with ALL of these fields (never skip any):
+    **c)** `record_implementation` with ALL of these fields (never skip any):
       - `action_item_id`
       - `commit_sha`: the final commit SHA
       - `agent_merged`: true if auto_merge was performed, false otherwise

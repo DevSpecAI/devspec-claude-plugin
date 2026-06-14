@@ -1,6 +1,6 @@
 ---
 name: devspec.work
-description: Pick up a DevSpec action item by name, optionally brainstorm, implement it, push/merge per settings, and mark it done. Supports --unattended for fire-and-forget execution.
+description: Pick up a DevSpec action item by name, optionally brainstorm, implement it, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
@@ -266,3 +266,4 @@ If any step in Phase 3 or 4 fails:
 - The testing_notes MUST be numbered step-by-step instructions a non-developer can follow
 - ALL completion fields are required — do not skip any
 - If the action item is too vague or requires human judgment to proceed, fail it with error "Requires human judgment" rather than guessing
+- `record_implementation` lands the item at `implemented`, NOT `done`. NEVER offer to verify or "mark it done", and never call `verify_action_item` — reaching `done` is a separate decision a present human makes. After recording, report the item as implemented (plus its check status) and stop. In `--unattended` mode you never verify under any circumstances.

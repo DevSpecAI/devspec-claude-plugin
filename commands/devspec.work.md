@@ -1,6 +1,6 @@
 ---
 name: devspec.work
-description: Pick up a DevSpec action item by name, optionally brainstorm, implement it, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
+description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
@@ -151,13 +151,41 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
 12. **Claim the item.** Call `claim_work_item(action_item_id)`. If the claim fails (already claimed by another agent), output `✗ Item already claimed` and stop. If the item was already claimed by this agent (e.g., returning to fix verification feedback), skip this step.
 
-13. **Create a branch** (skip if returning to an existing branch for verification feedback — just check out the existing branch instead). Use the `branch_prefix` from loaded settings:
-    ```bash
-    git checkout -b {branch_prefix}{id_first_8_chars}
-    ```
-    If `branch_prefix` is empty, fall back to `work/action-item-`.
+13. **Create an isolated worktree (not a branch-in-place).**
+    All implementation work happens inside a git worktree — a sibling directory with its own working tree that shares the main repo's object database. This is what makes concurrent `/devspec:work` sessions safe: the main repo never switches branches and never holds another session's uncommitted changes, so a commit here captures only *this* item's work. (This matches how `/autopilot` already isolates each item.)
 
-14. **Implement the changes.** Follow the action item description and any `ai_instructions`. Read existing files before editing. Follow existing code conventions. If the action item has brainstorm notes or prior implementation notes, use them to guide implementation. If returning to address verification feedback, focus specifically on the issues raised in the feedback.
+    a. **Record the main repo path:** run `pwd` and store as `main_repo`. Every path below is derived from it, and you return here before merging.
+
+    b. **Compute `branch_name`** = `{branch_prefix}{id_first_8_chars}`. If `branch_prefix` is empty, fall back to `work/action-item-`.
+
+    c. **Compute `worktree_path`** as a hidden sibling directory of the main repo (the same convention `/autopilot` uses):
+    ```
+    <parent_of_main_repo>/.<basename(main_repo)>-worktrees/task-<id_first_8_chars>-<unix_timestamp>
+    ```
+    The `<unix_timestamp>` suffix guarantees a unique path even across retries or parallel runs.
+
+    d. **Create the worktree:**
+    ```bash
+    git worktree add "<worktree_path>" -b "<branch_name>"
+    ```
+    **Returning for verification feedback** (the branch already exists from a prior run): attach a worktree to the existing branch instead of creating it — omit `-b`. If the branch ref is missing locally, fetch it first:
+    ```bash
+    git fetch origin "<branch_name>"          # only if the local branch ref is missing
+    git worktree add "<worktree_path>" "<branch_name>"
+    ```
+    If `git worktree add` fails (path or branch already exists), go to Failure Handling — do not force-overwrite.
+
+    e. **Link `node_modules` into the worktree** so lint/tests can run without a fresh install (best-effort — if there is no `node_modules` or the link fails, note that dependency-based checks may be skipped and continue; never fall into `npm install`):
+    ```bash
+    ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules"
+    ```
+
+    f. **Change into the worktree.** Every `git` and test command from here through the push (step 17) runs with the worktree as the working directory:
+    ```bash
+    cd "<worktree_path>"
+    ```
+
+14. **Implement the changes.** Follow the action item description and any `ai_instructions`. Read existing files before editing. You are working inside the worktree from step 13 (a full checkout of the branch) — read and edit files there as normal. Follow existing code conventions. If the action item has brainstorm notes or prior implementation notes, use them to guide implementation. If returning to address verification feedback, focus specifically on the issues raised in the feedback.
 
     **Custom Instructions:** If `custom_instructions` is set in the loaded settings, you MUST follow those instructions during implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
 
@@ -190,14 +218,27 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     git push -u origin {branch_name}
     ```
 
-18. **Merge** (if auto_merge is enabled):
-    Determine the merge target: use `target_branch` from settings if set and non-empty, otherwise use `starting_branch` (the branch recorded in step 3).
+18. **Return to the main repo, merge, and remove the worktree.**
+
+    a. **Return to the main repo.** The worktree has `{branch_name}` checked out, so the merge must run from the main repo (git refuses to check out the same branch in two worktrees):
     ```bash
+    cd "<main_repo>"
+    ```
+
+    b. **Merge** (only if `auto_merge` is enabled). Determine the merge target: use `target_branch` from settings if set and non-empty, otherwise use `starting_branch` (recorded in step 3). Fetch the target first so a concurrent session's commits are included:
+    ```bash
+    git fetch origin {merge_target}
     git checkout {merge_target}
     git merge {branch_name} --no-ff --no-edit
     git push origin {merge_target}
     ```
-    If merge conflicts arise, fail the item with a descriptive error. Leave the branch pushed so the developer can resolve manually.
+    If merge conflicts arise, run `git merge --abort` and go to Failure Handling — the branch is already pushed, so the developer can resolve it manually.
+
+    c. **Remove the worktree** — MANDATORY on every path, whether or not you merged (the branch and its commits live in the repo independently of the worktree):
+    ```bash
+    git worktree remove "<worktree_path>" --force
+    ```
+    Run this from `main_repo`. If removal fails (e.g. a file lock from a just-finished process), wait a moment and retry once; if it still fails, warn but do not block completion (`git worktree prune` can reap it later).
 
 ### Phase 4 — Done
 
@@ -248,10 +289,18 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
 ## Failure Handling
 
-If any step in Phase 3 or 4 fails:
-1. Call `add_implementation_note` documenting what was attempted and why it failed
-2. Call `update_action_item` with `agent_activity: 'failed'` and `agent_error: <description>`
-3. Output: `✗ Failed: {reason}`
+Runs as a "finally" block — it MUST execute no matter which Phase 3 / Phase 4 step failed. Order matters: abort any in-flight git operation and clean up the worktree so the main repo is left safe, THEN record the failure.
+
+1. **Abort any in-flight git operation and return to the main repo** (best-effort — these fail harmlessly if there is nothing to abort):
+   ```bash
+   cd "<main_repo>"
+   git merge --abort
+   git rebase --abort
+   ```
+2. **Remove the worktree** (MANDATORY, best-effort at the edges). From `main_repo`, run `git worktree remove "<worktree_path>" --force`; wait briefly and retry once if it fails. If the worktree was never created (the failure happened before step 13 added it), skip this silently. The feature branch and any pushed commits survive worktree removal, so the work can still be picked up.
+3. Call `add_implementation_note` documenting what was attempted, which step failed, and whether the worktree was cleaned up.
+4. Call `update_action_item` with `agent_activity: 'failed'` and `agent_error: <description>`.
+5. Output: `✗ Failed: {reason}`
 
 ## Rules
 
@@ -261,6 +310,7 @@ If any step in Phase 3 or 4 fails:
 - In **unattended mode**, there is NO user interaction — zero prompts, zero confirmations
 - Always read a file before editing it
 - Stage specific files only — never `git add -A` or `git add .`
+- Implementation, testing, and the commit/push all happen inside the worktree from step 13; the merge and the worktree removal happen from the main repo. Never run `git checkout -b` in the main repo — that pollutes a shared checkout and collides with other concurrent sessions.
 - Write the title and description fields as requirements (imperative tense), not past-tense summaries
 - The completion_summary is for end users, not developers
 - The testing_notes MUST be numbered step-by-step instructions a non-developer can follow

@@ -158,7 +158,7 @@ When the autopilot is stopped:
 - **Never use markdown headers** (`##`, `###`) in cycle output — use the Unicode symbols above
 - **One blank line** between cycles, no more
 - **Include timestamps** on cycle headers so the user can see cadence at a glance
-- **Minimize response size** — use `get_next_work_item()` for queued items (returns one item) instead of `get_action_items` (returns all items). NEVER use `agent_ready: true` alone or `lifecycle: 'open'` without agent filters — these return all matching items with full descriptions and will fill context within a few cycles.
+- **Minimize response size** — in the loop, use `get_next_work_item()` (returns one item) rather than `get_action_items`. `get_action_items` does NOT return the whole list: it returns a summary plus a single capped page of full-detail rows (default 25). For true counts read `summary.ui_buckets` / `page.total_matching` (never `items.length`); for a broad scan pass `fields: "compact"` to get thin rows. Avoid broad `agent_ready: true` / `lifecycle: 'open'` detail fetches every cycle — paging full descriptions will fill context fast.
 - **Never verify** — `record_implementation` lands an item at `implemented`, NOT `done`. The autopilot is unattended, so there is no human to confirm the work; it records the implementation and stops. Reaching `done` is always a present human's decision (verify_action_item is not even available to this skill).
 - **Background waits** — use `run_in_background: true` on sleep commands so they don't show `(No output)` inline
 - **No narration** — do not say "Now I'll check for work", "Sending heartbeat", "Waiting for next cycle", etc. Just do it silently and show the formatted result.

@@ -55,6 +55,14 @@ When `item_id_queue` is non-empty, the session is in **targeted mode**:
 
 Explicit UUID flags (`--assigned-to=<uuid>`, `--created-by=<uuid>`) > `--all` > `--mine` > default. If a caller passes both `--all` and `--assigned-to=<uuid>`, the explicit UUID wins.
 
+### Common recipe: everything you created, regardless of assignee
+
+```
+/autopilot.start --all --created-by=<your_user_id>
+```
+
+Processes only the items **you authored**, no matter who they are assigned to. Both flags are required: `--created-by` is ANDed on top of the assignee filter, and the default assignee filter is `--mine` (assigned to you OR unassigned). So `--created-by=<uuid>` *alone* skips items you created but assigned to a teammate. `--all` clears the assignee filter, leaving `--created-by` as the only narrowing condition. There is no "queued" flag — the autopilot only ever fetches and claims queued, agent-ready work, so `--created-by` already means "queued items created by that user".
+
 ### Force-claim is NOT used by default
 
 Sibling `360b1202` added a `force: true` flag to `claim_work_item` that bypasses the assignee-aware claim guard. The autopilot loop **MUST NOT** pass `force: true` under normal operation. If `claim_work_item` rejects with an `assigned to other users` error, treat it like any other claim rejection: log it, move on to the next item, and let the assignee pick the work up themselves. A future `--force-claim` flag may opt callers into force claiming explicitly; until that ships, the loop never overrides someone else's claim.

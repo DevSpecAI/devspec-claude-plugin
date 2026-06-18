@@ -131,6 +131,12 @@ Common variations:
 
 # Author-based filter (orthogonal to assignee — stacks if both are set)
 /autopilot:start --created-by=<user_id>
+
+# Everything YOU created, regardless of assignee. --all clears the default
+# --mine assignee filter so --created-by is the only thing narrowing the queue
+# (without --all, items you created but assigned to a teammate are skipped).
+# "Queued" is implicit — the runner only ever processes queued, agent-ready work.
+/autopilot:start --all --created-by=<user_id>
 ```
 
 The autopilot enters a polling loop. It checks for queued items every 60 seconds (configurable), processes one per cycle, and reports results back to DevSpec.

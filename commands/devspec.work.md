@@ -273,6 +273,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
         - `human_review_needed`: list of things a human should verify and why, e.g. `["Visual layout of the new testing page — no automated visual regression tests", "Role-based access — requires logging in as different roles"]`. Be specific about *what* and *why*.
         - `confidence`: 0.0-1.0 score. 0.9+ = straightforward change with passing tests. 0.7-0.9 = tests pass but change is complex or touches critical paths. Below 0.7 = significant uncertainty.
       - `provider`: always pass `"claude_code"`
+      - `local_session_id`: pass `${CLAUDE_SESSION_ID}`. Claude Code replaces this token with the real session UUID, which stamps the item so the developer can later resume *this exact session* with `claude --resume <id>` straight from the DevSpec UI. If the token was NOT replaced — i.e. the value you would send still looks like a placeholder (it contains the text CLAUDE_SESSION_ID) rather than a bare UUID — omit this field entirely rather than sending the placeholder. Do NOT pass `machine_user_id`: the server defaults it to you (the authenticated DevSpec user), which is exactly the developer whose machine ran this session.
 
 20. **Output the result:**
     ```

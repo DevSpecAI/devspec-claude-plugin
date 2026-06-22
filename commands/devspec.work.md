@@ -1,7 +1,7 @@
 ---
 name: devspec.work
 description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
 # DevSpec Work
@@ -81,6 +81,8 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - `search_memories(query: "<action item title>")` — related decisions, conventions, risks
 
    These calls are mandatory because the item's state may have changed since you last touched it (e.g., user re-queued with new feedback).
+
+   **Understand the intent.** Read the item's spec fields: `intent` (the WHY — the problem and desired outcome), `acceptance_criteria` (your definition of done — the diff must satisfy it), and `ai_instructions` (constraints). If `intent` is missing or too thin to grasp the real goal — common when the item came from a terse conversation — and the item has a `source_session_id`, call `get_session_transcript({ session_id: <source_session_id> })` to recover the originating intent from the conversation that produced it. This is optional and on-demand: skip it when the spec fields already make the goal clear. When the transcript reveals intent or criteria the item is missing, persist it back with `update_action_item({ action_item_id, intent, acceptance_criteria })` so it's captured for next time.
 
 6. **Handle non-queued activities.** After loading the history (from the MCP response, NOT from conversation memory), check the item's current `agent_activity`:
 

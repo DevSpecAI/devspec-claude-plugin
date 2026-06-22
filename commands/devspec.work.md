@@ -1,7 +1,7 @@
 ---
 name: devspec.work
 description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
 # DevSpec Work
@@ -318,3 +318,4 @@ Runs as a "finally" block — it MUST execute no matter which Phase 3 / Phase 4 
 - ALL completion fields are required — do not skip any
 - If the action item is too vague or requires human judgment to proceed, fail it with error "Requires human judgment" rather than guessing
 - `record_implementation` lands the item at `implemented`, NOT `done`. NEVER offer to verify or "mark it done", and never call `verify_action_item` — reaching `done` is a separate decision a present human makes. After recording, report the item as implemented (plus its check status) and stop. In `--unattended` mode you never verify under any circumstances.
+- **Parking vs. dropping an item.** Beyond shipping, an item can be set aside: `update_action_item(lifecycle: 'deferred')` parks it (consciously "not now" — reversible, resume with `update_action_item(lifecycle: 'open')`). `deferred` counts as resolved, so a deferred child no longer holds its parent brief open (a brief auto-completes once every child is verified, dismissed, OR deferred). It is distinct from `dismissed` (won't-do, terminal) and `blocked` (waiting on a dependency). When a parked child is genuinely SEPARATE future work that shouldn't reopen the original brief later, use `spin_off_action_item({ action_item_id, defer? })` instead — it extracts the child into a standalone follow-up item, detaches it from the brief, records a `derived_from` provenance link, and (by default) parks the new item as deferred. Never invent a `deferred` shortcut on `record_implementation`; these are explicit `update_action_item` / `spin_off_action_item` calls.

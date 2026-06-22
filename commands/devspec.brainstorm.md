@@ -1,7 +1,7 @@
 ---
 name: devspec.brainstorm
 description: Brainstorm on a DevSpec action item to refine scope, approach, and edge cases
-allowed-tools: mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item
+allowed-tools: mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item
 ---
 
 # DevSpec Brainstorm

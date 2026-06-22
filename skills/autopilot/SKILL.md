@@ -412,7 +412,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
         - `human_review_needed`: list of things a human should verify and why, e.g. `["Visual layout of the new testing page — no automated visual regression tests", "Role-based access — requires logging in as different roles"]`. Be specific about *what* and *why*.
         - `confidence`: 0.0–1.0 score. 0.9+ = straightforward change with passing tests. 0.7–0.9 = tests pass but change is complex or touches critical paths. Below 0.7 = significant uncertainty.
       - `provider`: always pass `"claude_code"`
-      - `local_session_id`: pass `${CLAUDE_SESSION_ID}` (Claude Code substitutes the current session UUID). This anchors the resume command (`claude --resume <id>`) DevSpec renders on the action item. The worktree this cycle ran in is deleted at cleanup, but the session is anchored to the workspace's main repo directory, so resuming drops a user into the end of this implementation — useful context. Do NOT pass `machine_user_id`: the server defaults it to the authenticated caller (the developer whose machine ran this runner), which is the correct owner of the resume command.
+      - `local_session_id`: pass `${CLAUDE_SESSION_ID}` (Claude Code substitutes the current session UUID). This anchors the resume command (`claude --resume <id>`) DevSpec renders on the action item. The worktree this cycle ran in is deleted at cleanup, but the session is anchored to the workspace's main repo directory, so resuming drops a user into the end of this implementation — useful context. If the token was NOT replaced — i.e. the value you would send still contains the text `CLAUDE_SESSION_ID` rather than a bare UUID — omit this field entirely rather than sending the placeholder. Do NOT pass `machine_user_id`: the server defaults it to the authenticated caller (the developer whose machine ran this runner), which is the correct owner of the resume command.
 
 10. **CLEANUP**: Remove the worktree:
     ```bash
@@ -424,7 +424,7 @@ Output step-by-step progress for each phase (see formatting).
 ### 3. Handle Failures
 If any step fails:
 1. Call `add_implementation_note` documenting what was attempted and why it failed — **MANDATORY, never skip even on failure**. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names.
-2. Call `update_action_item` with `agent_activity: 'failed'`, `agent_error: <description>`, and `local_session_id: ${CLAUDE_SESSION_ID}` — stamping the session id even on failure means a human can resume this run to inspect or finish the partial work. (As with `record_implementation`, do NOT pass `machine_user_id`; the server defaults it to the authenticated caller.)
+2. Call `update_action_item` with `agent_activity: 'failed'`, `agent_error: <description>`, and `local_session_id: ${CLAUDE_SESSION_ID}` — stamping the session id even on failure means a human can resume this run to inspect or finish the partial work. (Same placeholder guard as `record_implementation`: if the token was not substituted and the value still contains the text `CLAUDE_SESSION_ID`, omit the field. As there too, do NOT pass `machine_user_id`; the server defaults it to the authenticated caller.)
 3. Clean up the worktree if it was created
 4. Output failure markers (see formatting)
 5. **STOP the cycle** — do not skip to the next item

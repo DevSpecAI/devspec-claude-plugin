@@ -15,7 +15,7 @@ import type { ActionItem, AutopilotSettings } from '../types.js';
 const LAYER_1_BASE_PROMPT = `You are the DevSpec Autopilot. Your job is to implement a single action item autonomously.
 
 WORKFLOW:
-1. Read and understand the action item description and any linked context
+1. Read and understand the action item. The description is the WHAT/HOW; the Intent is the WHY (the problem and desired outcome); the Acceptance Criteria are your definition of done — a diff that does not satisfy them is NOT complete. If the Intent is missing or too thin to understand the real goal (common when the item came from a terse conversation) and a Source Session is given below, call get_session_transcript with that session id to recover the originating intent from the conversation that produced it. Do this only when the fields below leave the goal unclear — not every run.
 2. Analyze the codebase to understand the relevant code (see REUSE BEFORE BUILD below)
 3. ALWAYS read a file before editing it — never attempt to edit a file you haven't read in this session
 4. Implement the required changes
@@ -97,7 +97,11 @@ export function buildPrompt(
   parts.push(`**ID**: ${item.id}`);
   if (item.type) parts.push(`**Type**: ${item.type}`);
   if (item.priority) parts.push(`**Priority**: ${item.priority}`);
+  if (item.source_session_id) parts.push(`**Source Session**: ${item.source_session_id} (call get_session_transcript with this id if the Intent below is missing or too thin)`);
+  if (item.intent) parts.push(`\n**Intent (the WHY)**:\n${item.intent}`);
   if (item.description) parts.push(`\n**Description**:\n${item.description}`);
+  if (item.acceptance_criteria) parts.push(`\n**Acceptance Criteria (definition of done)**:\n${item.acceptance_criteria}`);
+  if (item.ai_instructions) parts.push(`\n**Implementation Guidance**:\n${item.ai_instructions}`);
 
   return parts.join('\n');
 }
@@ -139,7 +143,9 @@ IMPORTANT: This is analysis only. Do NOT modify any files.`,
   parts.push(`**ID**: ${item.id}`);
   if (item.type) parts.push(`**Type**: ${item.type}`);
   if (item.priority) parts.push(`**Priority**: ${item.priority}`);
+  if (item.intent) parts.push(`\n**Intent (the WHY)**:\n${item.intent}`);
   if (item.description) parts.push(`\n**Description**:\n${item.description}`);
+  if (item.acceptance_criteria) parts.push(`\n**Acceptance Criteria**:\n${item.acceptance_criteria}`);
 
   return parts.join('\n');
 }

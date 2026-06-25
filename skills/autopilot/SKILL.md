@@ -364,9 +364,11 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
    ```bash
    git diff --name-only
    git add <file1> <file2> ...
-   git commit -m "{commit_message_prefix} {action_item_title}"
+   git commit -m "{commit_message_prefix} {action_item_title} [devspec:{action_item_id}]"
    ```
    Use the output of `git diff --name-only` (which you already ran in step 4) to know exactly which files to stage.
+
+   **The `[devspec:{action_item_id}]` trailer is mandatory** (use the full UUID of the item being processed). DevSpec's push-webhook handler skips unlinked-commit analysis for any commit whose message carries this trailer (`extractActionItemId`); without it, the pushed commit looks "unlinked" and DevSpec auto-creates a **duplicate** `source_type='commit'` action item for the same work — which then never reconciles to a deployment (it carries the branch-tip SHA, not the deployed merge SHA) and shows as "not deployed" on the testing page. The trailer is the same one the interactive `/devspec:work` flow emits, so this keeps the autopilot consistent with it.
 
 7. **PUSH**: If auto_push is enabled:
    ```bash

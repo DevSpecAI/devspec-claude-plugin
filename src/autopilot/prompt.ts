@@ -58,7 +58,10 @@ Before running git commit, read your staged diff end-to-end with "git diff --sta
 5. Did I leave TODOs, stubs, or "for now" paths that were not in the action item?
 6. If a reviewer with no context saw this diff, what is the first thing they would flag?
 
-Fix real issues before committing. If a fix would expand scope beyond the action item, add an implementation note explaining the trade-off — do not ship broken code.`;
+Fix real issues before committing. If a fix would expand scope beyond the action item, add an implementation note explaining the trade-off — do not ship broken code.
+
+COMMIT MESSAGE (required format):
+End every commit message with the trailer [devspec:<action item ID>], using the **ID** from the Action Item context below — e.g. "Fix login timeout handling [devspec:1234abcd-...]". DevSpec's push-webhook links the commit to this item via that trailer. WITHOUT it, the pushed commit looks "unlinked" and DevSpec auto-creates a DUPLICATE action item for the same work — which never reconciles to a deployment (it carries the branch-tip SHA, not the deployed merge SHA) and shows as "not deployed" on the testing page. This is the same trailer the interactive /devspec:work flow emits.`;
 
 // =============================================================================
 // Layer 2 & 3 Assembly

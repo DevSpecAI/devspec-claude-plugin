@@ -55,13 +55,12 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 2. **Load project settings.** Call `get_project_summary` and read the `local_plugin_settings` field from the response. Store for later use. If the field is absent or null, use safe defaults:
    - `auto_push`: false
    - `auto_merge`: false
-   - `target_branch`: "" (DEPRECATED single fallback — branches are now per-repo; see below)
    - `branch_prefix`: "work/action-item-"
    - `custom_instructions`: "" (empty)
 
    If `auto_merge` is true, treat `auto_push` as true regardless of its stored value.
 
-   **Per-repo branches (source of truth for where to push).** The same `get_project_summary` response includes a `repos` array — `[{ id, full_name, target_branch, default_branch }]` — the branch DevSpec tracks for EACH repo. Store it. When you push/merge, resolve the branch for the repo you are pushing from this array (see Phase 3, step 18b). `local_plugin_settings.target_branch` is now only a deprecated single-branch fallback for older projects whose server doesn't return `repos`.
+   **Per-repo branches (source of truth for where to push).** The same `get_project_summary` response includes a `repos` array — `[{ id, full_name, target_branch, default_branch }]` — the branch DevSpec tracks for EACH repo. Store it. When you push/merge, resolve the branch for the repo you are pushing from this array (see Phase 3, step 18b).
 
 3. **Record starting branch.** Run `git branch --show-current` and store the result as `starting_branch`. This is the developer's current branch and the FINAL merge-target fallback, used only if a repo has no `target_branch` in the `repos` map and no `default_branch`.
 
@@ -234,7 +233,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     cd "<main_repo>"
     ```
 
-    b. **Merge** (only if `auto_merge` is enabled). Determine the merge target **for the repo you are pushing** by resolving its branch in this order: (1) the `target_branch` of its entry in the `repos` map from step 2 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch` if its `target_branch` is null/empty; (3) `local_plugin_settings.target_branch` (deprecated single value) if `repos` is unavailable; (4) `starting_branch`. A multi-repo item pushes EACH changed repo to ITS OWN resolved branch. Fetch the target first so a concurrent session's commits are included:
+    b. **Merge** (only if `auto_merge` is enabled). Determine the merge target **for the repo you are pushing** by resolving its branch in this order: (1) the `target_branch` of its entry in the `repos` map from step 2 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch` if its `target_branch` is null/empty; (3) `starting_branch`. A multi-repo item pushes EACH changed repo to ITS OWN resolved branch. Fetch the target first so a concurrent session's commits are included:
     ```bash
     git fetch origin {merge_target}
     git checkout {merge_target}

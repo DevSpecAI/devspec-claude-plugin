@@ -165,7 +165,7 @@ When the autopilot is stopped:
 
 ## Startup
 
-1. Call `get_project_summary` to fetch project settings
+1. Call `get_project_summary` to fetch project settings. Also store the `repos` array it returns — `[{ id, full_name, target_branch, default_branch }]`, the branch DevSpec tracks for EACH repo — as the source of truth for the per-repo merge target in step 8.
 2. Read the `autopilot` field from the response for configuration
 3. If autopilot is not enabled or settings are missing, use defaults:
    - auto_push: true
@@ -180,7 +180,7 @@ When the autopilot is stopped:
    HOSTNAME=$(hostname); UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || node -e "console.log(require('crypto').randomUUID())"); CLAUDE_SID="${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"; echo "HOST:$HOSTNAME"; echo "UUID:$UUID"; echo "CLAUDE_SID:$CLAUDE_SID"; cd "<workspace_root>" && REMOTE=$(git remote get-url origin 2>/dev/null) && SHA=$(git rev-parse --short HEAD 2>/dev/null) && BRANCH=$(git branch --show-current 2>/dev/null) && echo "REPO:<dirname>|$REMOTE|$BRANCH|$SHA"; for d in */; do if [ -d "$d/.git" ] && [ ! -f "$d/.git" ]; then cd "$d" && R=$(git remote get-url origin 2>/dev/null) && S=$(git rev-parse --short HEAD 2>/dev/null) && B=$(git branch --show-current 2>/dev/null) && [ -n "$R" ] && echo "REPO:${d%/}|$R|$B|$S"; cd ..; fi; done
    ```
    Parse the output to extract hostname, UUID, and build the `repositories` array. **Store the `CLAUDE_SID:` value as the session variable `claude_session_id`** — this is the *real* Claude Code session UUID (from `$CLAUDE_CODE_SESSION_ID`), which step 9 stamps on each item so the developer can resume the run with `claude --resume <id>`. It is NOT the same as `UUID` above (a synthetic runner/heartbeat id). If `CLAUDE_SID:` is empty (env var unset), set `claude_session_id` to empty and step 9 will omit it. For each REPO line: `name` = first field, `remote_url` = second field, `branch` = third field (empty = detached), `short_sha` = fourth field. Compute `normalized_url` by stripping protocol/auth/port/.git suffix, lowercase host (e.g. `git@github.com:org/repo.git` → `github.com/org/repo`). Set `detached = true` if branch is empty.
-   **Store the branch of the primary repo as `startup_branch`** — this is the branch the runner started on and will be used as the merge target during execution (step 8). For single-repo setups, this is the branch from the workspace root. For multi-repo setups, use the branch of the first discovered repo.
+   **Store the branch of the primary repo as `startup_branch`** — the branch the runner started on, used only as the last-resort merge-target fallback in step 8 (the per-repo `repos` map from step 1 is the source of truth). For single-repo setups, this is the branch from the workspace root; for multi-repo setups, the branch of the first discovered repo.
 5. **Output the startup banner** (see Output Formatting above) — this should appear BEFORE the first heartbeat
 6. **Send initial heartbeat**: Call `send_heartbeat` with `status: 'idle'`, `session_id` (the UUID from step 4), `machine_hostname` (from step 4), `cycle_count: 0`, `tasks_completed: 0`, `repositories` (from step 4). Wrap in try/catch — log failures but never halt startup.
 
@@ -347,7 +347,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
    After implementation is complete, send a `send_heartbeat` with `status: 'working'`, `current_task_id`, and `current_task_title` to maintain dashboard visibility during the longest phase. Wrap in try/catch — failures must never interrupt execution.
 
-   **Database migrations (if this item adds or edits a DB migration).** Do NOT assume which database to apply it to — the wrong one is a real, destructive failure. The `get_project_summary` settings and the `get_next_work_item` result both include a `database_targets` array: each connected database with its non-secret `identity` (for Supabase, `identity.externalId` is the project ref), `environment`, and the `branch_name` whose migrations target it. (a) Pick the target whose `branch_name` matches the merge target (`target_branch`/`starting_branch`), or one with `branch_name: null`. (b) Apply the migration with your OWN database tooling pointed at that target's `identity` — for Supabase, ensure your Supabase MCP/CLI targets that exact project ref, not whatever it defaults to. DevSpec does not apply migrations for you and never hands you the credential. (c) Never select the target by `name` (it can mislead — the bug this prevents). If the matching target has `needs_reconnect: true` / a null `identity`, or you cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`). Be especially careful when `environment` is `production`.
+   **Database migrations (if this item adds or edits a DB migration).** Do NOT assume which database to apply it to — the wrong one is a real, destructive failure. The `get_project_summary` settings and the `get_next_work_item` result both include a `database_targets` array: each connected database with its non-secret `identity` (for Supabase, `identity.externalId` is the project ref), `environment`, and the `branch_name` whose migrations target it. (a) Pick the target whose `branch_name` matches the merge target you resolved for the repo (its `target_branch`), or one with `branch_name: null`. (b) Apply the migration with your OWN database tooling pointed at that target's `identity` — for Supabase, ensure your Supabase MCP/CLI targets that exact project ref, not whatever it defaults to. DevSpec does not apply migrations for you and never hands you the credential. (c) Never select the target by `name` (it can mislead — the bug this prevents). If the matching target has `needs_reconnect: true` / a null `identity`, or you cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`). Be especially careful when `environment` is `production`.
 
 4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 
@@ -379,13 +379,13 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
    git push -u origin <branch_name>
    ```
 
-8. **MERGE**: If auto_merge is enabled, merge to the branch the runner started on:
+8. **MERGE**: If auto_merge is enabled, merge to the repo's DevSpec-tracked branch. Resolve the merge target **for the repo you are pushing** in order: (1) the `target_branch` of its entry in the `repos` array from step 1 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch`; (3) `startup_branch` (the branch this repo was on at startup) as a last resort. A multi-repo workspace merges each repo to ITS OWN resolved branch — never assume one project-wide branch.
    ```bash
-   git checkout {startup_branch}
+   git checkout {merge_target}
    git merge <branch_name> --no-ff --no-edit
-   git push origin {startup_branch}
+   git push origin {merge_target}
    ```
-   `{startup_branch}` is the branch discovered during startup repo collection (step 4) and stored as a session variable. If merge conflicts arise, fail the item with a clear error.
+   If merge conflicts arise, fail the item with a clear error.
 
 9. **REPORT SUCCESS** — three MCP calls, in this exact order:
 

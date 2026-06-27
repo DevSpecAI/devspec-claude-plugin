@@ -347,6 +347,8 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
    After implementation is complete, send a `send_heartbeat` with `status: 'working'`, `current_task_id`, and `current_task_title` to maintain dashboard visibility during the longest phase. Wrap in try/catch — failures must never interrupt execution.
 
+   **Database migrations (if this item adds or edits a DB migration).** Do NOT assume which database to apply it to — the wrong one is a real, destructive failure. The `get_project_summary` settings and the `get_next_work_item` result both include a `database_targets` array: each connected database with its non-secret `identity` (for Supabase, `identity.externalId` is the project ref), `environment`, and the `branch_name` whose migrations target it. (a) Pick the target whose `branch_name` matches the merge target (`target_branch`/`starting_branch`), or one with `branch_name: null`. (b) Apply the migration with your OWN database tooling pointed at that target's `identity` — for Supabase, ensure your Supabase MCP/CLI targets that exact project ref, not whatever it defaults to. DevSpec does not apply migrations for you and never hands you the credential. (c) Never select the target by `name` (it can mislead — the bug this prevents). If the matching target has `needs_reconnect: true` / a null `identity`, or you cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`). Be especially careful when `environment` is `production`.
+
 4. **VALIDATE PROTECTED PATHS**: Before committing, check that no files matching `protected_paths` patterns were modified. If violations found, fail the item.
 
 5. **TEST**: Run all configured test commands in the worktree:

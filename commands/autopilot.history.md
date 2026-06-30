@@ -1,7 +1,7 @@
 ---
 name: autopilot.history
 description: Show recent autopilot execution history
-allowed-tools: Bash, mcp__devspec__get_action_items
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_action_items
 ---
 
 # Autopilot History
@@ -10,7 +10,8 @@ Fetch completed and failed items, then output a clean formatted list.
 
 ## Steps
 
-1. Call `get_action_items` with `agent_activity: 'completed'` and `get_action_items` with `agent_activity: 'failed'` **in parallel**
+0. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide and no longer pin a project, so resolve which project's history to show. Run `git remote get-url origin` and call `list_projects({ git_remote: "<that remote>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, ask the user which project. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. Pass `project_id` on the `get_action_items` calls below.
+1. Call `get_action_items` with `project_id, agent_activity: 'completed'` and `get_action_items` with `project_id, agent_activity: 'failed'` **in parallel**
 2. If the completed items response is too large (saved to a file), read the file with the Bash tool
 3. Combine all items, sort by most recent first
 4. Calculate relative timestamps properly: use the `agent_claimed_at` field (ISO 8601 string). Compute elapsed time using a Bash one-liner if needed:

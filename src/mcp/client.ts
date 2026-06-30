@@ -78,7 +78,7 @@ export interface AddCommitReferenceParams {
 
 /**
  * Describes the MCP call to fetch project settings.
- * Claude executes: get_project_summary()
+ * Claude executes: get_project_summary({ project_id })
  * Returns project info including autopilot settings.
  */
 export interface ProjectSummary {
@@ -87,22 +87,105 @@ export interface ProjectSummary {
   autopilot: AutopilotSettings | null;
 }
 
+/**
+ * Describes the startup project-resolution call for account-wide MCP tokens.
+ *
+ * Account-wide tokens no longer pin a project — the server resolves the project
+ * per call from the most-specific id (an item id self-locates; else an explicit
+ * `project_id`; else the caller's single project; else it errors). So the runner
+ * must resolve WHICH project to operate on at startup and thread `project_id` on
+ * every project-scoped call.
+ *
+ * Claude executes: list_projects({ git_remote: "<git remote get-url origin>" })
+ * The response carries `remote_match: { resolved_project_id, candidate_project_ids }`:
+ *   - `resolved_project_id` non-null → use it as the run's project.
+ *   - null + `candidate_project_ids` (repo tracked by >1 project) → ambiguous;
+ *     unattended autopilot must STOP and fail naming the candidates (never guess).
+ *     Interactive commands ask the user instead.
+ *   - no match → fail with a clear "no DevSpec project for this repo" error.
+ */
+export interface ResolveProjectParams {
+  /** Output of `git remote get-url origin` for the workspace's primary repo. */
+  gitRemote: string;
+}
+
+export interface RemoteMatch {
+  resolved_project_id: string | null;
+  candidate_project_ids: string[];
+}
+
+export function buildResolveProjectArgs(params: ResolveProjectParams) {
+  return {
+    git_remote: params.gitRemote,
+  };
+}
+
 // =============================================================================
 // Helper: Build MCP tool call args
 // =============================================================================
 
-export function buildFetchPlanningArgs() {
+/**
+ * Build args for the queued-work fetch.
+ * Claude executes: get_next_work_item({ project_id, ... })
+ *
+ * Account-wide tokens require `project_id` on project-scoped calls — pass the
+ * project resolved at startup (AutopilotState.projectId).
+ */
+export function buildFetchNextWorkArgs(params: { projectId: string }) {
   return {
+    project_id: params.projectId,
+  };
+}
+
+export function buildFetchPlanningArgs(params: { projectId: string }) {
+  return {
+    project_id: params.projectId,
     agent_activity: 'planning',
   };
 }
 
 /** @deprecated Use get_next_work_item() MCP tool instead — avoids bulk-fetching all queued items */
-export function buildFetchQueuedArgs(params: { agentStatus: 'queued' | 'planning' }) {
+export function buildFetchQueuedArgs(params: { agentStatus: 'queued' | 'planning'; projectId: string }) {
   return {
+    project_id: params.projectId,
     agent_ready: true,
     agent_activity: params.agentStatus,
     lifecycle: 'open',
+  };
+}
+
+/**
+ * Build args for the agent-activity fetch used by stale-claim / planning checks.
+ * Claude executes: get_action_items({ project_id, agent_activity })
+ */
+export function buildFetchByActivityArgs(params: {
+  projectId: string;
+  agentActivity: string;
+}) {
+  return {
+    project_id: params.projectId,
+    agent_activity: params.agentActivity,
+  };
+}
+
+/**
+ * Build args for project settings fetch.
+ * Claude executes: get_project_summary({ project_id })
+ */
+export function buildGetProjectSummaryArgs(params: { projectId: string }) {
+  return {
+    project_id: params.projectId,
+  };
+}
+
+/**
+ * Build args for the memory grounding search.
+ * Claude executes: search_memories({ project_id, query })
+ */
+export function buildSearchMemoriesArgs(params: { projectId: string; query: string }) {
+  return {
+    project_id: params.projectId,
+    query: params.query,
   };
 }
 

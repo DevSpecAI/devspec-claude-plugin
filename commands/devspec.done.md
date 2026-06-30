@@ -1,7 +1,7 @@
 ---
 name: devspec.done
 description: Just finished some work? Log it to DevSpec — commits, testing notes, and all
-allowed-tools: mcp__devspec__record_completed_work, Bash
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__record_completed_work
 ---
 
 # DevSpec Done
@@ -11,10 +11,13 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
 ## Steps
 
 1. **Detect git state** — run these in parallel:
+   - `git remote get-url origin` to get the remote (used for project resolution in step 1b)
    - `git log --oneline -10` to get recent commits
    - `git diff --stat HEAD~10..HEAD 2>/dev/null || git diff --stat` to get affected files
    - `git branch --show-current` to get branch name
    - `git log --format="%H %s" -10` to get full SHAs and messages
+
+1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide and no longer pin a project, so name the project this work belongs to. Call `list_projects({ git_remote: "<remote from step 1>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, present them and ask the user which project. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. Pass `project_id` on the `record_completed_work` call in step 4.
 
 2. **If no recent commits exist**, ask the user for a title and what they implemented, then skip to step 4.
 
@@ -36,6 +39,7 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
    - `testability_rationale`: Brief explanation of why this verdict was chosen
 
 4. **Immediately call `record_completed_work`** (do NOT wait for confirmation) with:
+   - `project_id` (resolved in step 1b — required on this project-scoped call)
    - `title`, `description`, `implementation_summary` (required)
    - `type`, `priority`, `tags`, `commits`, `affected_files`, `branch`
    - `completion_summary`, `testing_notes`, `usage_notes`

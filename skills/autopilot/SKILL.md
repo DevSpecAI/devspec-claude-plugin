@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__record_implementation, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__get_session_transcript, mcp__devspec__search_memories, mcp__devspec__get_decisions, mcp__devspec__get_conventions, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__record_implementation, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__get_session_transcript, mcp__devspec__search_memories, mcp__devspec__get_decisions, mcp__devspec__get_conventions, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
 ---
 
 # DevSpec Autopilot
@@ -165,9 +165,17 @@ When the autopilot is stopped:
 
 ## Startup
 
-1. Call `get_project_summary` to fetch project settings. Also store the `repos` array it returns — `[{ id, full_name, target_branch, default_branch }]`, the branch DevSpec tracks for EACH repo — as the source of truth for the per-repo merge target in step 8.
-2. Read the `autopilot` field from the response for configuration
-3. If autopilot is not enabled or settings are missing, use defaults:
+0. **Collect startup info FIRST (one bash call).** Run the single bash command in step 4 below *now*, before any MCP call — the project-resolution step needs the workspace git remote, and `get_project_summary` (step 2) now needs the resolved `project_id`. Parse out the hostname, UUID, `claude_session_id`, and the `repositories` array exactly as step 4 describes. The `git remote get-url origin` of the **primary repo** (the workspace root) is the `git_remote` you pass in step 1.
+
+1. **Resolve your project (account-wide tokens).** DevSpec MCP tokens are account-wide — they no longer pin a project. The server resolves the project per call from the most-specific id, so you must tell it which project this run targets and then thread `project_id` on every project-scoped call.
+   - Call `list_projects({ git_remote: "<primary repo's git remote get-url origin>" })`.
+   - Read `remote_match` from the response:
+     - **`resolved_project_id` is non-null** → store it as the session variable `project_id`. This is your run's project for the rest of the loop.
+     - **`resolved_project_id` is null but `candidate_project_ids` is non-empty** (the repo is tracked by more than one project) → this is unattended autopilot, so you **MUST STOP — never guess**. Output the disabled-style banner with a clear message naming the candidate project ids, advising the operator to re-run `/autopilot.start --project-id=<uuid>` with one of them, then halt without claiming, fetching, or heartbeating.
+     - **no match at all** (both null/empty) → STOP with a clear error: "No DevSpec project tracks this repo (`<git_remote>`). Connect the repo to a DevSpec project first." Halt.
+   - **Override:** if `/autopilot.start` was invoked with `--project-id=<uuid>`, skip the `list_projects` resolution entirely and use that uuid as `project_id` (this is how an operator disambiguates a repo tracked by multiple projects).
+2. Call `get_project_summary({ project_id })` to fetch project settings. Also store the `repos` array it returns — `[{ id, full_name, target_branch, default_branch }]`, the branch DevSpec tracks for EACH repo — as the source of truth for the per-repo merge target in step 8.
+3. Read the `autopilot` field from the response for configuration. If autopilot is not enabled or settings are missing, use defaults:
    - auto_push: true
    - auto_merge: true
    - branch_prefix: autopilot/action-item-
@@ -175,14 +183,14 @@ When the autopilot is stopped:
    - stale_claim_timeout_minutes: 30
    - custom_instructions: "" (empty)
    **Store `custom_instructions`** from the autopilot settings as a session variable. These are project-owner-defined instructions that MUST be followed during every execution cycle (Layer 2 of the prompt). If the field is empty or missing, skip Layer 2.
-4. **Collect all startup info in ONE bash call** — hostname, session UUID, and repo discovery all in a single command to minimize visible tool calls:
+4. **The ONE startup bash call** (already run in step 0 — this is its definition; do not run it twice) — hostname, session UUID, and repo discovery all in a single command to minimize visible tool calls:
    ```bash
    HOSTNAME=$(hostname); UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || node -e "console.log(require('crypto').randomUUID())"); CLAUDE_SID="${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"; echo "HOST:$HOSTNAME"; echo "UUID:$UUID"; echo "CLAUDE_SID:$CLAUDE_SID"; cd "<workspace_root>" && REMOTE=$(git remote get-url origin 2>/dev/null) && SHA=$(git rev-parse --short HEAD 2>/dev/null) && BRANCH=$(git branch --show-current 2>/dev/null) && echo "REPO:<dirname>|$REMOTE|$BRANCH|$SHA"; for d in */; do if [ -d "$d/.git" ] && [ ! -f "$d/.git" ]; then cd "$d" && R=$(git remote get-url origin 2>/dev/null) && S=$(git rev-parse --short HEAD 2>/dev/null) && B=$(git branch --show-current 2>/dev/null) && [ -n "$R" ] && echo "REPO:${d%/}|$R|$B|$S"; cd ..; fi; done
    ```
    Parse the output to extract hostname, UUID, and build the `repositories` array. **Store the `CLAUDE_SID:` value as the session variable `claude_session_id`** — this is the *real* Claude Code session UUID (from `$CLAUDE_CODE_SESSION_ID`), which step 9 stamps on each item so the developer can resume the run with `claude --resume <id>`. It is NOT the same as `UUID` above (a synthetic runner/heartbeat id). If `CLAUDE_SID:` is empty (env var unset), set `claude_session_id` to empty and step 9 will omit it. For each REPO line: `name` = first field, `remote_url` = second field, `branch` = third field (empty = detached), `short_sha` = fourth field. Compute `normalized_url` by stripping protocol/auth/port/.git suffix, lowercase host (e.g. `git@github.com:org/repo.git` → `github.com/org/repo`). Set `detached = true` if branch is empty.
-   **Store the branch of the primary repo as `startup_branch`** — the branch the runner started on, used only as the last-resort merge-target fallback in step 8 (the per-repo `repos` map from step 1 is the source of truth). For single-repo setups, this is the branch from the workspace root; for multi-repo setups, the branch of the first discovered repo.
+   **Store the branch of the primary repo as `startup_branch`** — the branch the runner started on, used only as the last-resort merge-target fallback in step 8 (the per-repo `repos` map from step 2 is the source of truth). For single-repo setups, this is the branch from the workspace root; for multi-repo setups, the branch of the first discovered repo.
 5. **Output the startup banner** (see Output Formatting above) — this should appear BEFORE the first heartbeat
-6. **Send initial heartbeat**: Call `send_heartbeat` with `status: 'idle'`, `session_id` (the UUID from step 4), `machine_hostname` (from step 4), `cycle_count: 0`, `tasks_completed: 0`, `repositories` (from step 4). Wrap in try/catch — log failures but never halt startup.
+6. **Send initial heartbeat**: Call `send_heartbeat` with `project_id` (resolved in step 1), `status: 'idle'`, `session_id` (the UUID from step 4), `machine_hostname` (from step 4), `cycle_count: 0`, `tasks_completed: 0`, `repositories` (from step 4). Wrap in try/catch — log failures but never halt startup.
 
 ## Implementation Quality Standards
 
@@ -260,10 +268,12 @@ Repeat the following until stopped:
 
 **Default mode** (`item_id_queue` is empty): always call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
 
-Pass the resolved filter values from `/autopilot.start` on **every** call:
+`get_next_work_item` is project-scoped: account-wide tokens require `project_id` (the one resolved at startup) on it. Pass it alongside the resolved filter values from `/autopilot.start` on **every** call:
 
 ```ts
 get_next_work_item({
+  // Account-wide token: name the project resolved at startup (Startup step 1).
+  project_id,
   // Action item ownership v1 — the autopilot default. "me" matches items
   // assigned to the caller OR with no assignees (the grab-bag pool).
   // Omit only when --all was passed (shared-queue mode).
@@ -277,9 +287,9 @@ When both filters are set, the server requires both to match (additive). The def
 
 **Force-claim policy**: the autopilot loop **MUST NOT** pass `force: true` on `claim_work_item`. If `claim_work_item` rejects with an "assigned to other users" error (sibling `360b1202` introduced this guard), treat it as a normal claim rejection: log it and move on to the next item. The next pickup will skip the same item via the assignee filter, so this is a self-healing condition once `assigned_to` is set correctly.
 
-**First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`:
-1. `get_action_items({ agent_activity: 'in_progress' })` — stale claim detection
-2. `get_action_items({ agent_activity: 'planning' })` — items needing plan generation
+**First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`. Both are project-scoped — pass `project_id`:
+1. `get_action_items({ project_id, agent_activity: 'in_progress' })` — stale claim detection
+2. `get_action_items({ project_id, agent_activity: 'planning' })` — items needing plan generation
 
 During drain mode (`consecutive_idle_checks === 0`), only `get_next_work_item()` runs. Stale claims can't appear while this runner is actively working, and planning items wait until the drain completes.
 
@@ -292,7 +302,7 @@ From the results:
 - **Queued work**: the item from `get_next_work_item()` (or none if the queue is empty)
 - **Planning work** (when checked): items needing plan generation
 
-**Review items** (when checked on first cycle after idle): also call `get_action_items({ agent_activity: 'under_human_review' })` in parallel to check for items needing plan review.
+**Review items** (when checked on first cycle after idle): also call `get_action_items({ project_id, agent_activity: 'under_human_review' })` in parallel to check for items needing plan review.
 
 If no queued, review, or planning items found, output idle status (see formatting) and go to step 5 (Wait).
 
@@ -325,7 +335,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
    **Brief context (when the item belongs to a brief):** If the claimed item has `parent_action_item_id` set on it, immediately call `get_action_item_siblings({ action_item_id: <claimed_id> })` and read the returned `parent` (brief title + description) and `siblings` (titles + statuses + completion summaries). Use this to understand the broader feature before starting work — especially to spot files or concerns that an in-progress sibling is already handling, so your changes don't conflict with sibling work. If `parent` is null, skip this step (it's a flat item).
 
-   **Memory context (MANDATORY — never skip):** Before any file reading or implementation, call `search_memories({ query: "<action item title>" })` to retrieve related architecture decisions, coding conventions, known risks, and team preferences. Run it **in parallel** with the `get_action_item_siblings` call above when the item belongs to a brief. Treat the returned memories as **hard constraints**: if a memory records a convention (e.g. "always use Zod for validation") or an architectural decision, your implementation MUST follow it. Memories are the institutional knowledge layer that Dev (the conversation agent) retrieves on every turn — the autonomous loop must not run blind to it. This mirrors the mandatory pre-implementation context step in the interactive `/devspec:work` command.
+   **Memory context (MANDATORY — never skip):** Before any file reading or implementation, call `search_memories({ project_id, query: "<action item title>" })` (project-scoped — pass the project resolved at startup) to retrieve related architecture decisions, coding conventions, known risks, and team preferences. Run it **in parallel** with the `get_action_item_siblings` call above when the item belongs to a brief. Treat the returned memories as **hard constraints**: if a memory records a convention (e.g. "always use Zod for validation") or an architectural decision, your implementation MUST follow it. Memories are the institutional knowledge layer that Dev (the conversation agent) retrieves on every turn — the autonomous loop must not run blind to it. This mirrors the mandatory pre-implementation context step in the interactive `/devspec:work` command.
 
    **Understand the intent (read the spec fields, recover it if thin):** The claim response carries the item's `intent` (the WHY — the problem and desired outcome), `acceptance_criteria` (the definition of done you must satisfy), and `ai_instructions` (constraints). Read these first: `acceptance_criteria` is your target, and a diff that doesn't meet it is not done. If `intent` is missing or too thin to understand the real goal — common when the item was created from a terse conversation — and the item has a `source_session_id`, call `get_session_transcript({ session_id: <source_session_id> })` to recover the originating intent from the conversation that produced it. This is optional and on-demand: skip it when the spec fields already make the goal clear (don't pull a transcript every cycle). When the transcript reveals intent or criteria the item is missing, persist it back with `update_action_item({ action_item_id, intent, acceptance_criteria })` so the work is captured and the next agent inherits it.
 
@@ -347,7 +357,7 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 
    **Custom Instructions (Layer 2):** If `custom_instructions` was set during startup, you MUST follow those instructions throughout implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
 
-   After implementation is complete, send a `send_heartbeat` with `status: 'working'`, `current_task_id`, and `current_task_title` to maintain dashboard visibility during the longest phase. Wrap in try/catch — failures must never interrupt execution.
+   After implementation is complete, send a `send_heartbeat` with `project_id` (resolved at startup), `status: 'working'`, `current_task_id`, and `current_task_title` to maintain dashboard visibility during the longest phase. Wrap in try/catch — failures must never interrupt execution.
 
    **Database migrations (if this item adds or edits a DB migration).** Do NOT assume which database to apply it to — the wrong one is a real, destructive failure. The `get_project_summary` settings and the `get_next_work_item` result both include a `database_targets` array: each connected database with its non-secret `identity` (for Supabase, `identity.externalId` is the project ref), `environment`, and the `branch_name` whose migrations target it. (a) Pick the target whose `branch_name` matches the merge target you resolved for the repo (its `target_branch`), or one with `branch_name: null`. (b) Apply the migration with your OWN database tooling pointed at that target's `identity` — for Supabase, ensure your Supabase MCP/CLI targets that exact project ref, not whatever it defaults to. DevSpec does not apply migrations for you and never hands you the credential. (c) Never select the target by `name` (it can mislead — the bug this prevents). If the matching target has `needs_reconnect: true` / a null `identity`, or you cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`). Be especially careful when `environment` is `production`.
 
@@ -441,6 +451,7 @@ If any step fails:
 **Before sending**, refresh the repository branch info by re-running `git branch --show-current` and `git rev-parse --short HEAD` for each repo discovered at startup. This is fast (two commands per repo) and ensures branch changes made in other terminals are picked up immediately. Update the `repositories` array with the fresh branch and SHA values.
 
 Then call `send_heartbeat` with:
+- `project_id`: the project resolved at startup (Startup step 1) — required on this project-scoped call
 - `session_id`: the same UUID from startup
 - `machine_hostname`: the same hostname from startup
 - `status`: `'idle'` if no task was claimed this cycle, `'working'` if a task was claimed and is still in progress
@@ -478,7 +489,7 @@ This step uses two strategies to balance responsiveness with efficiency:
   - After waking, call `check_queue_status` (lightweight — returns only counts, no item details):
     * If `has_items` is true: output wake line (see formatting), reset `consecutive_idle_checks` to 0, go to step 1
     * If `has_items` is false: go back to the top of step 5B (sleep again at the current tier)
-  - **Heartbeats during idle**: Send a `send_heartbeat` (status: `'idle'`) every **2nd** idle check to stay visible on the dashboard. At the deepest idle tier (5-min sleeps) this means a heartbeat every 10 minutes, well within the server's 16-minute online cutoff. Always wrap in try/catch.
+  - **Heartbeats during idle**: Send a `send_heartbeat` (with `project_id`, status: `'idle'`) every **2nd** idle check to stay visible on the dashboard. At the deepest idle tier (5-min sleeps) this means a heartbeat every 10 minutes, well within the server's 16-minute online cutoff. Always wrap in try/catch.
 
 **Wake output format** (when `check_queue_status` finds items):
 ```
@@ -500,7 +511,7 @@ Track these values internally across cycles for the stop summary:
 
 When the autopilot is stopped (via `/autopilot:stop` or any other signal):
 1. Complete the current cycle if one is in progress
-2. Call `send_heartbeat` with `status: 'offline'` to immediately remove this runner from the dashboard. Wrap in try/catch — if it fails, the server will time out the runner automatically.
+2. Call `send_heartbeat` with `project_id` (resolved at startup) and `status: 'offline'` to immediately remove this runner from the dashboard. Wrap in try/catch — if it fails, the server will time out the runner automatically.
 3. Output the stop summary
 
 ## Safety Rules

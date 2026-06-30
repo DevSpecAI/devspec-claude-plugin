@@ -1,7 +1,7 @@
 ---
 name: devspec.work
 description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
 # DevSpec Work
@@ -52,7 +52,14 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - If a decision requires human judgment, fail the item with a documented error rather than guessing
    - If the action item name matches multiple items, auto-select the highest-priority match (or the closest title match)
 
-2. **Load project settings.** Call `get_project_summary` and read the `local_plugin_settings` field from the response. Store for later use. If the field is absent or null, use safe defaults:
+1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide — they no longer pin a project, so resolve which project this run targets before any project-scoped call:
+   - Run `git remote get-url origin` in the workspace root and call `list_projects({ git_remote: "<that remote>" })`.
+   - Read `remote_match`: use `resolved_project_id` when non-null and store it as the session variable `project_id`.
+   - If it is null with multiple `candidate_project_ids` (the repo is tracked by more than one project): **interactive mode** — present the candidate projects (use the `repos`/name info `list_projects` returns) and ask the user which one to use; **unattended mode** — fail the item with `"Requires human judgment: repo tracked by multiple DevSpec projects (<candidates>) — cannot pick one unattended"`.
+   - If there is no match at all, output `✗ No DevSpec project tracks this repo (<git_remote>). Connect it to a project first.` and stop.
+   - Thread this `project_id` on every project-scoped call below: `get_project_summary`, `get_action_items`, and `search_memories`. (Item-addressed calls — `claim_work_item`, `update_action_item`, `add_implementation_note`, `add_commit_reference`, `record_implementation`, `generate_commit_message`, `get_action_item_history`, `get_session_transcript` — self-resolve their project from the item id and take no `project_id`.)
+
+2. **Load project settings.** Call `get_project_summary({ project_id })` and read the `local_plugin_settings` field from the response. Store for later use. If the field is absent or null, use safe defaults:
    - `auto_push`: false
    - `auto_merge`: false
    - `branch_prefix`: "work/action-item-"
@@ -68,8 +75,8 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
 4. **Resolve the action item.** Extract an action item identifier from the user's input (ID, partial ID, or title keywords). Strip any `--unattended` flag from the input before matching.
    - **CRITICAL: ALWAYS call the MCP tool to fetch current state.** Even if you worked on this item earlier in this session, your conversation context may be stale — the user may have re-queued the item with new feedback since your last interaction. Never rely on in-session memory for item lifecycle.
-   - If an ID (or partial ID) is provided, call `get_action_items(status: "all")` and match by ID prefix.
-   - If keywords are provided, call `get_action_items(status: "all")` and match by title.
+   - If an ID (or partial ID) is provided, call `get_action_items({ project_id, status: "all" })` and match by ID prefix.
+   - If keywords are provided, call `get_action_items({ project_id, status: "all" })` and match by title.
      - **Interactive mode:** If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
      - **Unattended mode:** If ambiguous, auto-select the highest-priority match. If priorities are equal, pick the closest title match.
    - **Interactive mode:** If nothing is provided, ask the user for an action item name or ID.
@@ -79,7 +86,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
 5. **Load context.** Once resolved, **you MUST call these MCP tools** — do not skip them even if you worked on this item earlier in the session:
    - `get_action_item_history(action_item_id)` — prior notes, commits, lifecycle changes, **and verification feedback**
-   - `search_memories(query: "<action item title>")` — related decisions, conventions, risks
+   - `search_memories({ project_id, query: "<action item title>" })` — related decisions, conventions, risks
 
    These calls are mandatory because the item's state may have changed since you last touched it (e.g., user re-queued with new feedback).
 

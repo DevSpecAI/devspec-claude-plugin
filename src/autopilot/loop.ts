@@ -15,6 +15,65 @@
 import type { AutopilotSettings, CycleResult, HeartbeatPayload, HeartbeatResponse, RepositoryInfo, RunnerStatus } from '../types.js';
 import { isAutopilotRunning, updateCycleResult, getAutopilotState } from '../config.js';
 import { collectWorkspaceRepos, refreshRepoBranches } from '../vcs/index.js';
+import type { RemoteMatch } from '../mcp/client.js';
+
+// =============================================================================
+// Startup Project Resolution (account-wide MCP tokens)
+// =============================================================================
+
+export interface ProjectResolution {
+  /** The project to run against, or null when resolution failed. */
+  projectId: string | null;
+  /** When projectId is null, a clear agent-facing error explaining why. */
+  error: string | null;
+  /** True when the repo is tracked by more than one project (must not guess). */
+  ambiguous: boolean;
+  /** Candidate project ids when ambiguous, for naming them in the error. */
+  candidates: string[];
+}
+
+/**
+ * Resolve which DevSpec project a run targets from the `remote_match` returned by
+ * `list_projects({ git_remote })`.
+ *
+ * Account-wide MCP tokens no longer pin a project, so the runner resolves it once
+ * at startup from the workspace git remote and threads `project_id` thereafter.
+ *
+ * - `resolved_project_id` set → use it.
+ * - null + candidates (repo tracked by >1 project) → ambiguous. The caller decides:
+ *   unattended autopilot STOPS and fails naming the candidates (never guesses);
+ *   an interactive command asks the user.
+ * - no match → a "no DevSpec project for this repo" error.
+ */
+export function resolveProjectFromRemoteMatch(
+  remoteMatch: RemoteMatch | null | undefined,
+  gitRemote: string,
+): ProjectResolution {
+  const resolved = remoteMatch?.resolved_project_id ?? null;
+  if (resolved) {
+    return { projectId: resolved, error: null, ambiguous: false, candidates: [] };
+  }
+
+  const candidates = remoteMatch?.candidate_project_ids ?? [];
+  if (candidates.length > 0) {
+    return {
+      projectId: null,
+      ambiguous: true,
+      candidates,
+      error:
+        `Repo "${gitRemote}" is tracked by ${candidates.length} DevSpec projects ` +
+        `(${candidates.join(', ')}). Cannot guess which one to run against — ` +
+        `re-run with an explicit --project-id=<uuid>.`,
+    };
+  }
+
+  return {
+    projectId: null,
+    ambiguous: false,
+    candidates: [],
+    error: `No DevSpec project tracks this repo (${gitRemote}). Connect the repo to a DevSpec project first.`,
+  };
+}
 
 // =============================================================================
 // Repository Info Cache
@@ -203,6 +262,9 @@ export async function buildHeartbeatPayload(
   const payload: HeartbeatPayload = {
     session_id: state?.sessionId ?? '',
     machine_hostname: state?.machineHostname ?? '',
+    // Account-wide tokens require the project on project-scoped calls — the
+    // project resolved at startup (from the workspace git remote) lives in state.
+    project_id: state?.projectId ?? '',
     status,
     cycle_count: ctx.cycleCount,
     tasks_completed: state?.tasksCompleted ?? 0,
@@ -240,6 +302,8 @@ export async function buildLifecycleHeartbeat(status: 'idle' | 'offline'): Promi
   const payload: HeartbeatPayload = {
     session_id: state?.sessionId ?? '',
     machine_hostname: state?.machineHostname ?? '',
+    // Account-wide tokens require the project on project-scoped calls.
+    project_id: state?.projectId ?? '',
     status,
     cycle_count: state?.cycleCount ?? 0,
     tasks_completed: state?.tasksCompleted ?? 0,

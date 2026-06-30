@@ -1,7 +1,7 @@
 ---
 name: devspec.verify-connection
 description: Verify the DevSpec connection loop — push a tagged verification commit to each tracked repo's primary branch and report the per-repo result. Run this when the setup wizard asks you to "run the DevSpec verify tool" with a verification ID.
-allowed-tools: mcp__devspec__get_project_summary, mcp__devspec__report_connection_check, Bash
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__report_connection_check
 ---
 
 # DevSpec Verify Connection
@@ -14,7 +14,9 @@ The setup wizard hands the user a prompt like *"Run the DevSpec verify tool with
 
 1. **Extract the verification ID** (a UUID) from the user input. If none is present, ask the user for it and stop.
 
-2. **Fetch the target repos.** Call `get_project_summary` and read its `repos` array — each entry is `{ id, full_name, target_branch, default_branch }`. This is the authoritative per-repo branch map; do NOT guess branches and do NOT ask the user for them. The branch to push for a repo is `target_branch` if set, otherwise `default_branch`, otherwise `main`.
+1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide and no longer pin a project, so name the project before calling `get_project_summary`. Run `git remote get-url origin` and call `list_projects({ git_remote: "<that remote>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, present them and ask the user which project. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. (`report_connection_check` self-resolves its project from the `verification_id` and takes no `project_id`.)
+
+2. **Fetch the target repos.** Call `get_project_summary({ project_id })` and read its `repos` array — each entry is `{ id, full_name, target_branch, default_branch }`. This is the authoritative per-repo branch map; do NOT guess branches and do NOT ask the user for them. The branch to push for a repo is `target_branch` if set, otherwise `default_branch`, otherwise `main`.
 
 3. **Build the verification commit message — do NOT construct your own tag.** It is exactly:
    ```

@@ -1,7 +1,7 @@
 ---
 name: devspec.brainstorm
 description: Brainstorm on a DevSpec action item to refine scope, approach, and edge cases
-allowed-tools: mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item
 ---
 
 # DevSpec Brainstorm
@@ -10,16 +10,18 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
 
 ## Steps
 
+0. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide — they no longer pin a project, so resolve which project to operate on before any project-scoped call. Run `git remote get-url origin` and call `list_projects({ git_remote: "<that remote>" })`; read `remote_match`. Use `resolved_project_id` (non-null) as the session variable `project_id`. If it is null with multiple `candidate_project_ids`, present the candidates and ask the user which project to use. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. Thread `project_id` on the project-scoped calls below (`get_action_items`, `search_memories`). The item-addressed calls (`get_action_item_history`, `add_implementation_note`, `update_action_item`, `spin_off_action_item`) self-resolve from the item id and take no `project_id`.
+
 1. **Resolve the action item.** Extract an action item identifier from the user's input (ID, partial ID, or title keywords).
-   - If an ID (or partial ID) is provided, call `get_action_items(status: "all")` and match by ID prefix.
-   - If keywords are provided instead, call `get_action_items(status: "all")` and match by title. If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
+   - If an ID (or partial ID) is provided, call `get_action_items({ project_id, status: "all" })` and match by ID prefix.
+   - If keywords are provided instead, call `get_action_items({ project_id, status: "all" })` and match by title. If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
    - If nothing is provided, ask the user for an action item name or ID.
    - If no match is found, output: `✗ No action item found matching: {input}`
    - **CRITICAL:** Once resolved, store the **complete UUID** (e.g. `f43c187c-23e0-4764-885f-ef3a733d08df`) in working memory as `resolved_action_item_id`. Never truncate, pad, or reconstruct this value — always use the exact string returned by the API.
 
 2. **Load context.** Once resolved, call in parallel:
    - `get_action_item_history(action_item_id)` — prior notes, commits, lifecycle changes
-   - `search_memories(query: "<action item title>")` — related decisions, conventions, risks
+   - `search_memories({ project_id, query: "<action item title>" })` — related decisions, conventions, risks
 
 3. **Present the item.** Output a compact summary:
    ```

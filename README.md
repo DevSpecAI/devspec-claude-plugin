@@ -21,7 +21,7 @@ If something goes wrong, it marks the item as failed with a clear error so you c
 
 - **Claude Code** v1.0.33+
 - **DevSpec** account with a project that has action items
-- **DevSpec API token** (read_write scope) — generate one in DevSpec under API settings
+- **DevSpec API token** (read_write scope) — generate one in DevSpec under API settings. Tokens are account-wide; one token covers all your projects (the autopilot resolves the project from the workspace git remote).
 - **Node.js** 18+
 
 ## Install
@@ -78,7 +78,7 @@ In your project's `.mcp.json` or Claude Code MCP settings, add:
 }
 ```
 
-The token needs **read_write** scope for the project you want the autopilot to work on.
+The token needs **read_write** scope. DevSpec MCP tokens are **account-wide** — one token works across all your projects; you no longer generate a token per project. The autopilot figures out *which* project a run targets from the workspace's git remote (it calls `list_projects` with `git remote get-url origin` at startup and uses the matched project). If a repo is tracked by more than one of your DevSpec projects, pin the run explicitly with `/autopilot:start --project-id=<uuid>`.
 
 > **Security note:** `.mcp.json` contains a bearer token. If it lives at a project root that is a git repo, add `.mcp.json` to `.gitignore` before committing, or place the config in your user-scope Claude settings (`~/.claude.json`) instead.
 
@@ -137,6 +137,11 @@ Common variations:
 # (without --all, items you created but assigned to a teammate are skipped).
 # "Queued" is implicit — the runner only ever processes queued, agent-ready work.
 /autopilot:start --all --created-by=<user_id>
+
+# Pin the run to a specific project. Only needed when the workspace's git remote
+# is tracked by more than one of your DevSpec projects (otherwise the project is
+# resolved automatically from the remote).
+/autopilot:start --project-id=<project_uuid>
 ```
 
 The autopilot enters a polling loop. It checks for queued items every 60 seconds (configurable), processes one per cycle, and reports results back to DevSpec.

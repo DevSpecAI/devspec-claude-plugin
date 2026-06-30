@@ -107,6 +107,9 @@ export type RunnerStatus = 'idle' | 'working' | 'offline';
 export interface HeartbeatPayload {
   session_id: string;
   machine_hostname: string;
+  // Account-wide MCP tokens no longer pin a project, so project-scoped calls
+  // must name the project resolved at startup (from the workspace git remote).
+  project_id: string;
   status: RunnerStatus;
   current_task_id?: string;
   current_task_title?: string;

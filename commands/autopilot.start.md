@@ -1,8 +1,8 @@
 ---
 name: autopilot.start
 description: Start the DevSpec autopilot polling loop to automatically process queued action items
-argument-hint: "[--all | --mine | --assigned-to=<user_id>] [--created-by=<user_id>] [--drain] [--items=<uuid1>,<uuid2>,...]"
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__check_queue_status
+argument-hint: "[--all | --mine | --assigned-to=<user_id>] [--created-by=<user_id>] [--project-id=<uuid>] [--drain] [--items=<uuid1>,<uuid2>,...]"
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__check_queue_status
 ---
 
 # Start DevSpec Autopilot
@@ -11,7 +11,14 @@ You are starting the DevSpec Autopilot. Follow the autopilot skill instructions 
 
 ## Arguments
 
-Parse `$ARGUMENTS` into four independent session variables. Flags can be combined freely (e.g. `--all --drain`, `--assigned-to=<uuid> --created-by=<uuid>`, `--items=<uuid1>,<uuid2>`).
+Parse `$ARGUMENTS` into independent session variables. Flags can be combined freely (e.g. `--all --drain`, `--assigned-to=<uuid> --created-by=<uuid>`, `--items=<uuid1>,<uuid2>`, `--project-id=<uuid>`).
+
+### `project_id_override` (account-wide token disambiguation)
+
+- `--project-id=<uuid>` → `project_id_override = "<uuid>"`
+- nothing → `project_id_override = null`
+
+DevSpec MCP tokens are **account-wide** — they no longer pin a project, so the runner resolves which project to operate on at startup from the workspace git remote (see the skill's Startup step 1: `list_projects({ git_remote })` → `remote_match.resolved_project_id`). Pass `--project-id=<uuid>` **only when that resolution is ambiguous** — i.e. the repo is tracked by more than one DevSpec project, so `resolved_project_id` comes back null with multiple `candidate_project_ids`. The override skips git-remote resolution and pins the run to the given project. Validate the uuid against `^[0-9a-f-]{36}$`; on failure output `✗ Invalid UUID in --project-id: <value>` and stop before entering the loop.
 
 ### `assigned_to_filter` (NEW DEFAULT — assignee-based ownership)
 
@@ -69,9 +76,12 @@ Sibling `360b1202` added a `force: true` flag to `claim_work_item` that bypasses
 
 ## Steps
 
-1. Parse `$ARGUMENTS` per above and store all four flags (`assigned_to_filter`, `created_by_filter`, `drain_on_empty`, `item_id_queue`) in session state. If `--items=` is present, validate every UUID per the rule above and stop with a clear error on the first invalid value — do NOT enter the polling loop. If `item_id_queue` ends up non-empty, also set `drain_on_empty = true` (it is implied). Flags are otherwise independent — any combination is valid (e.g. `--mine --drain`, `--assigned-to=<uuid> --created-by=<uuid>`, `--items=<uuid>`).
-2. Call `get_project_summary` to fetch project settings including autopilot configuration
-3. If autopilot is not enabled in settings, output a warning and stop:
+1. Parse `$ARGUMENTS` per above and store the flags (`assigned_to_filter`, `created_by_filter`, `project_id_override`, `drain_on_empty`, `item_id_queue`) in session state. If `--items=` is present, validate every UUID per the rule above and stop with a clear error on the first invalid value — do NOT enter the polling loop. If `--project-id=` is present, validate its UUID too and stop on failure. If `item_id_queue` ends up non-empty, also set `drain_on_empty = true` (it is implied). Flags are otherwise independent — any combination is valid (e.g. `--mine --drain`, `--assigned-to=<uuid> --created-by=<uuid>`, `--items=<uuid>`, `--project-id=<uuid>`).
+2. **Resolve the project (account-wide token).** Follow the skill's Startup steps 0–1: run the one startup bash call to collect the workspace git remote, then resolve `project_id`:
+   - If `project_id_override` is set, use it directly as `project_id` and skip git-remote resolution.
+   - Otherwise call `list_projects({ git_remote: "<primary repo's origin remote>" })` and read `remote_match`. Use `resolved_project_id` when non-null. If it is null with `candidate_project_ids`, the repo is tracked by multiple projects — output a `DISABLED`-style banner naming the candidates and advising `/autopilot.start --project-id=<uuid>`, then stop (never guess). If there is no match at all, stop with "No DevSpec project tracks this repo (`<git_remote>`)."
+3. Call `get_project_summary({ project_id })` to fetch project settings including autopilot configuration
+4. If autopilot is not enabled in settings, output a warning and stop:
    ```
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      ◆  DEVSPEC AUTOPILOT  ▸  DISABLED
@@ -80,12 +90,12 @@ Sibling `360b1202` added a `force: true` flag to `claim_work_item` that bypasses
      Enable it in DevSpec project settings to use this feature.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    ```
-4. Output the startup banner as defined in the skill's Output Formatting section. Include a `filter:` line that reflects the active assignee-filter state:
+5. Output the startup banner as defined in the skill's Output Formatting section. Include a `filter:` line that reflects the active assignee-filter state:
    - Default / `--mine`: `filter: assigned to you (+ unassigned)`
    - `--assigned-to=<uuid>`: `filter: assigned to <short_id> (+ unassigned)`
    - `--all`: `filter: shared queue (no filter)`
    When `created_by_filter` is set, also include a separate `created_by: <short_id>` line. When `drain_on_empty` is set, include a `drain: on` line. When `item_id_queue` is non-empty, include a `mode: targeted (N items specified)` line so the operator can see at a glance that the session is processing a fixed list rather than the live queue.
-5. Enter the polling loop as defined in the autopilot skill (skills/autopilot/SKILL.md), passing all four flags through — the skill uses `assigned_to_filter` and `created_by_filter` on every `get_next_work_item` call, pops from `item_id_queue` at the Fetch Work step when it is non-empty, and checks `drain_on_empty` at the Wait step.
-6. Follow ALL formatting rules from the skill — use Unicode symbols, compact status lines, and timestamps
+6. Enter the polling loop as defined in the autopilot skill (skills/autopilot/SKILL.md), passing the resolved `project_id` and all the flags through — the skill threads `project_id` on every project-scoped call (`get_next_work_item`, `get_action_items`, `send_heartbeat`, `search_memories`, …), uses `assigned_to_filter` and `created_by_filter` on every `get_next_work_item` call, pops from `item_id_queue` at the Fetch Work step when it is non-empty, and checks `drain_on_empty` at the Wait step.
+7. Follow ALL formatting rules from the skill — use Unicode symbols, compact status lines, and timestamps
 
 When `drain_on_empty` is false (default) and `item_id_queue` is empty, the autopilot continues running until you receive `/autopilot.stop` or the session ends. When `drain_on_empty` is true, it stops on the first idle cycle. When `item_id_queue` is non-empty, the loop processes the listed items in order and then exits cleanly via the same drain-then-exit path.

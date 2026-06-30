@@ -84,11 +84,18 @@ export {
   shouldContinue,
   formatCycleResult,
   formatStatus,
+  resolveProjectFromRemoteMatch,
 } from './autopilot/loop.js';
+export type { ProjectResolution } from './autopilot/loop.js';
 
 // MCP client helpers
 export {
   generateBranchName,
+  buildResolveProjectArgs,
+  buildFetchNextWorkArgs,
+  buildFetchByActivityArgs,
+  buildGetProjectSummaryArgs,
+  buildSearchMemoriesArgs,
   buildFetchPlanningArgs,
   buildFetchQueuedArgs,
   buildClaimArgs,
@@ -99,3 +106,4 @@ export {
   isStaleClaimAt,
   buildStaleFailArgs,
 } from './mcp/client.js';
+export type { ResolveProjectParams, RemoteMatch } from './mcp/client.js';

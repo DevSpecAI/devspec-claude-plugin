@@ -1,7 +1,7 @@
 ---
 name: autopilot.status
 description: Show the current state of the DevSpec autopilot
-allowed-tools: mcp__devspec__get_action_items, mcp__devspec__get_project_summary
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_project_summary
 ---
 
 # Autopilot Status
@@ -10,7 +10,8 @@ Fetch current state and output a compact status panel. Make all API calls in par
 
 ## Steps
 
-1. Call `get_project_summary` for settings, `get_action_items` with `agent_ready: true, agent_activity: 'queued'` for queue count, and `get_action_items` with `agent_activity: 'in_progress'` for active count — **all in parallel**
+0. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide and no longer pin a project. Run `git remote get-url origin` and call `list_projects({ git_remote: "<that remote>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, ask the user which project. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. Pass `project_id` on the calls below.
+1. Call `get_project_summary({ project_id })` for settings, `get_action_items` with `project_id, agent_ready: true, agent_activity: 'queued'` for queue count, and `get_action_items` with `project_id, agent_activity: 'in_progress'` for active count — **all in parallel**
 2. Output:
 
 ```

@@ -2,7 +2,7 @@
 name: devspec.session-brainstorm
 description: Continue a DevSpec chat session locally — either post a one-shot answer back into the session, or brainstorm interactively with the user first and post the agreed conclusion. Invoked by the DevSpec "Continue in Local Agent" handoff.
 argument-hint: "mode=<answer|brainstorm> session_id=<uuid> [free-text topic]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__get_session_transcript, mcp__devspec__post_session_message, mcp__devspec__search_memories, mcp__devspec__search_index, mcp__devspec__read_file
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__get_session_transcript, mcp__devspec__post_session_message, mcp__devspec__search_memories, mcp__devspec__search_index, mcp__devspec__read_file, mcp__devspec__create_action_item, mcp__devspec__update_action_item
 ---
 
 # DevSpec Session Brainstorm
@@ -41,7 +41,7 @@ This command is normally launched by the "Continue in Local Agent" button in the
    - Investigate here in this repository — read the relevant code (`Read`/`Grep`/`Glob`, `search_index`, `search_memories`, run read-only commands as needed) to ground your answer in the real codebase.
    - When you have findings, post them back **once**:
      `post_session_message(session_id: <session_id>, message: <your findings as markdown>)`.
-   - Use clear markdown — a short summary line, then specifics (files, `code`, bullet lists). Do **not** create an action item or a comment; post directly to the session.
+   - Use clear markdown — a short summary line, then specifics (files, `code`, bullet lists). Post directly to the session; do not leave comments on items. Create action items only when the session conversation explicitly asks for them — and then follow the **Action items belong to the session** rule below.
    - Then output a local confirmation and **stop** (see Output).
 
    ### mode = brainstorm  (interactive)
@@ -70,6 +70,7 @@ This command is normally launched by the "Continue in Local Agent" button in the
    - Show it in the terminal, then ask: `Post this summary back to the DevSpec session? (y/n)`
      - If **yes**: `post_session_message(session_id: <session_id>, message: <the summary>)`.
      - If **no**: do not post; tell the user the summary is above if they want it later.
+   - **Action items.** If the brainstorm produced concrete work, list the proposed items in the terminal and ask: `Create these as DevSpec action items? (y/n/pick)`. On agreement, create each with `create_action_item` — **always passing `session_id: <session_id>`** so the item is owned by this session (it appears in the session transcript as an action-item card and in the "This session" panel automatically — so the posted summary can reference items briefly instead of re-listing their full details). Same for `update_action_item` on existing items the discussion refined: pass `session_id: <session_id>`.
    - Then output a local confirmation and stop (see Output).
 
 ## Output
@@ -88,5 +89,5 @@ If in brainstorm mode the user declined to post, replace the first line with `�
 - In **brainstorm** mode, never post a conclusion to the session until the user has finished brainstorming and agreed to post. In **answer** mode, post exactly one findings message.
 - Always use the full `session_id` UUID stored in step 1 — never reconstruct or pad it.
 - Ground everything in the actual transcript and codebase — no generic advice.
-- Do NOT create action items or comments; this command posts into the live session only.
+- **Action items belong to the session.** Never create or update an action item from this command without the user's agreement (brainstorm mode) or the session explicitly asking for it (answer mode). When you do, **every** `create_action_item` / `update_action_item` call MUST include `session_id: <session_id>` (the full chat-session UUID from step 1 — NOT a runner or local session id). That is what makes the item owned by the session: it shows up in the session's transcript and "This session" panel. An item created without it is orphaned from the conversation that produced it.
 - Keep terminal output tight — no filler before or after the structured blocks.

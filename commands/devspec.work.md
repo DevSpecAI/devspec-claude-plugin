@@ -228,7 +228,17 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     ```
     The `[devspec:<id>]` tag in the message is what the deployment webhook uses to track deployments — do NOT construct the message yourself.
 
-17. **Push** (if auto_push is enabled or implied by auto_merge):
+17. **Integrate the fresh target, then push** (if auto_push is enabled or implied by auto_merge).
+
+    When `auto_merge` is enabled, first integrate the target branch into your work branch **in the worktree** — another session or a parallel autopilot runner may have landed work since you branched (resolve `{merge_target}` per step 18b):
+    ```bash
+    git fetch origin {merge_target}
+    git merge origin/{merge_target} --no-edit
+    ```
+    - Conflicts here are normal, not an error: resolve them yourself on the work branch — read both sides, produce the correct combined code (never resolve by discarding the other side's changes), `git add` the resolved files and `git commit`. If you cannot produce a confident resolution, `git merge --abort` and go to Failure Handling.
+    - If the merge brought in any new commits, re-run the step-15 checks against the combined state before pushing.
+
+    Then push:
     ```bash
     git push -u origin {branch_name}
     ```
@@ -240,14 +250,19 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     cd "<main_repo>"
     ```
 
-    b. **Merge** (only if `auto_merge` is enabled). Determine the merge target **for the repo you are pushing** by resolving its branch in this order: (1) the `target_branch` of its entry in the `repos` map from step 2 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch` if its `target_branch` is null/empty; (3) `starting_branch`. A multi-repo item pushes EACH changed repo to ITS OWN resolved branch. Fetch the target first so a concurrent session's commits are included:
+    b. **Merge** (only if `auto_merge` is enabled). Determine the merge target **for the repo you are pushing** by resolving its branch in this order: (1) the `target_branch` of its entry in the `repos` map from step 2 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch` if its `target_branch` is null/empty; (3) `starting_branch`. A multi-repo item pushes EACH changed repo to ITS OWN resolved branch.
+
+    Merges serialize git-natively against concurrent sessions and parallel runners: **push atomicity is the lock**. Sync the local target exactly to the remote, merge, push:
     ```bash
     git fetch origin {merge_target}
     git checkout {merge_target}
+    git merge --ff-only origin/{merge_target}
     git merge {branch_name} --no-ff --no-edit
     git push origin {merge_target}
     ```
-    If merge conflicts arise, run `git merge --abort` and go to Failure Handling — the branch is already pushed, so the developer can resolve it manually.
+    - If the `--ff-only` sync fails, the LOCAL target has commits the remote doesn't. If they're your own leftover from a rejected attempt of THIS item, discard them with `git reset --hard origin/{merge_target}`; anything else (e.g. the developer's local work) — do NOT discard; go to Failure Handling and say so.
+    - The `{branch_name}` merge must be CLEAN — conflict resolution happened on the work branch in step 17. If it conflicts anyway, the target moved again: `git merge --abort` and repeat step 17's integrate (in the worktree — do this BEFORE removing it) then retry here.
+    - **Push rejected (non-fast-forward)?** Someone landed between your fetch and push — normal. Retry, bounded at 3 attempts: repeat step 17's integrate (new commits → resolve → re-run checks → re-push branch), then this step. After the third rejection, go to Failure Handling — the branch is already pushed, so the developer can resolve it manually.
 
     c. **Remove the worktree** — MANDATORY on every path, whether or not you merged (the branch and its commits live in the repo independently of the worktree):
     ```bash

@@ -391,13 +391,35 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
    git push -u origin <branch_name>
    ```
 
-8. **MERGE**: If auto_merge is enabled, merge to the repo's DevSpec-tracked branch. Resolve the merge target **for the repo you are pushing** in order: (1) the `target_branch` of its entry in the `repos` array from step 1 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch`; (3) `startup_branch` (the branch this repo was on at startup) as a last resort. A multi-repo workspace merges each repo to ITS OWN resolved branch — never assume one project-wide branch.
+8. **MERGE**: If auto_merge is enabled, land the work on the repo's DevSpec-tracked branch. Resolve the merge target **for the repo you are pushing** in order: (1) the `target_branch` of its entry in the `repos` array from step 1 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch`; (3) `startup_branch` (the branch this repo was on at startup) as a last resort. A multi-repo workspace merges each repo to ITS OWN resolved branch — never assume one project-wide branch.
+
+   Merges must serialize against OTHER runners and concurrent sessions pushing the same target — parallel runners are supported, so another agent may land work between your fetch and your push. The protocol is git-native: **push atomicity is the lock** (there is no merge lock to take), and nothing lands without the checks passing against the COMBINED state (fresh target + your change).
+
+   **a) Integrate the fresh target into your work branch — in the worktree:**
    ```bash
+   git fetch origin {merge_target}
+   git merge origin/{merge_target} --no-edit
+   ```
+   - **Conflicts here are normal under parallel execution, not an error.** Resolve them yourself, on the work branch — you have full context of your change. Read both sides, produce the correct combined code (never resolve by discarding the other side's changes), then `git add` the resolved files and `git commit`.
+   - If you cannot produce a resolution you are confident in: `git merge --abort` → **FAIL PATH**.
+   - If this merge brought in any new commits (conflicted or not), **re-run the step-5 test commands** against the combined state. If they fail because of the interaction and you cannot fix it → **FAIL PATH**.
+   - Push the updated work branch: `git push origin <branch_name>`.
+
+   **b) Land on the target — from the main repo** (the worktree keeps the work branch checked out; git refuses the same branch in two worktrees):
+   ```bash
+   cd <main_repo>
+   git fetch origin {merge_target}
    git checkout {merge_target}
+   git merge --ff-only origin/{merge_target}
    git merge <branch_name> --no-ff --no-edit
    git push origin {merge_target}
    ```
-   If merge conflicts arise, fail the item with a clear error.
+   - The `--ff-only` sync fails if the LOCAL target has commits the remote doesn't. If those commits are your own leftover from a rejected attempt of THIS item, discard them with `git reset --hard origin/{merge_target}`; if they are anything else (e.g. the developer's local work), do NOT discard — **FAIL PATH** with a note explaining the local target has unpushed commits.
+   - The `<branch_name>` merge must be CLEAN — all conflict resolution already happened on the work branch in (a). If it conflicts anyway, the target moved again: `git merge --abort` and return to (a).
+
+   **c) Push rejected (non-fast-forward)?** Another runner landed between your fetch and your push — normal, not an error. Retry, **bounded at 3 attempts**: return to (a) (integrate the new commits, re-run checks, re-push the branch), then (b) again. After the third rejection → **FAIL PATH**.
+
+   **FAIL PATH** (unresolvable conflict, checks that cannot go green against the combined state, retries exhausted, or a dirty local target): the work branch is already pushed — leave it for human triage. Fail the item with a clear error naming the conflicting files and the just-landed work it collides with (e.g. `"Merge conflict with just-landed a1b2c3d in src/foo.ts — needs human resolution"`), then continue the polling loop as for any other failed item. **Never stop the runner over one item's merge.**
 
 9. **REPORT SUCCESS** — three MCP calls, in this exact order:
 

@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 export const AgentStatusSchema = z.enum([
   'planning',
-  'queued',
+  'staged',
   'implementing',
   'finished',
   'failed',

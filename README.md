@@ -97,12 +97,12 @@ Open your project in DevSpec, go to **Settings**, and scroll to **Autopilot Conf
 | Test Commands | (empty) | Unit, E2E, and typecheck commands to run |
 | Protected Paths | (empty) | Files the agent must never modify (glob patterns) |
 | Custom Instructions | (empty) | Extra context injected into the agent's prompt |
-| Poll Interval | 60s | How often to check for queued items |
+| Poll Interval | 60s | How often to check for staged items |
 | Stale Timeout | 30min | When to auto-fail stuck items |
 
-### 3. Queue an Action Item
+### 3. Stage an Action Item
 
-In DevSpec, find an action item with the "Agent" badge. Click **Queue for Autopilot** (fully autonomous) or **Request Agent Plan** (agent analyzes first, you approve before execution).
+In DevSpec, find an action item with the "Agent" badge. Click **Stage for Autopilot** (fully autonomous) or **Request Agent Plan** (agent analyzes first, you approve before execution).
 
 ### 4. Start the Autopilot
 
@@ -123,7 +123,7 @@ Common variations:
 # Default filter, but stop after the queue drains
 /autopilot:start --drain
 
-# Legacy shared-queue mode — every queued item the caller can see
+# Legacy shared-queue mode — every staged item the caller can see
 /autopilot:start --all
 
 # Run on a specific teammate's queue (assigned to them + unassigned)
@@ -135,7 +135,7 @@ Common variations:
 # Everything YOU created, regardless of assignee. --all clears the default
 # --mine assignee filter so --created-by is the only thing narrowing the queue
 # (without --all, items you created but assigned to a teammate are skipped).
-# "Queued" is implicit — the runner only ever processes queued, agent-ready work.
+# "Staged" is implicit — the runner only ever processes staged, agent-ready work.
 /autopilot:start --all --created-by=<user_id>
 
 # Pin the run to a specific project. Only needed when the workspace's git remote
@@ -144,7 +144,7 @@ Common variations:
 /autopilot:start --project-id=<project_uuid>
 ```
 
-The autopilot enters a polling loop. It checks for queued items every 60 seconds (configurable), processes one per cycle, and reports results back to DevSpec.
+The autopilot enters a polling loop. It checks for staged items every 60 seconds (configurable), processes one per cycle, and reports results back to DevSpec.
 
 ## Commands
 
@@ -152,7 +152,7 @@ The autopilot enters a polling loop. It checks for queued items every 60 seconds
 |---------|-------------|
 | `/autopilot:start` | Start the polling loop (default: assigned to you + unassigned) |
 | `/autopilot:stop` | Stop after the current cycle completes |
-| `/autopilot:status` | Show current state, queued item count, settings |
+| `/autopilot:status` | Show current state, staged item count, settings |
 | `/autopilot:history` | Show recent runs with success/failure stats |
 
 ## How It Works
@@ -160,7 +160,7 @@ The autopilot enters a polling loop. It checks for queued items every 60 seconds
 ### Polling Loop
 
 ```
-Start → Check for stale claims → Fetch queued items → Claim one →
+Start → Check for stale claims → Fetch staged items → Claim one →
   → Create worktree → Implement → Test → Commit → Push → Merge →
   → Report success → Clean up → Wait → Repeat
 ```
@@ -201,7 +201,7 @@ The autopilot assembles its instructions from three layers:
 
 ### In DevSpec
 
-- Action items show agent activity badges (queued, claimed, implementing, reporting, finished, failed)
+- Action items show agent activity badges (staged, implementing, reporting, finished, failed)
 - Completed items link to the branch and commit
 - Failed items show the error with a Retry button
 - The **Autopilot Runs** dashboard shows success rate, timing, and run history
@@ -224,7 +224,7 @@ Shows recent runs with action item titles, outcomes, and timing.
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| "No queued items" every cycle | No items queued in DevSpec | Queue an item with "Queue for Autopilot" button |
+| "No staged items" every cycle | No items staged in DevSpec | Stage an item with "Stage for Autopilot" button |
 | "Autopilot is not enabled" | Project settings | Enable autopilot in Project Settings |
 | "Claim failed" | Another instance claimed it | Normal — next cycle picks up the next item |
 | "Requires human judgment" | Action item description too vague | Edit the item description and retry |

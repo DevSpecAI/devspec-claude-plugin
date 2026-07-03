@@ -97,7 +97,7 @@ export {
   buildGetProjectSummaryArgs,
   buildSearchMemoriesArgs,
   buildFetchPlanningArgs,
-  buildFetchQueuedArgs,
+  buildFetchStagedArgs,
   buildClaimArgs,
   buildReportSuccessArgs,
   buildReportFailureArgs,

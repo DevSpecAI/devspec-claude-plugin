@@ -19,19 +19,19 @@ import type { AutopilotSettings } from '../types.js';
  * Describes the MCP call to fetch planning action items.
  * Claude executes: get_action_items({ agent_activity: 'planning' })
  *
- * For queued items, use get_next_work_item() instead — it returns a single
+ * For staged items, use get_next_work_item() instead — it returns a single
  * item with full context, avoiding the 90k+ char overflow that
- * get_action_items({ agent_ready: true, agent_activity: 'queued' }) causes
- * when many items are in the queue.
+ * get_action_items({ agent_ready: true, agent_activity: 'staged' }) causes
+ * when many items are staged.
  */
 export interface FetchPlanningItemsParams {
   agentActivity: 'planning';
 }
 
 /**
- * Describes the MCP call to atomically claim a queued action item.
+ * Describes the MCP call to atomically claim a staged action item.
  * Claude executes: claim_work_item({ action_item_id, agent_branch })
- * Transitions queued → in_progress. Fails if item is no longer queued.
+ * Transitions staged → in_progress. Fails if item is no longer staged.
  */
 export interface ClaimItemParams {
   actionItemId: string;
@@ -125,7 +125,7 @@ export function buildResolveProjectArgs(params: ResolveProjectParams) {
 // =============================================================================
 
 /**
- * Build args for the queued-work fetch.
+ * Build args for the staged-work fetch.
  * Claude executes: get_next_work_item({ project_id, ... })
  *
  * Account-wide tokens require `project_id` on project-scoped calls — pass the
@@ -144,8 +144,8 @@ export function buildFetchPlanningArgs(params: { projectId: string }) {
   };
 }
 
-/** @deprecated Use get_next_work_item() MCP tool instead — avoids bulk-fetching all queued items */
-export function buildFetchQueuedArgs(params: { agentStatus: 'queued' | 'planning'; projectId: string }) {
+/** @deprecated Use get_next_work_item() MCP tool instead — avoids bulk-fetching all staged items */
+export function buildFetchStagedArgs(params: { agentStatus: 'staged' | 'planning'; projectId: string }) {
   return {
     project_id: params.projectId,
     agent_ready: true,

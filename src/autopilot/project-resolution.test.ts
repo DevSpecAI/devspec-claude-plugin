@@ -7,7 +7,7 @@ import {
   buildGetProjectSummaryArgs,
   buildSearchMemoriesArgs,
   buildFetchPlanningArgs,
-  buildFetchQueuedArgs,
+  buildFetchStagedArgs,
 } from '../mcp/client.js';
 
 // ---------------------------------------------------------------------------
@@ -101,11 +101,11 @@ describe('project-scoped arg builders include project_id', () => {
     });
   });
 
-  it('buildFetchQueuedArgs', () => {
-    expect(buildFetchQueuedArgs({ agentStatus: 'queued', projectId })).toEqual({
+  it('buildFetchStagedArgs', () => {
+    expect(buildFetchStagedArgs({ agentStatus: 'staged', projectId })).toEqual({
       project_id: projectId,
       agent_ready: true,
-      agent_activity: 'queued',
+      agent_activity: 'staged',
       lifecycle: 'open',
     });
   });

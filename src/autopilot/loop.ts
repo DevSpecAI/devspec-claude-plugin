@@ -6,7 +6,7 @@
  * session — this module provides the loop logic and state management.
  *
  * The skill SKILL.md references this loop structure and instructs Claude to:
- * 1. Call get_action_items to check for queued/planning items
+ * 1. Call get_action_items to check for staged/planning items
  * 2. If found, claim and process one item per cycle
  * 3. Wait poll_interval_seconds
  * 4. Repeat until stopped
@@ -212,7 +212,7 @@ export function formatCycleResult(result: CycleResult, cycleNumber: number): str
 
   switch (result.action) {
     case 'idle':
-      return `${prefix} No queued items found. Waiting for next cycle.`;
+      return `${prefix} No staged items found. Waiting for next cycle.`;
     case 'claimed':
       return `${prefix} Claimed: "${result.actionItemTitle}" (${result.actionItemId})`;
     case 'completed':

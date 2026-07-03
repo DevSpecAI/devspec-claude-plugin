@@ -74,7 +74,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 ### Phase 1 — Resolve
 
 4. **Resolve the action item.** Extract an action item identifier from the user's input (ID, partial ID, or title keywords). Strip any `--unattended` flag from the input before matching.
-   - **CRITICAL: ALWAYS call the MCP tool to fetch current state.** Even if you worked on this item earlier in this session, your conversation context may be stale — the user may have re-queued the item with new feedback since your last interaction. Never rely on in-session memory for item lifecycle.
+   - **CRITICAL: ALWAYS call the MCP tool to fetch current state.** Even if you worked on this item earlier in this session, your conversation context may be stale — the user may have re-staged the item with new feedback since your last interaction. Never rely on in-session memory for item lifecycle.
    - If an ID (or partial ID) is provided, call `get_action_items({ project_id, status: "all" })` and match by ID prefix.
    - If keywords are provided, call `get_action_items({ project_id, status: "all" })` and match by title.
      - **Interactive mode:** If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
@@ -88,11 +88,11 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - `get_action_item_history(action_item_id)` — prior notes, commits, lifecycle changes, **and verification feedback**
    - `search_memories({ project_id, query: "<action item title>" })` — related decisions, conventions, risks
 
-   These calls are mandatory because the item's state may have changed since you last touched it (e.g., user re-queued with new feedback).
+   These calls are mandatory because the item's state may have changed since you last touched it (e.g., user re-staged with new feedback).
 
    **Understand the intent.** Read the item's spec fields: `intent` (the WHY — the problem and desired outcome), `acceptance_criteria` (your definition of done — the diff must satisfy it), and `ai_instructions` (constraints). If `intent` is missing or too thin to grasp the real goal — common when the item came from a terse conversation — and the item has a `source_session_id`, call `get_session_transcript({ session_id: <source_session_id> })` to recover the originating intent from the conversation that produced it. This is optional and on-demand: skip it when the spec fields already make the goal clear. When the transcript reveals intent or criteria the item is missing, persist it back with `update_action_item({ action_item_id, intent, acceptance_criteria })` so it's captured for next time.
 
-6. **Handle non-queued activities.** After loading the history (from the MCP response, NOT from conversation memory), check the item's current `agent_activity`:
+6. **Handle non-staged activities.** After loading the history (from the MCP response, NOT from conversation memory), check the item's current `agent_activity`:
 
    - **`awaiting_verification`**: Scan the history for verification feedback (entries with type `verification_report`, `verification_failed`, `feedback`, or `comment` that were added *after* the most recent `completed` event). Pay special attention to `verification_report` entries with `change_data.verified === false` — these contain user feedback from the testing page. If feedback exists that indicates something is broken or missing:
      - Present the feedback prominently:
@@ -109,7 +109,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
    - **`in_progress`** (claimed by another agent): Output `✗ Item is currently being worked on by another agent` and stop. If claimed by this agent in a prior session, proceed.
 
-   - **`queued`** or **`ready`**: Proceed normally to Step 7.
+   - **`staged`** or **`ready`**: Proceed normally to Step 7.
 
 7. **Present the item:**
    ```

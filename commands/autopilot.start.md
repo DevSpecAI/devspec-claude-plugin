@@ -1,6 +1,6 @@
 ---
 name: autopilot.start
-description: Start the DevSpec autopilot polling loop to automatically process queued action items
+description: Start the DevSpec autopilot polling loop to automatically process staged action items
 argument-hint: "[--all | --mine | --assigned-to=<user_id>] [--created-by=<user_id>] [--project-id=<uuid>] [--drain] [--items=<uuid1>,<uuid2>,...]"
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__check_queue_status
 ---
@@ -68,7 +68,7 @@ Explicit UUID flags (`--assigned-to=<uuid>`, `--created-by=<uuid>`) > `--all` > 
 /autopilot.start --all --created-by=<your_user_id>
 ```
 
-Processes only the items **you authored**, no matter who they are assigned to. Both flags are required: `--created-by` is ANDed on top of the assignee filter, and the default assignee filter is `--mine` (assigned to you OR unassigned). So `--created-by=<uuid>` *alone* skips items you created but assigned to a teammate. `--all` clears the assignee filter, leaving `--created-by` as the only narrowing condition. There is no "queued" flag — the autopilot only ever fetches and claims queued, agent-ready work, so `--created-by` already means "queued items created by that user".
+Processes only the items **you authored**, no matter who they are assigned to. Both flags are required: `--created-by` is ANDed on top of the assignee filter, and the default assignee filter is `--mine` (assigned to you OR unassigned). So `--created-by=<uuid>` *alone* skips items you created but assigned to a teammate. `--all` clears the assignee filter, leaving `--created-by` as the only narrowing condition. There is no "staged" flag — the autopilot only ever fetches and claims staged, agent-ready work, so `--created-by` already means "staged items created by that user".
 
 ### Force-claim is NOT used by default
 

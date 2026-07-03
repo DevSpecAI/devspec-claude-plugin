@@ -65,7 +65,7 @@ Each cycle gets a SINGLE combined output block — the header and the result in 
 ▸ Cycle 3 · idle                                   12:34:05 PM
 ```
 
-That's it — one line. No "No queued items" message, no "next check in 60s". The status `idle` says it all.
+That's it — one line. No "No staged items" message, no "next check in 60s". The status `idle` says it all.
 
 **Idle cycle with branch change detected:**
 ```
@@ -262,11 +262,11 @@ Repeat the following until stopped:
 **Targeted mode** (`item_id_queue` is non-empty — session was started with `--items=...`):
 1. Pop the first UUID from `item_id_queue` in FIFO order.
 2. **Skip** the `get_next_work_item()` call entirely — the popped UUID *is* the next item. Proceed directly to step 2 (Process ONE Item) and claim it via `claim_work_item({ action_item_id: <popped_uuid>, agent_branch: ... })`. The claim response returns the item's full context (title, description, ai_instructions) for use during implementation.
-3. If the claim is rejected (item is no longer `queued`, was already implemented, was dismissed, or is assigned exclusively to another user), log it as a normal claim rejection and continue to the next UUID — do NOT pass `force: true`.
+3. If the claim is rejected (item is no longer `staged`, was already implemented, was dismissed, or is assigned exclusively to another user), log it as a normal claim rejection and continue to the next UUID — do NOT pass `force: true`.
 4. After popping, if `item_id_queue` is now empty, set `drain_on_empty = true` so the loop exits via the Wait step's drain-then-exit branch once this item finishes (success or failure).
 5. Skip the stale-claim and planning-item parallel checks while `item_id_queue` is non-empty — same rationale as drain mode (the runner is processing a fixed list and will exit cleanly when done).
 
-**Default mode** (`item_id_queue` is empty): always call `get_next_work_item()` — returns the single highest-priority queued item with full context, or empty when none available.
+**Default mode** (`item_id_queue` is empty): always call `get_next_work_item()` — returns the single highest-priority staged item with full context, or empty when none available.
 
 `get_next_work_item` is project-scoped: account-wide tokens require `project_id` (the one resolved at startup) on it. Pass it alongside the resolved filter values from `/autopilot.start` on **every** call:
 
@@ -294,20 +294,20 @@ When both filters are set, the server requires both to match (additive). The def
 During drain mode (`consecutive_idle_checks === 0`), only `get_next_work_item()` runs. Stale claims can't appear while this runner is actively working, and planning items wait until the drain completes.
 
 **IMPORTANT — Context Budget Rules:**
-- ALWAYS use `get_next_work_item()` for queued work — it returns ONE item with full context (description, ai_instructions, affected_files, related items). NEVER use `get_action_items` to fetch queued items — with 15+ items in the queue it returns all descriptions and easily exceeds 90k+ characters, overflowing the MCP tool result limit.
+- ALWAYS use `get_next_work_item()` for staged work — it returns ONE item with full context (description, ai_instructions, affected_files, related items). NEVER use `get_action_items` to fetch staged items — with 15+ items staged it returns all descriptions and easily exceeds 90k+ characters, overflowing the MCP tool result limit.
 - NEVER call `get_action_items` with `lifecycle: 'open'` and no agent filters — returns ALL open items, same problem.
 
 From the results:
 - **Stale claims** (when checked): items where `agent_claimed_at` is older than `stale_claim_timeout_minutes`. For each, call `update_action_item` to set `agent_activity: 'failed'` with `agent_error: 'Stale claim: process may have crashed'`.
-- **Queued work**: the item from `get_next_work_item()` (or none if the queue is empty)
+- **Staged work**: the item from `get_next_work_item()` (or none if nothing is staged)
 - **Planning work** (when checked): items needing plan generation
 
 **Review items** (when checked on first cycle after idle): also call `get_action_items({ project_id, agent_activity: 'under_human_review' })` in parallel to check for items needing plan review.
 
-If no queued, review, or planning items found, output idle status (see formatting) and go to step 5 (Wait).
+If no staged, review, or planning items found, output idle status (see formatting) and go to step 5 (Wait).
 
 ### 2. Process ONE Item
-Pick ONE item to process. **Priority order: queued > under_human_review > planning.** Only process a lower-priority item if no higher-priority items are available. Within the same status, pick the oldest item first. Process based on its `agent_activity`:
+Pick ONE item to process. **Priority order: staged > under_human_review > planning.** Only process a lower-priority item if no higher-priority items are available. Within the same status, pick the oldest item first. Process based on its `agent_activity`:
 
 #### If agent_activity = 'planning' (Analysis Only)
 1. Read and analyze the action item description
@@ -329,9 +329,9 @@ Pick ONE item to process. **Priority order: queued > under_human_review > planni
 6. Output review completion (see formatting)
 7. **DO NOT** create branches, modify code, commit, or create worktrees — this is review-only
 
-#### If agent_activity = 'queued' (Full Execution)
+#### If agent_activity = 'staged' (Full Execution)
 
-1. **CLAIM**: Call `claim_work_item` with `action_item_id` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. This is an atomic transition (queued → in_progress) — if the item is no longer queued (another agent claimed it), the call fails. On failure, skip to the next cycle.
+1. **CLAIM**: Call `claim_work_item` with `action_item_id` and `agent_branch: <branch_name>`. Branch name format: `{branch_prefix}{item_id_first_8_chars}`. This is an atomic transition (staged → in_progress) — if the item is no longer staged (another agent claimed it), the call fails. On failure, skip to the next cycle.
 
    **Brief context (when the item belongs to a brief):** If the claimed item has `parent_action_item_id` set on it, immediately call `get_action_item_siblings({ action_item_id: <claimed_id> })` and read the returned `parent` (brief title + description) and `siblings` (titles + statuses + completion summaries). Use this to understand the broader feature before starting work — especially to spot files or concerns that an in-progress sibling is already handling, so your changes don't conflict with sibling work. If `parent` is null, skip this step (it's a flat item).
 
@@ -499,9 +499,9 @@ This step uses two strategies to balance responsiveness with efficiency:
 **B. Drain-then-exit** — if this cycle was idle AND the session was started with `--drain` (`drain_on_empty === true`):
   - Do NOT sleep, do NOT call `check_queue_status`, do NOT heartbeat again
   - Follow the Graceful Shutdown sequence below (send_heartbeat offline, then stop summary)
-  - This lets `--drain` sessions fire-and-forget: process everything currently queued, then exit cleanly
+  - This lets `--drain` sessions fire-and-forget: process everything currently staged, then exit cleanly
 
-**C. Adaptive idle sleep** — if this cycle was idle (no queued or planning items found) and `drain_on_empty` is false:
+**C. Adaptive idle sleep** — if this cycle was idle (no staged or planning items found) and `drain_on_empty` is false:
   - Increment `consecutive_idle_checks`
   - Compute sleep duration based on how long the runner has been idle:
     * `consecutive_idle_checks` ≤ 10 (~first 5 minutes): sleep **30 seconds**

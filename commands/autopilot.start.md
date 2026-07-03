@@ -68,7 +68,7 @@ Explicit UUID flags (`--assigned-to=<uuid>`, `--created-by=<uuid>`) > `--all` > 
 /autopilot.start --all --created-by=<your_user_id>
 ```
 
-Processes only the items **you authored**, no matter who they are assigned to. Both flags are required: `--created-by` is ANDed on top of the assignee filter, and the default assignee filter is `--mine` (assigned to you OR unassigned). So `--created-by=<uuid>` *alone* skips items you created but assigned to a teammate. `--all` clears the assignee filter, leaving `--created-by` as the only narrowing condition. There is no "staged" flag — the autopilot only ever fetches and claims staged, agent-ready work, so `--created-by` already means "staged items created by that user".
+Processes only the items **you authored**, no matter who they are assigned to. Both flags are required: `--created-by` is ANDed on top of the assignee filter, and the default assignee filter is `--mine` (assigned to you OR unassigned). So `--created-by=<uuid>` *alone* skips items you created but assigned to a teammate. `--all` clears the assignee filter, leaving `--created-by` as the only narrowing condition. There is no "staged" flag — the autopilot only ever fetches and claims staged work, so `--created-by` already means "staged items created by that user".
 
 ### Force-claim is NOT used by default
 

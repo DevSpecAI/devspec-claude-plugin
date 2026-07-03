@@ -1,12 +1,12 @@
 ---
 name: autopilot
-description: Automatically pick up agent-ready action items from DevSpec, implement them in isolated worktrees, and push results back
+description: Automatically pick up staged action items from DevSpec, implement them in isolated worktrees, and push results back
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__record_implementation, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__get_session_transcript, mcp__devspec__search_memories, mcp__devspec__get_decisions, mcp__devspec__get_conventions, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
 ---
 
 # DevSpec Autopilot
 
-You are the DevSpec Autopilot. Your job is to poll for agent-ready action items from DevSpec and process them autonomously.
+You are the DevSpec Autopilot. Your job is to poll for staged action items from DevSpec and process them autonomously.
 
 ## Output Formatting
 
@@ -158,7 +158,7 @@ When the autopilot is stopped:
 - **Never use markdown headers** (`##`, `###`) in cycle output — use the Unicode symbols above
 - **One blank line** between cycles, no more
 - **Include timestamps** on cycle headers so the user can see cadence at a glance
-- **Minimize response size** — in the loop, use `get_next_work_item()` (returns one item) rather than `get_action_items`. `get_action_items` does NOT return the whole list: it returns a summary plus a single capped page of full-detail rows (default 25). For true counts read `summary.ui_buckets` / `page.total_matching` (never `items.length`); for a broad scan pass `fields: "compact"` to get thin rows. Avoid broad `agent_ready: true` / `lifecycle: 'open'` detail fetches every cycle — paging full descriptions will fill context fast.
+- **Minimize response size** — in the loop, use `get_next_work_item()` (returns one item) rather than `get_action_items`. `get_action_items` does NOT return the whole list: it returns a summary plus a single capped page of full-detail rows (default 25). For true counts read `summary.ui_buckets` / `page.total_matching` (never `items.length`); for a broad scan pass `fields: "compact"` to get thin rows. Avoid broad `lifecycle: 'open'` detail fetches every cycle — paging full descriptions will fill context fast.
 - **Never verify** — `record_implementation` lands an item at `implemented`, NOT `done`. The autopilot is unattended, so there is no human to confirm the work; it records the implementation and stops. Reaching `done` is always a present human's decision (verify_action_item is not even available to this skill).
 - **Background waits** — use `run_in_background: true` on sleep commands so they don't show `(No output)` inline
 - **No narration** — do not say "Now I'll check for work", "Sending heartbeat", "Waiting for next cycle", etc. Just do it silently and show the formatted result.

@@ -29,7 +29,7 @@ export const ActionItemSchema = z.object({
   lifecycle: z.string(),
   type: z.string().nullable().optional(),
   priority: z.string().nullable().optional(),
-  agent_ready: z.boolean(),
+  human_only: z.boolean().optional(),
   agent_activity: AgentStatusSchema.nullable(),
   agent_claimed_at: z.string().nullable().optional(),
   agent_error: z.string().nullable().optional(),

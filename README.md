@@ -135,7 +135,7 @@ Common variations:
 # Everything YOU created, regardless of assignee. --all clears the default
 # --mine assignee filter so --created-by is the only thing narrowing the queue
 # (without --all, items you created but assigned to a teammate are skipped).
-# "Staged" is implicit — the runner only ever processes staged, agent-ready work.
+# "Staged" is implicit — the runner only ever processes staged work.
 /autopilot:start --all --created-by=<user_id>
 
 # Pin the run to a specific project. Only needed when the workspace's git remote

@@ -21,7 +21,7 @@ import type { AutopilotSettings } from '../types.js';
  *
  * For staged items, use get_next_work_item() instead — it returns a single
  * item with full context, avoiding the 90k+ char overflow that
- * get_action_items({ agent_ready: true, agent_activity: 'staged' }) causes
+ * get_action_items({ agent_activity: 'staged' }) causes
  * when many items are staged.
  */
 export interface FetchPlanningItemsParams {
@@ -148,7 +148,6 @@ export function buildFetchPlanningArgs(params: { projectId: string }) {
 export function buildFetchStagedArgs(params: { agentStatus: 'staged' | 'planning'; projectId: string }) {
   return {
     project_id: params.projectId,
-    agent_ready: true,
     agent_activity: params.agentStatus,
     lifecycle: 'open',
   };

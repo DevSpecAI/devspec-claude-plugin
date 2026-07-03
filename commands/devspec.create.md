@@ -17,7 +17,7 @@ Create a new action item in DevSpec without leaving the terminal.
    - `description`: optional — detailed description
    - `type`: optional, default `task` (accept: `bug`, `feature`, `improvement`, `task`, `query`)
    - `priority`: optional, default not set (accept: `low`, `medium`, `high`, `critical`)
-   - `agent_ready`: optional, default `true` — set to `false` if user says "not for autopilot" or "manual"
+   - `suggest_human_only`: optional boolean — pass `true` ONLY for plainly off-platform work no agent could do (e.g. "call the lawyer", "buy the domain"). It is a suggestion a human confirms in DevSpec. Everything else needs no flag.
 
 2. If no title is provided, ask the user for one.
 
@@ -36,11 +36,12 @@ Create a new action item in DevSpec without leaving the terminal.
      Title:    {title}
      Type:     {type}
      Priority: {priority or "not set"}
-     Agent:    {ready/not ready}
    ```
+
+   If `suggest_human_only: true` was passed, append: `  Human-only: suggested (a human confirms in DevSpec)`
 
 ## Rules
 
 - Do NOT output filler text before or after the confirmation
 - Keep output compact
-- If user mentions "manual", "not for agent", or "no autopilot", set `agent_ready: false`
+- Pass `suggest_human_only: true` only for plainly off-platform work — never for code or platform work, even if the user says "manual" or "no autopilot" (any open item can simply stay unstaged)

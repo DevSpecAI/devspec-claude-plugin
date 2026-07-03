@@ -1,18 +1,33 @@
 ---
 name: devspec.verify-connection
-description: Verify the DevSpec connection loop — push a tagged verification commit to each tracked repo's primary branch and report the per-repo result. Run this when the setup wizard asks you to "run the DevSpec verify tool" with a verification ID.
-allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__report_connection_check
+description: Verify the DevSpec connection. Two modes — "Run the DevSpec connection check" (no ID) pings DevSpec through your token to prove agent+plugin+token, no git involved; "Run the DevSpec verify tool with ID <uuid>" pushes a tagged verification commit to each tracked repo and reports the per-repo result.
+allowed-tools: Bash, mcp__devspec__verify_agent_connection, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__report_connection_check
 ---
 
 # DevSpec Verify Connection
 
 Prove the end-to-end loop the setup wizard cares about: that **this coding agent** can execute a tool, push to GitHub, and have DevSpec receive the webhook — for **every** repo the project tracks. This is distinct from `devspec.work` / item verification; it does not touch action items.
 
-The setup wizard hands the user a prompt like *"Run the DevSpec verify tool with ID `<uuid>`"*. This command handles that.
+The setup wizard hands the user one of two prompts. Pick the mode by whether a verification UUID is present — never ask for one:
 
-## Steps
+- *"Run the DevSpec connection check"* (no UUID) → **Ping mode** below. This is the personal wizard's git-free check.
+- *"Run the DevSpec verify tool with ID `<uuid>`"* → **Commit mode** (the numbered steps). This is the project wizard's repo round-trip.
 
-1. **Extract the verification ID** (a UUID) from the user input. If none is present, ask the user for it and stop.
+## Ping mode (no verification ID)
+
+Call `verify_agent_connection` with no arguments. That single token-authenticated call is the whole proof: DevSpec stamps your token as agent-verified, and the user's wizard step turns green by itself within a few seconds. It needs no project, no repo, and no git — it works during first-time onboarding before any project exists.
+
+Print exactly:
+```
+✓ DevSpec connection verified
+  Connected as: {connected_as from the response, or the token owner}
+  Your setup wizard step will turn green automatically.
+```
+On an error, print `✗ DevSpec connection failed: {error}` and suggest checking that the token in the MCP config is the one just created. Do not fall through to commit mode.
+
+## Commit mode steps
+
+1. **Extract the verification ID** (a UUID) from the user input.
 
 1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide and no longer pin a project, so name the project before calling `get_project_summary`. Run `git remote get-url origin` and call `list_projects({ git_remote: "<that remote>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, present them and ask the user which project. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. (`report_connection_check` self-resolves its project from the `verification_id` and takes no `project_id`.)
 

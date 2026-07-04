@@ -1,7 +1,7 @@
 ---
 name: devspec.work
 description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
 ---
 
 # DevSpec Work
@@ -306,6 +306,8 @@ Fix real issues before committing. If a fix would expand scope beyond the action
         - `confidence`: 0.0-1.0 score. 0.9+ = straightforward change with passing tests. 0.7-0.9 = tests pass but change is complex or touches critical paths. Below 0.7 = significant uncertainty.
       - `provider`: always pass `"claude_code"`
       - `local_session_id`: the real Claude Code session UUID, so the developer can later resume *this exact session* with `claude --resume <id>` straight from the DevSpec UI. Get it by running this bash command and using the bare UUID it prints: `echo "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"`. Pass that concrete value (e.g. `7ef055ed-4716-44f8-a68f-abfa27d61e77`) — **never** pass the literal text `${CLAUDE_SESSION_ID}` / `${CLAUDE_CODE_SESSION_ID}`: MCP arguments are not shell-expanded, so a placeholder is stored verbatim and is useless. Only if that command prints an empty line do you omit this field entirely rather than sending a placeholder or non-UUID value. Do NOT pass `machine_user_id`: the server defaults it to you (the authenticated DevSpec user), which is exactly the developer whose machine ran this session.
+
+    **d)** `record_memory` — **only if** the work taught you something durable about the *project* (a decision, convention, architecture fact, or risk that outlives this item — e.g. "the item said X, we did Y because Z", a non-obvious constraint you had to honour). `search_memories` FIRST and `supersede_memory`/`retract_memory` the stale match instead of duplicating. Record shared knowledge only — do NOT record aggressively, and skip transient or obvious-from-the-code details (that reintroduces the duplicate-memory clutter we already fought). This is DevSpec's **shared** team memory — the source of truth the in-app DevSpec assistant reads every turn — and is distinct from your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge → DevSpec `record_memory`; personal or machine-specific notes → your local memory. That boundary is what keeps DevSpec from going stale.
 
 20. **Output the result:**
     ```

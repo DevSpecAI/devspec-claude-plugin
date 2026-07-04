@@ -1,7 +1,7 @@
 ---
 name: devspec.brainstorm
 description: Brainstorm on a DevSpec action item to refine scope, approach, and edge cases
-allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_action_item_history, mcp__devspec__add_implementation_note, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item
 ---
 
 # DevSpec Brainstorm
@@ -104,6 +104,8 @@ Interactively brainstorm on an action item to sharpen its scope, surface edge ca
        Note:  {note_id or "linked"}
      ```
    - If no: output `↻ Brainstorm not saved — summary is above if you need it later.`
+
+7. **Persist durable conclusions.** If the brainstorm settled something durable about the *project itself* — a decision, convention, architecture fact, or risk that outlives this item — record it to DevSpec with `record_memory` (`decision`/`convention`/`architecture`/`risk`/`insight`). `search_memories` FIRST and `supersede_memory`/`retract_memory` the stale match instead of duplicating; record shared knowledge only, not transient or obvious details. DevSpec memory is the team's **shared** source of truth — the in-app DevSpec assistant reads it every turn — so don't let a durable conclusion be lost or kept only in your own local notes (Claude Code's `CLAUDE.md` / built-in memory), where personal or machine-specific notes belong.
 
 ## Rules
 

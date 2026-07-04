@@ -2,7 +2,7 @@
 name: devspec.session-brainstorm
 description: Continue a DevSpec chat session locally — either post a one-shot answer back into the session, or brainstorm interactively with the user first and post the agreed conclusion. Invoked by the DevSpec "Continue in Local Agent" handoff.
 argument-hint: "mode=<answer|brainstorm> session_id=<uuid> [free-text topic]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__get_session_transcript, mcp__devspec__post_session_message, mcp__devspec__search_memories, mcp__devspec__search_index, mcp__devspec__read_file, mcp__devspec__create_action_item, mcp__devspec__update_action_item
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__get_session_transcript, mcp__devspec__post_session_message, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__search_index, mcp__devspec__read_file, mcp__devspec__create_action_item, mcp__devspec__update_action_item
 ---
 
 # DevSpec Session Brainstorm
@@ -71,6 +71,7 @@ This command is normally launched by the "Continue in Local Agent" button in the
      - If **yes**: `post_session_message(session_id: <session_id>, message: <the summary>)`.
      - If **no**: do not post; tell the user the summary is above if they want it later.
    - **Action items.** If the brainstorm produced concrete work, list the proposed items in the terminal and ask: `Create these as DevSpec action items? (y/n/pick)`. On agreement, create each with `create_action_item` — **always passing `session_id: <session_id>`** so the item is owned by this session (it appears in the session transcript as an action-item card and in the "This session" panel automatically — so the posted summary can reference items briefly instead of re-listing their full details). Same for `update_action_item` on existing items the discussion refined: pass `session_id: <session_id>`.
+   - **Durable knowledge.** If the discussion settled something durable about the *project* — a decision, convention, architecture fact, or risk that outlives this session — persist it with `record_memory` (`search_memories` FIRST; `supersede_memory`/`retract_memory` the stale match instead of duplicating; shared knowledge only, not transient or obvious details — don't record aggressively). DevSpec memory is the team's **shared** source of truth the in-app DevSpec assistant reads every turn, distinct from your own local memory (Claude Code's `CLAUDE.md` / built-in notes) where personal or machine-specific notes belong — keeping that boundary is what stops DevSpec going stale.
    - Then output a local confirmation and stop (see Output).
 
 ## Output

@@ -454,8 +454,11 @@ Pick ONE item to process. **Priority order: staged > under_human_review > planni
       - `provider`: always pass `"claude_code"`
       - `local_session_id`: pass the concrete `claude_session_id` value captured at startup (step 4 — the real `$CLAUDE_CODE_SESSION_ID` UUID, e.g. `7ef055ed-4716-44f8-a68f-abfa27d61e77`). Do NOT write the literal text `${CLAUDE_SESSION_ID}` or `${CLAUDE_CODE_SESSION_ID}` — MCP arguments are not shell-expanded, so a placeholder is stored verbatim and is useless. Send the actual bare UUID. This anchors the resume command (`claude --resume <id>`) DevSpec renders on the action item. The worktree this cycle ran in is deleted at cleanup, but the session is anchored to the workspace's main repo directory, so resuming drops a user into the end of this implementation — useful context. Only if `claude_session_id` is empty (the env var was unset at startup) do you omit this field entirely — never send a placeholder or a non-UUID value. Do NOT pass `machine_user_id`: the server defaults it to the authenticated caller (the developer whose machine ran this runner), which is the correct owner of the resume command.
 
-10. **CLEANUP**: Remove the worktree:
+10. **CLEANUP**: Remove the worktree. **First drop the `node_modules` link, then remove the worktree** — in that order. On Windows `node_modules` is a junction into the MAIN checkout; `git worktree remove --force` recurses through it and wipes the main checkout's real `node_modules` if the link is still there. Removing the link (never the target — it's a junction/symlink, not a real dir) makes the delete stop at the worktree:
     ```bash
+    # 1. Drop the node_modules junction/symlink first (safe: removes only the link).
+    node -e "const fs=require('fs'),p='<worktree_path>/node_modules';try{if(fs.lstatSync(p).isSymbolicLink()){try{fs.unlinkSync(p)}catch{fs.rmdirSync(p)}}}catch{}"
+    # 2. Now remove the worktree.
     git worktree remove <worktree_path> --force
     ```
 

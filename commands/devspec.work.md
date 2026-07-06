@@ -266,8 +266,9 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     - The `{branch_name}` merge must be CLEAN — conflict resolution happened on the work branch in step 17. If it conflicts anyway, the target moved again: `git merge --abort` and repeat step 17's integrate (in the worktree — do this BEFORE removing it) then retry here.
     - **Push rejected (non-fast-forward)?** Someone landed between your fetch and push — normal. Retry, bounded at 3 attempts: repeat step 17's integrate (new commits → resolve → re-run checks → re-push branch), then this step. After the third rejection, go to Failure Handling — the branch is already pushed, so the developer can resolve it manually.
 
-    c. **Remove the worktree** — MANDATORY on every path, whether or not you merged (the branch and its commits live in the repo independently of the worktree):
+    c. **Remove the worktree** — MANDATORY on every path, whether or not you merged (the branch and its commits live in the repo independently of the worktree). **Drop the `node_modules` link FIRST, then remove the worktree.** On Windows `node_modules` is a junction into the MAIN checkout; `git worktree remove --force` recurses through it and wipes the main checkout's real `node_modules` if the link is still there (the isSymbolicLink guard means only the link is ever removed, never a real dir):
     ```bash
+    node -e "const fs=require('fs'),p='<worktree_path>/node_modules';try{if(fs.lstatSync(p).isSymbolicLink()){try{fs.unlinkSync(p)}catch{fs.rmdirSync(p)}}}catch{}"
     git worktree remove "<worktree_path>" --force
     ```
     Run this from `main_repo`. If removal fails (e.g. a file lock from a just-finished process), wait a moment and retry once; if it still fails, warn but do not block completion (`git worktree prune` can reap it later).
@@ -332,7 +333,12 @@ Runs as a "finally" block — it MUST execute no matter which Phase 3 / Phase 4 
    git merge --abort
    git rebase --abort
    ```
-2. **Remove the worktree** (MANDATORY, best-effort at the edges). From `main_repo`, run `git worktree remove "<worktree_path>" --force`; wait briefly and retry once if it fails. If the worktree was never created (the failure happened before step 13 added it), skip this silently. The feature branch and any pushed commits survive worktree removal, so the work can still be picked up.
+2. **Remove the worktree** (MANDATORY, best-effort at the edges). From `main_repo`, **first drop the `node_modules` link, then remove the worktree** (on Windows the `--force` remove otherwise recurses through the `node_modules` junction and wipes the main checkout's real `node_modules`):
+   ```bash
+   node -e "const fs=require('fs'),p='<worktree_path>/node_modules';try{if(fs.lstatSync(p).isSymbolicLink()){try{fs.unlinkSync(p)}catch{fs.rmdirSync(p)}}}catch{}"
+   git worktree remove "<worktree_path>" --force
+   ```
+   Wait briefly and retry once if it fails. If the worktree was never created (the failure happened before step 13 added it), skip this silently. The feature branch and any pushed commits survive worktree removal, so the work can still be picked up.
 3. Call `add_implementation_note` documenting what was attempted, which step failed, and whether the worktree was cleaned up.
 4. Call `update_action_item` with `agent_activity: 'failed'` and `agent_error: <description>`.
 5. Output: `✗ Failed: {reason}`

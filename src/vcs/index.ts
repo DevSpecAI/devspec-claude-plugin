@@ -328,12 +328,48 @@ export async function commitAndPush(
 }
 
 /**
+ * Remove the node_modules link that linkNodeModules() created in a worktree.
+ *
+ * This MUST happen before `git worktree remove --force`. On Windows, node_modules
+ * is a `junction` (a directory reparse point) pointing at the MAIN checkout's
+ * node_modules. `git worktree remove --force` recursively deletes the worktree
+ * directory, and that recursion follows the junction into the main checkout and
+ * wipes its real node_modules contents — leaving an empty directory behind and
+ * breaking the main checkout's tooling. Dropping the link first makes the delete
+ * stop at the worktree boundary.
+ *
+ * The isSymbolicLink() guard means we only ever remove a link/junction, never a
+ * real node_modules directory. Junctions and dir-symlinks differ in how they're
+ * unlinked (unlink on Unix, rmdir for some Windows setups), so we try both.
+ */
+async function unlinkNodeModules(worktreePath: string): Promise<void> {
+  const link = path.join(worktreePath, 'node_modules');
+  try {
+    const stat = await fs.lstat(link);
+    if (!stat.isSymbolicLink()) return; // Real directory (or nothing) — never touch it.
+    try {
+      await fs.unlink(link);
+    } catch {
+      // Some Windows directory junctions reject unlink — rmdir removes the
+      // reparse point itself without recursing into (or deleting) the target.
+      await fs.rmdir(link);
+    }
+  } catch {
+    // No link present (already gone, or never created) — nothing to do.
+  }
+}
+
+/**
  * Remove a git worktree with retry logic.
  * Retries once after a short delay to handle race conditions
  * (e.g., file locks from recently completed processes).
  */
 export async function removeWorktree(ctx: WorktreeContext): Promise<void> {
   const { mainRepoPath, worktreePath } = ctx;
+
+  // Drop the node_modules junction BEFORE removing the worktree, or the force
+  // delete follows it and wipes the main checkout's node_modules (see above).
+  await unlinkNodeModules(worktreePath);
 
   const tryRemove = async () => {
     await execa('git', ['worktree', 'remove', worktreePath, '--force'], {

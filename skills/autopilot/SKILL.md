@@ -175,14 +175,15 @@ When the autopilot is stopped:
      - **no match at all** (both null/empty) → STOP with a clear error: "No DevSpec project tracks this repo (`<git_remote>`). Connect the repo to a DevSpec project first." Halt.
    - **Override:** if `/autopilot.start` was invoked with `--project-id=<uuid>`, skip the `list_projects` resolution entirely and use that uuid as `project_id` (this is how an operator disambiguates a repo tracked by multiple projects).
 2. Call `get_project_summary({ project_id })` to fetch project settings. Also store the `repos` array it returns — `[{ id, full_name, target_branch, default_branch }]`, the branch DevSpec tracks for EACH repo — as the source of truth for the per-repo merge target in step 8.
-3. Read the `autopilot` field from the response for configuration. If autopilot is not enabled or settings are missing, use defaults:
+3. Read configuration from the response. **Execution settings** (how work is done, applied to interactive and unattended runs alike) come from the unified **`execution`** block: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `test_commands`, `protected_paths`. **Orchestration** (unattended-only, e.g. `stale_claim_timeout_minutes`) comes from the `autopilot` block. For back-compat with older web/MCP versions that don't serve `execution`, fall back to the legacy `autopilot` execution fields, then `local_plugin_settings`. If autopilot is not enabled or a field is missing everywhere, use defaults:
    - auto_push: true
    - auto_merge: true
    - branch_prefix: autopilot/action-item-
    - commit_message_prefix: [autopilot]
    - stale_claim_timeout_minutes: 30
    - custom_instructions: "" (empty)
-   **Store `custom_instructions`** from the autopilot settings as a session variable. These are project-owner-defined instructions that MUST be followed during every execution cycle (Layer 2 of the prompt). If the field is empty or missing, skip Layer 2.
+   - test_commands: none configured (tests are skipped — see step 5)
+   **Store `custom_instructions`** from the execution settings as a session variable. These are project-owner-defined instructions that MUST be followed during every execution cycle (Layer 2 of the prompt). If the field is empty or missing, skip Layer 2. (Unattended honours the stored `auto_push`/`auto_merge`; there is no live human override in this path.)
 4. **The ONE startup bash call** (already run in step 0 — this is its definition; do not run it twice) — hostname, session UUID, and repo discovery all in a single command to minimize visible tool calls:
    ```bash
    HOSTNAME=$(hostname); UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || node -e "console.log(require('crypto').randomUUID())"); CLAUDE_SID="${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"; echo "HOST:$HOSTNAME"; echo "UUID:$UUID"; echo "CLAUDE_SID:$CLAUDE_SID"; cd "<workspace_root>" && REMOTE=$(git remote get-url origin 2>/dev/null) && SHA=$(git rev-parse --short HEAD 2>/dev/null) && BRANCH=$(git branch --show-current 2>/dev/null) && echo "REPO:<dirname>|$REMOTE|$BRANCH|$SHA"; for d in */; do if [ -d "$d/.git" ] && [ ! -f "$d/.git" ]; then cd "$d" && R=$(git remote get-url origin 2>/dev/null) && S=$(git rev-parse --short HEAD 2>/dev/null) && B=$(git branch --show-current 2>/dev/null) && [ -n "$R" ] && echo "REPO:${d%/}|$R|$B|$S"; cd ..; fi; done

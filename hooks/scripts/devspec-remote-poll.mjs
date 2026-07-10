@@ -34,7 +34,16 @@ import path from 'node:path'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 
-const STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
+const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
+const SESSIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'sessions')
+
+function statePathForSession(sessionId) {
+  if (sessionId) {
+    const per = path.join(SESSIONS_DIR, `${sessionId}.json`)
+    if (fs.existsSync(per)) return per
+  }
+  return LEGACY_STATE_PATH
+}
 
 /** @type {Array<{ untilMs: number, pollMs: number, heartbeatMs: number, tier: string }>} */
 const BACKOFF_TIERS = [
@@ -60,30 +69,61 @@ function parseArgs(argv) {
   return out
 }
 
-function readState() {
+/** Prefer per-session state so concurrent remotes do not clobber each other. */
+function readState(sessionId) {
+  const tryPaths = []
+  if (sessionId) tryPaths.push(path.join(SESSIONS_DIR, `${sessionId}.json`))
+  tryPaths.push(LEGACY_STATE_PATH)
+  for (const p of tryPaths) {
+    try {
+      if (!fs.existsSync(p)) continue
+      const s = JSON.parse(fs.readFileSync(p, 'utf8'))
+      if (sessionId && s.session_id && s.session_id !== sessionId && p === LEGACY_STATE_PATH) {
+        continue
+      }
+      return s
+    } catch {
+      /* try next */
+    }
+  }
+  return null
+}
+
+function writeState(state, sessionId) {
+  const sid = sessionId || state.session_id
+  const paths = []
+  if (sid) paths.push(path.join(SESSIONS_DIR, `${sid}.json`))
   try {
-    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'))
+    const legacy = fs.existsSync(LEGACY_STATE_PATH)
+      ? JSON.parse(fs.readFileSync(LEGACY_STATE_PATH, 'utf8'))
+      : null
+    if (!legacy || !legacy.session_id || legacy.session_id === sid) {
+      paths.push(LEGACY_STATE_PATH)
+    }
   } catch {
-    return null
+    paths.push(LEGACY_STATE_PATH)
+  }
+  for (const p of paths) {
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
   }
 }
 
-function writeState(state) {
-  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true })
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
-}
-
+/** Disable THIS session only — never other remotes on the machine. */
 function disableLocalState({ sessionId, reason }) {
   try {
-    const prev = readState() || {}
-    writeState({
-      ...prev,
-      enabled: false,
-      session_id: sessionId || prev.session_id,
-      ended_from_ui: reason === 'ended_from_ui',
-      end_reason: reason,
-      updated_at: new Date().toISOString(),
-    })
+    const prev = readState(sessionId) || {}
+    writeState(
+      {
+        ...prev,
+        enabled: false,
+        session_id: sessionId || prev.session_id,
+        ended_from_ui: reason === 'ended_from_ui',
+        end_reason: reason,
+        updated_at: new Date().toISOString(),
+      },
+      sessionId,
+    )
   } catch (e) {
     process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
   }
@@ -136,12 +176,16 @@ function isOwnerMessage(msg, ownerUserId) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
-  const state = readState()
-  const sessionId = args.session || state?.session_id
+  // Session id must come from argv when possible so multi-remote is safe.
+  let sessionId = args.session || null
+  let state = readState(sessionId)
+  if (!sessionId) sessionId = state?.session_id
   if (!sessionId) {
     process.stderr.write('devspec-remote-poll: missing --session and no state file session_id\n')
     process.exit(2)
   }
+  // Re-read with known session id (per-session file)
+  state = readState(sessionId) || state
 
   if (state && state.enabled === false) {
     process.stderr.write('devspec-remote-poll: remote control disabled in state file\n')
@@ -210,7 +254,7 @@ async function main() {
   // Long-running loop — stepped backoff; no flat 10m exit for re-arm.
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const liveState = readState()
+    const liveState = readState(sessionId)
     if (liveState && liveState.enabled === false) {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
       process.exit(1)
@@ -254,10 +298,11 @@ async function main() {
         `devspec-remote-poll: check tier → ${tier.tier} (poll ${tier.pollMs}ms, heartbeat ${tier.heartbeatMs}ms)\n`,
       )
       try {
-        const s = readState() || {}
+        const s = readState(sessionId) || {}
         s.check_tier = tier.tier
+        s.session_id = sessionId
         s.updated_at = new Date().toISOString()
-        writeState(s)
+        writeState(s, sessionId)
       } catch {
         /* ignore */
       }
@@ -328,11 +373,12 @@ async function main() {
           }) + '\n',
         )
         try {
-          const s = readState() || {}
+          const s = readState(sessionId) || {}
           s.cursor_after_message_id = next
           s.owner_user_id = ownerUserId
+          s.session_id = sessionId
           s.updated_at = new Date().toISOString()
-          writeState(s)
+          writeState(s, sessionId)
         } catch {
           /* ignore */
         }

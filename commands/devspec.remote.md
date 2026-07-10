@@ -130,8 +130,10 @@ Run this with **`run_in_background: true`** (or your harness's background flag).
 | Exit | Meaning | What you do |
 |------|---------|-------------|
 | **0** | Owner posted one or more instructions | Read poller stdout JSON lines (`type: owner_message`). Treat each as an **instruction**. Do the work. Mirror your reply with `post_session_message`. Update cursor from `wake.next_after_message_id`. **Re-arm** the poller in background. |
-| **1** | Disabled, timeout, or error | If state still `enabled`, re-arm poller. If user stopped (`enabled: false`), stop the skill. |
+| **1** | Disabled, timeout, error, or **UI End** | Read stdout: if `type: session_ended` / `reason: ended_from_ui`, print `✓ DevSpec remote control ended (from UI)` and **stop — do not re-arm**. Else if state still `enabled`, re-arm poller. If `enabled: false` (local stop or UI End), stop the skill. |
 | **2** | Bad args | Fix and stop. |
+
+**UI End (Agents page / session header):** server sticky-offline makes heartbeat return `ended_from_ui: true`. The poller disables `~/.devspec/remote-control.json`, emits `session_ended`, exits 1. **Never** treat the transcript boundary message body as an owner command — the structured heartbeat flag is authoritative.
 
 **Cadence is inside the poller** (heartbeat ~15s, transcript poll ~5s). You are woken **only when the owner messages** — not every 40s. That is intentional (token cost).
 
@@ -160,7 +162,7 @@ Simply exiting Claude without stop leaves a stale live chip for up to ~90s.
 
 If `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-poll.mjs` does not exist, use this **exact** fallback (do not invent a different one):
 
-1. `report_remote_agent_heartbeat(session_id, status: "live")`
+1. `report_remote_agent_heartbeat(session_id, status: "live")` — if result has `ended_from_ui: true`, disable local state, stop (do not re-poll).
 2. `get_session_transcript(session_id, after_message_id: cursor)`
 3. React to new **owner** human messages; advance cursor
 4. Background: `sleep 40` then re-invoke yourself (foreground sleep is blocked in Claude Code)

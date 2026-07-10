@@ -91,6 +91,9 @@ if (cmd === 'write') {
     auth_source: auth.source || auth.error || null,
     auth_ok: !!auth.ok,
     cwd,
+    // Clear any prior UI-end sticky flags from a previous session.
+    ended_from_ui: false,
+    end_reason: null,
     updated_at: new Date().toISOString(),
   }
   writeState(state)

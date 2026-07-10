@@ -12,8 +12,15 @@
  *
  * Exit codes:
  *   0  — owner message(s) arrived (agent should wake and process)
- *   1  — disabled / offline / auth failure / error (do not treat as instruction)
+ *   1  — disabled / offline / UI end / auth failure / error / timeout
+ *        (do not treat as an owner instruction; re-arm only if state.enabled)
  *   2  — bad args
+ *
+ * When the owner Ends remote control from the DevSpec UI, heartbeat returns
+ * `ended_from_ui: true` (sticky offline). This poller then:
+ *   - writes enabled:false to ~/.devspec/remote-control.json
+ *   - prints a JSON `session_ended` line on stdout
+ *   - exits 1 so the skill must NOT re-arm
  *
  * Requires token in ~/.devspec/remote-control.json (from remote-control-state.mjs write)
  * or DEVSPEC_MCP_TOKEN env.
@@ -51,6 +58,40 @@ function readState() {
   } catch {
     return null
   }
+}
+
+function writeState(state) {
+  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true })
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
+}
+
+/**
+ * Disable local remote-control state so skills do not re-arm after UI End.
+ * Structured fields only — never treat message body text as a stop signal.
+ */
+function disableLocalState({ sessionId, reason }) {
+  try {
+    const prev = readState() || {}
+    writeState({
+      ...prev,
+      enabled: false,
+      session_id: sessionId || prev.session_id,
+      ended_from_ui: reason === 'ended_from_ui' ? true : prev.ended_from_ui,
+      end_reason: reason,
+      updated_at: new Date().toISOString(),
+    })
+  } catch (e) {
+    process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
+  }
+}
+
+/** True when heartbeat reports the owner ended the channel from DevSpec UI. */
+function isEndedFromUi(hb) {
+  if (!hb || typeof hb !== 'object') return false
+  if (hb.ended_from_ui === true) return true
+  // Defensive: some transports may nest the tool payload
+  if (hb.result && hb.result.ended_from_ui === true) return true
+  return false
 }
 
 function sleep(ms) {
@@ -173,13 +214,31 @@ async function main() {
     const now = Date.now()
     if (now - lastHeartbeat >= args.heartbeatMs) {
       try {
-        await mcpToolsCall({
+        const hb = await mcpToolsCall({
           mcpUrl,
           token,
           name: 'report_remote_agent_heartbeat',
           arguments: { session_id: sessionId, agent_name: agentName, status: 'live' },
         })
         lastHeartbeat = now
+
+        // Owner ended from DevSpec UI (sticky offline) — stop spinning.
+        if (isEndedFromUi(hb)) {
+          disableLocalState({ sessionId, reason: 'ended_from_ui' })
+          process.stdout.write(
+            JSON.stringify({
+              type: 'session_ended',
+              reason: 'ended_from_ui',
+              session_id: sessionId,
+              message:
+                'Remote control was ended from DevSpec. Local poller stopping; do not re-arm.',
+            }) + '\n',
+          )
+          process.stderr.write(
+            'devspec-remote-poll: session ended from UI (ended_from_ui) — disabling and exiting\n',
+          )
+          process.exit(1)
+        }
       } catch (e) {
         process.stderr.write(`devspec-remote-poll: heartbeat failed: ${e.message}\n`)
       }

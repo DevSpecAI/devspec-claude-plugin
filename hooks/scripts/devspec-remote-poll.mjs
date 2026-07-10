@@ -57,21 +57,36 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+/**
+ * Owner-only instruction gate (fail closed).
+ *
+ * Prefer server-stamped remote_control.is_owner_instruction when present
+ * (DevSpec get_session_transcript on agent_remote_control sessions).
+ * Fallback derives the same rules from author/user_id — never from body text.
+ */
 function isOwnerMessage(msg, ownerUserId) {
   if (!msg) return false
-  // Human messages only
-  if (msg.role !== 'user') return false
-  if (msg.message_type && msg.message_type !== 'user' && msg.message_type !== null) {
-    // allow plain user messages; skip local_agent_handoff etc if any
-    if (msg.message_type !== 'text' && msg.message_type !== 'user') {
-      // still treat standard user role as instruction
-    }
+
+  // Server-side classification is authoritative when present
+  if (msg.remote_control && typeof msg.remote_control.is_owner_instruction === 'boolean') {
+    return msg.remote_control.is_owner_instruction === true
   }
+
+  // Fail closed without a known owner
+  if (!ownerUserId) return false
+
+  // Human user turns only
+  if (msg.role !== 'user') return false
+  const mt = msg.message_type
+  if (mt === 'external_agent' || mt === 'local_agent_handoff' || mt === 'system') return false
+
   const author = msg.author
   if (author?.kind && author.kind !== 'human') return false
-  if (ownerUserId && author?.user_id && author.user_id !== ownerUserId) return false
-  // Prefer owner_user_id from transcript session when available
-  return true
+
+  const uid = author?.user_id || msg.user_id
+  // Fail closed: missing user_id cannot prove owner
+  if (!uid) return false
+  return uid === ownerUserId
 }
 
 async function main() {

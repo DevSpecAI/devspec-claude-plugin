@@ -9,7 +9,8 @@
  *
  * Stepped backoff (idle without owner message — does NOT exit for re-arm):
  *   0–10 min:   transcript ~15s, heartbeat ~15s, check_tier=responsive
- *   10 min–2 h: transcript ~60s, heartbeat ~60s, check_tier=normal
+ *   10 min–1 h: transcript ~30s, heartbeat ~30s, check_tier=normal
+ *   1–2 h:      transcript ~60s, heartbeat ~60s, check_tier=normal
  *   2–12 h:     transcript ~5 min, heartbeat ~60s, check_tier=relaxed
  *   12–24 h:    transcript ~10 min, heartbeat ~60s, check_tier=sparse
  *   >24 h idle: clean disconnect (offline + idle_timeout), exit 1 — do not re-arm
@@ -37,8 +38,10 @@ const STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 
 /** @type {Array<{ untilMs: number, pollMs: number, heartbeatMs: number, tier: string }>} */
 const BACKOFF_TIERS = [
+  // untilMs = upper bound of idle time for this tier (exclusive)
   { untilMs: 10 * 60 * 1000, pollMs: 15_000, heartbeatMs: 15_000, tier: 'responsive' },
-  { untilMs: 2 * 60 * 60 * 1000, pollMs: 60_000, heartbeatMs: 60_000, tier: 'normal' },
+  { untilMs: 60 * 60 * 1000, pollMs: 30_000, heartbeatMs: 30_000, tier: 'normal' }, // 10m–1h
+  { untilMs: 2 * 60 * 60 * 1000, pollMs: 60_000, heartbeatMs: 60_000, tier: 'normal' }, // 1–2h
   { untilMs: 12 * 60 * 60 * 1000, pollMs: 5 * 60_000, heartbeatMs: 60_000, tier: 'relaxed' },
   { untilMs: 24 * 60 * 60 * 1000, pollMs: 10 * 60_000, heartbeatMs: 60_000, tier: 'sparse' },
 ]

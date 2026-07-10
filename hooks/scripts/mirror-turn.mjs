@@ -1,26 +1,14 @@
 #!/usr/bin/env node
 /**
- * DevSpec remote-control mirror hook.
- *
- * Invoked by Claude Code Stop / UserPromptSubmit hooks when this plugin is
- * enabled. If ~/.devspec/remote-control.json says a remote session is active
- * and a token is available, posts the latest turn to DevSpec via MCP HTTP.
- *
- * State file (written by /devspec.remote on connect):
- *   {
- *     "enabled": true,
- *     "session_id": "<uuid>",
- *     "agent_name": "Claude Code",
- *     "mcp_url": "https://devspec.ai/api/mcp",
- *     "token": "dvs_..."   // optional — falls back to DEVSPEC_MCP_TOKEN env
- *   }
- *
- * Exit 0 always so hooks never block the agent turn.
+ * DevSpec remote-control mirror hook (Stop / UserPromptSubmit).
+ * Uses token from ~/.devspec/remote-control.json or resolve-mcp-auth.
  */
 
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { mcpToolsCall } from './mcp-call.mjs'
+import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const statePath = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -45,7 +33,6 @@ function loadState() {
 }
 
 function extractLastText(hookInput, which) {
-  // Claude Code hook stdin is JSON; shapes vary slightly by version. Be defensive.
   let data
   try {
     data = JSON.parse(hookInput || '{}')
@@ -54,16 +41,9 @@ function extractLastText(hookInput, which) {
   }
 
   if (which === 'user_prompt') {
-    return (
-      data.prompt ||
-      data.user_prompt ||
-      data.message ||
-      data.transcript?.slice?.(-1)?.[0]?.content ||
-      null
-    )
+    return data.prompt || data.user_prompt || data.message || null
   }
 
-  // Stop: last assistant message
   if (typeof data.last_assistant_message === 'string') return data.last_assistant_message
   if (typeof data.assistant_message === 'string') return data.assistant_message
   if (typeof data.response === 'string') return data.response
@@ -88,107 +68,44 @@ function extractLastText(hookInput, which) {
   return null
 }
 
-async function postSessionMessage({ mcpUrl, token, sessionId, agentName, message }) {
-  const body = {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'tools/call',
-    params: {
-      name: 'post_session_message',
-      arguments: {
-        session_id: sessionId,
-        message,
-        agent_name: agentName || 'Claude Code',
-      },
-    },
-  }
-
-  const res = await fetch(mcpUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-    },
-    body: JSON.stringify(body),
-  })
-
-  // Best-effort; never throw out of the hook.
-  if (!res.ok) {
-    process.stderr.write(`[devspec-remote] post failed: HTTP ${res.status}\n`)
-  }
-}
-
-async function heartbeat({ mcpUrl, token, sessionId, agentName }) {
-  const body = {
-    jsonrpc: '2.0',
-    id: 2,
-    method: 'tools/call',
-    params: {
-      name: 'report_remote_agent_heartbeat',
-      arguments: {
-        session_id: sessionId,
-        agent_name: agentName || 'Claude Code',
-      },
-    },
-  }
-  try {
-    await fetch(mcpUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-      },
-      body: JSON.stringify(body),
-    })
-  } catch {
-    /* ignore */
-  }
-}
-
 async function main() {
   const state = loadState()
   if (!state) process.exit(0)
 
-  const token = state.token || process.env.DEVSPEC_MCP_TOKEN || process.env.DEVSPEC_TOKEN
-  const mcpUrl = state.mcp_url || process.env.DEVSPEC_MCP_URL || 'https://devspec.ai/api/mcp'
+  let token = state.token
+  let mcpUrl = state.mcp_url
   if (!token) {
-    // No token — leave a tiny system hint via stdout is not supported for command
-    // hooks reliably; just exit quietly. The skill still posts instructionally.
-    process.exit(0)
+    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
+    token = auth.token
+    mcpUrl = mcpUrl || auth.mcp_url
   }
+  if (!token) process.exit(0) // silent — skill still posts instructionally
+
+  mcpUrl = mcpUrl || 'https://devspec.ai/api/mcp'
+  const agentName = state.agent_name || 'Claude Code'
+  const sessionId = state.session_id
 
   const raw = readStdin()
   const text = extractLastText(raw, mode)
-  if (!text || !String(text).trim()) {
-    await heartbeat({
-      mcpUrl,
-      token,
-      sessionId: state.session_id,
-      agentName: state.agent_name,
-    })
-    process.exit(0)
-  }
-
-  const message =
-    mode === 'user_prompt'
-      ? `👤 **Local prompt:**\n\n${String(text).trim().slice(0, 12000)}`
-      : String(text).trim().slice(0, 12000)
 
   try {
-    await postSessionMessage({
+    if (text && String(text).trim()) {
+      const message =
+        mode === 'user_prompt'
+          ? `👤 **Local prompt:**\n\n${String(text).trim().slice(0, 12000)}`
+          : String(text).trim().slice(0, 12000)
+      await mcpToolsCall({
+        mcpUrl,
+        token,
+        name: 'post_session_message',
+        arguments: { session_id: sessionId, message, agent_name: agentName },
+      })
+    }
+    await mcpToolsCall({
       mcpUrl,
       token,
-      sessionId: state.session_id,
-      agentName: state.agent_name,
-      message,
-    })
-    await heartbeat({
-      mcpUrl,
-      token,
-      sessionId: state.session_id,
-      agentName: state.agent_name,
+      name: 'report_remote_agent_heartbeat',
+      arguments: { session_id: sessionId, agent_name: agentName, status: 'live' },
     })
   } catch (e) {
     process.stderr.write(`[devspec-remote] ${e instanceof Error ? e.message : String(e)}\n`)

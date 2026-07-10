@@ -7,34 +7,40 @@ allowed-tools: Bash, mcp__devspec__report_remote_agent_heartbeat, mcp__devspec__
 
 # DevSpec Remote Control — Stop / Disconnect
 
-Cleanly disconnect this local agent from DevSpec remote control so the **Agents page** drops the live indicator immediately (instead of waiting for heartbeat expiry).
+Cleanly disconnect so the **Agents page** drops the live indicator immediately.
 
 ## Steps
 
-1. **Load session id.** Prefer `~/.devspec/remote-control.json` → `session_id`. If missing, ask the user for the session UUID (from the Agents page or control session URL).
+1. **Load session id** from `~/.devspec/remote-control.json` → `session_id`, or from `$ARGUMENTS` / user.
 
-2. **Mark offline on DevSpec.** Call:
-   `report_remote_agent_heartbeat` with:
-   - `session_id`: the UUID
-   - `status`: `"offline"`
-   - `agent_name`: "Claude Code"
-   This clears `remote_agent_last_seen_at` so the Agents page shows **disconnected** right away.
+2. **Mark offline:**
+   ```
+   report_remote_agent_heartbeat({
+     session_id,
+     status: "offline",
+     agent_name: "Claude Code"
+   })
+   ```
 
-3. **Post a disconnect line** (best-effort):
-   `post_session_message(session_id, "🔌 **Local agent disconnected**.", agent_name: "Claude Code")`
+3. **Post disconnect** (best-effort):
+   ```
+   post_session_message(session_id, "🔌 **Local agent disconnected**.", agent_name: "Claude Code")
+   ```
 
-4. **Disable local state.** Write/update `~/.devspec/remote-control.json` with `enabled: false` (or delete the file). Stop any background poll/sleep loop.
+4. **Disable local state:**
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" disable
+   ```
+   This stops `devspec-remote-poll` on its next loop.
 
-5. **Print:**
+5. Print:
    ```
    ✓ DevSpec remote control stopped
-     Session:  {{first 8 chars}}…
+     Session:  {first 8}…
      Agents page: offline
    ```
 
 ## Rules
 
-- Always call `status: "offline"` even if the post fails — clearing live state is the point.
-- Do not delete the DevSpec session — history stays for later review.
-- Distinct from Claude's built-in `/remote-control`.
-
+- Always call `status: "offline"` even if post fails.
+- Do not delete the DevSpec session — history remains.

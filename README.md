@@ -155,6 +155,12 @@ The autopilot enters a polling loop. It checks for staged items every 60 seconds
 | `/autopilot:status` | Show current state, staged item count, settings |
 | `/autopilot:history` | Show recent runs with success/failure stats |
 | `/devspec.remote` | Connect this session as a **DevSpec remote-control** target (Agents page). Not Claude's built-in `/remote-control`. |
+| `/devspec.remote-stop` | Disconnect — Agents page offline immediately. |
+
+### Remote control (details)
+
+After `/devspec.remote`, the skill writes `~/.devspec/remote-control.json` (token resolved from project `.mcp.json` / env) and arms `hooks/scripts/devspec-remote-poll.mjs` in the background. The poller heartbeats and only wakes the model when you post from the Agents page. Stop with `/devspec.remote-stop`.
+
 
 ## How It Works
 

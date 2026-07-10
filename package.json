@@ -9,8 +9,13 @@
     "dist",
     ".claude-plugin",
     "commands",
-    "skills"
+    "skills",
+    "hooks"
   ],
+  "bin": {
+    "devspec-remote-poll": "./hooks/scripts/devspec-remote-poll.mjs",
+    "devspec-remote-state": "./hooks/scripts/remote-control-state.mjs"
+  },
   "scripts": {
     "build": "node node_modules/typescript/bin/tsc",
     "dev": "node node_modules/typescript/bin/tsc --watch",
@@ -18,6 +23,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:remote-auth": "node hooks/scripts/resolve-mcp-auth.mjs; node hooks/scripts/remote-control-state.mjs resolve-auth --mask",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -1,7 +1,7 @@
 ---
 name: devspec.work
-description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message
+description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution and --remote to open a DevSpec remote-control channel (Agents page).
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__report_remote_agent_heartbeat, mcp__devspec__get_session_transcript
 ---
 
 # DevSpec Work
@@ -58,6 +58,17 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - If it is null with multiple `candidate_project_ids` (the repo is tracked by more than one project): **interactive mode** — present the candidate projects (use the `repos`/name info `list_projects` returns) and ask the user which one to use; **unattended mode** — fail the item with `"Requires human judgment: repo tracked by multiple DevSpec projects (<candidates>) — cannot pick one unattended"`.
    - If there is no match at all, output `✗ No DevSpec project tracks this repo (<git_remote>). Connect it to a project first.` and stop.
    - Thread this `project_id` on every project-scoped call below: `get_project_summary`, `get_action_items`, and `search_memories`. (Item-addressed calls — `claim_work_item`, `update_action_item`, `add_implementation_note`, `add_commit_reference`, `record_implementation`, `generate_commit_message`, `get_action_item_history`, `get_session_transcript` — self-resolve their project from the item id and take no `project_id`.)
+
+
+1b. **Detect remote mode.** Check the user's input for `--remote` or `remote control`. Store as boolean `is_remote`.
+
+   When `is_remote` is true, **before claiming work** also run the connect steps from `/devspec.remote`:
+   - `create_session({ session_type: "agent_remote_control", access: "private", agent_name: "Claude Code", project_id })`
+   - Write `~/.devspec/remote-control.json` with `{ enabled: true, session_id, agent_name, mcp_url, token? }` (see `/devspec.remote`)
+   - While implementing, mirror significant progress via `post_session_message` and heartbeat via `report_remote_agent_heartbeat`
+   - On disconnect / completion, set `enabled: false` and post a disconnected line
+   Remote is **orthogonal** to unattended — both flags may be combined.
+
 
 2. **Load project settings.** Call `get_project_summary({ project_id })` and read the unified **`execution`** block from the response. Store it for later use. Read these fields: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `test_commands` ({ unit, e2e, typecheck }), `protected_paths`.
 

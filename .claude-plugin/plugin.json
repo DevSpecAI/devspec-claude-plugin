@@ -1,12 +1,13 @@
 {
   "name": "devspec-autopilot",
-  "description": "Automatically pick up staged action items from DevSpec, implement them, test them, and push to a target branch",
-  "version": "0.2.3",
+  "description": "Automatically pick up staged action items from DevSpec, implement them, test them, and push to a target branch. Includes /devspec.remote for Agents-page remote control.",
+  "version": "0.3.0",
   "author": {
     "name": "DevSpecAI"
   },
   "license": "MIT",
-  "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items"],
+  "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items", "remote-control"],
   "commands": ["./commands"],
-  "skills": ["./skills"]
+  "skills": ["./skills"],
+  "hooks": "./hooks/hooks.json"
 }

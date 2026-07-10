@@ -68,6 +68,30 @@ This is **DevSpec** remote control — not Claude Code's built-in `/remote-contr
    - `post_session_message(session_id, "🔌 **Local agent disconnected**.", agent_name: "Claude Code")`
    - Print `✓ DevSpec remote control ended` and stop polling.
 
+## State file (for hooks)
+
+After a successful `create_session`, write (and keep updated):
+
+```bash
+mkdir -p ~/.devspec
+# Prefer token from env if present (hooks use it for deterministic mirror-out)
+node -e "
+const fs=require('fs'),os=require('os'),path=require('path');
+const f=path.join(os.homedir(),'.devspec','remote-control.json');
+const state={
+  enabled:true,
+  session_id:process.argv[1],
+  agent_name:'Claude Code',
+  mcp_url:process.env.DEVSPEC_MCP_URL||'https://devspec.ai/api/mcp',
+  token:process.env.DEVSPEC_MCP_TOKEN||process.env.DEVSPEC_TOKEN||undefined,
+  updated_at:new Date().toISOString()
+};
+fs.writeFileSync(f, JSON.stringify(state,null,2));
+" '<session_id>'
+```
+
+On disconnect, set `enabled: false` (or delete the file). Plugin hooks (`Stop` / `UserPromptSubmit`) read this file and post turns automatically when a token is available.
+
 ## Rules
 
 - Full `session_id` UUID always — never truncate when calling tools.

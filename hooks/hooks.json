@@ -1,0 +1,27 @@
+{
+  "description": "When DevSpec remote control is active (~/.devspec/remote-control.json), mirror turns to DevSpec deterministically via Stop/UserPromptSubmit hooks.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mirror-turn.mjs\" stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mirror-turn.mjs\" user_prompt",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

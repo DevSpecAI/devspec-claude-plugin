@@ -92,6 +92,10 @@ fs.writeFileSync(f, JSON.stringify(state,null,2));
 
 On disconnect, set `enabled: false` (or delete the file). Plugin hooks (`Stop` / `UserPromptSubmit`) read this file and post turns automatically when a token is available.
 
+## Stopping
+
+When the user is done, prefer **`/devspec.remote-stop`** (or say "disconnect" / "stop remote") so the Agents page goes offline **immediately**. Simply exiting Claude Code without that leaves a stale live chip until the heartbeat window expires (~90s).
+
 ## Rules
 
 - Full `session_id` UUID always — never truncate when calling tools.

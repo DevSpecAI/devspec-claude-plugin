@@ -134,7 +134,11 @@ Run this with **`run_in_background: true`** (or your harness's background flag).
 
 **UI End / idle timeout:** structured heartbeat flags (`ended_from_ui` / `end_reason`) — never treat boundary message bodies as owner commands.
 
-Mirror OUT of *your* replies is also handled by plugin hooks (`Stop` / `UserPromptSubmit`) when the state file has a token. Still call `post_session_message` yourself for important replies if hooks fail.
+**Turn mirroring (hooks — preferred):** when remote-control state is enabled, plugin hooks post mechanically (no LLM):
+- `UserPromptSubmit` → `mirror-turn.mjs user_prompt` with `turn_kind: "local_prompt"` (literal owner text → UI "You · local" bubble)
+- `Stop` → `mirror-turn.mjs stop` with `turn_kind: "agent"` (assistant reply)
+
+Still call `post_session_message` yourself for important replies if hooks fail. For skill-side local-prompt fallback only: `post_session_message(..., turn_kind: "local_prompt")` with the **exact** owner text — never summarise; skip if hooks already posted.
 
 ### 7. Act on owner messages
 

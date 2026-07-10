@@ -159,7 +159,7 @@ The autopilot enters a polling loop. It checks for staged items every 60 seconds
 
 ### Remote control (details)
 
-After `/devspec.remote`, the skill writes `~/.devspec/remote-control.json` (token resolved from project `.mcp.json` / env) and arms `hooks/scripts/devspec-remote-poll.mjs` in the background. The poller heartbeats and only wakes the model when you post from the Agents page. Stop with `/devspec.remote-stop`.
+After `/devspec.remote`, the skill writes `~/.devspec/remote-control.json` (token resolved from project `.mcp.json` / env) and arms `hooks/scripts/devspec-remote-poll.mjs` in the background. The poller heartbeats and only wakes the model when you post from the Agents page. **Turn mirroring** is mechanical: `UserPromptSubmit` / `Stop` hooks run `mirror-turn.mjs` (literal local prompts with `turn_kind=local_prompt` + agent replies) so the Agents transcript is two-sided without relying on the model. Stop with `/devspec.remote-stop`.
 
 **Requirement — Node.js on PATH:** the preferred remote-control path runs a small **Node** script (`devspec-remote-poll.mjs` / `remote-control-state.mjs`) on your machine. You need **Node.js 18+** installed and available as `node` (same requirement as the rest of this plugin). Waiting for remote instructions does **not** burn LLM tokens — the poller is plain HTTP to DevSpec MCP. Without Node, skills fall back to a coarser in-agent poll loop that is less reliable; install Node for the supported experience.
 

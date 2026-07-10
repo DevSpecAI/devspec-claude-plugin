@@ -154,6 +154,7 @@ The autopilot enters a polling loop. It checks for staged items every 60 seconds
 | `/autopilot:stop` | Stop after the current cycle completes |
 | `/autopilot:status` | Show current state, staged item count, settings |
 | `/autopilot:history` | Show recent runs with success/failure stats |
+| `/devspec.remote` | Connect this session as a **DevSpec remote-control** target (Agents page). Not Claude's built-in `/remote-control`. |
 
 ## How It Works
 

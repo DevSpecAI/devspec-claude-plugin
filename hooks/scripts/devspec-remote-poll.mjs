@@ -2,28 +2,29 @@
 /**
  * devspec-remote-poll — background long-poller for DevSpec remote control.
  *
- * Runs outside the model context. Heartbeats the session, polls transcript,
- * and **exits 0 only when a new owner-authored human message arrives**, printing
- * those messages as JSON lines so the agent can re-invoke and act.
+ * Runs outside the model context (plain Node HTTP MCP — **no LLM tokens**).
+ * Heartbeats the session, polls transcript, and **exits 0 only when a new
+ * owner-authored human message arrives**, printing those messages as JSON lines
+ * so the agent can re-invoke and act.
  *
- * Usage (from skill, background):
- *   node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-poll.mjs" \
- *     --session <uuid> [--interval-ms 5000] [--heartbeat-ms 15000] [--max-ms 600000]
+ * Stepped backoff (idle without owner message — does NOT exit for re-arm):
+ *   0–10 min:   transcript ~15s, heartbeat ~15s, check_tier=responsive
+ *   10 min–2 h: transcript ~60s, heartbeat ~60s, check_tier=normal
+ *   2–12 h:     transcript ~5 min, heartbeat ~60s, check_tier=relaxed
+ *   12–24 h:    transcript ~10 min, heartbeat ~60s, check_tier=sparse
+ *   >24 h idle: clean disconnect (offline + idle_timeout), exit 1 — do not re-arm
  *
  * Exit codes:
  *   0  — owner message(s) arrived (agent should wake and process)
- *   1  — disabled / offline / UI end / auth failure / error / timeout
- *        (do not treat as an owner instruction; re-arm only if state.enabled)
+ *   1  — disabled / UI end / idle_timeout / auth failure / error
+ *        (do not treat as an owner instruction; re-arm only if state.enabled
+ *         and end_reason is not terminal)
  *   2  — bad args
  *
- * When the owner Ends remote control from the DevSpec UI, heartbeat returns
- * `ended_from_ui: true` (sticky offline). This poller then:
- *   - writes enabled:false to ~/.devspec/remote-control.json
- *   - prints a JSON `session_ended` line on stdout
- *   - exits 1 so the skill must NOT re-arm
+ * Usage:
+ *   node devspec-remote-poll.mjs --session <uuid> [--cursor <id>]
  *
- * Requires token in ~/.devspec/remote-control.json (from remote-control-state.mjs write)
- * or DEVSPEC_MCP_TOKEN env.
+ * Requires token in ~/.devspec/remote-control.json or DEVSPEC_MCP_TOKEN.
  */
 
 import fs from 'node:fs'
@@ -34,20 +35,24 @@ import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 
 const STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 
+/** @type {Array<{ untilMs: number, pollMs: number, heartbeatMs: number, tier: string }>} */
+const BACKOFF_TIERS = [
+  { untilMs: 10 * 60 * 1000, pollMs: 15_000, heartbeatMs: 15_000, tier: 'responsive' },
+  { untilMs: 2 * 60 * 60 * 1000, pollMs: 60_000, heartbeatMs: 60_000, tier: 'normal' },
+  { untilMs: 12 * 60 * 60 * 1000, pollMs: 5 * 60_000, heartbeatMs: 60_000, tier: 'relaxed' },
+  { untilMs: 24 * 60 * 60 * 1000, pollMs: 10 * 60_000, heartbeatMs: 60_000, tier: 'sparse' },
+]
+const IDLE_DISCONNECT_MS = 24 * 60 * 60 * 1000
+
 function parseArgs(argv) {
-  const out = {
-    intervalMs: 5000,
-    heartbeatMs: 15000,
-    maxMs: 10 * 60 * 1000, // re-exit after 10m so the skill can re-arm if needed
-  }
+  const out = {}
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--session' || a === '--session_id') out.session = argv[++i]
-    else if (a === '--interval-ms') out.intervalMs = Number(argv[++i])
-    else if (a === '--heartbeat-ms') out.heartbeatMs = Number(argv[++i])
-    else if (a === '--max-ms') out.maxMs = Number(argv[++i])
     else if (a === '--cursor') out.cursor = argv[++i]
     else if (a === '--owner-user-id') out.ownerUserId = argv[++i]
+    // Legacy flags ignored (tiers own cadence); keep parse so old skills don't crash
+    else if (a === '--interval-ms' || a === '--heartbeat-ms' || a === '--max-ms') i++
   }
   return out
 }
@@ -65,10 +70,6 @@ function writeState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
 }
 
-/**
- * Disable local remote-control state so skills do not re-arm after UI End.
- * Structured fields only — never treat message body text as a stop signal.
- */
 function disableLocalState({ sessionId, reason }) {
   try {
     const prev = readState() || {}
@@ -76,7 +77,7 @@ function disableLocalState({ sessionId, reason }) {
       ...prev,
       enabled: false,
       session_id: sessionId || prev.session_id,
-      ended_from_ui: reason === 'ended_from_ui' ? true : prev.ended_from_ui,
+      ended_from_ui: reason === 'ended_from_ui',
       end_reason: reason,
       updated_at: new Date().toISOString(),
     })
@@ -85,12 +86,21 @@ function disableLocalState({ sessionId, reason }) {
   }
 }
 
-/** True when heartbeat reports the owner ended the channel from DevSpec UI. */
 function isEndedFromUi(hb) {
   if (!hb || typeof hb !== 'object') return false
   if (hb.ended_from_ui === true) return true
-  // Defensive: some transports may nest the tool payload
+  if (hb.end_reason === 'ui') return true
   if (hb.result && hb.result.ended_from_ui === true) return true
+  return false
+}
+
+function isTerminalEnded(hb) {
+  if (!hb || typeof hb !== 'object') return false
+  if (isEndedFromUi(hb)) return true
+  // Sticky end from a previous offline (idle_timeout / local_stop)
+  if (hb.live === false && hb.end_reason && hb.end_reason !== null) {
+    return true
+  }
   return false
 }
 
@@ -98,34 +108,25 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-/**
- * Owner-only instruction gate (fail closed).
- *
- * Prefer server-stamped remote_control.is_owner_instruction when present
- * (DevSpec get_session_transcript on agent_remote_control sessions).
- * Fallback derives the same rules from author/user_id — never from body text.
- */
+function tierForIdleMs(idleMs) {
+  for (const t of BACKOFF_TIERS) {
+    if (idleMs < t.untilMs) return t
+  }
+  return null
+}
+
 function isOwnerMessage(msg, ownerUserId) {
   if (!msg) return false
-
-  // Server-side classification is authoritative when present
   if (msg.remote_control && typeof msg.remote_control.is_owner_instruction === 'boolean') {
     return msg.remote_control.is_owner_instruction === true
   }
-
-  // Fail closed without a known owner
   if (!ownerUserId) return false
-
-  // Human user turns only
   if (msg.role !== 'user') return false
   const mt = msg.message_type
   if (mt === 'external_agent' || mt === 'local_agent_handoff' || mt === 'system') return false
-
   const author = msg.author
   if (author?.kind && author.kind !== 'human') return false
-
   const uid = author?.user_id || msg.user_id
-  // Fail closed: missing user_id cannot prove owner
   if (!uid) return false
   return uid === ownerUserId
 }
@@ -163,7 +164,9 @@ async function main() {
   let cursor = args.cursor || state?.cursor_after_message_id || null
   let ownerUserId = args.ownerUserId || state?.owner_user_id || null
   let lastHeartbeat = 0
-  const started = Date.now()
+  let lastTier = null
+  // Idle clock resets when we see an owner message (we exit 0) or on start.
+  const idleStarted = Date.now()
 
   // Initial transcript to seed cursor + owner id
   try {
@@ -178,10 +181,8 @@ async function main() {
     })
     if (initial?.owner_user_id) ownerUserId = initial.owner_user_id
     if (initial?.cursor?.next_after_message_id) {
-      // If no cursor yet, jump to end so we only wake on NEW messages
       if (!cursor) cursor = initial.cursor.next_after_message_id
     }
-    // If we had a cursor and there are already owner messages, exit immediately
     const msgs = Array.isArray(initial?.messages) ? initial.messages : []
     const ownerMsgs = msgs.filter((m) => isOwnerMessage(m, ownerUserId))
     if (cursor && ownerMsgs.length > 0) {
@@ -203,39 +204,92 @@ async function main() {
     process.exit(1)
   }
 
-  while (Date.now() - started < args.maxMs) {
-    // Re-read state each loop so /remote-stop can disable us
+  // Long-running loop — stepped backoff; no flat 10m exit for re-arm.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
     const liveState = readState()
     if (liveState && liveState.enabled === false) {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
       process.exit(1)
     }
 
+    const idleMs = Date.now() - idleStarted
+    if (idleMs >= IDLE_DISCONNECT_MS) {
+      try {
+        await mcpToolsCall({
+          mcpUrl,
+          token,
+          name: 'report_remote_agent_heartbeat',
+          arguments: {
+            session_id: sessionId,
+            agent_name: agentName,
+            status: 'offline',
+            end_reason: 'idle_timeout',
+          },
+        })
+      } catch (e) {
+        process.stderr.write(`devspec-remote-poll: idle offline heartbeat failed: ${e.message}\n`)
+      }
+      disableLocalState({ sessionId, reason: 'idle_timeout' })
+      process.stdout.write(
+        JSON.stringify({
+          type: 'session_ended',
+          reason: 'idle_timeout',
+          session_id: sessionId,
+          message:
+            'Remote control ended after 24h idle. Local poller stopping; do not re-arm.',
+        }) + '\n',
+      )
+      process.stderr.write('devspec-remote-poll: idle_timeout (24h) — disabling and exiting\n')
+      process.exit(1)
+    }
+
+    const tier = tierForIdleMs(idleMs) || BACKOFF_TIERS[BACKOFF_TIERS.length - 1]
+    if (tier.tier !== lastTier) {
+      lastTier = tier.tier
+      process.stderr.write(
+        `devspec-remote-poll: check tier → ${tier.tier} (poll ${tier.pollMs}ms, heartbeat ${tier.heartbeatMs}ms)\n`,
+      )
+      try {
+        const s = readState() || {}
+        s.check_tier = tier.tier
+        s.updated_at = new Date().toISOString()
+        writeState(s)
+      } catch {
+        /* ignore */
+      }
+    }
+
     const now = Date.now()
-    if (now - lastHeartbeat >= args.heartbeatMs) {
+    if (now - lastHeartbeat >= tier.heartbeatMs) {
       try {
         const hb = await mcpToolsCall({
           mcpUrl,
           token,
           name: 'report_remote_agent_heartbeat',
-          arguments: { session_id: sessionId, agent_name: agentName, status: 'live' },
+          arguments: {
+            session_id: sessionId,
+            agent_name: agentName,
+            status: 'live',
+            check_tier: tier.tier,
+          },
         })
         lastHeartbeat = now
 
-        // Owner ended from DevSpec UI (sticky offline) — stop spinning.
-        if (isEndedFromUi(hb)) {
-          disableLocalState({ sessionId, reason: 'ended_from_ui' })
+        if (isTerminalEnded(hb)) {
+          const reason = isEndedFromUi(hb) ? 'ended_from_ui' : hb.end_reason || 'ended_from_ui'
+          disableLocalState({ sessionId, reason })
           process.stdout.write(
             JSON.stringify({
               type: 'session_ended',
-              reason: 'ended_from_ui',
+              reason,
               session_id: sessionId,
               message:
-                'Remote control was ended from DevSpec. Local poller stopping; do not re-arm.',
+                'Remote control was ended. Local poller stopping; do not re-arm.',
             }) + '\n',
           )
           process.stderr.write(
-            'devspec-remote-poll: session ended from UI (ended_from_ui) — disabling and exiting\n',
+            `devspec-remote-poll: session ended (${reason}) — disabling and exiting\n`,
           )
           process.exit(1)
         }
@@ -270,13 +324,12 @@ async function main() {
             next_after_message_id: next,
           }) + '\n',
         )
-        // Persist cursor into state for next arm
         try {
           const s = readState() || {}
           s.cursor_after_message_id = next
           s.owner_user_id = ownerUserId
           s.updated_at = new Date().toISOString()
-          fs.writeFileSync(STATE_PATH, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 })
+          writeState(s)
         } catch {
           /* ignore */
         }
@@ -289,12 +342,8 @@ async function main() {
       process.stderr.write(`devspec-remote-poll: poll failed: ${e.message}\n`)
     }
 
-    await sleep(args.intervalMs)
+    await sleep(tier.pollMs)
   }
-
-  // Timed out without owner message — exit 1 so skill can re-arm without treating as instruction
-  process.stderr.write('devspec-remote-poll: max wait reached without owner message — re-arm\n')
-  process.exit(1)
 }
 
 main().catch((e) => {

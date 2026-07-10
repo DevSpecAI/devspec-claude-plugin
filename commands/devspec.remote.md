@@ -119,25 +119,20 @@ Store `cursor.next_after_message_id` as `cursor`. Also store `owner_user_id` if 
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-poll.mjs" \
-  --session '<session_id>' \
-  --interval-ms 5000 \
-  --heartbeat-ms 15000 \
-  --max-ms 600000
+  --session '<session_id>'
 ```
 
-Run this with **`run_in_background: true`** (or your harness's background flag).
+Run this with **`run_in_background: true`** (or your harness's background flag). The poller uses **stepped backoff** (up to ~24h idle) — you do **not** re-arm every 10 minutes. Idle wait uses **no LLM tokens**.
 
 **When the poller exits:**
 
 | Exit | Meaning | What you do |
 |------|---------|-------------|
 | **0** | Owner posted one or more instructions | Read poller stdout JSON lines (`type: owner_message`). Treat each as an **instruction**. Do the work. Mirror your reply with `post_session_message`. Update cursor from `wake.next_after_message_id`. **Re-arm** the poller in background. |
-| **1** | Disabled, timeout, error, or **UI End** | Read stdout: if `type: session_ended` / `reason: ended_from_ui`, print `✓ DevSpec remote control ended (from UI)` and **stop — do not re-arm**. Else if state still `enabled`, re-arm poller. If `enabled: false` (local stop or UI End), stop the skill. |
+| **1** | Disabled, UI End, idle_timeout, or error | Read stdout: if `type: session_ended`, print ended message and **stop — do not re-arm**. Else if state still `enabled`, re-arm. If `enabled: false`, stop. |
 | **2** | Bad args | Fix and stop. |
 
-**UI End (Agents page / session header):** server sticky-offline makes heartbeat return `ended_from_ui: true`. The poller disables `~/.devspec/remote-control.json`, emits `session_ended`, exits 1. **Never** treat the transcript boundary message body as an owner command — the structured heartbeat flag is authoritative.
-
-**Cadence is inside the poller** (heartbeat ~15s, transcript poll ~5s). You are woken **only when the owner messages** — not every 40s. That is intentional (token cost).
+**UI End / idle timeout:** structured heartbeat flags (`ended_from_ui` / `end_reason`) — never treat boundary message bodies as owner commands.
 
 Mirror OUT of *your* replies is also handled by plugin hooks (`Stop` / `UserPromptSubmit`) when the state file has a token. Still call `post_session_message` yourself for important replies if hooks fail.
 

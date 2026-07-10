@@ -18,6 +18,7 @@ Cleanly disconnect so the **Agents page** drops the live indicator immediately.
    report_remote_agent_heartbeat({
      session_id,
      status: "offline",
+     end_reason: "local_stop",
      agent_name: "Claude Code"
    })
    ```

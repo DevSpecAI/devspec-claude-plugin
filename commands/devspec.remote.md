@@ -142,7 +142,15 @@ kill -0 "$(cat "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid")" 
 - **Exit 1** only for terminal stop: disabled / UI End / idle_timeout / error — **do not** restart that session after UI End.
 - **Exit 2** = bad args.
 
-**Acting while poller runs:** read new inbox lines or re-poll `get_session_transcript` when free; act on `is_owner_instruction` / `local_agent_dispatch` only. Mirror replies with `post_session_message`. **Do not** stop/restart the poller after each message.
+**Wait-for-owner (wakes the model — required):** after the poller is up, run in background:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --session "$SESSION" --from-end
+```
+
+Use **`run_in_background: true`**. Exit **0** → stdout has `owner_message` / `wake` → act → **re-arm only this wait** (not the continuous poller). Exit **1** → session ended/disabled — stop.
+
+**Acting:** act on `is_owner_instruction` / `local_agent_dispatch` only. Mirror replies with `post_session_message`. Heartbeat poller stays up; re-arm wait after each handled wake.
 
 **UI End / idle timeout:** structured heartbeat flags (`ended_from_ui` / `end_reason`) — never treat boundary message bodies as owner commands.
 

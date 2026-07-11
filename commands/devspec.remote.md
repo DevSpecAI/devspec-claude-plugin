@@ -139,7 +139,7 @@ kill -0 "$(cat "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid")" 
   2. Prints stdout JSON (`owner_message` / `wake` with `continuous: true`)
   3. Advances cursor in state
   4. **Keeps heartbeating** so Agents UI stays Live while you work
-- **Exit 1** only for terminal stop: disabled / UI End / idle_timeout / error — **do not** restart that session after UI End.
+- **Exit 1** only for terminal stop: disabled / UI End / idle_timeout / error — **do not** keep *this* process running after UI End — exit. A **new** instance may re-attach to the same session_id (UI End frees the slot).
 - **Exit 2** = bad args.
 
 **Wait-for-owner (wakes the model — required):** after the poller is up, run in background:

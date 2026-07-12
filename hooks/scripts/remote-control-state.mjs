@@ -680,11 +680,16 @@ if (isMain) {
     const auth = resolveDevspecMcpAuth(cwd)
     const prev = readJson(sessionPath(args.session)) || {}
     const agentName = args.agent || prev.agent_name || 'Claude Code'
+    // The conversation this write belongs to — stamped INTO the per-session state
+    // so the mirror hook can bind strictly to THIS conversation (never a global
+    // "latest session" pointer). See mirror-turn.mjs selectBoundState.
+    const localId = detectLocalId(args, process.env).local_id
     const state = {
       ...prev,
       enabled: true,
       session_id: args.session,
       agent_name: agentName,
+      local_id: localId ?? prev.local_id ?? null,
       mcp_url: args.url || auth.mcp_url || prev.mcp_url || 'https://devspec.ai/api/mcp',
       token: auth.token || prev.token || undefined,
       auth_source: auth.source || auth.error || prev.auth_source || null,
@@ -702,7 +707,6 @@ if (isMain) {
     writeJson(LEGACY_PATH, state)
 
     // Bind local conversation → this session (live)
-    const localId = detectLocalId(args, process.env).local_id
     let bond = null
     if (localId) {
       bond = writeLocalBond(agentName, localId, {

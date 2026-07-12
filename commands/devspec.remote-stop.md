@@ -36,11 +36,12 @@ Multiple remotes may run on one machine.
    post_session_message(session_id, "🔌 **Local agent disconnected**.", agent_name: "Claude Code")
    ```
 
-4. **Disable state + kill only this poller:**
+4. **Disable state + kill only this poller + mark bond stopped:**
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" disable --session '<session_id>'
+   node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" disable \
+     --session '<session_id>' --agent "Claude Code" --local-id "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"
    ```
-   Session-scoped: writes that session's state `enabled: false` and SIGTERMs pollers whose argv includes this UUID only.
+   Session-scoped: writes that session's state `enabled: false`, marks matching local bonds `stopped` (soft-reconnect only for this conversation within ~30m), and SIGTERMs pollers whose argv includes this UUID only.
 
 5. Print:
    ```
@@ -54,3 +55,4 @@ Multiple remotes may run on one machine.
 
 - Always offline **this** session even if post fails.
 - Do not delete the DevSpec session — history remains.
+- Soft-reconnect is bond-scoped (same Claude session id), never by cwd/repo. A new terminal must not rejoin just because files remain under `~/.devspec`.

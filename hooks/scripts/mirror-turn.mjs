@@ -105,6 +105,25 @@ function extractLastText(hookInput, which) {
   return null
 }
 
+/**
+ * Claude Code re-invokes the model after a background task completes by
+ * injecting a synthetic user prompt — a <task-notification> block, a
+ * [SYSTEM NOTIFICATION …] banner, or a <system-reminder>. Those are harness
+ * plumbing, never owner-typed input, and must not be mirrored into the
+ * transcript as local_prompt bubbles. This guard is Claude-Code-specific:
+ * other tools never surface this text on UserPromptSubmit, so shipping it
+ * only here keeps the working plugins untouched.
+ */
+function isHarnessInjection(text) {
+  const t = String(text)
+  return (
+    t.includes('<task-notification') ||
+    t.includes('[SYSTEM NOTIFICATION - NOT USER INPUT]') ||
+    t.includes('This is an automated background-task event') ||
+    t.includes('<system-reminder>')
+  )
+}
+
 async function main() {
   const state = loadState()
   if (!state) process.exit(0)
@@ -125,8 +144,14 @@ async function main() {
   const raw = readStdin()
   const text = extractLastText(raw, mode)
 
+  // In user_prompt mode, mirror only genuine owner-typed prompts. Skip harness
+  // plumbing (task-notification / system-reminder injections) so it never shows
+  // as a fake "local prompt" bubble. The heartbeat below still runs regardless,
+  // so presence is unaffected.
+  const skipMirror = mode === 'user_prompt' && !!text && isHarnessInjection(text)
+
   try {
-    if (text && String(text).trim()) {
+    if (text && String(text).trim() && !skipMirror) {
       const cleaned = String(text).trim().slice(0, 12000)
       const isLocalPrompt = mode === 'user_prompt'
       await mcpToolsCall({

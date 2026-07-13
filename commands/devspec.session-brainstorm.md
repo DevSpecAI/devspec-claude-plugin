@@ -2,7 +2,7 @@
 name: devspec.session-brainstorm
 description: Continue a DevSpec chat session locally — either post a one-shot answer back into the session, or brainstorm interactively with the user first and post the agreed conclusion. Invoked by the DevSpec "Continue in Local Agent" handoff.
 argument-hint: "mode=<answer|brainstorm> session_id=<uuid> [free-text topic]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__get_session_transcript, mcp__devspec__post_session_message, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__search_index, mcp__devspec__read_file, mcp__devspec__create_action_item, mcp__devspec__update_action_item
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__get_session_transcript, mcp__devspec__post_session_message, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__create_action_item, mcp__devspec__update_action_item
 ---
 
 # DevSpec Session Brainstorm
@@ -38,7 +38,7 @@ This command is normally launched by the "Continue in Local Agent" button in the
 5. **Branch on `mode`:**
 
    ### mode = answer  (one-shot)
-   - Investigate here in this repository — read the relevant code (`Read`/`Grep`/`Glob`, `search_index`, `search_memories`, run read-only commands as needed) to ground your answer in the real codebase.
+   - Investigate here in this repository — read the relevant code (`Read`/`Grep`/`Glob`, `search_memories`, run read-only commands as needed) to ground your answer in the real codebase.
    - When you have findings, post them back **once**:
      `post_session_message(session_id: <session_id>, message: <your findings as markdown>)`.
    - Use clear markdown — a short summary line, then specifics (files, `code`, bullet lists). Post directly to the session; do not leave comments on items. Create action items only when the session conversation explicitly asks for them — and then follow the **Action items belong to the session** rule below.

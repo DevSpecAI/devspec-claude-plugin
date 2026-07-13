@@ -2,7 +2,7 @@
 name: devspec.remote
 description: Connect this Claude Code session as a DevSpec remote-control target — private channel, mirror turns, poll Agents page. Not Claude's built-in /remote-control.
 argument-hint: "[--session <uuid>] [--new] [--title=\"label\"] [optional note]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__report_remote_agent_heartbeat, mcp__devspec__search_index, mcp__devspec__read_file, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__report_remote_agent_heartbeat, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
 ---
 
 # DevSpec Remote Control

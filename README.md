@@ -1,6 +1,6 @@
 # claude-code-devspec-autopilot
 
-**Put your action items on autopilot.** Queue an action item in DevSpec, and this Claude Code plugin picks it up, implements it, tests it, and pushes the result — all without leaving your IDE.
+**Put your action items on autopilot.** Queue an action item in DevSpec, and this Claude Code plugin picks it up, implements it, tests it, and pushes the result — all without leaving your terminal. It also connects your session to the DevSpec **Agents page** for remote control.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -17,16 +17,19 @@ You chat with DevSpec's AI. It creates action items and flags some as automatabl
 
 If something goes wrong, it marks the item as failed with a clear error so you can review and retry.
 
+It also ships terminal companions for the rest of the DevSpec loop — create/claim/implement items (`/devspec.work`), log finished work (`/devspec.done`), generate deployment-tracked commits (`/devspec.commit`), and drive the session from DevSpec's Agents page (`/devspec.remote`).
+
 ## Prerequisites
 
-- **Claude Code** v1.0.33+
-- **DevSpec** account with a project that has action items
-- **DevSpec API token** (read_write scope) — generate one in DevSpec under API settings. Tokens are account-wide; one token covers all your projects (the autopilot resolves the project from the workspace git remote).
-- **Node.js** 18+
+- **Claude Code** with plugin support — run `/plugin` to confirm it's available in your version.
+- **A DevSpec account** with a project that has action items (DevSpec is a hosted service at [devspec.ai](https://devspec.ai) — you don't self-host anything).
+- **A DevSpec API token** (`read_write` scope) — generate one in DevSpec under **Settings → API**. Tokens are account-wide; one token covers all your projects (the plugin resolves which project a run targets from the workspace's git remote).
+- **Node.js 18+** on your `PATH`. Verify with `node --version`. The plugin's remote-control poller and turn-mirroring hooks are small Node scripts, and the autopilot links dependencies with Node.
+  > **If you installed Claude Code with the native installer**, a system `node` may not be present — install [Node.js 18+](https://nodejs.org) separately so `node` resolves on your `PATH`.
 
 ## Install
 
-**Recommended: install as a local marketplace.** This is currently the easiest way to get the plugin — it installs persistently, so you launch Claude Code normally (no `--plugin-dir` flag), and updates to the plugin are picked up live from disk.
+Until the plugin is published to the official Claude Code marketplace (see below), the supported install path is a **local marketplace** from a clone of this repo. It installs persistently — launch Claude Code normally (no `--plugin-dir` flag), and updates are picked up from disk.
 
 ### 1. Clone this repo anywhere on your machine
 
@@ -36,7 +39,7 @@ git clone https://github.com/DevSpecAI/claude-code-devspec-autopilot.git
 
 ### 2. Register it as a marketplace and install
 
-The repo already ships its own `.claude-plugin/marketplace.json`, so you can point Claude Code straight at the cloned directory. Inside Claude Code, run:
+The repo ships its own `.claude-plugin/marketplace.json`, so you can point Claude Code straight at the cloned directory. Inside Claude Code, run:
 
 ```
 /plugin marketplace add /absolute/path/to/claude-code-devspec-autopilot
@@ -44,32 +47,30 @@ The repo already ships its own `.claude-plugin/marketplace.json`, so you can poi
 /reload-plugins
 ```
 
-That's it. From now on, just launch Claude Code with `claude` and the `/autopilot:*` and `/devspec:*` commands will be available everywhere.
+That's it. From now on, just launch Claude Code with `claude` and the plugin's commands are available everywhere.
 
 > **Path with spaces?** Inside the Claude Code REPL, `/plugin marketplace add` takes the rest of the line as the path — no quoting needed.
 
 ### Updating
 
-Because the marketplace source is a local path, `git pull` in the cloned repo is all you need to update. Run `/reload-plugins` (or restart Claude Code) to pick up changes.
+Because the marketplace source is a local path, `git pull` in the cloned repo is all you need. Run `/reload-plugins` (or restart Claude Code) to pick up changes.
 
-### Coming soon
+### Coming soon: one-command install
 
-We're planning to publish this to the official Claude Code plugin marketplace so installation will be a single command. Until then, the local-marketplace flow above is the supported path.
+We're publishing this to the official Claude Code plugin marketplace so installation becomes a single `/plugin install` command with no clone step. Until then, the local-marketplace flow above is the supported path.
 
 ## Setup
 
-### 1. Configure the DevSpec MCP Server
+### 1. Connect the DevSpec MCP Server
 
-The plugin communicates with DevSpec through MCP. Add the DevSpec MCP server to your Claude Code configuration.
-
-In your project's `.mcp.json` or Claude Code MCP settings, add:
+The plugin talks to DevSpec through MCP. Add the DevSpec MCP server to your Claude Code configuration — either your project's `.mcp.json` or your user-scope config (`~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
     "devspec": {
       "type": "http",
-      "url": "https://your-devspec-instance.com/api/mcp",
+      "url": "https://devspec.ai/api/mcp",
       "headers": {
         "Authorization": "Bearer dvs_your_api_token_here"
       }
@@ -78,7 +79,7 @@ In your project's `.mcp.json` or Claude Code MCP settings, add:
 }
 ```
 
-The token needs **read_write** scope. DevSpec MCP tokens are **account-wide** — one token works across all your projects; you no longer generate a token per project. The autopilot figures out *which* project a run targets from the workspace's git remote (it calls `list_projects` with `git remote get-url origin` at startup and uses the matched project). If a repo is tracked by more than one of your DevSpec projects, pin the run explicitly with `/autopilot:start --project-id=<uuid>`.
+The token needs **`read_write`** scope. DevSpec MCP tokens are **account-wide** — one token works across all your projects; you don't generate a token per project. The plugin figures out *which* project a run targets from the workspace's git remote (it calls `list_projects` with `git remote get-url origin` at startup and uses the matched project). If a repo is tracked by more than one of your DevSpec projects, pin the run explicitly with `--project-id=<uuid>`.
 
 > **Security note:** `.mcp.json` contains a bearer token. If it lives at a project root that is a git repo, add `.mcp.json` to `.gitignore` before committing, or place the config in your user-scope Claude settings (`~/.claude.json`) instead.
 
@@ -86,19 +87,19 @@ The token needs **read_write** scope. DevSpec MCP tokens are **account-wide** �
 
 Open your project in DevSpec, go to **Settings**, and scroll to **Autopilot Configuration**:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| Enabled | off | Must be on for the autopilot to process items |
-| Target Branch | `staging` | Branch to merge completed work into |
-| Auto-push | on | Push feature branches to remote |
-| Auto-merge | on | Merge feature branches into target branch |
-| Branch Prefix | `autopilot/action-item-` | Prefix for feature branch names |
-| Commit Prefix | `[autopilot] ` | Prefix for commit messages |
-| Test Commands | (empty) | Unit, E2E, and typecheck commands to run |
-| Protected Paths | (empty) | Files the agent must never modify (glob patterns) |
-| Custom Instructions | (empty) | Extra context injected into the agent's prompt |
-| Poll Interval | 60s | How often to check for staged items |
-| Stale Timeout | 30min | When to auto-fail stuck items |
+| Setting | Description |
+|---------|-------------|
+| Enabled | Must be on for the autopilot to process items |
+| Target Branch | Branch to merge completed work into (set this to your integration branch, e.g. `main`) |
+| Auto-push | Push feature branches to remote |
+| Auto-merge | Merge feature branches into the target branch |
+| Branch Prefix | Prefix for feature branch names (e.g. `autopilot/action-item-`) |
+| Commit Prefix | Prefix for commit messages (e.g. `[autopilot] `) |
+| Test Commands | Unit, E2E, and typecheck commands to run |
+| Protected Paths | Files the agent must never modify (glob patterns) |
+| Custom Instructions | Extra context injected into the agent's prompt |
+| Poll Interval | How often to check for staged items (default 60s) |
+| Stale Timeout | When to auto-fail stuck items (default 30min) |
 
 ### 3. Stage an Action Item
 
@@ -109,60 +110,75 @@ In DevSpec, find an action item with the "Agent" badge. Click **Stage for Autopi
 In Claude Code:
 
 ```
-/autopilot:start
+/devspec-autopilot:autopilot.start
 ```
 
-By default, the autopilot picks up items **assigned to you** plus the **unassigned grab-bag pool** — items the team hasn't earmarked for anyone yet. Items assigned exclusively to other people are left alone unless you opt in with `--all` (shared-queue mode) or `--assigned-to=<user_id>` (run on a specific teammate's queue).
+By default, the autopilot picks up items **assigned to you** plus the **unassigned grab-bag pool** — items the team hasn't earmarked for anyone yet. Items assigned exclusively to other people are left alone unless you opt in with `--all` (shared-queue mode) or `--assigned-to=<user_id>`.
 
 Common variations:
 
 ```bash
 # Default: assigned to you + unassigned, never stops on idle
-/autopilot:start
+/devspec-autopilot:autopilot.start
 
 # Default filter, but stop after the queue drains
-/autopilot:start --drain
+/devspec-autopilot:autopilot.start --drain
 
 # Legacy shared-queue mode — every staged item the caller can see
-/autopilot:start --all
+/devspec-autopilot:autopilot.start --all
 
 # Run on a specific teammate's queue (assigned to them + unassigned)
-/autopilot:start --assigned-to=<user_id>
+/devspec-autopilot:autopilot.start --assigned-to=<user_id>
 
 # Author-based filter (orthogonal to assignee — stacks if both are set)
-/autopilot:start --created-by=<user_id>
+/devspec-autopilot:autopilot.start --created-by=<user_id>
 
-# Everything YOU created, regardless of assignee. --all clears the default
-# --mine assignee filter so --created-by is the only thing narrowing the queue
-# (without --all, items you created but assigned to a teammate are skipped).
-# "Staged" is implicit — the runner only ever processes staged work.
-/autopilot:start --all --created-by=<user_id>
-
-# Pin the run to a specific project. Only needed when the workspace's git remote
-# is tracked by more than one of your DevSpec projects (otherwise the project is
-# resolved automatically from the remote).
-/autopilot:start --project-id=<project_uuid>
+# Pin the run to a specific project (only needed when the workspace's git remote
+# is tracked by more than one of your DevSpec projects)
+/devspec-autopilot:autopilot.start --project-id=<project_uuid>
 ```
 
-The autopilot enters a polling loop. It checks for staged items every 60 seconds (configurable), processes one per cycle, and reports results back to DevSpec.
+The autopilot enters a polling loop, checks for staged items on your configured interval, processes one per cycle, and reports results back to DevSpec.
 
 ## Commands
 
+All commands are namespaced under the plugin, so they're invoked as `/devspec-autopilot:<command>` (Claude Code shows them in the `/` menu once the plugin is installed).
+
+### Autopilot
+
 | Command | Description |
 |---------|-------------|
-| `/autopilot:start` | Start the polling loop (default: assigned to you + unassigned) |
-| `/autopilot:stop` | Stop after the current cycle completes |
-| `/autopilot:status` | Show current state, staged item count, settings |
-| `/autopilot:history` | Show recent runs with success/failure stats |
-| `/devspec.remote` | Connect this session as a **DevSpec remote-control** target (Agents page). Not Claude's built-in `/remote-control`. |
-| `/devspec.remote-stop` | Disconnect — Agents page offline immediately. |
+| `autopilot.start` | Start the polling loop (default: assigned to you + unassigned) |
+| `autopilot.stop` | Stop after the current cycle completes |
+| `autopilot.status` | Show current state, staged item count, and settings |
+| `autopilot.history` | Show recent runs with success/failure stats |
+
+### DevSpec workflow
+
+| Command | Description |
+|---------|-------------|
+| `devspec.work` | Pick up an action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports `--unattended` and `--remote`. |
+| `devspec.create` | Create an action item in DevSpec from the terminal |
+| `devspec.brainstorm` | Brainstorm on an action item to refine scope, approach, and edge cases |
+| `devspec.commit` | Generate a deployment-tracked commit message and execute `git commit` |
+| `devspec.link` | Link a git commit to an action item |
+| `devspec.done` | Log finished work to DevSpec — commits, testing notes, and all |
+| `devspec.help` | Ask how to use DevSpec — searches the official product docs and answers |
+| `devspec.verify-connection` | Verify the DevSpec connection (token/plugin ping, or a tagged verification commit per tracked repo) |
+
+### Remote control
+
+| Command | Description |
+|---------|-------------|
+| `devspec.remote` | Connect this session as a **DevSpec remote-control** target (Agents page). Not Claude's built-in `/remote-control`. |
+| `devspec.remote-stop` | Disconnect — this session's Agents entry goes offline immediately. |
+| `devspec.session-brainstorm` | Continue a DevSpec chat session locally (invoked by the DevSpec "Continue in Local Agent" handoff) |
 
 ### Remote control (details)
 
-After `/devspec.remote`, the skill writes `~/.devspec/remote-control.json` (token resolved from project `.mcp.json` / env) and arms `hooks/scripts/devspec-remote-poll.mjs` in the background. The poller heartbeats and only wakes the model when you post from the Agents page. **Turn mirroring** is mechanical: `UserPromptSubmit` / `Stop` hooks run `mirror-turn.mjs` (literal local prompts with `turn_kind=local_prompt` + agent replies) so the Agents transcript is two-sided without relying on the model. Stop with `/devspec.remote-stop`.
+After `/devspec-autopilot:devspec.remote`, the skill writes `~/.devspec/remote-control.json` (token resolved from project `.mcp.json` / `~/.claude.json` / env) and arms `hooks/scripts/devspec-remote-poll.mjs` in the background. The poller heartbeats and only wakes the model when you post from the Agents page. **Turn mirroring** is mechanical: `UserPromptSubmit` / `Stop` hooks run `mirror-turn.mjs` so the Agents transcript is two-sided without relying on the model. Stop with `/devspec-autopilot:devspec.remote-stop`.
 
-**Requirement — Node.js on PATH:** the preferred remote-control path runs a small **Node** script (`devspec-remote-poll.mjs` / `remote-control-state.mjs`) on your machine. You need **Node.js 18+** installed and available as `node` (same requirement as the rest of this plugin). Waiting for remote instructions does **not** burn LLM tokens — the poller is plain HTTP to DevSpec MCP. Without Node, skills fall back to a coarser in-agent poll loop that is less reliable; install Node for the supported experience.
-
+**Requirement — Node.js on PATH:** the poller scripts are small **Node** programs (`devspec-remote-poll.mjs` / `remote-control-state.mjs`). You need **Node.js 18+** available as `node` (same requirement as the rest of the plugin). Idle polling is plain HTTP to DevSpec MCP — it does **not** consume LLM tokens. Without Node, the skill falls back to a coarser in-agent poll loop that is less reliable; install Node for the supported experience.
 
 ## How It Works
 
@@ -193,7 +209,7 @@ No code changes, branches, or commits are made during planning.
 
 The autopilot assembles its instructions from three layers:
 
-1. **Layer 1** (hardcoded): The base workflow — fetch, implement, test, push, report. Includes safety rules. Not user-modifiable.
+1. **Layer 1** (from the skill): The base workflow — fetch, implement, test, push, report. Includes safety rules. Not user-modifiable.
 2. **Layer 2** (from settings): Your custom instructions — project conventions, style guides, architectural constraints.
 3. **Layer 3** (from DevSpec): The specific action item title, description, type, and priority.
 
@@ -218,60 +234,63 @@ The autopilot assembles its instructions from three layers:
 ### In Claude Code
 
 ```
-/autopilot:status
+/devspec-autopilot:autopilot.status    # loop state, cycles completed, last action, current settings
+/devspec-autopilot:autopilot.history   # recent runs with action item titles, outcomes, and timing
 ```
-
-Shows whether the loop is running, cycles completed, last action, and current settings.
-
-```
-/autopilot:history
-```
-
-Shows recent runs with action item titles, outcomes, and timing.
 
 ## Troubleshooting
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| "No staged items" every cycle | No items staged in DevSpec | Stage an item with "Stage for Autopilot" button |
+| Commands don't appear in `/` menu | Plugin not installed/enabled | Re-run the install steps and `/reload-plugins` |
+| `node: command not found` in hooks/poller | Node.js not on PATH | Install Node.js 18+ and confirm `node --version` |
+| "No staged items" every cycle | No items staged in DevSpec | Stage an item with the "Stage for Autopilot" button |
 | "Autopilot is not enabled" | Project settings | Enable autopilot in Project Settings |
 | "Claim failed" | Another instance claimed it | Normal — next cycle picks up the next item |
 | "Requires human judgment" | Action item description too vague | Edit the item description and retry |
 | "Protected path violation" | Changes touched a protected file | Review protected paths in settings, or adjust the action item |
 | "Stale claim" | Previous process crashed mid-work | Automatic — item is marked failed for you to retry |
-| MCP connection errors | DevSpec server unreachable | Check your MCP config and API token |
+| MCP connection errors | DevSpec server unreachable or token invalid | Check your MCP config and API token; run `/devspec-autopilot:devspec.verify-connection` |
 
 ## Project Structure
 
-```
-src/
-├── types.ts              # Zod schemas (ActionItem, AutopilotSettings, CycleResult)
-├── config.ts             # State management and settings parsing
-├── autopilot/
-│   ├── loop.ts           # Polling loop logic and cycle formatting
-│   ├── prompt.ts         # Three-layer prompt assembly
-│   └── executor.ts       # Execution orchestration (full + planning mode)
-├── mcp/
-│   └── client.ts         # DevSpec MCP tool call helpers
-├── vcs/
-│   ├── index.ts          # Git worktree operations (create, commit, push, merge, cleanup)
-│   └── types.ts          # Worktree type definitions
-├── logs/
-│   └── index.ts          # Execution log file management
-├── history/
-│   └── index.ts          # JSONL execution history tracking
-└── utils/
-    └── shell.ts          # Shell escaping and path validation
+The plugin is defined entirely by its manifest, Markdown skills/commands, and Node hook scripts — there is no build step or bundled binary to run.
 
-commands/
-├── autopilot-start.md    # /autopilot:start
-├── autopilot-stop.md     # /autopilot:stop
-├── autopilot-status.md   # /autopilot:status
-└── autopilot-history.md  # /autopilot:history
+```
+.claude-plugin/
+├── plugin.json           # Plugin manifest (name, version, component paths)
+└── marketplace.json      # Local-marketplace descriptor
+
+commands/                 # Slash commands (/devspec-autopilot:<name>)
+├── autopilot.start.md
+├── autopilot.stop.md
+├── autopilot.status.md
+├── autopilot.history.md
+├── devspec.work.md
+├── devspec.create.md
+├── devspec.brainstorm.md
+├── devspec.commit.md
+├── devspec.link.md
+├── devspec.done.md
+├── devspec.help.md
+├── devspec.verify-connection.md
+├── devspec.remote.md
+├── devspec.remote-stop.md
+└── devspec.session-brainstorm.md
 
 skills/
 └── autopilot/
-    └── SKILL.md          # Full autopilot skill definition (Layer 1 prompt)
+    └── SKILL.md          # Full autopilot skill (the polling loop the model runs)
+
+hooks/
+├── hooks.json            # Stop / UserPromptSubmit turn-mirroring hooks
+└── scripts/              # Node scripts (built-ins only — no npm install needed)
+    ├── devspec-remote-poll.mjs    # Long-lived remote-control poller
+    ├── devspec-remote-wait.mjs    # Wakes the model on owner messages
+    ├── mirror-turn.mjs            # Mechanical turn mirroring to the Agents page
+    ├── remote-control-state.mjs   # Remote-control session state
+    ├── resolve-mcp-auth.mjs       # Resolves DevSpec MCP URL + token
+    └── mcp-call.mjs               # Minimal JSON-RPC MCP client
 ```
 
 ## License

@@ -1,6 +1,6 @@
 {
   "name": "claude-code-devspec-autopilot",
-  "version": "0.2.1",
+  "version": "0.4.1",
   "description": "Claude Code plugin that automatically picks up staged action items from DevSpec, implements them, tests them, and pushes to a target branch",
   "type": "module",
   "main": "dist/index.js",

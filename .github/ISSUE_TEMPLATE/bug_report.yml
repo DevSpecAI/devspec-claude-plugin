@@ -51,8 +51,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: claude-scheduler version (run `npm list claude-scheduler`)
-      placeholder: "0.1.0"
+      description: DevSpec Autopilot plugin version (see `.claude-plugin/plugin.json`, or run `/plugin` in Claude Code)
+      placeholder: "0.5.0"
     validations:
       required: true
 

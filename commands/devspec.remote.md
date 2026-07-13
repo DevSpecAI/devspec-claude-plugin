@@ -11,7 +11,13 @@ Connect **this** local Claude Code session to DevSpec so you can be driven from 
 
 This is **DevSpec** remote control — not Claude Code's built-in `/remote-control`.
 
-**Requirement:** preferred remote-control path needs **Node.js 18+** (`node` on PATH) for the packaged poller scripts. Idle polling is mechanical MCP HTTP — it does **not** consume LLM tokens. Without Node, use the fallback in-agent poll loop (less reliable).
+**Requirement — Node.js 18+ (`node` on PATH):** the preferred remote-control path runs the packaged poller scripts in Node. Idle polling is mechanical MCP HTTP — it does **not** consume LLM tokens.
+
+**Preflight (do this FIRST, before anything else):** run `node --version`.
+- Prints **v18 or newer** → continue normally.
+- `node` **missing** or **older than v18** → tell the owner verbatim, then stop (or, only if they explicitly ask, continue with the coarser in-agent fallback poll loop below — it is less reliable and consumes some tokens):
+  > DevSpec remote control needs **Node.js 18 or newer** on your PATH, and I couldn't find it. Install it from https://nodejs.org (or via your version manager) so `node --version` works, then re-run `/devspec.remote`.
+  > (If you installed Claude Code with the native installer, it may not have put a system `node` on your PATH.)
 
 ## Security (non-negotiable)
 

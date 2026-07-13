@@ -2,7 +2,7 @@
   "name": "devspec-autopilot",
   "displayName": "DevSpec Autopilot",
   "description": "Automatically pick up staged action items from DevSpec, implement them, test them, and push to a target branch. Includes /devspec.remote for Agents-page remote control.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -11,6 +11,24 @@
   "repository": "https://github.com/DevSpecAI/claude-code-devspec-autopilot",
   "license": "MIT",
   "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items", "remote-control"],
+  "userConfig": {
+    "devspec_token": {
+      "type": "string",
+      "title": "DevSpec API token",
+      "description": "Your DevSpec API token with read_write scope. Generate one in DevSpec under Settings → API. It starts with 'dvs_'.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "mcpServers": {
+    "devspec": {
+      "type": "http",
+      "url": "https://devspec.ai/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ${user_config.devspec_token}"
+      }
+    }
+  },
   "commands": ["./commands"],
   "skills": ["./skills"],
   "hooks": "./hooks/hooks.json"

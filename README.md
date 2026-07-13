@@ -61,27 +61,37 @@ We're publishing this to the official Claude Code plugin marketplace so installa
 
 ## Setup
 
-### 1. Connect the DevSpec MCP Server
+### 1. Provide your DevSpec API token
 
-The plugin talks to DevSpec through MCP. Add the DevSpec MCP server to your Claude Code configuration — either your project's `.mcp.json` or your user-scope config (`~/.claude.json`):
+The plugin wires up the DevSpec MCP connection for you — **the only thing you supply is your token.** When the plugin is enabled, Claude Code prompts:
+
+```
+DevSpec API token: [hidden] ________________
+```
+
+Paste a DevSpec API token with **`read_write`** scope (generate one in DevSpec under **Settings → API**; it starts with `dvs_`). The token is stored securely in your OS keychain — never in a project file or version control. That's the whole setup; the MCP server (`https://devspec.ai/api/mcp`) is baked into the plugin.
+
+DevSpec MCP tokens are **account-wide** — one token works across all your projects; you don't generate a token per project. The plugin figures out *which* project a run targets from the workspace's git remote (it calls `list_projects` with `git remote get-url origin` at startup). If a repo is tracked by more than one of your DevSpec projects, pin the run explicitly with `--project-id=<uuid>`.
+
+<details>
+<summary><b>Advanced: point at a different endpoint (self-host / staging)</b></summary>
+
+If you need to override the baked-in endpoint, define a `devspec` MCP server yourself in your project's `.mcp.json` (or `~/.claude.json`). A user-defined server of the same name takes precedence over the plugin's, so the plugin's default is ignored entirely:
 
 ```json
 {
   "mcpServers": {
     "devspec": {
       "type": "http",
-      "url": "https://devspec.ai/api/mcp",
-      "headers": {
-        "Authorization": "Bearer dvs_your_api_token_here"
-      }
+      "url": "https://your-endpoint.example.com/api/mcp",
+      "headers": { "Authorization": "Bearer dvs_your_api_token_here" }
     }
   }
 }
 ```
 
-The token needs **`read_write`** scope. DevSpec MCP tokens are **account-wide** — one token works across all your projects; you don't generate a token per project. The plugin figures out *which* project a run targets from the workspace's git remote (it calls `list_projects` with `git remote get-url origin` at startup and uses the matched project). If a repo is tracked by more than one of your DevSpec projects, pin the run explicitly with `--project-id=<uuid>`.
-
-> **Security note:** `.mcp.json` contains a bearer token. If it lives at a project root that is a git repo, add `.mcp.json` to `.gitignore` before committing, or place the config in your user-scope Claude settings (`~/.claude.json`) instead.
+`.mcp.json` contains a bearer token — add it to `.gitignore` (or use `~/.claude.json`) so it's never committed.
+</details>
 
 ### 2. Configure Autopilot Settings in DevSpec
 

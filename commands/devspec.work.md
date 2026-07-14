@@ -78,7 +78,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - `branch_prefix`: "work/action-item-"
    - `commit_message_prefix`: "" (none)
    - `custom_instructions`: "" (empty)
-   - `agent_rules`: "" (empty) — and `owner_agent_rules` absent on older MCP versions
+   - `agent_rules`: "" (empty) — and `owner_agent_rules` may be absent
    - `test_commands`: none configured (tests are skipped — see step 15)
    - `protected_paths`: none
 
@@ -228,7 +228,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     **Database migrations (if this item adds or edits a DB migration).** Do NOT assume which database to apply it to — applying to the wrong one is a real, destructive failure. The `get_project_summary` response you loaded in Phase 0 includes a `database_targets` array: each connected database with its non-secret `identity` (for Supabase, `identity.externalId` is the project ref), declared `environment`, and the `branch_name` whose migrations target it.
     - **(a)** Pick the target whose `branch_name` matches the branch you push the migration's repo to — the repo's resolved branch from the `repos` map (Phase 0 step 2 / Phase 3 step 18b) — or one with `branch_name: null` (applies to all branches).
     - **(b)** Apply the migration with your OWN database tooling pointed at that target's `identity` — for Supabase, ensure your Supabase MCP/CLI targets that exact project ref, not whatever it defaults to. DevSpec does not apply migrations for you and never hands you the credential.
-    - **(c)** Never select the target by `name` (it can be misleading — that is the bug this prevents). If the matching target has `needs_reconnect: true` / a null `identity`, or your tooling cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`) rather than applying to a different or default database. Be especially careful when `environment` is `production`.
+    - **(c)** Never select the target by `name` (names can collide). If the matching target has `needs_reconnect: true` / a null `identity`, or your tooling cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`) rather than applying to a different or default database. Be especially careful when `environment` is `production`.
 
 15. **Test.** After implementation, run the project's configured `test_commands` from the execution settings loaded in step 2 — each only if it is set:
     - Unit: `{test_commands.unit}` (if configured)

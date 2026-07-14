@@ -1,34 +1,32 @@
 # DevSpec for Claude Code
 
-Connect [Claude Code](https://code.claude.com) to [DevSpec](https://devspec.ai) — the project intelligence and action-item platform for AI-native teams.
+Bring your team's DevSpec work into Claude Code — and drive Claude from your browser or phone.
 
-This plugin gives Claude Code a first-class DevSpec loop: claim and implement action items, mirror a session to the Agents page, run autopilot against a staged queue, and keep commits deployment-tracked. It ships as Claude Code skills, slash commands, hooks, and a bundled MCP server.
+[DevSpec](https://devspec.ai) tracks your team's tasks, bugs, and features — called **action items** — against your git repositories, along with the context, decisions, and history around them. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can pick up that work, do it, and report back — and so you can steer a Claude Code session running on your machine from anywhere.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## What you get
+## What you can do with it
 
-| Capability | What it does |
-|---|---|
-| **MCP connection** | Wires `https://devspec.ai/api/mcp` automatically; you only paste an API token |
-| **Interactive work** | `/devspec:devspec.work`, brainstorm, create, commit, verify, help |
-| **Agents remote control** | `/devspec:devspec.remote` — drive this Claude Code session from the DevSpec Agents page |
-| **Autopilot** | `/devspec:autopilot.start` — poll staged items, implement in worktrees, test, push/merge, report back |
+- **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread, while only you can actually steer it. → [Remote control](#-drive-a-session-from-devspec-remote-control)
+- **Work a task end to end.** Point Claude at an action item and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
+- **Let Claude clear a queue.** Approve a batch of tasks in DevSpec, then run **autopilot** — Claude works through them one by one on its own.
+- **Small conveniences.** Create tasks, make tracked commits, and ask DevSpec's docs questions without leaving the terminal.
 
-Commands are namespaced as `/devspec:<command>` (for example `/devspec:devspec.work`).
+Everything runs against your own DevSpec account and repositories, using an API token you control.
 
-## Prerequisites
+## Before you start
 
-- **Claude Code** with plugin support (`/plugin` available)
-- A **[DevSpec](https://devspec.ai)** account and at least one project that tracks your git repo(s)
-- A DevSpec API token with **`read_write`** scope (Settings → API). Tokens are **account-wide** — one token covers all your projects
-- **Node.js 18+** on your `PATH` (`node --version`) — required for remote-control poller/hooks and worktree dependency linking
+You'll need:
 
-> Native Claude Code installers often ship without a system `node`. Install [Node.js 18+](https://nodejs.org) separately so `node` resolves on your `PATH`.
+- **Claude Code** with plugin support (run `/plugin` to check it's available).
+- A **[DevSpec](https://devspec.ai)** account with at least one project that's connected to your git repo(s).
+- A **DevSpec API token** with `read_write` scope. Create one in DevSpec under **Settings → API**; it starts with `dvs_`. One token covers all of your projects.
+- **Node.js 18+** on your `PATH` (check with `node --version`). Remote control — the headline feature — needs it, as does setting up isolated work branches. Most other commands work without it, but you'll want it installed.
+
+> **Heads up:** Claude Code's native installer sometimes ships without a system `node`. If `node --version` fails, install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH`.
 
 ## Install
-
-### Option A — from GitHub (recommended once the repo is public)
 
 Inside Claude Code:
 
@@ -38,15 +36,16 @@ Inside Claude Code:
 /reload-plugins
 ```
 
-Claude Code prompts for your **DevSpec API token** on enable. Paste a `dvs_…` token; it is stored in the OS keychain (or Claude’s secure credential store). You do **not** need to type the MCP URL.
+When you enable the plugin, Claude Code asks for your **DevSpec API token**. Paste your `dvs_…` token — it's stored securely in your OS keychain, and the connection to DevSpec is wired up for you. You don't need to configure any URLs.
 
-### Option B — local marketplace (development / private clone)
+<details>
+<summary>Installing from a local clone (for contributors)</summary>
 
 ```bash
 git clone https://github.com/DevSpecAI/devspec-claude-plugin.git
 ```
 
-Then in Claude Code (use your absolute path; spaces are fine without quotes in the REPL):
+Then, in Claude Code (use the absolute path):
 
 ```
 /plugin marketplace add /absolute/path/to/devspec-claude-plugin
@@ -54,202 +53,151 @@ Then in Claude Code (use your absolute path; spaces are fine without quotes in t
 /reload-plugins
 ```
 
-Updates: `git pull` in the clone, then `/reload-plugins`.
+To update: `git pull` in the clone, then `/reload-plugins`. See [DEVELOPMENT.md](./DEVELOPMENT.md) for pointing the plugin at a staging or self-hosted DevSpec instance.
 
-### Verify the connection
+</details>
 
-In Claude Code, run:
+### Check the connection
+
+Ask Claude:
 
 ```
 Run the DevSpec connection check
 ```
 
-or `/devspec:devspec.verify-connection` with no ID. You should see a confirmation that you’re connected as your DevSpec user. The personal setup wizard in DevSpec turns green when this ping succeeds.
+You should see confirmation that you're connected as your DevSpec user. (If you're following DevSpec's setup wizard, this step turns green once the check passes.)
 
-## How project resolution works
+Commands appear in Claude Code's `/` menu after install, namespaced under the plugin — for example `/devspec:devspec.remote` and `/devspec:autopilot.start`.
 
-DevSpec MCP tokens are account-wide — they do not pin a project. At the start of a run the plugin:
+## ⭐ Drive a session from DevSpec (remote control)
 
-1. Reads `git remote get-url origin`
-2. Calls `list_projects({ git_remote })`
-3. Uses `remote_match.resolved_project_id` for project-scoped tools
+This is the feature most people come for. You run a real Claude Code session on your machine, but steer it from DevSpec — the **Agents page** in your browser, or your phone. Kick off work, answer its questions, and watch it go while you're away from your desk.
 
-If one remote is tracked by multiple projects, pass `--project-id=<uuid>` (supported on autopilot and the interactive work flows that need it).
+### Two ways to connect
 
-## Quick starts
-
-### 1. Work on a specific action item
-
-```
-/devspec:devspec.work <action-item-uuid>
-```
-
-Claims the item (if needed), implements in an isolated git worktree, runs configured tests, commits with a `[devspec:<id>]` tag, pushes/merges per project execution settings, and calls `record_implementation`.
-
-Useful flags:
-
-- `--unattended` — no human prompts; fire-and-forget
-- `--remote` — also open an Agents-page remote-control channel for this session
-
-Related:
-
-```
-/devspec:devspec.brainstorm <id>     # refine scope before implementing
-/devspec:devspec.create              # create an item from the terminal
-/devspec:devspec.commit              # deployment-tracked commit message + git commit
-/devspec:devspec.done                # log finished work after the fact
-/devspec:devspec.help                # ask product docs questions
-```
-
-### 2. Drive this session from the DevSpec Agents page
+**Start a new session** — in Claude Code, from the repo you want Claude to work in:
 
 ```
 /devspec:devspec.remote
 ```
 
-Creates (or soft-reconnects) a private **agent remote control** session, heartbeats to DevSpec, and mirrors turns so the Agents transcript stays two-sided. Post instructions from the Agents page; only the token owner’s messages are treated as commands.
+This creates a new remote session and lists it on DevSpec's Agents page. Open it there and start sending instructions.
 
-Stop this session’s remote (leaves other remotes alone):
+**Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent.
+
+Either way, your prompts and Claude's replies are mirrored into the DevSpec thread, so the transcript stays two-sided and you can read it back from anywhere. Waiting for your next instruction is a lightweight background check — it does **not** spend Claude usage while idle. Disconnect this session (others stay connected) with `/devspec:devspec.remote-stop`.
+
+### Who can talk to it
+
+The collaboration is safe by design:
+
+- **Only you can command it.** DevSpec verifies on its server that each instruction came from you — the person whose token the session uses. That can't be spoofed by anyone simply typing "I'm the owner."
+- **Teammates can join the thread.** They (and DevSpec's own in-app AI) can add context and discuss right alongside you. Claude reads their messages as background, but will never take orders from them — instructions from anyone but you are treated as advisory context only.
+- **Nobody can drive someone else's agent.** Steering a session requires that person's own token.
+
+The result is a shared, watchable session the whole team can weigh in on — while only you hold the wheel.
+
+> This is **not** Claude Code's built-in `/remote-control` for mobile/desktop. DevSpec's remote control is a separate feature and lives under `/devspec:devspec.remote`.
+
+## Other workflows
+
+### Work on a single task
 
 ```
-/devspec:devspec.remote-stop
+/devspec:devspec.work <task name or id>
 ```
 
-Idle polling is plain HTTP to DevSpec MCP — it does **not** burn LLM tokens. Node.js on `PATH` is required for the supported poller; without Node the skill falls back to a coarser in-agent loop.
+Claude claims the task, creates an isolated git branch, implements the change, runs your project's configured tests, and commits. When it's done, it records what it did — the files it touched, tests it ran, and a summary — back on the task in DevSpec, ready for a human to review and mark complete.
 
-This is **not** Claude’s built-in `/remote-control` (mobile/desktop). DevSpec remote control is separate and lives under `/devspec:devspec.remote`.
+Two useful flags:
 
-### 3. Autopilot a staged queue
+- `--unattended` — don't pause to ask questions; run start to finish (a task that's too vague to do safely is failed rather than guessed at).
+- `--remote` — also connect this session to the Agents page so you can watch and steer from your browser.
 
-In DevSpec, stage items (**Stage for Autopilot** or approve a plan), ensure project execution/autopilot settings are configured, then:
+### Let autopilot clear a queue
+
+First, in DevSpec, mark the tasks you want Claude to handle as ready for autopilot (**Stage for Autopilot**, or approve a plan). Then:
 
 ```
 /devspec:autopilot.start
 ```
 
-Default filter: items **assigned to you** plus the **unassigned** pool. Common variants:
+Claude picks up each ready task, works it the same way as `devspec.work`, and moves to the next. By default it takes tasks assigned to you plus anything unassigned. Some variations:
 
 ```
-/devspec:autopilot.start --drain
-/devspec:autopilot.start --all
-/devspec:autopilot.start --assigned-to=<user_id>
-/devspec:autopilot.start --created-by=<user_id>
-/devspec:autopilot.start --project-id=<project_uuid>
-/devspec:autopilot.start --items=<id1>,<id2>
+/devspec:autopilot.start --drain                    # keep going until the queue is empty
+/devspec:autopilot.start --all                       # include tasks assigned to others
+/devspec:autopilot.start --project-id=<id>           # limit to one project
+/devspec:autopilot.start --items=<id1>,<id2>         # only these tasks
 ```
 
-Each cycle: claim → worktree → implement → test → commit → push → optional merge → `record_implementation` → cleanup. Monitor with `/devspec:autopilot.status` and `/devspec:autopilot.history`. Stop after the current cycle with `/devspec:autopilot.stop`.
+Check in with `/devspec:autopilot.status` and `/devspec:autopilot.history`, and stop after the current task with `/devspec:autopilot.stop`.
 
-Planning mode (no code until you approve): use **Request Agent Plan** in DevSpec, review the note, then **Approve & Queue**.
+**Want to review the plan first?** In DevSpec, use **Request Agent Plan** — Claude writes up its approach and waits. Nothing is coded until you **Approve & Queue**.
 
-## Execution settings (DevSpec project)
+## All commands
 
-Configure in the DevSpec project (Settings / execution). These apply to interactive work and autopilot:
+Every command is in Claude Code's `/` menu after install, under the `/devspec:` prefix.
 
-| Setting | Role |
+| Command | What it does |
 |---|---|
-| Auto-push / Auto-merge | Push feature branches; merge into each repo’s target branch |
-| Target branch (per repo) | Integration branch (`target_branch`, else `default_branch`) |
-| Branch / commit prefixes | Naming for autopilot branches and commits |
-| Test commands | Unit / E2E / typecheck commands to run after implementation |
-| Protected paths | Globs the agent must not modify |
-| Custom instructions | Extra project rules injected into the agent prompt |
+| `/devspec:devspec.remote` | ⭐ Connect this session to DevSpec's Agents page (see above) |
+| `/devspec:devspec.remote-stop` | Disconnect this session from the Agents page |
+| `/devspec:devspec.work` | Pick up an action item, implement it, and record the work |
+| `/devspec:devspec.brainstorm` | Talk through scope and approach before writing code |
+| `/devspec:devspec.create` | Create a new action item from the terminal |
+| `/devspec:devspec.commit` | Write a tracked commit message and commit |
+| `/devspec:devspec.link` | Link an existing commit to an action item |
+| `/devspec:devspec.done` | Log work you already finished (commits, testing notes) |
+| `/devspec:devspec.help` | Ask a question and get an answer from DevSpec's docs |
+| `/devspec:devspec.verify-connection` | Confirm the plugin is connected |
+| `/devspec:autopilot.start` | Start working through approved tasks automatically |
+| `/devspec:autopilot.stop` | Stop after the current task finishes |
+| `/devspec:autopilot.status` | Show what autopilot is doing right now |
+| `/devspec:autopilot.history` | Show recent autopilot runs and their outcomes |
 
-Autopilot also uses poll interval, stale-claim timeout, and the project “autopilot enabled” flag for the background loop.
+## How it finds the right project
 
-## Command reference
+You don't pass a project id in most cases. The plugin matches the git remote of the repo you're in to the DevSpec project that tracks it. If a single repo is tracked by more than one project, add `--project-id=<id>` to point at the one you mean.
 
-All commands are listed in Claude Code’s `/` menu after install.
+## Settings that live in DevSpec
 
-### Workflow
+How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you run a task by hand or via autopilot:
 
-| Command | Description |
+| Setting | Controls |
 |---|---|
-| `devspec.work` | Claim/implement an action item in a worktree; record implementation |
-| `devspec.brainstorm` | Refine scope, approach, and edge cases |
-| `devspec.create` | Create an action item from the terminal |
-| `devspec.commit` | Generate a tagged commit message and run `git commit` |
-| `devspec.link` | Link a commit SHA to an action item |
-| `devspec.done` | Log finished work (commits, testing notes) |
-| `devspec.help` | Search DevSpec product docs and answer how-to questions |
-| `devspec.verify-connection` | Ping token/plugin, or push tagged verify commits per tracked repo |
-| `devspec.session-brainstorm` | Continue a DevSpec chat locally (“Continue in Local Agent”) |
+| Auto-push / Auto-merge | Whether branches are pushed, and merged into the target branch |
+| Target branch (per repo) | The branch Claude's work lands on |
+| Branch / commit prefixes | How autopilot names branches and commits |
+| Test commands | What Claude runs after making a change (unit, E2E, typecheck) |
+| Protected paths | Files and folders Claude must not touch |
+| Custom instructions | Extra project rules Claude follows |
 
-### Remote control
+## What it will and won't do
 
-| Command | Description |
-|---|---|
-| `devspec.remote` | Connect this session to the Agents page |
-| `devspec.remote-stop` | Disconnect this session’s Agents entry |
-
-### Autopilot
-
-| Command | Description |
-|---|---|
-| `autopilot.start` | Start the polling loop |
-| `autopilot.stop` | Stop after the current cycle |
-| `autopilot.status` | Loop state, settings, staged count |
-| `autopilot.history` | Recent runs and outcomes |
-
-## Advanced: non-production MCP endpoint
-
-The plugin defaults to `https://devspec.ai/api/mcp`. To point at staging or a self-hosted instance, define a user/project `devspec` MCP server — it **overrides** the plugin’s bundled server:
-
-```json
-{
-  "mcpServers": {
-    "devspec": {
-      "type": "http",
-      "url": "https://staging.devspec.ai/api/mcp",
-      "headers": {
-        "Authorization": "Bearer dvs_your_api_token_here"
-      }
-    }
-  }
-}
-```
-
-Prefer `~/.claude.json` (user scope) over a committed project `.mcp.json`. If you use a project file, gitignore it — it contains a secret.
-
-## Safety model
-
-- Work that changes the repo runs in an **isolated git worktree** (your main checkout stays clean)
-- No force-push; protected paths are respected
-- Autopilot / unattended modes do not stop for ad-hoc questions — vague items fail with “Requires human judgment”
-- Lifecycle is DevSpec’s chain: claim → implement → `record_implementation` → human verify → done
-- Commits that implement tracked items include `[devspec:<action-item-uuid>]` so deployment tracking can link them
+- Changes are made on an **isolated branch** — your working checkout stays clean.
+- It **never force-pushes**, and it respects the protected paths you set.
+- **Nothing is marked done on its own.** Claude does the work and records it; a human reviews and verifies in DevSpec.
+- In autopilot or `--unattended` mode it won't stop to ask clarifying questions — a task that's too ambiguous to do safely is failed with a reason, not guessed at.
+- Commits it makes for a tracked task carry a small `[devspec:…]` tag so DevSpec can link the commit — and later the deployment — back to the task.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| Commands missing from `/` | Reinstall `devspec@devspec`, run `/reload-plugins` |
-| Plugin failed to load / hooks error | Pull latest `main`; do not set `"hooks"` in `plugin.json` (Claude Code auto-loads `hooks/hooks.json`) |
-| No token prompt | `/plugin` → DevSpec → **Configure options**, or reinstall |
-| Connection check fails | Confirm `read_write` token; regenerate under Settings → API |
-| `node: command not found` | Install Node.js 18+ and ensure `node` is on `PATH` |
-| Wrong project / no project match | Ensure the repo is tracked in DevSpec; or pass `--project-id=` |
-| Autopilot “no staged items” | Stage items in DevSpec; confirm autopilot is enabled for the project |
-| Claim failed | Another runner won the race — normal; next cycle continues |
+| Commands don't appear in `/` | Reinstall with `/plugin install devspec@devspec`, then `/reload-plugins` |
+| Plugin won't load, or hook errors | Update to the latest version (`git pull` for local installs) and `/reload-plugins` |
+| Never asked for a token | Open `/plugin`, select **DevSpec → Configure options**, or reinstall |
+| Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **Settings → API** |
+| Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
+| "No matching project" | Make sure the repo is tracked in DevSpec, or pass `--project-id=<id>` |
+| Autopilot says "no tasks" | Mark tasks ready for autopilot in DevSpec and confirm autopilot is enabled for the project |
+| "Claim failed" during autopilot | Another runner picked up that task first — this is normal; autopilot continues |
 
-## Repository layout
+## Contributing
 
-No build step, no npm dependencies for runtime hooks.
-
-```
-.claude-plugin/
-├── plugin.json          # Manifest (id, version, userConfig, mcpServers)
-└── marketplace.json     # Marketplace catalog + renames
-
-commands/                # Slash commands → /devspec:<name>
-skills/autopilot/        # Autopilot loop skill
-hooks/
-├── hooks.json           # Turn-mirroring hooks (auto-loaded)
-└── scripts/             # Node built-ins only
-```
-
-Maintainer notes: see [DEVELOPMENT.md](./DEVELOPMENT.md). Release history: [CHANGELOG.md](./CHANGELOG.md).
+The plugin is Markdown commands and skills plus a few dependency-free Node scripts — no build step. See [DEVELOPMENT.md](./DEVELOPMENT.md) for how it's structured, how to run the tests, and how to develop against a non-production DevSpec instance. Release notes are in [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
-MIT
+[MIT](./LICENSE)

@@ -30,7 +30,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
   ◆  DEVSPEC AUTOPILOT  ▸  ONLINE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   host: DESKTOP-RS6M104  ·  session: fdd...88cb
-  repo: DevSpecV2 → main (7abccf0)
+  repo: your-repo → main (a1b2c3d)
   idle: 30s → 2m → 5m
   push: on  ·  merge: on  ·  prefix: [autopilot]
   tests: typecheck
@@ -48,7 +48,7 @@ On startup, after fetching config and collecting repo info, output exactly this 
 - If multiple repos, show one `repo:` line per repo
 - Use "ONLINE" not "STARTING" — the banner appears after setup is done
 - Show `instructions: on (N lines)` if custom_instructions is set, `instructions: off` if empty/missing. Line count = number of non-empty lines in the custom_instructions string.
-- Show the assignee filter on the `filter:` line (action item ownership v1):
+- Show the assignee filter on the `filter:` line:
   - Default / `--mine`: `filter: assigned to you (+ unassigned)`
   - `--assigned-to=<uuid>`: `filter: assigned to <short_id> (+ unassigned)`
   - `--all`: `filter: shared queue (no filter)`
@@ -76,7 +76,7 @@ That's it — one line. No "No staged items" message, no "next check in 60s". Th
 **Gated cycle (validation mismatch — work skipped, heartbeat continues):**
 ```
 ▸ Cycle 2 · idle (gated)                            12:34:05 PM
-  ⚠ Branch mismatch: DevSpecV2 on staging, project expects main
+  ⚠ Branch mismatch: your-repo on <current>, project expects <target>
 ```
 
 One line + warning. Do NOT add commentary, suggestions, or questions. The loop continues to the next cycle automatically.
@@ -167,7 +167,7 @@ When the autopilot is stopped:
 
 0. **Collect startup info FIRST (one bash call).** Run the single bash command in step 4 below *now*, before any MCP call — the project-resolution step needs the workspace git remote, and `get_project_summary` (step 2) now needs the resolved `project_id`. Parse out the hostname, UUID, `claude_session_id`, and the `repositories` array exactly as step 4 describes. The `git remote get-url origin` of the **primary repo** (the workspace root) is the `git_remote` you pass in step 1.
 
-1. **Resolve your project (account-wide tokens).** DevSpec MCP tokens are account-wide — they no longer pin a project. The server resolves the project per call from the most-specific id, so you must tell it which project this run targets and then thread `project_id` on every project-scoped call.
+1. **Resolve your project (account-wide tokens).** DevSpec MCP tokens are account-wide, so resolve the project per run. The server resolves the project per call from the most-specific id, so you must tell it which project this run targets and then thread `project_id` on every project-scoped call.
    - Call `list_projects({ git_remote: "<primary repo's git remote get-url origin>" })`.
    - Read `remote_match` from the response:
      - **`resolved_project_id` is non-null** → store it as the session variable `project_id`. This is your run's project for the rest of the loop.
@@ -175,7 +175,7 @@ When the autopilot is stopped:
      - **no match at all** (both null/empty) → STOP with a clear error: "No DevSpec project tracks this repo (`<git_remote>`). Connect the repo to a DevSpec project first." Halt.
    - **Override:** if `/autopilot.start` was invoked with `--project-id=<uuid>`, skip the `list_projects` resolution entirely and use that uuid as `project_id` (this is how an operator disambiguates a repo tracked by multiple projects).
 2. Call `get_project_summary({ project_id })` to fetch project settings. Also store the `repos` array it returns — `[{ id, full_name, target_branch, default_branch }]`, the branch DevSpec tracks for EACH repo — as the source of truth for the per-repo merge target in step 8.
-3. Read configuration from the response. **Execution settings** (how work is done, applied to interactive and unattended runs alike) come from the unified **`execution`** block: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands`, `protected_paths`. Also read the top-level **`owner_agent_rules`** (the runner owner's personal machine/tooling rules). **Orchestration** (unattended-only, e.g. `stale_claim_timeout_minutes`) comes from the `autopilot` block. For back-compat with older web/MCP versions that don't serve `execution`, fall back to the legacy `autopilot` execution fields, then `local_plugin_settings`. If autopilot is not enabled or a field is missing everywhere, use defaults:
+3. Read configuration from the response. **Execution settings** (how work is done, applied to interactive and unattended runs alike) come from the unified **`execution`** block: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands`, `protected_paths`. Also read the top-level **`owner_agent_rules`** (the runner owner's personal machine/tooling rules). **Orchestration** (unattended-only, e.g. `stale_claim_timeout_minutes`) comes from the `autopilot` block. If the response has no `execution` block, fall back to the `autopilot` execution fields, then `local_plugin_settings`. If autopilot is not enabled or a field is missing everywhere, use defaults:
    - auto_push: true
    - auto_merge: true
    - branch_prefix: autopilot/action-item-
@@ -184,7 +184,7 @@ When the autopilot is stopped:
    - custom_instructions: "" (empty)
    - agent_rules: "" (empty); owner_agent_rules absent on older MCP versions
    - test_commands: none configured (tests are skipped — see step 5)
-   **Store the instruction tiers** from the response as session variables (Layer 2 of the prompt), each followed during every execution cycle if set: `custom_instructions` (team **Principles** — philosophy/quality bar), `agent_rules` (team **Agent Execution Rules** — build/test/ship mechanics), and `owner_agent_rules` (the runner owner's **Personal Agent Rules** — machine/tooling). Skip whichever are empty/missing. (Unattended honours the stored `auto_push`/`auto_merge`; there is no live human override in this path.)
+   **Store the instruction tiers** from the response as session variables, each followed during every execution cycle if set: `custom_instructions` (team **Principles** — philosophy/quality bar), `agent_rules` (team **Agent Execution Rules** — build/test/ship mechanics), and `owner_agent_rules` (the runner owner's **Personal Agent Rules** — machine/tooling). Skip whichever are empty/missing. (Unattended honours the stored `auto_push`/`auto_merge`; there is no live human override in this path.)
 4. **The ONE startup bash call** (already run in step 0 — this is its definition; do not run it twice) — hostname, session UUID, and repo discovery all in a single command to minimize visible tool calls:
    ```bash
    HOSTNAME=$(hostname); UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || node -e "console.log(require('crypto').randomUUID())"); CLAUDE_SID="${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"; echo "HOST:$HOSTNAME"; echo "UUID:$UUID"; echo "CLAUDE_SID:$CLAUDE_SID"; cd "<workspace_root>" && REMOTE=$(git remote get-url origin 2>/dev/null) && SHA=$(git rev-parse --short HEAD 2>/dev/null) && BRANCH=$(git branch --show-current 2>/dev/null) && echo "REPO:<dirname>|$REMOTE|$BRANCH|$SHA"; for d in */; do if [ -d "$d/.git" ] && [ ! -f "$d/.git" ]; then cd "$d" && R=$(git remote get-url origin 2>/dev/null) && S=$(git rev-parse --short HEAD 2>/dev/null) && B=$(git branch --show-current 2>/dev/null) && [ -n "$R" ] && echo "REPO:${d%/}|$R|$B|$S"; cd ..; fi; done
@@ -245,7 +245,7 @@ On EVERY DevSpec MCP **write** call in this loop — no exceptions — pass `run
 
 ### Record what you learn
 
-When you discover something worth persisting — a deviation from the item's stated approach ("the item said X, we did Y because Z"), a non-obvious constraint, an architectural finding — record it with `record_memory` (`decision`/`convention`/`architecture`/`risk`/`insight`). ALWAYS `search_memories` first and `supersede_memory` the closest match instead of duplicating. Do NOT record transient details or anything obvious from the code. Your writes land **unconfirmed** and capped at `in_discussion` — you propose; the human ratifies. This is DevSpec's **shared** team memory — the source of truth the in-app DevSpec assistant reads every turn — not your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge goes to DevSpec `record_memory`, while personal or machine-specific notes stay in your local memory — that boundary is what keeps DevSpec from going stale.
+When you discover something worth persisting — a deviation from the item's stated approach ("the item said X, we did Y because Z"), a non-obvious constraint, an architectural finding — record it with `record_memory` (`decision`/`convention`/`architecture`/`risk`/`insight`). ALWAYS `search_memories` first and `supersede_memory` the closest match instead of duplicating. Do NOT record transient details or anything obvious from the code. Your writes land **unconfirmed** and capped at `in_discussion` — you propose; the human ratifies. This is DevSpec's **shared** team memory — not your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge goes to DevSpec `record_memory`, while personal or machine-specific notes stay in your local memory — that boundary is what keeps DevSpec from going stale.
 
 ### Keep artifacts current
 
@@ -276,7 +276,7 @@ Repeat the following until stopped:
 get_next_work_item({
   // Account-wide token: name the project resolved at startup (Startup step 1).
   project_id,
-  // Action item ownership v1 — the autopilot default. "me" matches items
+  // Action item ownership — the autopilot default. "me" matches items
   // assigned to the caller OR with no assignees (the grab-bag pool).
   // Omit only when --all was passed (shared-queue mode).
   ...(assigned_to_filter !== null ? { assigned_to: assigned_to_filter } : {}),
@@ -287,7 +287,7 @@ get_next_work_item({
 
 When both filters are set, the server requires both to match (additive). The default loop runs with `assigned_to: "me"` and no `created_by`, so it picks up items assigned to the caller plus the unassigned grab-bag pool — never items assigned exclusively to other users. To override the assignee gate without `--all`, the operator must pass an explicit `--assigned-to=<uuid>`.
 
-**Force-claim policy**: the autopilot loop **MUST NOT** pass `force: true` on `claim_work_item`. If `claim_work_item` rejects with an "assigned to other users" error (sibling `360b1202` introduced this guard), treat it as a normal claim rejection: log it and move on to the next item. The next pickup will skip the same item via the assignee filter, so this is a self-healing condition once `assigned_to` is set correctly.
+**Force-claim policy**: the autopilot loop **MUST NOT** pass `force: true` on `claim_work_item`. If `claim_work_item` rejects with an "assigned to other users" error, treat it as a normal claim rejection: log it and move on to the next item. The next pickup will skip the same item via the assignee filter, so this is a self-healing condition once `assigned_to` is set correctly.
 
 **First cycle after idle only** (when `consecutive_idle_checks > 0`): also call these two **in parallel** with `get_next_work_item()`. Both are project-scoped — pass `project_id`:
 1. `get_action_items({ project_id, agent_activity: 'in_progress' })` — stale claim detection
@@ -337,7 +337,7 @@ Pick ONE item to process. **Priority order: staged > under_human_review > planni
 
    **Brief context (when the item belongs to a brief):** If the claimed item has `parent_action_item_id` set on it, immediately call `get_action_item_siblings({ action_item_id: <claimed_id> })` and read the returned `parent` (brief title + description) and `siblings` (titles + statuses + completion summaries). Use this to understand the broader feature before starting work — especially to spot files or concerns that an in-progress sibling is already handling, so your changes don't conflict with sibling work. If `parent` is null, skip this step (it's a flat item).
 
-   **Memory context (MANDATORY — never skip):** Before any file reading or implementation, call `search_memories({ project_id, query: "<action item title>" })` (project-scoped — pass the project resolved at startup) to retrieve related architecture decisions, coding conventions, known risks, and team preferences. Run it **in parallel** with the `get_action_item_siblings` call above when the item belongs to a brief. Treat the returned memories as **hard constraints**: if a memory records a convention (e.g. "always use Zod for validation") or an architectural decision, your implementation MUST follow it. Memories are the institutional knowledge layer that Dev (the conversation agent) retrieves on every turn — the autonomous loop must not run blind to it. This mirrors the mandatory pre-implementation context step in the interactive `/devspec:work` command.
+   **Memory context (MANDATORY — never skip):** Before any file reading or implementation, call `search_memories({ project_id, query: "<action item title>" })` (project-scoped — pass the project resolved at startup) to retrieve related architecture decisions, coding conventions, known risks, and team preferences. Run it **in parallel** with the `get_action_item_siblings` call above when the item belongs to a brief. Treat the returned memories as **hard constraints**: if a memory records a convention (e.g. "always use Zod for validation") or an architectural decision, your implementation MUST follow it. Do not run the loop blind to recorded knowledge.
 
    **Read the originating conversation (before you implement):** The claim response carries the item's `intent` (the WHY — the problem and desired outcome), `acceptance_criteria` (the definition of done you must satisfy), and `ai_instructions` (constraints). Read these first: `acceptance_criteria` is your target, and a diff that doesn't meet it is not done. The claim response also carries a `session_context` object when the item is tied to a session. If `session_context.transcript_is_authoritative` is `true` — the item was *born* in that session — call `get_session_transcript({ session_id: session_context.originating_session_id })` **before implementing**; it carries the human intent and nuance behind the item. Do NOT gate this on whether the spec fields "look complete": fully-specified fields can still have lost the conversation's nuance, and that gap is exactly what this closes. The autopilot loop is always a cold pickup, so this normally fires. If `transcript_is_authoritative` is `false` — the item was filed externally then attributed — the item fields are canonical; pull the transcript only as optional background. When the transcript reveals intent or criteria the item is missing, persist it back with `update_action_item({ action_item_id, intent, acceptance_criteria })` so the work is captured and the next agent inherits it.
 
@@ -357,9 +357,9 @@ Pick ONE item to process. **Priority order: staged > under_human_review > planni
 
 3. **IMPLEMENT**: Working in the worktree, implement the changes described in the action item. Follow existing code conventions. **Review the `search_memories` results from the claim phase before touching any files — treat recorded decisions and conventions as hard constraints.** **ALWAYS read a file before editing it** — the Edit tool will reject edits to unread files, so read first to avoid wasted tool calls.
 
-   **Principles + Agent Rules (Layer 2):** Apply the instruction tiers stored at startup, each mandatory if set:
+   **Principles + Agent Rules:** Apply the instruction tiers stored at startup, each mandatory if set:
    - `custom_instructions` (team **Principles**) — engineering philosophy and quality bar (no hacky workarounds, prefer the proper/secure solution, use platform tools properly). Shapes *how* you build.
-   - `agent_rules` (team **Agent Execution Rules**) + `owner_agent_rules` (the runner owner's **Personal Agent Rules**) — concrete execution mechanics: run typecheck/build (and any test commands) before pushing, never `git stash`, commit only your own files, honour the target branch, plus any personal tooling. These are agent mechanics (deliberately hidden from the in-session Dev), so they apply to you here.
+   - `agent_rules` (team **Agent Execution Rules**) + `owner_agent_rules` (the runner owner's **Personal Agent Rules**) — concrete execution mechanics: run typecheck/build (and any test commands) before pushing, never `git stash`, commit only your own files, honour the target branch, plus any personal tooling. These are agent mechanics, so they apply to you here.
 
    Treat all three as mandatory, not suggestions. Precedence: personal rules govern local working-style; shared-repo-safety rules always hold. Skip any tier whose field is empty/missing.
 
@@ -390,7 +390,7 @@ Pick ONE item to process. **Priority order: staged > under_human_review > planni
    ```
    Use the output of `git diff --name-only` (which you already ran in step 4) to know exactly which files to stage.
 
-   **The `[devspec:{action_item_id}]` trailer is mandatory** (use the full UUID of the item being processed). DevSpec's push-webhook handler skips unlinked-commit analysis for any commit whose message carries this trailer (`extractActionItemId`); without it, the pushed commit looks "unlinked" and DevSpec auto-creates a **duplicate** `source_type='commit'` action item for the same work — which then never reconciles to a deployment (it carries the branch-tip SHA, not the deployed merge SHA) and shows as "not deployed" on the testing page. The trailer is the same one the interactive `/devspec:work` flow emits, so this keeps the autopilot consistent with it.
+   **The `[devspec:{action_item_id}]` trailer is mandatory** — use the full UUID of the item being processed. It is how DevSpec links the pushed commit to this action item; without it, DevSpec treats the commit as unlinked and auto-creates a **duplicate** action item for the same work. The trailer is the same one the interactive `/devspec:work` flow emits, so this keeps the autopilot consistent with it.
 
 7. **PUSH**: If auto_push is enabled:
    ```bash

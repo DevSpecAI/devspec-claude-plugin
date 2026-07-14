@@ -43,5 +43,5 @@ Generate a properly formatted commit message with a `[devspec:<id>]` tag for dep
 
 - Do NOT output filler text before or after the confirmation
 - The MCP endpoint generates the message — do not construct it yourself
-- The `[devspec:<id>]` tag in the message is what the deployment webhook uses to track deployments
+- The `[devspec:<id>]` tag in the message is what DevSpec uses to link the commit and track the deployment
 - If the commit fails (e.g., pre-commit hook), show the error and do NOT retry automatically

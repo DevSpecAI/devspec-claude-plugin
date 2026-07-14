@@ -41,7 +41,7 @@ Never rejoin a session because it shared a repo/cwd or another agent/terminal st
 
 ## Interactive knowledge capture (while remote — non-negotiable)
 
-Remote control has **no in-session Dev** offering memories each turn. **You** are the capture agent. Action items alone are not enough — decisions evaporate if they only live in the control transcript.
+**You** are the capture agent. Action items alone are not enough — decisions evaporate if they only live in the control transcript.
 
 When the conversation produces a durable decision, convention, architecture choice, accepted risk, or short plan/ADR-worthy write-up:
 
@@ -248,10 +248,10 @@ Cadence 40s keeps live under 90s window while limiting idle cost. Prefer fixing 
 After `create_session` for `agent_remote_control` (or the initial `get_session_transcript` seed with no cursor), read the instruction fields from the response when present and non-null, and hold them for the **entire remote-control run**. There are two tiers (each with a `_note` field on the create_session response explaining it):
 
 **Style + principles — how you talk, and what good work looks like:**
-- **`owner_custom_instructions`** — the owner's Account → Chat Response Style. Apply to how you reply (brevity, tone, naming) — same spirit as Dev's profile style note.
+- **`owner_custom_instructions`** — the owner's Account → Chat Response Style. Apply to how you reply (brevity, tone, naming).
 - **`project_custom_instructions`** — the team's Project Principles (engineering philosophy, quality bar, provider preferences). Apply to how you plan, recommend, and evaluate work.
 
-**Agent execution rules — how you actually run work on this machine (you ARE a coding agent, so these apply to you and NOT to the in-session Dev):**
+**Agent execution rules — how you actually run work on this machine (you ARE a coding agent, so these apply to you):**
 - **`project_agent_rules`** — the team's Agent Execution Rules: e.g. run typecheck/build before pushing, never `git stash`, commit only your own files, target branch. Treat as mandatory execution mechanics.
 - **`owner_agent_rules`** — the owner's Personal Agent Rules: their machine/tooling context (installed tools, local ports, personal workflow). Apply to how you run work locally.
 - **Precedence:** your personal/machine rules govern local working-style; the shared-repo-safety rules (branch protection, commit-only-your-own-files, don't break staging, don't leak secrets) always hold.

@@ -52,7 +52,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - If a decision requires human judgment, fail the item with a documented error rather than guessing
    - If the action item name matches multiple items, auto-select the highest-priority match (or the closest title match)
 
-1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide — they no longer pin a project, so resolve which project this run targets before any project-scoped call:
+1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide, so resolve which project this run targets before any project-scoped call:
    - Run `git remote get-url origin` in the workspace root and call `list_projects({ git_remote: "<that remote>" })`.
    - Read `remote_match`: use `resolved_project_id` when non-null and store it as the session variable `project_id`.
    - If it is null with multiple `candidate_project_ids` (the repo is tracked by more than one project): **interactive mode** — present the candidate projects (use the `repos`/name info `list_projects` returns) and ask the user which one to use; **unattended mode** — fail the item with `"Requires human judgment: repo tracked by multiple DevSpec projects (<candidates>) — cannot pick one unattended"`.
@@ -72,7 +72,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
 2. **Load project settings.** Call `get_project_summary({ project_id })` and read the unified **`execution`** block from the response. Store it for later use. Read these fields: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands` ({ unit, e2e, typecheck }), `protected_paths`. Also read the top-level **`owner_agent_rules`** (your own personal machine/tooling rules). Note the two instruction tiers: `custom_instructions` is the team **Principles** (philosophy/quality bar), while `agent_rules` (team) + `owner_agent_rules` (yours) are **execution mechanics** for a coding agent — how you build, test, and ship. Store all three.
 
-   **Back-compat (rollout):** if the response has no `execution` block (an older web/MCP version), fall back to the legacy `local_plugin_settings` object, then to the legacy `autopilot` execution fields. If a field is absent everywhere, use these defaults:
+   If the response has no `execution` block, fall back to the `local_plugin_settings` object, then to the `autopilot` execution fields. If a field is absent everywhere, use these defaults:
    - `auto_push`: true
    - `auto_merge`: true
    - `branch_prefix`: "work/action-item-"
@@ -218,7 +218,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
     **Principles + Agent Rules (mandatory):** Apply the instruction tiers you loaded in step 2:
     - `custom_instructions` (team **Principles**): engineering philosophy and quality bar — no hacky workarounds, prefer the proper/secure solution, use platform tools properly. These shape *how* you build.
-    - `agent_rules` (team **Agent Execution Rules**) + `owner_agent_rules` (**your** personal machine/tooling rules): concrete execution mechanics — e.g. run typecheck/build (and any test commands) before pushing, never `git stash`, commit only your own files, honour the target branch, plus any personal tooling you have set up. These are mechanics for a coding agent, so they apply to you here (they are deliberately hidden from the in-session Dev).
+    - `agent_rules` (team **Agent Execution Rules**) + `owner_agent_rules` (**your** personal machine/tooling rules): concrete execution mechanics — e.g. run typecheck/build (and any test commands) before pushing, never `git stash`, commit only your own files, honour the target branch, plus any personal tooling you have set up. These are mechanics for a coding agent, so they apply to you here.
 
     Treat all three as mandatory requirements, not suggestions. Precedence: your personal rules govern local working-style, but the shared-repo-safety rules always hold. Skip any tier whose field is empty/absent.
 
@@ -252,7 +252,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
     ```bash
     git commit -m "{generated_message}"
     ```
-    The `[devspec:<id>]` tag in the message is what the deployment webhook uses to track deployments — do NOT construct the message yourself.
+    The `[devspec:<id>]` tag in the message is what DevSpec uses to link the commit and track the deployment — do NOT construct the message yourself.
 
 17. **Integrate the fresh target, then push** (if auto_push is enabled or implied by auto_merge).
 
@@ -332,7 +332,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
       - `provider`: always pass `"claude_code"`
       - `local_session_id`: the real Claude Code session UUID, so the developer can later resume *this exact session* with `claude --resume <id>` straight from the DevSpec UI. Get it by running this bash command and using the bare UUID it prints: `echo "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"`. Pass that concrete value (e.g. `7ef055ed-4716-44f8-a68f-abfa27d61e77`) — **never** pass the literal text `${CLAUDE_SESSION_ID}` / `${CLAUDE_CODE_SESSION_ID}`: MCP arguments are not shell-expanded, so a placeholder is stored verbatim and is useless. Only if that command prints an empty line do you omit this field entirely rather than sending a placeholder or non-UUID value. Do NOT pass `machine_user_id`: the server defaults it to you (the authenticated DevSpec user), which is exactly the developer whose machine ran this session.
 
-    **d)** `record_memory` — **only if** the work taught you something durable about the *project* (a decision, convention, architecture fact, or risk that outlives this item — e.g. "the item said X, we did Y because Z", a non-obvious constraint you had to honour). `search_memories` FIRST and `supersede_memory`/`retract_memory` the stale match instead of duplicating. Record shared knowledge only — do NOT record aggressively, and skip transient or obvious-from-the-code details (that reintroduces the duplicate-memory clutter we already fought). This is DevSpec's **shared** team memory — the source of truth the in-app DevSpec assistant reads every turn — and is distinct from your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge → DevSpec `record_memory`; personal or machine-specific notes → your local memory. That boundary is what keeps DevSpec from going stale.
+    **d)** `record_memory` — **only if** the work taught you something durable about the *project* (a decision, convention, architecture fact, or risk that outlives this item — e.g. "the item said X, we did Y because Z", a non-obvious constraint you had to honour). `search_memories` FIRST and `supersede_memory`/`retract_memory` the stale match instead of duplicating. Record shared knowledge only — do NOT record aggressively, and skip transient or obvious-from-the-code details (avoid duplicate or low-value memories). This is DevSpec's **shared** team memory — and is distinct from your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge → DevSpec `record_memory`; personal or machine-specific notes → your local memory. That boundary is what keeps DevSpec from going stale.
 
 20. **Output the result:**
     ```

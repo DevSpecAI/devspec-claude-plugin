@@ -1,14 +1,14 @@
 {
-  "name": "devspec-autopilot",
-  "displayName": "DevSpec Autopilot",
-  "description": "Automatically pick up staged action items from DevSpec, implement them, test them, and push to a target branch. Includes /devspec.remote for Agents-page remote control.",
+  "name": "devspec",
+  "displayName": "DevSpec",
+  "description": "Connect Claude Code to DevSpec: autopilot staged action items, interactive /devspec.* workflows, and Agents-page remote control.",
   "version": "0.5.0",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
   },
   "homepage": "https://devspec.ai",
-  "repository": "https://github.com/DevSpecAI/claude-code-devspec-autopilot",
+  "repository": "https://github.com/DevSpecAI/devspec-claude-plugin",
   "license": "MIT",
   "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items", "remote-control"],
   "userConfig": {

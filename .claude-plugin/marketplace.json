@@ -1,18 +1,20 @@
 {
-  "name": "devspec-autopilot-marketplace",
+  "name": "devspec",
   "owner": {
-    "name": "DevSpecAI"
+    "name": "DevSpecAI",
+    "email": "brandon.caddowyoung@devspec.ai"
   },
-  "metadata": {
-    "description": "DevSpec Autopilot plugin for Claude Code - autonomous action item implementation plus Agents-page remote control"
-  },
+  "description": "DevSpec plugin for Claude Code — action-item autopilot, interactive workflows, and Agents-page remote control",
   "plugins": [
     {
-      "name": "devspec-autopilot",
+      "name": "devspec",
       "source": "./",
-      "description": "Automatically pick up staged action items from DevSpec, implement them, test them, and push to a target branch. Includes /devspec.remote for Agents-page remote control.",
+      "description": "Connect Claude Code to DevSpec: autopilot staged action items, interactive /devspec.* workflows, and Agents-page remote control.",
       "version": "0.5.0",
       "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items", "remote-control"]
     }
-  ]
+  ],
+  "renames": {
+    "devspec-autopilot": "devspec"
+  }
 }

@@ -1,6 +1,6 @@
 # Development
 
-Maintainer notes for the DevSpec Autopilot plugin. End users don't need any of this — see `README.md`.
+Maintainer notes for the DevSpec Claude Code plugin (`devspec`). End users don't need any of this — see `README.md`.
 
 ## What the plugin actually is
 

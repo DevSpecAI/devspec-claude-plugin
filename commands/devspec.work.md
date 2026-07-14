@@ -70,7 +70,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    Remote is **orthogonal** to unattended — both flags may be combined.
 
 
-2. **Load project settings.** Call `get_project_summary({ project_id })` and read the unified **`execution`** block from the response. Store it for later use. Read these fields: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `test_commands` ({ unit, e2e, typecheck }), `protected_paths`.
+2. **Load project settings.** Call `get_project_summary({ project_id })` and read the unified **`execution`** block from the response. Store it for later use. Read these fields: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands` ({ unit, e2e, typecheck }), `protected_paths`. Also read the top-level **`owner_agent_rules`** (your own personal machine/tooling rules). Note the two instruction tiers: `custom_instructions` is the team **Principles** (philosophy/quality bar), while `agent_rules` (team) + `owner_agent_rules` (yours) are **execution mechanics** for a coding agent — how you build, test, and ship. Store all three.
 
    **Back-compat (rollout):** if the response has no `execution` block (an older web/MCP version), fall back to the legacy `local_plugin_settings` object, then to the legacy `autopilot` execution fields. If a field is absent everywhere, use these defaults:
    - `auto_push`: true
@@ -78,6 +78,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - `branch_prefix`: "work/action-item-"
    - `commit_message_prefix`: "" (none)
    - `custom_instructions`: "" (empty)
+   - `agent_rules`: "" (empty) — and `owner_agent_rules` absent on older MCP versions
    - `test_commands`: none configured (tests are skipped — see step 15)
    - `protected_paths`: none
 
@@ -215,7 +216,11 @@ Fix real issues before committing. If a fix would expand scope beyond the action
 
 14. **Implement the changes.** Follow the action item description and any `ai_instructions`. Read existing files before editing. You are working inside the worktree from step 13 (a full checkout of the branch) — read and edit files there as normal. Follow existing code conventions. If the action item has brainstorm notes or prior implementation notes, use them to guide implementation. If returning to address verification feedback, focus specifically on the issues raised in the feedback.
 
-    **Custom Instructions:** If `custom_instructions` is set in the loaded settings, you MUST follow those instructions during implementation. These are project-owner-defined rules that apply to every action item — e.g., which tools to use, which files to update, testing requirements, or additional steps to perform alongside the main task. Treat them as mandatory requirements, not suggestions.
+    **Principles + Agent Rules (mandatory):** Apply the instruction tiers you loaded in step 2:
+    - `custom_instructions` (team **Principles**): engineering philosophy and quality bar — no hacky workarounds, prefer the proper/secure solution, use platform tools properly. These shape *how* you build.
+    - `agent_rules` (team **Agent Execution Rules**) + `owner_agent_rules` (**your** personal machine/tooling rules): concrete execution mechanics — e.g. run typecheck/build (and any test commands) before pushing, never `git stash`, commit only your own files, honour the target branch, plus any personal tooling you have set up. These are mechanics for a coding agent, so they apply to you here (they are deliberately hidden from the in-session Dev).
+
+    Treat all three as mandatory requirements, not suggestions. Precedence: your personal rules govern local working-style, but the shared-repo-safety rules always hold. Skip any tier whose field is empty/absent.
 
     During implementation, whenever you complete a significant milestone (e.g., finished a major component, wired up an integration, completed a migration):
     - Call `add_implementation_note(action_item_id, content: <what was done and why>)` to keep a running log. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names. Never write as a single prose paragraph.

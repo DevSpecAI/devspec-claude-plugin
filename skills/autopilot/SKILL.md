@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Automatically pick up staged action items from DevSpec, implement them in isolated worktrees, and push results back
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__record_implementation, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__check_queue_status, mcp__devspec__get_action_item_siblings, mcp__devspec__get_session_transcript, mcp__devspec__search_memories, mcp__devspec__get_decisions, mcp__devspec__get_conventions, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_action_items, mcp__devspec__get_next_work_item, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__record_implementation, mcp__devspec__get_project_summary, mcp__devspec__add_commit_reference, mcp__devspec__add_implementation_note, mcp__devspec__send_heartbeat, mcp__devspec__get_action_item_siblings, mcp__devspec__get_session_transcript, mcp__devspec__search_memories, mcp__devspec__get_decisions, mcp__devspec__get_conventions, mcp__devspec__get_resources, mcp__devspec__get_resource, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource
 ---
 
 # DevSpec Autopilot
@@ -506,7 +506,7 @@ This step uses two strategies to balance responsiveness with efficiency:
   - This drains the entire queue without sleeping between items
 
 **B. Drain-then-exit** — if this cycle was idle AND the session was started with `--drain` (`drain_on_empty === true`):
-  - Do NOT sleep, do NOT call `check_queue_status`, do NOT heartbeat again
+  - Do NOT sleep or heartbeat again
   - Follow the Graceful Shutdown sequence below (send_heartbeat offline, then stop summary)
   - This lets `--drain` sessions fire-and-forget: process everything currently staged, then exit cleanly
 
@@ -517,15 +517,15 @@ This step uses two strategies to balance responsiveness with efficiency:
     * `consecutive_idle_checks` 11–60 (~5–30 minutes): sleep **2 minutes**
     * `consecutive_idle_checks` > 60 (30+ minutes): sleep **5 minutes**
   - Sleep via Bash with `run_in_background: true`
-  - After waking, call `check_queue_status` (lightweight — returns only counts, no item details):
-    * If `has_items` is true: output wake line (see formatting), reset `consecutive_idle_checks` to 0, go to step 1
-    * If `has_items` is false: go back to the top of step 5B (sleep again at the current tier)
+  - After waking, go to step 1 and fetch with `get_next_work_item`:
+    * If it returns an item: output the wake line (see formatting), then process it — drain mode (5A) resets `consecutive_idle_checks` to 0.
+    * If it returns empty (no staged work): return here and sleep again at the current tier.
   - **Heartbeats during idle**: Send a `send_heartbeat` (with `project_id`, status: `'idle'`) every **2nd** idle check to stay visible on the dashboard. At the deepest idle tier (5-min sleeps) this means a heartbeat every 10 minutes, well within the server's 16-minute online cutoff. Always wrap in try/catch.
 
-**Wake output format** (when `check_queue_status` finds items):
+**Wake output format** (when the wake fetch finds staged work):
 ```
 ▸ Cycle {N} · woke                                  {time}
-  ↻ Queue check: {count} item(s) available — resuming
+  ↻ Staged work available — resuming
 ```
 
 ## State Tracking

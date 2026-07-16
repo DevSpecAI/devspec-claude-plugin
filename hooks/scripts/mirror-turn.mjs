@@ -14,6 +14,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { AGENT_NAME } from './agent-identity.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -201,7 +202,8 @@ async function main() {
   if (!token) process.exit(0) // silent — skill still posts instructionally
 
   mcpUrl = mcpUrl || 'https://devspec.ai/api/mcp'
-  const agentName = state.agent_name || 'Claude Code'
+  // Identity is a fixed property of THIS plugin — never trust state/args for it.
+  const agentName = AGENT_NAME
   const sessionId = state.session_id
 
   const text = extractLastText(raw, mode)

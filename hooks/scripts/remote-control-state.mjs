@@ -43,6 +43,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { AGENT_NAME } from './agent-identity.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -252,7 +253,7 @@ function markBondsStoppedForSession(sessionId, endReason = 'local_stop') {
  * Never scans by cwd.
  */
 export function resolveLocalAction({
-  agent = 'Grok Build',
+  agent = AGENT_NAME,
   localId = null,
   forceNew = false,
   maxAgeMinutes = DEFAULT_RECONNECT_MAX_AGE_MINUTES,
@@ -260,7 +261,7 @@ export function resolveLocalAction({
   readBond = readLocalBond,
   readSession = (id) => readJson(sessionPath(id)),
 } = {}) {
-  const agentName = agent || 'Grok Build'
+  const agentName = agent || AGENT_NAME
   const maxAgeMs =
     Math.max(1, Number(maxAgeMinutes) || DEFAULT_RECONNECT_MAX_AGE_MINUTES) * 60 * 1000
 
@@ -541,7 +542,7 @@ if (isMain) {
 
   if (cmd === 'resolve-local' || cmd === 'find-reconnect') {
     // find-reconnect is a deprecated alias — same bond-scoped logic, never cwd scan.
-    const agentName = args.agent || 'Grok Build'
+    const agentName = args.agent || AGENT_NAME
     const detected = detectLocalId(args, process.env)
     const localId = detected.local_id
     const maxAgeMinutesRaw = args['max-age-minutes']
@@ -679,7 +680,7 @@ if (isMain) {
     const cwd = args.cwd || process.cwd()
     const auth = resolveDevspecMcpAuth(cwd)
     const prev = readJson(sessionPath(args.session)) || {}
-    const agentName = args.agent || prev.agent_name || 'Claude Code'
+    const agentName = args.agent || prev.agent_name || AGENT_NAME
     // The conversation this write belongs to — stamped INTO the per-session state
     // so the mirror hook can bind strictly to THIS conversation (never a global
     // "latest session" pointer). See mirror-turn.mjs selectBoundState.

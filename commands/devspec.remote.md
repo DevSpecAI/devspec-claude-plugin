@@ -148,10 +148,11 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" write \
   --agent 'Claude Code' \
   --cwd "$(pwd)" \
   --local-id '<local_id>' \
+  --owner-pid "$PPID" \
   --codename '<session_codename if any>'
 ```
 
-This resolves the MCP token from env → project `.mcp.json` → `~/.claude.json` and writes session state + a **local conversation bond** (mode 0600) with `mcp_url` matching the configured host (staging vs prod).
+This resolves the MCP token from env → project `.mcp.json` → `~/.claude.json` and writes session state + a **local conversation bond** (mode 0600) with `mcp_url` matching the configured host (staging vs prod). `--owner-pid "$PPID"` records the owning `claude` session process so the poller can self-terminate when this session goes away (no zombie "Live" agents).
 
 If the JSON result has `auth_ok: false`, print the `warning` line and tell the user to fix MCP auth — hooks/poller will not work without a token.
 
@@ -169,17 +170,28 @@ Store `cursor.next_after_message_id` as `cursor`. Also store `owner_user_id` if 
 
 ```bash
 SESSION='<session_id>'
+# The DURABLE owning process for THIS session — a Bash-tool subshell's PPID is the
+# `claude` session process. The poller anchors to it and self-terminates the moment
+# it dies (terminal close / crash / SIGKILL / /clear), so a closed session never
+# leaves a zombie "Live" agent on the Agents page.
+OWNER_PID="$PPID"
 LOG="${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.log"
 mkdir -p "${HOME}/.devspec/remote-control/sessions"
+# Backstop: reap any provably-dead pollers left by hard-closed sessions before we start.
+node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" \
+  reap --agent "Claude Code" --except-session "$SESSION" 2>/dev/null || true
 # Prefer harness run_in_background: true when available; otherwise nohup so the
-# tool shell cannot kill the poller when the tool invocation ends.
+# tool shell cannot kill the poller when the tool invocation ends. Always pass
+# --owner-pid so the poller can self-terminate when this session goes away.
 nohup node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-poll.mjs" \
-  --session "$SESSION" >> "$LOG" 2>&1 &
+  --session "$SESSION" --owner-pid "$OWNER_PID" >> "$LOG" 2>&1 &
 echo $! > "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid"
 sleep 2
 kill -0 "$(cat "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid")" 2>/dev/null \
   || echo "✗ poller failed to stay up — check $LOG"
 ```
+
+> Also pass `--owner-pid "$PPID"` on the step-5 `remote-control-state.mjs write` call, so the owning-process anchor is persisted in session state even before the poller starts.
 
 **Continuous contract (do not re-arm for liveness):**
 
@@ -189,16 +201,16 @@ kill -0 "$(cat "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid")" 
   2. Prints stdout JSON (`owner_message` / `wake` with `continuous: true`)
   3. Advances cursor in state
   4. **Keeps heartbeating** so Agents UI stays Live while you work
-- **Exit 1** only for terminal stop: disabled / UI End / idle_timeout / error — **do not** keep *this* process running after UI End — exit. A **new** instance may re-attach to the same session_id (UI End frees the slot).
+- **Exit 1** only for terminal stop: disabled / UI End / idle_timeout / **owner gone** (the session's process died) / error — **do not** keep *this* process running after UI End — exit. A **new** instance may re-attach to the same session_id (UI End frees the slot).
 - **Exit 2** = bad args.
 
 **Wait-for-owner (wakes the model — required):** after the poller is up, run in background:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --session "$SESSION" --from-end
+node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --session "$SESSION" --owner-pid "$PPID" --from-end
 ```
 
-Use **`run_in_background: true`**. Exit **0** → stdout has `owner_message` / `wake` → act → **re-arm only this wait** (not the continuous poller). Exit **1** → session ended/disabled — stop.
+Use **`run_in_background: true`**. Exit **0** → stdout has `owner_message` / `wake` → act → **re-arm only this wait** (not the continuous poller). Exit **1** → session ended/disabled/owner gone — stop.
 
 **Acting:** act on `is_owner_instruction` / `local_agent_dispatch` only. Mirror replies with `post_session_message`. Heartbeat poller stays up; re-arm wait after each handled wake.
 

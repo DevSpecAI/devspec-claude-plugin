@@ -66,10 +66,16 @@ cannot drift. To add or rename a plugin, edit the `PLUGINS` array in
 
 ## Why the shared files no longer need per-tool rewrites
 
-- **Conversation id:** the canonical scripts already probe every tool's env var
-  (`CLAUDE_CODE_SESSION_ID`, `GROK_*`, `CODEX_THREAD_ID`, `TERM_SESSION_ID`, …)
-  and fall back to the hook-stdin `session_id` / a minted local id, so one file
-  works for all local-poller tools.
+- **Conversation id:** `mirror-turn.mjs` resolves the firing conversation via the
+  shared `detectLocalId` (probes whichever conversation-id env var the tool exposes
+  — `CLAUDE_CODE_SESSION_ID`, `GROK_SESSION_ID`, `CODEX_THREAD_ID`, `TERM/SHELL_SESSION_ID`,
+  …), then the hook-stdin `session_id`. This MUST be tool-agnostic — a Claude-only
+  resolver silently fail-closes every other plugin's mirror. **Fallback for tools
+  that expose no per-conversation id (Cursor, Antigravity):** `selectBoundState`
+  selects the single enabled remote session for THIS agent — safe because "exactly
+  one" cannot bleed; two+ concurrent sessions of that agent fail closed rather than
+  guess. (Confirming a live single-session mirror for those tools is still worth a
+  smoke test.)
 - **Auth:** `resolve-mcp-auth.mjs` probes env → project `.mcp.json` → `~/.claude.json`
   → the Claude `CLAUDE_PLUGIN_OPTION_*` userConfig token (last, lowest priority).
   That last source is a no-op on tools that never set it, so the file stays shared.

@@ -164,7 +164,7 @@ export function resolveDevspecMcpAuth(cwd = process.cwd()) {
     ok: false,
     mcp_url: envUrl || DEFAULT_PROD_URL,
     error:
-      'No DevSpec MCP token found. Provide your token when the plugin prompts for it, set DEVSPEC_MCP_TOKEN, or configure mcpServers.devspec.headers.Authorization in project .mcp.json.',
+      'No DevSpec MCP token found. Provide your token via the plugin configuration, set DEVSPEC_MCP_TOKEN, or configure mcpServers.devspec.headers.Authorization in project .mcp.json.',
   }
 }
 

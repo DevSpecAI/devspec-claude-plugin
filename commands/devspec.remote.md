@@ -152,9 +152,14 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" write \
   --codename '<session_codename if any>'
 ```
 
-This resolves the MCP token from env → project `.mcp.json` → `~/.claude.json` and writes session state + a **local conversation bond** (mode 0600) with `mcp_url` matching the configured host (staging vs prod). `--owner-pid "$PPID"` records the owning `claude` session process so the poller can self-terminate when this session goes away (no zombie "Live" agents).
+This resolves the MCP token from env → project `.mcp.json` → `~/.claude.json` and writes session state + a **local conversation bond** (mode 0600) with `mcp_url` matching the configured host (staging vs prod).
 
-If the JSON result has `auth_ok: false`, print the `warning` line and tell the user to fix MCP auth — hooks/poller will not work without a token.
+**`write` also does the whole poller lifecycle for you** after an auth-ok write:
+- **Auto-starts the continuous heartbeat poller** (detached), anchored to `--owner-pid "$PPID"` (the owning `claude` session process) — so it self-terminates the moment this session closes (terminal close / crash / SIGKILL / /clear). No manual `nohup` launch. Confirm `poller.ok` / `poller.pid` in the JSON.
+- **Reaps** any provably-dead pollers for this agent (self-heals leftover zombies).
+- Opt out with `--no-poller` (tests only).
+
+If the JSON result has `auth_ok: false`, print the `warning` line and tell the user to fix MCP auth — nothing runs without a token. If `poller.ok` is false, show `warning_poller`.
 
 ### 6. Seed transcript cursor
 
@@ -164,34 +169,14 @@ get_session_transcript({ session_id })
 
 Store `cursor.next_after_message_id` as `cursor`. Also store `owner_user_id` if returned. On attach/reconnect, apply the four instruction fields when present — `owner_custom_instructions` / `project_custom_instructions` (style + principles) and `owner_agent_rules` / `project_agent_rules` (agent execution mechanics). See "Account + project instructions" below.
 
-### 7. Packaged poll loop (REQUIRED — continuous; do not invent a sleep loop)
+### 7. Poll loop (the poller is already running — just arm the wait)
 
-**Do NOT** invent a model-driven `sleep` re-invoke loop. Use the packaged poller as a **long-lived** process:
+**Step 5's `write` already started the continuous poller** (detached, `--owner-pid`-anchored). Do **NOT** launch a second one with `nohup`/`&` — that multiplies orphans. If you ever need to (re)start it by hand:
 
 ```bash
-SESSION='<session_id>'
-# The DURABLE owning process for THIS session — a Bash-tool subshell's PPID is the
-# `claude` session process. The poller anchors to it and self-terminates the moment
-# it dies (terminal close / crash / SIGKILL / /clear), so a closed session never
-# leaves a zombie "Live" agent on the Agents page.
-OWNER_PID="$PPID"
-LOG="${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.log"
-mkdir -p "${HOME}/.devspec/remote-control/sessions"
-# Backstop: reap any provably-dead pollers left by hard-closed sessions before we start.
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" \
-  reap --agent "Claude Code" --except-session "$SESSION" 2>/dev/null || true
-# Prefer harness run_in_background: true when available; otherwise nohup so the
-# tool shell cannot kill the poller when the tool invocation ends. Always pass
-# --owner-pid so the poller can self-terminate when this session goes away.
-nohup node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-poll.mjs" \
-  --session "$SESSION" --owner-pid "$OWNER_PID" >> "$LOG" 2>&1 &
-echo $! > "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid"
-sleep 2
-kill -0 "$(cat "${HOME}/.devspec/remote-control/sessions/${SESSION}.poll.pid")" 2>/dev/null \
-  || echo "✗ poller failed to stay up — check $LOG"
+  ensure-poller --session "$SESSION" --owner-pid "$PPID"
 ```
-
-> Also pass `--owner-pid "$PPID"` on the step-5 `remote-control-state.mjs write` call, so the owning-process anchor is persisted in session state even before the poller starts.
 
 **Continuous contract (do not re-arm for liveness):**
 

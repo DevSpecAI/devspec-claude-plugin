@@ -104,10 +104,10 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" resolve-loca
 Then **register the connection** (idempotent on the conversation bond — returns the same `connection_id` if already live):
 
 ```
-register_connection({ project_id, local_id: "<local_id>", agent_name: "Claude Code", machine_hostname?, cwd? })
+register_connection({ project_id, local_id: "<local_id>", agent_name: "Claude Code", machine_hostname?, cwd?, name?: "<--name value, only if the user passed one>" })
 ```
 
-Store the returned **`connection_id`** (full UUID).
+Store the returned **`connection_id`** (full UUID) **and the returned `codename`** — this agent's own adjective-animal identity (e.g. `Brave Otter`), auto-minted server-side so two of your Claude Code agents are never confused. If `--name "…"` was passed, that becomes the codename instead. **Tell the user which agent this terminal is** (see the status block), so a phone/web driver can pick the right one.
 
 Now handle the session attachment by invocation:
 - **bare** → nothing more; the connection is available and sessionless.
@@ -120,6 +120,7 @@ Print:
 
 ```
 ━━━ DevSpec Remote Control ━━━
+Agent:      Claude Code · {codename}
 Connection: {connection_id first 8}…
 Session:    {first 8}… | (none — available)
 Status:     registered | attached | reconnected | already live (private)
@@ -127,6 +128,8 @@ Open:       Agents page
 Stop with:  /devspec.remote-stop
 ─────────────────────────────
 ```
+
+The **Agent** line is how the user and any phone/web driver identify THIS terminal among several connected agents — always print it with the codename returned by `register_connection`.
 
 ### 5. Write state file (token resolution — required)
 
@@ -140,7 +143,7 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" write \
   --cwd "$(pwd)" \
   --local-id '<local_id>' \
   --owner-pid "$PPID" \
-  [--codename '<session_codename if any>']
+  [--codename '<the codename returned by register_connection — this agent's identity>']
 ```
 
 This resolves the MCP token (env → project `.mcp.json` → `~/.claude.json`), writes connection state + the conversation bond (mode 0600) with the configured `mcp_url` (staging vs prod), and **auto-starts the continuous poller** (detached, `--owner-pid`-anchored, keyed to this connection, polling the attached session's room only when `--session` was given). It also reaps provably-dead pollers for this agent. Confirm `poller.ok` / `poller.pid`. Opt out with `--no-poller` (tests only).

@@ -2,7 +2,7 @@
 name: devspec.remote-stop
 description: Disconnect DevSpec remote control for THIS conversation only — connection offline, stop matching poller, leave other remotes alone.
 argument-hint: "[connection_id=<uuid>]"
-allowed-tools: Bash, mcp__devspec__heartbeat_connection, mcp__devspec__report_remote_agent_heartbeat, mcp__devspec__detach_connection, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript
+allowed-tools: Bash, mcp__devspec__heartbeat_connection, mcp__devspec__detach_connection, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript
 ---
 
 # DevSpec Remote Control — Stop / Disconnect
@@ -27,8 +27,7 @@ Multiple remotes may run on one machine.
    (use its `connection_id`), or `~/.devspec/remote-control/connections/<uuid>.json`, or legacy `~/.devspec/remote-control.json`. If ambiguous, ask the user. Note its `session_id` (may be null = sessionless).
 
 2. **Mark the connection offline (this connection only):**
-   - If attached (`session_id` present): `report_remote_agent_heartbeat({ session_id, status: "offline", end_reason: "local_stop", agent_name: "Claude Code" })` (the bond-aware dual-write also ends the connection row), then optionally `detach_connection({ connection_id })`.
-   - If sessionless: `heartbeat_connection({ connection_id, status: "offline", end_reason: "local_stop" })`.
+   - `heartbeat_connection({ connection_id, status: "offline", end_reason: "local_stop" })` (one path, attached or sessionless), then optionally `detach_connection({ connection_id })`.
 
 3. **Post disconnect** (best-effort, only when attached):
    ```

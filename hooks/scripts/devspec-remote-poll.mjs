@@ -506,7 +506,17 @@ async function main() {
         mcpUrl,
         token,
         name: 'get_session_transcript',
-        arguments: { session_id: sessionId, ...(cursor ? { after_message_id: cursor } : {}) },
+        // Pass THIS connection's id so the server scopes owner-instruction
+        // stamping to us: a dispatch is a command for this poller only when it
+        // is addressed to this connection (target_connection_id). Without it the
+        // server falls back to whole-owner matching and every same-owner agent
+        // in the room would treat one targeted dispatch as a command (the
+        // "Grok answered a message sent to Claude" hijack) [devspec:3e76a6cc].
+        arguments: {
+          session_id: sessionId,
+          connection_id: connectionId,
+          ...(cursor ? { after_message_id: cursor } : {}),
+        },
       })
       if (delta?.owner_user_id) ownerUserId = delta.owner_user_id
       const msgs = Array.isArray(delta?.messages) ? delta.messages : []

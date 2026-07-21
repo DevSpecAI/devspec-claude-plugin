@@ -71,18 +71,9 @@ Commands appear in Claude Code's `/` menu after install, namespaced under the pl
 
 ### Using Grok Build on the same machine
 
-**Product requirement:** users may install **both** this plugin and [DevSpec for Grok Build](https://github.com/DevSpecAI/DevSpec-Grok-Build-Plugin) for the same projects on the same machine. That must stay clean with **no** hand-tuning.
+This plugin is **fully featured for Claude Code alone**. Optionally install [DevSpec for Grok Build](https://github.com/DevSpecAI/DevSpec-Grok-Build-Plugin) for Grok — also fully featured alone. **Neither requires the other.**
 
-| Host | Plugin package `name` | Where it lives | Slash style |
-|------|----------------------|----------------|-------------|
-| **Claude Code** (this plugin) | `devspec` | `~/.claude/plugins/…` | `/devspec:devspec.remote`, … |
-| **Grok Build** | `devspec` (same name on purpose) | `~/.grok/installed-plugins/…` | `/devspec-remote`, … |
-
-- Claude Code only loads Claude’s plugin system — it never reads `~/.grok`.
-- Grok discovers Claude plugins for harness compatibility; **both packages keep the name `devspec`** so Grok’s install **shadows** this one inside Grok (skills + hooks). Renaming either package re-introduces mixed slash menus for every dual-host user.
-- Do not layer flat skill copies under `.agents/skills` (or similar) on top of either plugin.
-
-Full contract (Grok side, including `./scripts/check-host-isolation.sh`): [HOST-ISOLATION.md](https://github.com/DevSpecAI/DevSpec-Grok-Build-Plugin/blob/main/docs/HOST-ISOLATION.md).
+Claude Code only loads `~/.claude/…`. Grok only activates its own DevSpec install under `~/.grok/…`. Install one or both; each host keeps a complete skill/command set. See [HOST-ISOLATION.md](https://github.com/DevSpecAI/DevSpec-Grok-Build-Plugin/blob/main/docs/HOST-ISOLATION.md).
 
 ## ⭐ Drive a session from DevSpec (remote control)
 

@@ -46,7 +46,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
-import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -377,7 +377,13 @@ async function main() {
   let token = state?.token || null
   let mcpUrl = state?.mcp_url || null
   if (!token) {
-    const auth = resolveDevspecMcpAuth(state?.cwd || process.cwd())
+    // Token symmetry (item 74b29c76): write normally caches the token; if it did
+    // not, resolve one preferring the host bearer (plugin userConfig env) over the
+    // .mcp.json walk, so even a fallback resolution matches the token
+    // register_connection ran on rather than diverging into dispatch spam.
+    const auth = resolveDevspecMcpAuth(state?.cwd || process.cwd(), {
+      hostToken: hostTokenFromEnv(process.env),
+    })
     token = auth.token
     mcpUrl = mcpUrl || auth.mcp_url
   }

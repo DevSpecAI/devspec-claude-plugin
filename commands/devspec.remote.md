@@ -146,7 +146,7 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" write \
   [--codename '<the codename returned by register_connection — this agent's identity>']
 ```
 
-This resolves the MCP token (env → project `.mcp.json` → `~/.claude.json`), writes connection state + the conversation bond (mode 0600) with the configured `mcp_url` (staging vs prod), and **auto-starts the continuous poller** (detached, `--owner-pid`-anchored, keyed to this connection, polling the attached session's room only when `--session` was given). It also reaps provably-dead pollers for this agent. Confirm `poller.ok` / `poller.pid`. Opt out with `--no-poller` (tests only).
+This resolves the MCP token (explicit `DEVSPEC_MCP_TOKEN` → the host plugin token this Claude Code uses for `register_connection` → project `.mcp.json` → `~/.claude.json`), so the poller heartbeats under the SAME token `register_connection` ran on (no "connection belongs to a different token" spam). It writes connection state + the conversation bond (mode 0600) with the configured `mcp_url` (staging vs prod), and **auto-starts the continuous poller** (detached, `--owner-pid`-anchored, keyed to this connection, polling the attached session's room only when `--session` was given). It also reaps provably-dead pollers for this agent. Confirm `poller.ok` / `poller.pid`. Opt out with `--no-poller` (tests only). The poller **requires** `--owner-pid`; without it `write` refuses to start one (a poller with no owner anchor could never be proven dead → zombie "Live" agent).
 
 If `auth_ok: false`, print the `warning` and tell the user to fix MCP auth. If `poller.ok` is false, show `warning_poller`.
 

@@ -7,7 +7,12 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { isOwnerMessage, classifyRoomMessage } from './devspec-remote-poll.mjs'
+import {
+  isOwnerMessage,
+  classifyRoomMessage,
+  cadenceFor,
+  resolveServerAttachment,
+} from './devspec-remote-poll.mjs'
 
 const OWNER = 'owner-user-1'
 const OTHER = 'teammate-user-2'
@@ -129,5 +134,104 @@ describe('classifyRoomMessage (command vs advisory vs skip)', () => {
     // gate trusts the server, never the body. This documents that contract.
     const serverStamped = { remote_control: { is_owner_instruction: true }, author: { kind: 'human', user_id: OWNER } }
     assert.equal(classifyRoomMessage(serverStamped, OWNER), 'command')
+  })
+})
+
+describe('cadenceFor (2-tier attended/idle cadence)', () => {
+  it('attached to a session → attended (15s poll + heartbeat)', () => {
+    const c = cadenceFor({ attached: true, turnActive: false })
+    assert.equal(c.tier, 'attended')
+    assert.equal(c.pollMs, 15_000)
+    assert.equal(c.heartbeatMs, 15_000)
+  })
+
+  it('turn active while sessionless → attended (pickup latency matters)', () => {
+    const c = cadenceFor({ attached: false, turnActive: true })
+    assert.equal(c.tier, 'attended')
+    assert.equal(c.pollMs, 15_000)
+    assert.equal(c.heartbeatMs, 15_000)
+  })
+
+  it('attached AND a turn active → attended', () => {
+    assert.equal(cadenceFor({ attached: true, turnActive: true }).tier, 'attended')
+  })
+
+  it('sessionless with no active turn → idle (60s poll + heartbeat)', () => {
+    const c = cadenceFor({ attached: false, turnActive: false })
+    assert.equal(c.tier, 'idle')
+    assert.equal(c.pollMs, 60_000)
+    assert.equal(c.heartbeatMs, 60_000)
+  })
+
+  it('defaults (no attachment, no turn) → idle', () => {
+    const c = cadenceFor()
+    assert.equal(c.tier, 'idle')
+    assert.equal(c.pollMs, 60_000)
+  })
+
+  it('only ever returns one of the two cadences (no stepped middle tiers)', () => {
+    const tiers = new Set(
+      [
+        [true, true],
+        [true, false],
+        [false, true],
+        [false, false],
+      ].map(([attached, turnActive]) => cadenceFor({ attached, turnActive }).tier),
+    )
+    assert.deepEqual([...tiers].sort(), ['attended', 'idle'])
+  })
+})
+
+describe('resolveServerAttachment (server is the SOLE attachment authority)', () => {
+  const S1 = 'session-aaaaaaaa'
+  const S2 = 'session-bbbbbbbb'
+
+  it('adopts a newly-attached session from the heartbeat echo (reseed cursor)', () => {
+    const r = resolveServerAttachment(null, { status: 'live', session_id: S1 })
+    assert.equal(r.sessionId, S1)
+    assert.equal(r.changed, true)
+  })
+
+  it('no change when the server reports the same session (cursor NOT reseeded)', () => {
+    const r = resolveServerAttachment(S1, { status: 'live', session_id: S1 })
+    assert.equal(r.sessionId, S1)
+    assert.equal(r.changed, false)
+  })
+
+  it('adopts a switch to a different server session', () => {
+    const r = resolveServerAttachment(S1, { status: 'live', session_id: S2 })
+    assert.equal(r.sessionId, S2)
+    assert.equal(r.changed, true)
+  })
+
+  it('a web-driven detach (hb.session_id null) detaches us', () => {
+    const r = resolveServerAttachment(S1, { status: 'live', session_id: null })
+    assert.equal(r.sessionId, null)
+    assert.equal(r.changed, true)
+  })
+
+  it('empty-string session_id is treated as null (detach)', () => {
+    const r = resolveServerAttachment(S1, { status: 'live', session_id: '' })
+    assert.equal(r.sessionId, null)
+    assert.equal(r.changed, true)
+  })
+
+  it('a not_found heartbeat means re-register, NEVER a detach → no change', () => {
+    // not_found omits session_id; reading it as a detach would strand the room.
+    const r = resolveServerAttachment(S1, { status: 'not_found' })
+    assert.equal(r.sessionId, S1)
+    assert.equal(r.changed, false)
+  })
+
+  it('a missing/failed heartbeat leaves the current attachment untouched', () => {
+    assert.deepEqual(resolveServerAttachment(S1, null), { sessionId: S1, changed: false })
+    assert.deepEqual(resolveServerAttachment(null, undefined), { sessionId: null, changed: false })
+  })
+
+  it('idempotent: re-applying the adopted session is a no-op (no cursor ping-pong)', () => {
+    const first = resolveServerAttachment(null, { status: 'live', session_id: S1 })
+    assert.equal(first.changed, true)
+    const second = resolveServerAttachment(first.sessionId, { status: 'live', session_id: S1 })
+    assert.equal(second.changed, false)
   })
 })

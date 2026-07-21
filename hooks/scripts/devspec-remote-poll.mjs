@@ -20,7 +20,8 @@
  * A connection may be SESSIONLESS (available, no room) or ATTACHED to one session
  * (optional shared context). When sessionless it only polls its dispatch inbox;
  * when attached it also polls the room transcript. Attach/detach is picked up live
- * from state each loop, so the poller adapts without a restart.
+ * from the server (the heartbeat echo is the SOLE attachment authority), so the
+ * poller adapts without a restart — local state is never used to override it.
  *
  * Owner commands do **NOT** terminate this process — heartbeats keep the Agents UI
  * Live while the agent works.
@@ -29,8 +30,10 @@
  *   1  — disabled / UI end / idle_timeout / auth failure / connection ended / error
  *   2  — bad args
  *
- * Stepped backoff (idle without an owner command): responsive→…→dormant, then a
- * clean disconnect at the 72h cap. Heartbeat and poll are independent timers.
+ * Two cadences, chosen by connection STATE: attended (attached to a session OR a
+ * turn active) polls + heartbeats every 15s; idle (sessionless + no turn) every
+ * 60s. A fully idle connection disconnects cleanly at the 72h cap. Heartbeat and
+ * poll are independent timers.
  *
  * Usage:
  *   node devspec-remote-poll.mjs --connection-id <uuid> [--session <uuid>] [--owner-pid <pid>]
@@ -53,15 +56,16 @@ function inboxPathForConnection(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.inbox.jsonl`)
 }
 
-/** @type {Array<{ untilMs: number, pollMs: number, heartbeatMs: number, tier: string }>} */
-const BACKOFF_TIERS = [
-  { untilMs: 10 * 60 * 1000, pollMs: 15_000, heartbeatMs: 15_000, tier: 'responsive' },
-  { untilMs: 60 * 60 * 1000, pollMs: 30_000, heartbeatMs: 30_000, tier: 'normal' },
-  { untilMs: 2 * 60 * 60 * 1000, pollMs: 60_000, heartbeatMs: 60_000, tier: 'normal' },
-  { untilMs: 12 * 60 * 60 * 1000, pollMs: 5 * 60_000, heartbeatMs: 60_000, tier: 'relaxed' },
-  { untilMs: 24 * 60 * 60 * 1000, pollMs: 10 * 60_000, heartbeatMs: 60_000, tier: 'sparse' },
-  { untilMs: 72 * 60 * 60 * 1000, pollMs: 60 * 60_000, heartbeatMs: 60 * 60_000, tier: 'dormant' },
-]
+// Two cadences, chosen by connection STATE (not elapsed idle time):
+//   attended — attached to a session OR a turn is active. Someone may be watching
+//              and pickup latency matters, so poll + heartbeat fast (15s).
+//   idle     — sessionless AND no active turn. Poll + heartbeat slow (60s).
+// The wait/inbox path stays event-driven for owner commands regardless of cadence.
+/** @type {{ pollMs: number, heartbeatMs: number, tier: 'attended' }} */
+const ATTENDED_CADENCE = { pollMs: 15_000, heartbeatMs: 15_000, tier: 'attended' }
+/** @type {{ pollMs: number, heartbeatMs: number, tier: 'idle' }} */
+const IDLE_CADENCE = { pollMs: 60_000, heartbeatMs: 60_000, tier: 'idle' }
+// Hard idle-disconnect cap: a fully idle connection disconnects cleanly at 72h.
 const IDLE_DISCONNECT_MS = 72 * 60 * 60 * 1000
 const MAX_TURN_MS = 60 * 60 * 1000
 
@@ -233,11 +237,31 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-function tierForIdleMs(idleMs) {
-  for (const t of BACKOFF_TIERS) {
-    if (idleMs < t.untilMs) return t
+/**
+ * Poll/heartbeat cadence from connection STATE. attended (15s) when attached to a
+ * session OR a turn is active — someone may be watching and pickup latency
+ * matters; idle (60s) otherwise. Elapsed idle time no longer changes the cadence;
+ * it only feeds the 72h IDLE_DISCONNECT_MS cap.
+ */
+export function cadenceFor({ attached = false, turnActive = false } = {}) {
+  return attached || turnActive ? ATTENDED_CADENCE : IDLE_CADENCE
+}
+
+/**
+ * Server-authoritative attachment decision — the SOLE attachment-adoption path.
+ * The heartbeat echo (`hb.session_id`) is the one source of truth for which
+ * session this connection is attached to; local state is written FROM it, never
+ * used to override it (item edea1a91). A `not_found` heartbeat means the
+ * connection must re-register and omits session_id, so it must NEVER be read as a
+ * detach → no change. `changed` is the ONE trigger to reseed the transcript
+ * cursor, and it flips only when the server-reported session actually differs.
+ */
+export function resolveServerAttachment(currentSessionId, hb) {
+  if (!hb || typeof hb !== 'object' || hb.status === 'not_found') {
+    return { sessionId: currentSessionId, changed: false }
   }
-  return null
+  const hbSession = typeof hb.session_id === 'string' && hb.session_id ? hb.session_id : null
+  return { sessionId: hbSession, changed: hbSession !== currentSessionId }
 }
 
 /**
@@ -596,15 +620,12 @@ async function main() {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
       process.exit(1)
     }
-    // Pick up attach/detach performed mid-run (state.session_id changed).
-    const liveSession = liveState?.session_id || null
-    if (liveSession !== sessionId) {
-      process.stderr.write(
-        `devspec-remote-poll: attachment changed ${sessionId || '(none)'} → ${liveSession || '(none)'}\n`,
-      )
-      sessionId = liveSession
-      cursor = null // fresh room → reseed the transcript cursor
-    }
+    // NOTE: local state is read ONLY to observe a local stop (enabled === false).
+    // Attachment is NOT adopted from it — the server (heartbeat echo) is the sole
+    // authority for which session this connection is attached to (see the
+    // resolveServerAttachment call below). Overriding the server from the local
+    // file made the two fight and ping-pong the transcript cursor on a web-driven
+    // detach the local file never learned about (item edea1a91).
 
     if (ownerAnchor && !ownerAlive(ownerAnchor)) {
       process.stderr.write(`devspec-remote-poll: owner process ${ownerAnchor} gone — stopping\n`)
@@ -630,15 +651,21 @@ async function main() {
       process.exit(1)
     }
 
-    const tier = tierForIdleMs(idleMs)
-    if (!tier) {
-      process.stderr.write('devspec-remote-poll: no backoff tier — exiting\n')
-      process.exit(1)
-    }
+    // Agent-authoritative "working": re-assert busy while a fresh turn marker exists.
+    const marker = readTurnMarker(connectionId)
+    const turnActive = !!marker && Date.now() - marker.startedAt < MAX_TURN_MS
+    if (turnActive) idleStarted = Date.now()
+    let busyArg = null
+    if (turnActive) busyArg = true
+    else if (lastBusySent === true) busyArg = false
+
+    // Cadence from connection STATE: attended (attached to a session OR a turn
+    // active) polls + heartbeats fast; idle (sessionless + no turn) slow.
+    const tier = cadenceFor({ attached: !!sessionId, turnActive })
     if (tier.tier !== lastTier) {
       lastTier = tier.tier
       process.stderr.write(
-        `devspec-remote-poll: check tier → ${tier.tier} (poll ${tier.pollMs}ms, heartbeat ${tier.heartbeatMs}ms)\n`,
+        `devspec-remote-poll: cadence → ${tier.tier} (poll ${tier.pollMs}ms, heartbeat ${tier.heartbeatMs}ms)\n`,
       )
       try {
         const s = readState(connectionId) || {}
@@ -650,14 +677,6 @@ async function main() {
         /* ignore */
       }
     }
-
-    // Agent-authoritative "working": re-assert busy while a fresh turn marker exists.
-    const marker = readTurnMarker(connectionId)
-    const turnActive = !!marker && Date.now() - marker.startedAt < MAX_TURN_MS
-    if (turnActive) idleStarted = Date.now()
-    let busyArg = null
-    if (turnActive) busyArg = true
-    else if (lastBusySent === true) busyArg = false
 
     const now = Date.now()
     if (now - lastHeartbeat >= tier.heartbeatMs) {
@@ -681,32 +700,30 @@ async function main() {
           process.exit(1)
         }
 
-        // Server-authoritative attachment: a live heartbeat reports which session
-        // (if any) this connection is attached to. A web attach/detach from the
-        // Agents page changes it server-side without touching local state, so adopt
-        // hb.session_id here — otherwise a sessionless agent that gets web-attached
-        // would never start polling the room (and a web-detach would never stop it).
-        // Guarded to real responses; a not_found omits session_id and means
-        // re-register, so it must never be read as a detach.
-        if (hb && hb.status !== 'not_found') {
-          const hbSession =
-            typeof hb.session_id === 'string' && hb.session_id ? hb.session_id : null
-          if (hbSession !== sessionId) {
-            process.stderr.write(
-              `devspec-remote-poll: server attachment ${sessionId || '(none)'} → ${hbSession || '(none)'}\n`,
-            )
-            sessionId = hbSession
-            cursor = null // fresh room → reseed the transcript cursor
-            try {
-              const s = readState(connectionId) || {}
-              s.session_id = hbSession
-              s.cursor_after_message_id = null
-              s.connection_id = connectionId
-              s.updated_at = new Date().toISOString()
-              writeState(s, connectionId)
-            } catch {
-              /* ignore */
-            }
+        // Server-authoritative attachment — the SOLE adoption path. A live
+        // heartbeat reports which session (if any) this connection is attached to.
+        // A web attach/detach from the Agents page changes it server-side without
+        // touching local state, so we adopt hb.session_id here and nowhere else;
+        // local state is written FROM this, never used to override it. cursor is
+        // reseeded on this ONE trigger, only when the server session actually
+        // changes. (resolveServerAttachment guards not_found as re-register, not a
+        // detach.)
+        const adopt = resolveServerAttachment(sessionId, hb)
+        if (adopt.changed) {
+          process.stderr.write(
+            `devspec-remote-poll: server attachment ${sessionId || '(none)'} → ${adopt.sessionId || '(none)'}\n`,
+          )
+          sessionId = adopt.sessionId
+          cursor = null // fresh room → reseed the transcript cursor (the ONE reseed path)
+          try {
+            const s = readState(connectionId) || {}
+            s.session_id = sessionId
+            s.cursor_after_message_id = null
+            s.connection_id = connectionId
+            s.updated_at = new Date().toISOString()
+            writeState(s, connectionId)
+          } catch {
+            /* ignore */
           }
         }
       } catch (e) {

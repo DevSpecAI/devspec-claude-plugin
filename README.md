@@ -69,6 +69,17 @@ You should see confirmation that you're connected as your DevSpec user. (If you'
 
 Commands appear in Claude Code's `/` menu after install, namespaced under the plugin — for example `/devspec:devspec.remote` and `/devspec:autopilot.start`.
 
+### Using Grok Build on the same machine
+
+You can keep **both** this plugin and [DevSpec for Grok Build](https://github.com/DevSpecAI/DevSpec-Grok-Build-Plugin) installed for the same projects. They do not share install directories:
+
+| Host | Plugin package | Where it lives | Slash style |
+|------|----------------|----------------|-------------|
+| **Claude Code** (this plugin) | `devspec` | `~/.claude/plugins/…` | `/devspec:devspec.remote`, … |
+| **Grok Build** | `devspec` | `~/.grok/installed-plugins/…` | `/devspec-remote`, … |
+
+Claude Code only loads Claude’s plugin system. Grok discovers Claude plugins for harness compatibility, but Grok’s own `devspec` install **shadows** this package so Claude-worded commands never appear inside Grok. Use each host’s plugin only — don’t copy skills into shared folders like `.agents/skills` on top of the plugins, or you’ll get duplicate slash entries.
+
 ## ⭐ Drive a session from DevSpec (remote control)
 
 This is the feature most people come for. You run a real Claude Code session on your machine, but steer it from DevSpec — the **Agents page** in your browser, or your phone. Kick off work, answer its questions, and watch it go while you're away from your desk.

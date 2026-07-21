@@ -15,7 +15,7 @@
     "devspec_token": {
       "type": "string",
       "title": "DevSpec API token",
-      "description": "Your DevSpec API token with read_write scope. Generate one in DevSpec under Settings → API. It starts with 'dvs_'.",
+      "description": "Your DevSpec API token with read_write scope. Create one in DevSpec under You → Connections → Connect a tool (pick Read & write). It starts with 'dvs_' and is account-wide — reuse the same token everywhere.",
       "sensitive": true,
       "required": true
     }

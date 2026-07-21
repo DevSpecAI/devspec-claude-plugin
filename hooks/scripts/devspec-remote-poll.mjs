@@ -248,6 +248,35 @@ export function cadenceFor({ attached = false, turnActive = false } = {}) {
 }
 
 /**
+ * Map a turn-active transition (previous loop tick → this loop tick) to the
+ * connection activity verb the poller emits DIRECTLY (item 71a8b201). This is the
+ * clean end state: the poller drives the activity state machine from its own
+ * turn-active signal instead of leaving the server to translate the legacy
+ * busy-heartbeat (syncActivityFromBusy). Driven by the poller's turn marker, so it
+ * is host-agnostic (Grok works too — no per-host Stop hook needed).
+ *
+ *   false → true  = a turn just started (owner-command pickup / local turn) → 'pickup'
+ *   true  → true  = still working this turn (per heartbeat/loop tick)        → 'keepalive'
+ *   true  → false = the turn ended (marker cleared by Stop / wait re-arm)    → 'complete'
+ *   false → false = idle, nothing to report                                  → null
+ *
+ * @returns {'pickup'|'keepalive'|'complete'|null}
+ */
+export function verbForTurnTransition(prev, next) {
+  if (!prev && next) return 'pickup'
+  if (prev && next) return 'keepalive'
+  if (prev && !next) return 'complete'
+  return null
+}
+
+/** Activity verb → connection-native MCP tool name. */
+const ACTIVITY_VERB_TOOL = {
+  pickup: 'report_pickup',
+  keepalive: 'report_keepalive',
+  complete: 'report_complete',
+}
+
+/**
  * Server-authoritative attachment decision — the SOLE attachment-adoption path.
  * The heartbeat echo (`hb.session_id`) is the one source of truth for which
  * session this connection is attached to; local state is written FROM it, never
@@ -446,6 +475,23 @@ async function main() {
     })
   }
 
+  // Emit a connection-scoped activity verb DIRECTLY (item 71a8b201). Best-effort:
+  // this is ADDITIVE to the busy-heartbeat above (the server's syncActivityFromBusy
+  // translation stays the safety net during rollout), so a failed verb must NEVER
+  // break the poll loop — log to stderr and move on. attempt_id is omitted; the
+  // server resolves this connection's current attempt (pickup opens one for a
+  // locally-initiated turn; keepalive/complete refresh/close the working attempt).
+  async function emitActivityVerb(verb) {
+    if (!verb) return
+    const name = ACTIVITY_VERB_TOOL[verb]
+    if (!name) return
+    try {
+      await mcpToolsCall({ mcpUrl, token, name, arguments: { connection_id: connectionId } })
+    } catch (e) {
+      process.stderr.write(`devspec-remote-poll: activity verb ${verb} (${name}) failed: ${e.message}\n`)
+    }
+  }
+
   // Single teardown path: best-effort offline heartbeat so presence flips to
   // Disconnected immediately, disable local state, exit.
   let shuttingDown = false
@@ -618,6 +664,10 @@ async function main() {
   }
 
   let lastPoll = 0
+  // Turn-active state carried across loop ticks so we emit activity verbs on the
+  // TRANSITION (see verbForTurnTransition): pickup on start, keepalive each tick
+  // while active, complete on end. Starts false (no turn at boot).
+  let prevTurnActive = false
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -664,6 +714,16 @@ async function main() {
     let busyArg = null
     if (turnActive) busyArg = true
     else if (lastBusySent === true) busyArg = false
+
+    // ADDITIVE (item 71a8b201): emit the connection activity verb DIRECTLY off the
+    // turn-active transition (pickup / keepalive / complete). This is ON TOP of the
+    // busy-heartbeat above — both feed the same server-side activity attempt
+    // idempotently, so leaving the busy path untouched keeps the server's
+    // syncActivityFromBusy translation as the safety net during rollout. One tick =
+    // one keepalive (attended cadence ≈ 15s while a turn runs). Best-effort inside
+    // emitActivityVerb — a failed verb never breaks the loop.
+    await emitActivityVerb(verbForTurnTransition(prevTurnActive, turnActive))
+    prevTurnActive = turnActive
 
     // Cadence from connection STATE: attended (attached to a session OR a turn
     // active) polls + heartbeats fast; idle (sessionless + no turn) slow.

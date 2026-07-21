@@ -12,6 +12,7 @@ import {
   classifyRoomMessage,
   cadenceFor,
   resolveServerAttachment,
+  verbForTurnTransition,
 } from './devspec-remote-poll.mjs'
 
 const OWNER = 'owner-user-1'
@@ -179,6 +180,34 @@ describe('cadenceFor (2-tier attended/idle cadence)', () => {
       ].map(([attached, turnActive]) => cadenceFor({ attached, turnActive }).tier),
     )
     assert.deepEqual([...tiers].sort(), ['attended', 'idle'])
+  })
+})
+
+describe('verbForTurnTransition (direct activity-verb emission, item 71a8b201)', () => {
+  it('false → true (turn starts) → pickup', () => {
+    assert.equal(verbForTurnTransition(false, true), 'pickup')
+  })
+
+  it('true → true (still working) → keepalive', () => {
+    assert.equal(verbForTurnTransition(true, true), 'keepalive')
+  })
+
+  it('true → false (turn ends) → complete', () => {
+    assert.equal(verbForTurnTransition(true, false), 'complete')
+  })
+
+  it('false → false (idle) → null (no verb, no HTTP call)', () => {
+    assert.equal(verbForTurnTransition(false, false), null)
+  })
+
+  it('a full turn lifecycle maps to pickup → keepalive… → complete', () => {
+    // Simulate the turn-active signal across successive loop ticks.
+    const ticks = [false, true, true, true, false, false]
+    const verbs = []
+    for (let i = 1; i < ticks.length; i++) {
+      verbs.push(verbForTurnTransition(ticks[i - 1], ticks[i]))
+    }
+    assert.deepEqual(verbs, ['pickup', 'keepalive', 'keepalive', 'complete', null])
   })
 })
 

@@ -209,6 +209,29 @@ export function ensurePollerForConnection(connectionId, opts = {}) {
     return { ok: false, error: `poller script missing: ${POLLER_SCRIPT}` }
   }
 
+  // Reuse a live poller instead of kill→respawn (item b9e02835). A running poller
+  // needs NO restart for a session attach/detach — the server heartbeat echo is
+  // its sole attachment authority — so a restart is only warranted when its
+  // startup-cached identity (token / mcp_url / owner anchor) went stale. Callers
+  // that verified nothing changed pass reuseRunning: true; with no live poller
+  // this falls through to the normal spawn (and its guards) below.
+  const findPids = opts.findPids || findPollerPidsForConnection
+  if (opts.reuseRunning) {
+    const running = findPids(connectionId)
+    if (running.length) {
+      return {
+        ok: true,
+        reused: true,
+        connection_id: connectionId,
+        session_id:
+          typeof opts.sessionId === 'string' && opts.sessionId.length >= 8 ? opts.sessionId : null,
+        pid: running[0],
+        pid_file: pollerPidPath(connectionId),
+        log: pollerLogPath(connectionId),
+      }
+    }
+  }
+
   // Owner-process anchor — REQUIRED before we spawn anything. A poller with no
   // recorded owner_pid can never be proven dead by the reaper (owner-death is the
   // liveness proof it keys on), so it lingers as a zombie "Live" agent
@@ -968,6 +991,9 @@ if (isMain) {
       cwd: args.cwd ? path.resolve(args.cwd) : process.cwd(),
       ownerPid: args['owner-pid'],
       sessionId: args.session || null,
+      // "ensure" semantics: a live poller for this connection already satisfies
+      // the call — never restart it from here (item b9e02835).
+      reuseRunning: true,
     })
     process.stdout.write(JSON.stringify(result, null, 2) + '\n')
     process.exit(result.ok ? 0 : 1)
@@ -1125,7 +1151,22 @@ if (isMain) {
       } catch {
         /* non-fatal */
       }
-      const poller = ensurePollerForConnection(connectionId, { cwd, ownerPid, sessionId })
+      // Same token/url/owner → the live poller keeps serving this connection
+      // (session attach/detach reaches it via the server heartbeat echo), so a
+      // `write --session` never restarts it. Only a real identity change takes
+      // the kill→respawn path — and even then the dying poller exits silently
+      // (item b9e02835).
+      const reuseRunning =
+        !!prev.token &&
+        prev.token === state.token &&
+        (prev.mcp_url || null) === (state.mcp_url || null) &&
+        (Number(prev.owner_pid) || null) === (Number(state.owner_pid) || null)
+      const poller = ensurePollerForConnection(connectionId, {
+        cwd,
+        ownerPid,
+        sessionId,
+        reuseRunning,
+      })
       result.poller = poller
       if (!poller.ok) {
         result.warning_poller = poller.error

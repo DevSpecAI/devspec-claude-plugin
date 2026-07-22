@@ -444,3 +444,43 @@ describe('ensurePollerForConnection (guards)', () => {
     assert.match(bad.error, /owner-pid/)
   })
 })
+
+describe('ensurePollerForConnection (reuse, item b9e02835)', () => {
+  const connectionId = '11111111-1111-1111-1111-111111111111'
+
+  it('reuses a live poller when reuseRunning is set — no kill, no respawn', () => {
+    const r = ensurePollerForConnection(connectionId, {
+      reuseRunning: true,
+      findPids: () => [4242],
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.reused, true)
+    assert.equal(r.pid, 4242)
+    assert.equal(r.connection_id, connectionId)
+  })
+
+  it('reuse carries the sessionId through for the caller result', () => {
+    const r = ensurePollerForConnection(connectionId, {
+      reuseRunning: true,
+      sessionId: '22222222-2222-2222-2222-222222222222',
+      findPids: () => [4242],
+    })
+    assert.equal(r.reused, true)
+    assert.equal(r.session_id, '22222222-2222-2222-2222-222222222222')
+  })
+
+  it('reuseRunning with no live poller falls through to the spawn guards', () => {
+    const r = ensurePollerForConnection(connectionId, {
+      reuseRunning: true,
+      findPids: () => [],
+    })
+    assert.equal(r.ok, false)
+    assert.match(r.error, /owner-pid/)
+  })
+
+  it('without reuseRunning the restart path is unchanged (guards still apply)', () => {
+    const r = ensurePollerForConnection(connectionId, { findPids: () => [4242] })
+    assert.equal(r.ok, false)
+    assert.match(r.error, /owner-pid/)
+  })
+})

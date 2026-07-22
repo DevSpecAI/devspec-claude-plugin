@@ -11,6 +11,7 @@ import {
   isOwnerMessage,
   classifyRoomMessage,
   cadenceFor,
+  installStopSignalHandlers,
   resolveServerAttachment,
   verbForTurnTransition,
 } from './devspec-remote-poll.mjs'
@@ -262,5 +263,44 @@ describe('resolveServerAttachment (server is the SOLE attachment authority)', ()
     assert.equal(first.changed, true)
     const second = resolveServerAttachment(first.sessionId, { status: 'live', session_id: S1 })
     assert.equal(second.changed, false)
+  })
+})
+
+describe('installStopSignalHandlers (item b9e02835)', () => {
+  function fakeProcess() {
+    return {
+      handlers: {},
+      exits: [],
+      once(sig, fn) {
+        this.handlers[sig] = fn
+      },
+      exit(code) {
+        this.exits.push(code)
+      },
+    }
+  }
+
+  it('SIGTERM exits silently — code 0, no offline heartbeat, no state stamp', () => {
+    const proc = fakeProcess()
+    installStopSignalHandlers(proc)
+    proc.handlers.SIGTERM()
+    // The handler receives ONLY the process object, so by construction it cannot
+    // heartbeat offline or stamp enabled:false — a superseded poller in a
+    // write-restart must never end the connection its successor serves.
+    assert.deepEqual(proc.exits, [0])
+  })
+
+  it('SIGINT exits silently too', () => {
+    const proc = fakeProcess()
+    installStopSignalHandlers(proc)
+    proc.handlers.SIGINT()
+    assert.deepEqual(proc.exits, [0])
+  })
+
+  it('registers one-shot handlers for both stop signals', () => {
+    const proc = fakeProcess()
+    installStopSignalHandlers(proc)
+    assert.equal(typeof proc.handlers.SIGTERM, 'function')
+    assert.equal(typeof proc.handlers.SIGINT, 'function')
   })
 })

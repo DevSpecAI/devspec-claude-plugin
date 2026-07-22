@@ -294,6 +294,23 @@ export function resolveServerAttachment(currentSessionId, hb) {
 }
 
 /**
+ * A stop signal means "this PROCESS must stop" — a state-write restart superseding
+ * this poller, the connect-time reaper, or a manual kill. It is NEVER a statement
+ * about the connection, so the handlers exit silently: no offline heartbeat, no
+ * enabled:false / end_reason stamp. A superseded poller that stamped local_stop on
+ * SIGTERM used to end the very connection its successor was starting to serve
+ * (item b9e02835). Every INTENTIONAL end keeps its own stamping path: owner-death,
+ * idle-timeout, and server-ended stamp from inside the poll loop, and
+ * /devspec.remote-stop sends the offline heartbeat itself before killing the
+ * poller. By construction the handlers get only the process object — they cannot
+ * reach the heartbeat or state file.
+ */
+export function installStopSignalHandlers(proc = process) {
+  proc.once('SIGTERM', () => proc.exit(0))
+  proc.once('SIGINT', () => proc.exit(0))
+}
+
+/**
  * COMMAND gate (unchanged authority model). True only for a server-stamped
  * same-token owner instruction, or (degraded fallback for untagged rows) an
  * explicit local_agent_dispatch authored by this connection's owner. Command
@@ -492,8 +509,10 @@ async function main() {
     }
   }
 
-  // Single teardown path: best-effort offline heartbeat so presence flips to
-  // Disconnected immediately, disable local state, exit.
+  // INTENTIONAL teardown (owner-death path): best-effort offline heartbeat so
+  // presence flips to Disconnected immediately, disable local state, exit. Only
+  // the poll loop's own decisions reach this — stop signals exit silently instead
+  // (see installStopSignalHandlers, item b9e02835).
   let shuttingDown = false
   async function offlineAndExit(reason, code) {
     if (shuttingDown) return
@@ -506,8 +525,7 @@ async function main() {
     disableLocalState({ connectionId, reason })
     process.exit(code)
   }
-  process.once('SIGTERM', () => void offlineAndExit('local_stop', 0))
-  process.once('SIGINT', () => void offlineAndExit('local_stop', 0))
+  installStopSignalHandlers()
 
   let cursor = args.cursor || state?.cursor_after_message_id || null
   let ownerUserId = args.ownerUserId || state?.owner_user_id || null

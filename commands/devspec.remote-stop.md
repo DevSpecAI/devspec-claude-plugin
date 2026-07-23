@@ -2,7 +2,7 @@
 name: devspec.remote-stop
 description: Disconnect DevSpec remote control for THIS conversation only — connection offline, stop matching poller, leave other remotes alone.
 argument-hint: "[connection_id=<uuid>]"
-allowed-tools: Bash, mcp__devspec__heartbeat_connection, mcp__devspec__detach_connection, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript
+allowed-tools: Bash, mcp__devspec__heartbeat_connection, mcp__devspec__detach_connection, mcp__devspec__get_session_transcript
 ---
 
 # DevSpec Remote Control — Stop / Disconnect
@@ -28,20 +28,16 @@ Multiple remotes may run on one machine.
 
 2. **Mark the connection offline (this connection only):**
    - `heartbeat_connection({ connection_id, status: "offline", end_reason: "local_stop" })` (one path, attached or sessionless), then optionally `detach_connection({ connection_id })`.
+   - **Do not** `post_session_message` disconnect chrome — presence updates via the offline heartbeat / Agents page.
 
-3. **Post disconnect** (best-effort, only when attached):
-   ```
-   post_session_message(session_id, "🔌 **Local agent disconnected**.", agent_name: "Claude Code")
-   ```
-
-4. **Disable state + kill only this poller + mark bond stopped:**
+3. **Disable state + kill only this poller + mark bond stopped:**
    ```bash
    node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" disable \
      --connection-id '<connection_id>' --agent "Claude Code" --local-id "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"
    ```
    Connection-scoped: writes that connection's state `enabled: false`, marks matching local bonds `stopped` (soft-reconnect only for this conversation within ~30m), and SIGTERMs pollers whose argv includes this connection UUID only.
 
-5. Print:
+4. Print **in this local terminal only** (never into the session transcript):
    ```
    ✓ DevSpec remote control stopped
      Connection: {first 8}…
@@ -51,6 +47,6 @@ Multiple remotes may run on one machine.
 
 ## Rules
 
-- Always offline **this** connection even if the post fails.
+- Always offline **this** connection.
 - Do not delete the DevSpec session — history remains.
 - Soft-reconnect is bond-scoped (same conversation id), never by cwd/repo.

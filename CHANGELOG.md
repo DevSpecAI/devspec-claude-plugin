@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.5.1 - 2026-07-24
+
+### Remote control — agent-canonical, connection-scoped, session optional
+
+- **Answers:** when attached, post via `post_session_message({ connection_id })` (server resolves current session / reattach-safe). Sessionless: assignment / `report_progress` only — never invent a room.
+- **Stop hooks:** busy/heartbeat + optional local_prompt only — **no** full assistant text as primary path (no dual writers).
+- **`/devspec.work --remote`:** defaults **sessionless**; optional `--session` / `--new` for a transcript.
+- **Delivery contract:** skills/commands align with DevSpecV2 `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md` (ADR b98a39a9).
+
 ## Unreleased
 
 - **Token docs — one account-wide token, reusable everywhere:**

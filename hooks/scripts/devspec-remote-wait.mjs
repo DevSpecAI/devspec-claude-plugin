@@ -29,6 +29,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { resolveOwnerPid } from './remote-control-state.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
@@ -176,7 +177,7 @@ function readNewLines(file, offset) {
  * Owner-command batches ONLY. `advisory_context` entries are intentionally excluded
  * so room awareness never wakes the model or triggers an autonomous response.
  */
-function parseOwnerBatches(lines) {
+export function parseOwnerBatches(lines) {
   const batches = []
   for (const line of lines) {
     try {
@@ -189,6 +190,32 @@ function parseOwnerBatches(lines) {
     }
   }
   return batches
+}
+
+/**
+ * Build the stdout events for one owner-command batch — one `owner_message` per
+ * message plus a trailing `wake` summary. Both carry the batch's `session_id`
+ * (item b9fb49a9): the poller already stamps this on every inbox line via
+ * appendInbox, but it used to get dropped here, so the agent consuming this
+ * stream had no live signal for which session an owner command belonged to and
+ * fell back to a value cached at attach time — stale after a server-side
+ * reattach moved the connection to a different session.
+ */
+export function buildOwnerMessageEvents(batch, { inboxFile } = {}) {
+  const sessionId = batch?.session_id ?? null
+  const messages = Array.isArray(batch?.messages) ? batch.messages : []
+  const events = messages.map((m) => ({ type: 'owner_message', session_id: sessionId, message: m }))
+  events.push({
+    type: 'wake',
+    reason: 'owner_message',
+    session_id: sessionId,
+    count: messages.length,
+    next_after_message_id: batch?.next_after_message_id ?? null,
+    inbox: inboxFile ?? null,
+    continuous_poller: true,
+    rearm: 'devspec-remote-wait',
+  })
+  return events
 }
 
 async function main() {
@@ -269,20 +296,9 @@ async function main() {
 
       if (batches.length > 0) {
         for (const batch of batches) {
-          for (const m of batch.messages) {
-            process.stdout.write(JSON.stringify({ type: 'owner_message', message: m }) + '\n')
+          for (const event of buildOwnerMessageEvents(batch, { inboxFile: file })) {
+            process.stdout.write(JSON.stringify(event) + '\n')
           }
-          process.stdout.write(
-            JSON.stringify({
-              type: 'wake',
-              reason: 'owner_message',
-              count: batch.messages.length,
-              next_after_message_id: batch.next_after_message_id ?? null,
-              inbox: file,
-              continuous_poller: true,
-              rearm: 'devspec-remote-wait',
-            }) + '\n',
-          )
         }
         process.stderr.write(
           `devspec-remote-wait: wake (${batches.reduce((n, b) => n + b.messages.length, 0)} msg) — exit 0\n`,
@@ -298,7 +314,15 @@ async function main() {
   process.exit(1)
 }
 
-main().catch((e) => {
-  process.stderr.write(`devspec-remote-wait: ${e.message}\n`)
-  process.exit(1)
-})
+// Run the CLI only when executed directly (skipped when imported for tests —
+// this module used to call main() unconditionally on import, which killed any
+// test file that imported its exports with "missing --connection-id").
+const isMain =
+  Boolean(process.argv[1]) && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+
+if (isMain) {
+  main().catch((e) => {
+    process.stderr.write(`devspec-remote-wait: ${e.message}\n`)
+    process.exit(1)
+  })
+}

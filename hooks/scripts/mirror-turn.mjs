@@ -115,7 +115,31 @@ export function selectBoundState(candidates, conversationId, agentName = null) {
   return null
 }
 
-function loadState(conversationId) {
+/**
+ * Marker set by mark-explicit-reply.mjs (PostToolUse on the devspec
+ * post_session_message tool) when the agent itself already posted a reply this
+ * turn. Checked here so Stop never ALSO mirrors the turn's end-of-turn
+ * narration as a second, redundant session message (item b9fb49a9 — the
+ * "double post, real reply missing" symptom was this narration landing
+ * alongside an explicit reply, not instead of one). Cleared unconditionally
+ * once read so it can never leak into a later turn.
+ */
+export function explicitReplyMarkerPath(connectionId) {
+  return path.join(CONNECTIONS_DIR, `${connectionId}.explicit-reply`)
+}
+export function consumeExplicitReplyMarker(connectionId) {
+  if (!connectionId) return false
+  const p = explicitReplyMarkerPath(connectionId)
+  try {
+    const existed = fs.existsSync(p)
+    if (existed) fs.rmSync(p, { force: true })
+    return existed
+  } catch {
+    return false
+  }
+}
+
+export function loadState(conversationId) {
   // Gather every candidate (legacy singleton + per-connection files) but NEVER
   // trust "most recent" — selectBoundState keeps only THIS conversation's state.
   const candidates = []
@@ -291,9 +315,15 @@ async function main() {
   const text = extractLastText(raw, mode)
   const skipMirror = mode === 'user_prompt' && !!text && isHarnessInjection(text)
 
+  // The agent already posted its reply explicitly this turn (PostToolUse marker
+  // on post_session_message) — skip the Stop mirror entirely so the turn never
+  // produces two session messages. Consumed (deleted) either way so it cannot
+  // bleed into a later turn.
+  const alreadyRepliedExplicitly = mode === 'stop' && consumeExplicitReplyMarker(connectionId)
+
   try {
     // Mirror the turn into the attached session's transcript — only when attached.
-    if (sessionId && text && String(text).trim() && !skipMirror) {
+    if (sessionId && text && String(text).trim() && !skipMirror && !alreadyRepliedExplicitly) {
       const isLocalPrompt = mode === 'user_prompt'
       const cleaned = isLocalPrompt
         ? String(text).trim().slice(0, 12000)

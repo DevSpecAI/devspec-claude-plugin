@@ -29,6 +29,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { resolveOwnerPid } from './remote-control-state.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -204,8 +205,12 @@ async function main() {
     process.exit(1)
   }
 
-  const ownerPidRaw = Number.parseInt(String(args.ownerPid ?? state?.owner_pid ?? ''), 10)
-  const ownerPid = Number.isInteger(ownerPidRaw) && ownerPidRaw > 1 ? ownerPidRaw : null
+  // resolveOwnerPid validates the explicit --owner-pid before trusting it (falling
+  // back to auto-resolution / state.owner_pid otherwise) — plain `??` here would
+  // let an invalid caller-supplied value (e.g. Git Bash's non-numeric-on-Windows
+  // $PPID) win over a genuinely-correct value `write` already resolved into state
+  // (item 3cddb3b4).
+  const ownerPid = resolveOwnerPid(args.ownerPid, state?.owner_pid)
   const ownerAnchor = ownerPid && ownerAlive(ownerPid) ? ownerPid : null
 
   const file = inboxPath(connectionId)

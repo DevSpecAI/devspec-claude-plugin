@@ -1,5 +1,10 @@
 # Remote-control hook layer — source of truth & sync policy
 
+**Delivery primacy (2026-07-24):** Agent-canonical answers — Stop does **not**
+full-mirror assistant text as the primary path. See monorepo
+`docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md` (ADR b98a39a9). Syncing hooks must
+**not** re-introduce dual-writer full-turn Stop mirroring.
+
 The remote-control hook scripts (`hooks/scripts/*.mjs`) power the DevSpec
 remote-control feature in **every** coding-agent plugin (Claude Code, Grok Build,
 Cursor, Antigravity, Codex). They used to be hand-copied per plugin and drifted —

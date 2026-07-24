@@ -315,30 +315,38 @@ async function main() {
   const text = extractLastText(raw, mode)
   const skipMirror = mode === 'user_prompt' && !!text && isHarnessInjection(text)
 
-  // The agent already posted its reply explicitly this turn (PostToolUse marker
-  // on post_session_message) — skip the Stop mirror entirely so the turn never
-  // produces two session messages. Consumed (deleted) either way so it cannot
-  // bleed into a later turn.
-  const alreadyRepliedExplicitly = mode === 'stop' && consumeExplicitReplyMarker(connectionId)
+  // Consume any explicit-reply marker so it cannot bleed into a later turn.
+  // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full
+  // assistant text as a primary path — dual writers caused wrong-voice dupes
+  // and silent misses when bonding failed.
+  if (mode === 'stop') consumeExplicitReplyMarker(connectionId)
 
   try {
-    // Mirror the turn into the attached session's transcript — only when attached.
-    if (sessionId && text && String(text).trim() && !skipMirror && !alreadyRepliedExplicitly) {
-      const isLocalPrompt = mode === 'user_prompt'
-      const cleaned = isLocalPrompt
-        ? String(text).trim().slice(0, 12000)
-        : prepareAgentMirrorText(text)
+    // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
+    // when attached (two-sided transcript). Agent Stop text is NOT posted here —
+    // the skill must post_session_message the direct answer (prefer connection_id).
+    if (
+      mode === 'user_prompt' &&
+      sessionId &&
+      text &&
+      String(text).trim() &&
+      !skipMirror
+    ) {
+      const cleaned = String(text).trim().slice(0, 12000)
       if (cleaned) {
+        const postArgs = {
+          message: cleaned,
+          agent_name: agentName,
+          turn_kind: 'local_prompt',
+        }
+        // Prefer connection_id so reattach is server-resolved (delivery contract).
+        if (connectionId) postArgs.connection_id = connectionId
+        else postArgs.session_id = sessionId
         await mcpToolsCall({
           mcpUrl,
           token,
           name: 'post_session_message',
-          arguments: {
-            session_id: sessionId,
-            message: cleaned,
-            agent_name: agentName,
-            turn_kind: isLocalPrompt ? 'local_prompt' : 'agent',
-          },
+          arguments: postArgs,
         })
       }
     }

@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "Connect Claude Code to DevSpec: autopilot staged action items, interactive /devspec.* workflows, and Agents-page remote control.",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"

@@ -148,7 +148,9 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" write \
   [--codename '<the codename returned by register_connection — this agent's identity>']
 ```
 
-This resolves the MCP token (explicit `DEVSPEC_MCP_TOKEN` → the host plugin token this Claude Code uses for `register_connection` → project `.mcp.json` → `~/.claude.json`), so the poller heartbeats under the SAME token `register_connection` ran on (no "connection belongs to a different token" spam). It writes connection state + the conversation bond (mode 0600) with the configured `mcp_url` (staging vs prod), and **auto-starts the continuous poller** (detached, `--owner-pid`-anchored, keyed to this connection, polling the attached session's room only when `--session` was given). It also reaps provably-dead pollers for this agent. Confirm `poller.ok` / `poller.pid`. Opt out with `--no-poller` (tests only). The poller **requires** `--owner-pid`; without it `write` refuses to start one (a poller with no owner anchor could never be proven dead → zombie "Live" agent).
+This resolves the MCP token (explicit `DEVSPEC_MCP_TOKEN` → the host plugin token this Claude Code uses for `register_connection` → project `.mcp.json` → `~/.claude.json`), so the poller heartbeats under the SAME token `register_connection` ran on (no "connection belongs to a different token" spam). It writes connection state + the conversation bond (mode 0600) with the configured `mcp_url` (staging vs prod), and **auto-starts the continuous poller** (detached, `--owner-pid`-anchored, keyed to this connection, polling the attached session's room only when `--session` was given). It also reaps provably-dead pollers for this agent. Confirm `poller.ok` / `poller.pid`. Opt out with `--no-poller` (tests only). The poller **requires** an owner-pid anchor; without one `write` refuses to start one (a poller with no owner anchor could never be proven dead → zombie "Live" agent).
+
+**Do not hunt for your own PID manually (item 3cddb3b4).** Always pass `--owner-pid "$PPID"` exactly as shown — never try to "fix" it by scanning the process table yourself first. On Windows, Git Bash's `$PPID` is an MSYS-internal number, not a real Win32 pid (it typically comes back as `1`), so `remote-control-state.mjs` silently ignores that invalid value and **self-resolves** the real owner by walking its own (genuinely-real) process ancestry up to the owning `claude.exe` — no manual process-table scan needed or wanted. `$PPID` still resolves correctly on macOS/Linux and is used as-is there.
 
 If `auth_ok: false`, print the `warning` and tell the user to fix MCP auth. If `poller.ok` is false, show `warning_poller`.
 
@@ -188,6 +190,8 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-
 ```
 
 Use **`run_in_background: true`**. Exit **0** → stdout has `owner_message` / `wake` → act → **re-arm only this wait**. Exit **1** → connection ended/disabled/owner gone — stop.
+
+(Same `$PPID` note as step 5: on Windows an invalid value here is ignored in favor of the owner-pid `write` already resolved into state — never hand-derive it yourself.)
 
 **Turn mirroring (hooks — automatic):** when connection state is enabled, plugin hooks post mechanically (no LLM): `UserPromptSubmit` → local-prompt bubble, `Stop` → agent reply. When sessionless there is no room, so hooks only update the working indicator. Still `post_session_message` important **reply-only** answers yourself if hooks fail (same shape rules as below) — and do **not** double-post a turn hooks already mirrored.
 

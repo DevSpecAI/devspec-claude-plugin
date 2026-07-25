@@ -76,11 +76,27 @@ const LOCAL_POLLER = [
 // Downstream plugins. `hooksDir` is relative to PLUGINS_ROOT. Add a new plugin
 // here — nothing else — and it joins the sync. `family: 'bridge'` means the
 // plugin owns its poll/mirror/state/auth (Codex's app-server bridge model).
+//
+// `owns` is a per-plugin escape hatch for a file the plugin has genuinely diverged
+// on, as opposed to merely fallen behind. It is NOT a licence to fork casually — a
+// file listed here stops receiving canonical fixes forever, so it must be a file
+// whose behaviour is a property of the HOST, not of DevSpec. Listed files are
+// reported as plugin-owned instead of counting as drift, and are never written.
 const PLUGINS = [
   {
     name: 'Grok Build',
     hooksDir: path.join('devspec_grok_build_extension', 'hooks', 'scripts'),
     family: 'local-poller',
+    // Grok Build's host contract really is different, and the blanket sync would
+    // have silently destroyed all three (verified 25 Jul, item 27058153):
+    //   resolve-mcp-auth  — the token lives in Grok's own config file, not in a
+    //                       CLAUDE_PLUGIN_OPTION_* env var.
+    //   mirror-turn       — Grok hook stdin is camelCase (sessionId,
+    //                       lastAssistantMessage) and its monitor tool turns every
+    //                       stdout line into a model-visible event to filter.
+    //   remote-control-state — GROK_SESSION_ID local-id detection plus Grok-only
+    //                       --force / --force-restart poller controls.
+    owns: ['resolve-mcp-auth.mjs', 'mirror-turn.mjs', 'remote-control-state.mjs', 'remote-control-state.test.mjs', 'mirror-turn.test.mjs'],
   },
   {
     name: 'Cursor',
@@ -168,14 +184,24 @@ function main() {
       continue
     }
 
+    const owned = new Set(plugin.owns ?? [])
+    /** Skip a file this plugin owns, saying so out loud rather than silently. */
+    const applyUnlessOwned = (f) => {
+      if (owned.has(f)) {
+        log(`    plugin-owned ${f} — left untouched`)
+        return
+      }
+      apply(path.join(destDir, f), readCanonical(f), f)
+    }
+
     // GENERATED: the one per-plugin file.
     apply(path.join(destDir, 'agent-identity.mjs'), agentIdentitySource(plugin.name), 'agent-identity.mjs')
 
     // UNIVERSAL: every plugin, every family.
-    for (const f of UNIVERSAL) apply(path.join(destDir, f), readCanonical(f), f)
+    for (const f of UNIVERSAL) applyUnlessOwned(f)
 
     if (plugin.family === 'local-poller') {
-      for (const f of LOCAL_POLLER) apply(path.join(destDir, f), readCanonical(f), f)
+      for (const f of LOCAL_POLLER) applyUnlessOwned(f)
     } else if (plugin.family === 'bridge') {
       log(
         '    bridge-owned: poll / mirror / state / resolve-mcp-auth left untouched\n' +

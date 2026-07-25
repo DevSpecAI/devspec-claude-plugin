@@ -209,6 +209,10 @@ If you only have a session id (legacy), use the `session_id` on **this** owner_m
 
 **Hooks (mechanical only):** when enabled, `UserPromptSubmit` may mirror a **local_prompt** bubble into the attached room; **Stop only updates busy/heartbeat** — it does not post your answer. **You** must `post_session_message` the direct answer when attached. Sessionless: hooks only update working; no chat.
 
+### Attribute your writes (non-negotiable when connected)
+
+Pass **`connection_id`** on every DevSpec write that produces a session card — `create_action_item` and `surface_session_action_items` accept it. Action-item rows carry no agent identity of their own, so without it the server can only *infer* which agent acted, and when one person runs two agents on one token it cannot tell them apart: it now declines to guess and the card renders with **no** agent name (item `b6c447fd`; it previously guessed, and guessed wrong 3 times out of 6). Passing your `connection_id` makes attribution exact instead of merely honest.
+
 ### Session transcript posts (non-negotiable)
 
 The room is for **owner dispatches + direct answers**. Connection lifecycle is **not** chat.

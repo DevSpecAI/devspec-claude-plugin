@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.6.3 - 2026-07-26
+
+### Remote control — the "working" dots no longer die thirty seconds into a five-minute turn
+
+- **Your agent stays "working" for the whole turn.** Arming the wait for the next command used to be treated as "the agent is idle", so it cleared the turn marker the poller had just written. Because agents are told to re-arm the *instant* they wake — precisely so owner mail arriving mid-turn is not dropped — an agent switched its own indicator off seconds into every turn and then worked on with the driver's UI showing nothing.
+- **Worse than a cosmetic bug:** with the marker gone, the poller's next tick emitted `report_complete`, so the activity state machine recorded the turn as *finished* while it was still running.
+- **Turn end is now owned by the Stop hook alone** (`mirror-turn.mjs stop`), which every plugin in this family registers. A *first* arm (`--from-end`) still clears the marker — that is the connect/reconnect case the original clear was written for, where a seed delivery can leave a turn nobody will ever wake for.
+- Whether the dots appeared at all used to depend on *when* in its turn an agent happened to re-arm, which is why this read as intermittent rather than broken.
+
 ## 0.6.2 - 2026-07-26
 
 ### Remote control — screenshots you send from your phone now actually arrive

@@ -10,6 +10,9 @@
  * cache and risk going stale after a server-side session reattach.
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, it } from 'node:test'
 import {
   parseOwnerBatches,
@@ -17,6 +20,9 @@ import {
   describeAttachment,
   materialiseAttachments,
   MAX_INLINE_ATTACHMENT_CHARS,
+  applyArmTurnSemantics,
+  armEndsTurn,
+  clearTurnMarker,
 } from './devspec-remote-wait.mjs'
 
 describe('parseOwnerBatches', () => {
@@ -311,5 +317,69 @@ describe('attachments: payload to disk, descriptor to the model', () => {
   it('leaves a command with no attachments completely unchanged', () => {
     const msg = { id: 'm1', content: 'no files here' }
     assert.equal(materialiseAttachments(msg, { dir: '/att', writeFile: () => {} }), msg)
+  })
+})
+
+describe('arming and the working indicator (item 68f7b30c)', () => {
+  /** A real temp CONNECTIONS_DIR with a turn marker already written by the poller. */
+  function withMarker(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-turn-'))
+    const conn = 'conn-1'
+    const marker = path.join(dir, `${conn}.turn`)
+    fs.writeFileSync(marker, JSON.stringify({ startedAt: Date.now() }))
+    try {
+      return fn({ dir, conn, marker })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('a re-arm (--pending) LEAVES the marker — the agent is still working', () => {
+    withMarker(({ dir, conn, marker }) => {
+      // The documented pattern: re-arm the instant the agent wakes so mid-turn
+      // owner mail is not dropped. That must not turn the driver's dots off.
+      const ended = applyArmTurnSemantics(conn, { pending: true, fromEnd: false }, dir)
+      assert.equal(ended, false)
+      assert.equal(fs.existsSync(marker), true)
+    })
+  })
+
+  it('a flagless re-arm also LEAVES the marker (default is resume, not idle)', () => {
+    withMarker(({ dir, conn, marker }) => {
+      const ended = applyArmTurnSemantics(conn, {}, dir)
+      assert.equal(ended, false)
+      assert.equal(fs.existsSync(marker), true)
+    })
+  })
+
+  it('a FIRST arm (--from-end) clears it — a seed turn nobody will wake for', () => {
+    withMarker(({ dir, conn, marker }) => {
+      const ended = applyArmTurnSemantics(conn, { fromEnd: true, pending: false }, dir)
+      assert.equal(ended, true)
+      assert.equal(fs.existsSync(marker), false)
+    })
+  })
+
+  it('turn completion clears it — the Stop hook path still ends "working"', () => {
+    withMarker(({ dir, conn, marker }) => {
+      // mirror-turn.mjs stop does exactly this; asserted here so the pair
+      // "survives a re-arm, does NOT survive turn end" is locked in one place.
+      clearTurnMarker(conn, dir)
+      assert.equal(fs.existsSync(marker), false)
+    })
+  })
+
+  it('--pending wins if both flags are passed (never hide real work)', () => {
+    assert.equal(armEndsTurn({ fromEnd: true, pending: true }), false)
+    assert.equal(armEndsTurn({ fromEnd: true }), true)
+    assert.equal(armEndsTurn({ pending: true }), false)
+    assert.equal(armEndsTurn({}), false)
+  })
+
+  it('is a no-op without a connection id rather than throwing', () => {
+    withMarker(({ dir, marker }) => {
+      assert.equal(applyArmTurnSemantics(null, { fromEnd: true }, dir), true)
+      assert.equal(fs.existsSync(marker), true)
+    })
   })
 })

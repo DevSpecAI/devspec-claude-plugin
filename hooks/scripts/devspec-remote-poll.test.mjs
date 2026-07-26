@@ -18,6 +18,7 @@ import {
   emptyTurnBackoffMs,
   errorBackoffMs,
   unansweredCommands,
+  splitRoomWindow,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
@@ -247,16 +248,77 @@ describe('unansweredCommands (seed filter)', () => {
     assert.deepEqual(unansweredCommands(cmds, [{ id: 'x', author: { kind: 'human' }, created_at: at(2) }]).length, 1)
   })
 
-  it('advisory is never filtered — old room context IS the orientation', () => {
-    // Guard on intent: the filter only ever takes commands as its first argument.
-    const cmds = []
-    const room = [{ id: 'reply', message_type: 'external_agent', created_at: at(3) }]
-    assert.deepEqual(unansweredCommands(cmds, room), [])
-  })
-
   it('handles missing/garbage input without throwing', () => {
     assert.deepEqual(unansweredCommands(null, null), [])
     assert.deepEqual(unansweredCommands([command()], undefined).length, 1)
+  })
+})
+
+/**
+ * The seed asymmetry (item 55655986). `seed` filters the COMMAND half only; advisory
+ * always survives. Getting this backwards is the original bug: a reconnecting agent
+ * whose inbox is empty for the very window it needs, saved only by a skill instruction
+ * to call get_session_transcript. These assert the split, not the comment.
+ */
+describe('splitRoomWindow (seed filters commands, never advisory)', () => {
+  const at = (t) => `2026-07-25T20:0${t}:00.000Z`
+
+  /** Mixed history: an answered command, a live one, and third-party chatter. */
+  const scenario = () => ({
+    commands: [command({ id: 'answered', created_at: at(1) }), command({ id: 'live', created_at: at(5) })],
+    ownerAmbient: [{ id: 'ambient', author: { kind: 'human' }, created_at: at(2) }],
+    roomContext: [
+      { id: 'reply', message_type: 'external_agent', created_at: at(3) },
+      { id: 'teammate', author: { kind: 'human' }, created_at: at(4) },
+    ],
+  })
+
+  it('seed: wakes only the unanswered command but keeps ALL advisory', () => {
+    const { wake, advisory } = splitRoomWindow({ ...scenario(), seed: true })
+    assert.deepEqual(wake.map((c) => c.id), ['live'])
+    // The acceptance criterion: the whole window is still written as advisory.
+    assert.deepEqual(advisory.map((m) => m.id), ['ambient', 'reply', 'teammate'])
+  })
+
+  it('steady state: every addressed command wakes, advisory unchanged', () => {
+    const { wake, advisory } = splitRoomWindow({ ...scenario(), seed: false })
+    assert.deepEqual(wake.map((c) => c.id), ['answered', 'live'])
+    assert.deepEqual(advisory.map((m) => m.id), ['ambient', 'reply', 'teammate'])
+  })
+
+  it('advisory is byte-identical whether or not this is a seed window', () => {
+    // The regression guard proper: if anyone ever routes `seed` into the advisory
+    // half, these two stop matching.
+    const s = scenario()
+    assert.deepEqual(
+      splitRoomWindow({ ...s, seed: true }).advisory,
+      splitRoomWindow({ ...s, seed: false }).advisory,
+    )
+  })
+
+  it('seed with a fully-answered window wakes nothing yet still delivers the room', () => {
+    // Exactly the reconnect-into-a-finished-conversation case: no wake, full context.
+    const { wake, advisory } = splitRoomWindow({
+      commands: [command({ id: 'answered', created_at: at(1) })],
+      ownerAmbient: [{ id: 'ambient', author: { kind: 'human' }, created_at: at(2) }],
+      roomContext: [{ id: 'reply', message_type: 'external_agent', created_at: at(3) }],
+      seed: true,
+    })
+    assert.deepEqual(wake, [])
+    assert.equal(advisory.length, 2)
+  })
+
+  it('owner ambient precedes third-party room context in the delivered order', () => {
+    const { advisory } = splitRoomWindow({ ...scenario(), seed: true })
+    assert.equal(advisory[0].id, 'ambient')
+  })
+
+  it('handles missing/garbage input without throwing', () => {
+    assert.deepEqual(splitRoomWindow(), { wake: [], advisory: [] })
+    assert.deepEqual(splitRoomWindow({ commands: null, ownerAmbient: null, roomContext: null }), {
+      wake: [],
+      advisory: [],
+    })
   })
 })
 

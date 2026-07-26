@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.6.1 - 2026-07-26
+
+### Remote control — a dropped agent now says *why* it dropped
+
+- **`owner_gone` is no longer reported as `local_stop`.** When the poller detects that its host process has died it tears itself down — but it stamped that with the same `local_stop` value the server gets when you deliberately run `/devspec.remote-stop`. On staging that made 117 connection ends indistinguishable, so "why do agents disconnect mid-conversation?" could not be answered from the data at all. The two are now separate reasons, and the Agents page says "The agent process exited" rather than "Local agent disconnected".
+- **A relaunch still resumes your agent.** `owner_gone` is a *recoverable* end, so re-running `/devspec.remote` after Claude Code exits reconnects the same connection instead of registering a fresh one with a new codename. (Had it been added as a new reason without this, every restart would have silently become a new agent.)
+- **Requires DevSpec staging with `owner_gone` in the `heartbeat_connection` enum.** An end reason the server does not recognise is discarded rather than rejected, which would skip the sticky end and leave a zombie "Live" chip — so the server change ships first.
+
+### Internal
+
+- The seed/advisory split is now covered by tests rather than only by a comment: `splitRoomWindow` asserts that a cold launch filters the **command** half only and never the advisory half, which is the invariant that makes a reconnecting agent arrive oriented.
+
 ## 0.6.0 - 2026-07-25
 
 ### Remote control — long-poll transport, and the room arrives with the command

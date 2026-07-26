@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.6.2 - 2026-07-26
+
+### Remote control — screenshots you send from your phone now actually arrive
+
+- **Attachments on an owner command are saved as real files and handed to the model as a path**, instead of being dumped into the turn as base64. Previously the wake payload carried the server's raw `content` *and* its `dataUrl` — the same bytes twice. A 500KB screenshot measured at **1.37MB of stdout, roughly 341,000 tokens** of base64 that the model still could not see as an image. It is now **589 bytes** and a path the host can open, with the decoded file written to `~/.devspec/remote-control/connections/<id>.attachments/`.
+- **Small text attachments stay inline** (under 2KB) — a file path for a 30-byte note helps nobody.
+- **Nothing is dropped silently.** If an attachment cannot be written to disk, the descriptor says so and points at `get_session_transcript`, rather than quietly omitting it.
+- Filenames are sanitised, so an attachment called `../../etc/passwd` lands as `passwd` inside the attachment directory and nowhere else.
+
 ## 0.6.1 - 2026-07-26
 
 ### Remote control — a dropped agent now says *why* it dropped

@@ -11,7 +11,13 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { parseOwnerBatches, buildOwnerMessageEvents } from './devspec-remote-wait.mjs'
+import {
+  parseOwnerBatches,
+  buildOwnerMessageEvents,
+  describeAttachment,
+  materialiseAttachments,
+  MAX_INLINE_ATTACHMENT_CHARS,
+} from './devspec-remote-wait.mjs'
 
 describe('parseOwnerBatches', () => {
   it('keeps only owner_messages lines with a non-empty messages array', () => {
@@ -168,5 +174,142 @@ describe('buildOwnerMessageEvents — packaged room context', () => {
       }),
     ]
     assert.equal(parseOwnerBatches(lines).length, 0)
+  })
+})
+
+/**
+ * Attachments (item 99165e12). The server sends base64 `content` plus, for images, a
+ * `dataUrl` carrying the SAME bytes again. Emitting that verbatim is the defect: a
+ * 500KB screenshot measured at 1.37MB of stdout (~341k tokens) of base64 the model
+ * still cannot see as an image. These lock in the fix — payload goes to disk, only a
+ * descriptor goes to the model.
+ */
+describe('attachments: payload to disk, descriptor to the model', () => {
+  const png = (bytes = 4096) => Buffer.alloc(bytes, 7).toString('base64')
+
+  const imageAttachment = (over = {}) => ({
+    filename: 'shot.png',
+    mimeType: 'image/png',
+    type: 'image',
+    sizeBytes: 4096,
+    content: png(),
+    dataUrl: 'data:image/png;base64,' + png(),
+    ...over,
+  })
+
+  it('writes an image to disk and returns a path, not the payload', () => {
+    const written = []
+    const d = describeAttachment(imageAttachment(), {
+      dir: '/att',
+      messageId: 'm1',
+      index: 0,
+      writeFile: (t, b) => written.push([t, b.length]),
+    })
+    assert.equal(d.delivery, 'file')
+    assert.equal(d.path, '/att/m1-0-shot.png')
+    assert.equal(d.content, undefined)
+    assert.equal(d.dataUrl, undefined)
+    // Decoded to the true byte length, not the inflated base64 length.
+    assert.equal(written[0][1], 4096)
+  })
+
+  it('never emits base64 into the wake event', () => {
+    const b64 = png(8192)
+    const events = buildOwnerMessageEvents(
+      {
+        session_id: 's1',
+        messages: [{ id: 'm1', content: 'why is this wrong?', attachments: [imageAttachment({ content: b64 })] }],
+      },
+      { attachmentDir: '/att', writeFile: () => {} },
+    )
+    const out = events.map((e) => JSON.stringify(e)).join('\n')
+    assert.equal(out.includes(b64.slice(0, 64)), false)
+    // And the turn stays small rather than scaling with the image.
+    assert.ok(out.length < 2000, `wake payload should stay small, was ${out.length}`)
+  })
+
+  it('prefers content over dataUrl and never carries both', () => {
+    const d = describeAttachment(imageAttachment(), {
+      dir: '/att', messageId: 'm', index: 0, writeFile: () => {},
+    })
+    assert.equal('content' in d, false)
+    assert.equal('dataUrl' in d, false)
+  })
+
+  it('recovers the payload from dataUrl when content is absent', () => {
+    const written = []
+    const d = describeAttachment(
+      { filename: 'a.png', mimeType: 'image/png', type: 'image', dataUrl: 'data:image/png;base64,' + png(512) },
+      { dir: '/att', messageId: 'm', index: 0, writeFile: (t, b) => written.push(b.length) },
+    )
+    assert.equal(d.delivery, 'file')
+    assert.equal(written[0], 512)
+  })
+
+  it('keeps SMALL text inline — a file path for 30 bytes helps nobody', () => {
+    const d = describeAttachment(
+      {
+        filename: 'note.txt', mimeType: 'text/plain', type: 'text',
+        content: Buffer.from('ship it').toString('base64'),
+      },
+      { dir: '/att', messageId: 'm', index: 0, writeFile: () => { throw new Error('should not write') } },
+    )
+    assert.equal(d.delivery, 'inline')
+    assert.equal(d.content, 'ship it')
+  })
+
+  it('sends LARGE text to disk instead of inlining it', () => {
+    const big = 'x'.repeat(MAX_INLINE_ATTACHMENT_CHARS + 1)
+    const d = describeAttachment(
+      { filename: 'big.txt', mimeType: 'text/plain', type: 'text', content: Buffer.from(big).toString('base64') },
+      { dir: '/att', messageId: 'm', index: 0, writeFile: () => {} },
+    )
+    assert.equal(d.delivery, 'file')
+    assert.equal(d.content, undefined)
+  })
+
+  it('sanitises the filename — no directory escape, no shell-hostile chars', () => {
+    const d = describeAttachment(imageAttachment({ filename: '../../etc/passwd' }), {
+      dir: '/att', messageId: 'm', index: 0, writeFile: () => {},
+    })
+    assert.equal(d.path.includes('..'), false)
+    assert.equal(d.path, '/att/m-0-passwd')
+  })
+
+  it('says so when it cannot write, rather than silently inlining base64', () => {
+    const d = describeAttachment(imageAttachment(), {
+      dir: '/att', messageId: 'm', index: 0,
+      writeFile: () => { throw new Error('disk full') },
+    })
+    assert.equal(d.delivery, 'unavailable')
+    assert.match(d.note, /disk full/)
+    assert.equal(d.content, undefined)
+  })
+
+  it('declines rather than drops when there is nowhere to write', () => {
+    const d = describeAttachment(imageAttachment(), { messageId: 'm', index: 0 })
+    assert.equal(d.delivery, 'unavailable')
+    assert.equal(d.content, undefined)
+  })
+
+  it('an image descriptor TELLS the model to open it', () => {
+    const d = describeAttachment(imageAttachment(), {
+      dir: '/att', messageId: 'm', index: 0, writeFile: () => {},
+    })
+    // Without this the model sees a path and treats it as decoration.
+    assert.match(d.note, /OPEN THIS PATH/)
+  })
+
+  it('drops payload-less stubs instead of emitting empty descriptors', () => {
+    const m = materialiseAttachments(
+      { id: 'm1', attachments: [{ filename: 'ghost.png', mimeType: 'image/png', type: 'image' }] },
+      { dir: '/att', writeFile: () => {} },
+    )
+    assert.equal('attachments' in m, false)
+  })
+
+  it('leaves a command with no attachments completely unchanged', () => {
+    const msg = { id: 'm1', content: 'no files here' }
+    assert.equal(materialiseAttachments(msg, { dir: '/att', writeFile: () => {} }), msg)
   })
 })

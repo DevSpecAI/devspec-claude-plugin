@@ -168,6 +168,12 @@ const PLUGINS = [
     name: 'Cursor',
     hooksDir: path.join('Cursor plugin', 'cursor-devspec-plugin', 'hooks', 'scripts'),
     family: 'local-poller',
+    // Cursor keeps the DevSpec token in its OWN host config —
+    // ~/.cursor/mcp.json, written by the extension's "DevSpec: Set MCP token" —
+    // not in a CLAUDE_PLUGIN_OPTION_* env. The canonical resolver reads neither,
+    // so a blanket sync leaves remote control unable to authenticate. Cursor owns
+    // a tool-aware resolver (reads ~/.cursor/mcp.json); its test travels with it.
+    owns: ['resolve-mcp-auth.mjs'],
   },
   {
     name: 'Antigravity',
@@ -178,6 +184,10 @@ const PLUGINS = [
       'scripts',
     ),
     family: 'local-poller',
+    // Antigravity keeps the token in ~/.gemini/antigravity-cli/mcp_config.json
+    // (serverUrl + headers.Authorization), not a CLAUDE_PLUGIN_OPTION_* env — same
+    // class as Grok/Cursor. Owns a tool-aware resolver; its test travels with it.
+    owns: ['resolve-mcp-auth.mjs'],
   },
   {
     name: 'Codex',

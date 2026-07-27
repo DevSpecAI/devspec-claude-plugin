@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.6.4 - 2026-07-27
+
+### Every plugin's test suite now actually protects it
+
+- **A shared file's tests travel with it.** The sync lists named implementations and their tests side by side, by hand, and the pairing had rotted: `resolve-mcp-auth.mjs` was synced while its test was not, so the Cursor plugin held an older test asserting an export the shared implementation no longer had — **its suite could not even load, on main**. `devspec-remote-poll.test.mjs` and `devspec-remote-wait.test.mjs` were absent from the lists too, so Antigravity had no copy of either. Tests are now derived from the implementation entry, so the pairing cannot rot again.
+- **The failure used to be invisible.** A file in *neither* list counted as neither drift nor plugin-owned, so `--check` reported everything in sync while a downstream suite was red. It now reports a missing downstream test as drift, and warns about a canonical test that pairs with no synced implementation.
+- **Owning an implementation now owns its test.** A plugin that keeps its own `resolve-mcp-auth.mjs` because its host stores the token elsewhere keeps the test that asserts that, rather than having the canonical one written over it.
+- Result across the family: **Cursor red → 151 passing**, Antigravity 62 → 151, Grok Build 69 → 151 (its three owned tests untouched), Codex 38 → 68 (its own bridge poller test preserved).
+- `scripts/sync-hooks.mjs` no longer runs a real sync when imported, and its pairing rules have their own tests.
+
 ## 0.6.3 - 2026-07-26
 
 ### Remote control — the "working" dots no longer die thirty seconds into a five-minute turn

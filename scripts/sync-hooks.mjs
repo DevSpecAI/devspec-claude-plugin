@@ -27,6 +27,12 @@
  *                 are left untouched. The script prints a reminder so a maintainer
  *                 reconciles shared-concern changes into them by hand.
  *
+ * TESTS ARE NOT A TIER — they follow their implementation (item b97a3521). The lists
+ * name implementations only; `X.test.mjs` is synced wherever `X.mjs` is, and is
+ * plugin-owned wherever `X.mjs` is. Never hand-add a test entry to a list or to an
+ * `owns` array: the hand-maintained pairing is exactly what rotted and left Cursor's
+ * suite unable to load on main while `--check` reported everything in sync.
+ *
  * Adaptations that USED to force divergence are gone:
  *   - agent name  → externalised to agent-identity.mjs (GENERATED here)
  *   - conv-id env → the canonical scripts already probe every tool's env var
@@ -61,17 +67,76 @@ const PLUGINS_ROOT =
   process.env.DEVSPEC_PLUGINS_ROOT || path.join(CLAUDE_ROOT, '..', '..')
 
 // Files that are identical for every tool (transport + wait).
+// List IMPLEMENTATIONS ONLY — a file's canonical test travels with it automatically
+// (see withDerivedTests). Never hand-add a `.test.mjs` entry here.
 const UNIVERSAL = ['mcp-call.mjs', 'devspec-remote-wait.mjs']
 
-// The local-poller remote-control implementation + its tests.
+// The local-poller remote-control implementation. Implementations only — see above.
 const LOCAL_POLLER = [
   'devspec-remote-poll.mjs',
   'mirror-turn.mjs',
   'remote-control-state.mjs',
   'resolve-mcp-auth.mjs',
-  'mirror-turn.test.mjs',
-  'remote-control-state.test.mjs',
 ]
+
+/**
+ * A synced implementation carries its canonical test file with it (item b97a3521).
+ *
+ * These lists used to name implementations and tests side by side, by hand, and the
+ * pairing silently rotted: `resolve-mcp-auth.mjs` was synced while
+ * `resolve-mcp-auth.test.mjs` was not, so Cursor kept an older test asserting an
+ * export the shared implementation no longer had — its suite could not even load,
+ * on main, for days. `devspec-remote-poll.test.mjs` and `devspec-remote-wait.test.mjs`
+ * were missing from the lists too, so Antigravity had no copy of either.
+ *
+ * The failure was invisible from here: a file in NEITHER list is neither drift nor
+ * plugin-owned, so `--check` reported everything in sync while a downstream suite
+ * was red. Deriving the test from the implementation removes the hand-pairing
+ * entirely, so the next shared file added cannot repeat it.
+ */
+export function withDerivedTests(files, dir = CANONICAL_HOOKS) {
+  const out = []
+  for (const f of files) {
+    out.push(f)
+    // A test has no test of its own. Defensive rather than theoretical: if someone
+    // re-adds a `.test.mjs` entry to a list by hand — the very habit that caused
+    // this bug — deriving from it would ask for `x.test.test.mjs`.
+    if (f.endsWith('.test.mjs')) continue
+    const test = f.replace(/\.mjs$/, '.test.mjs')
+    if (test !== f && fs.existsSync(path.join(dir, test))) out.push(test)
+  }
+  return out
+}
+
+/**
+ * Ownership is declared on the IMPLEMENTATION and covers its test implicitly.
+ *
+ * A plugin that owns `resolve-mcp-auth.mjs` because its host keeps the token
+ * somewhere else necessarily owns the test that asserts that behaviour — syncing the
+ * canonical test over it would assert the wrong contract against a divergent
+ * implementation. Grok Build is the live case: it owns three implementations, and its
+ * three tests must stay its own. This is why `owns` lists implementations only.
+ */
+export function ownsFile(owns, f) {
+  const owned = owns instanceof Set ? owns : new Set(owns ?? [])
+  return (
+    owned.has(f) ||
+    (f.endsWith('.test.mjs') && owned.has(f.replace(/\.test\.mjs$/, '.mjs')))
+  )
+}
+
+/**
+ * Every canonical test file must pair with an implementation that is actually
+ * synced, or it reaches nobody. Reported rather than silently ignored — a test with
+ * no synced impl is the same blind spot as an impl with no synced test.
+ */
+function orphanCanonicalTests() {
+  const synced = new Set([...UNIVERSAL, ...LOCAL_POLLER])
+  return fs
+    .readdirSync(CANONICAL_HOOKS)
+    .filter((f) => f.endsWith('.test.mjs'))
+    .filter((f) => !synced.has(f.replace(/\.test\.mjs$/, '.mjs')))
+}
 
 // Downstream plugins. `hooksDir` is relative to PLUGINS_ROOT. Add a new plugin
 // here — nothing else — and it joins the sync. `family: 'bridge'` means the
@@ -96,7 +161,8 @@ const PLUGINS = [
     //                       stdout line into a model-visible event to filter.
     //   remote-control-state — GROK_SESSION_ID local-id detection plus Grok-only
     //                       --force / --force-restart poller controls.
-    owns: ['resolve-mcp-auth.mjs', 'mirror-turn.mjs', 'remote-control-state.mjs', 'remote-control-state.test.mjs', 'mirror-turn.test.mjs'],
+    // Implementations only — each one's test is owned implicitly (see isOwned).
+    owns: ['resolve-mcp-auth.mjs', 'mirror-turn.mjs', 'remote-control-state.mjs'],
   },
   {
     name: 'Cursor',
@@ -185,9 +251,11 @@ function main() {
     }
 
     const owned = new Set(plugin.owns ?? [])
+    const isOwned = (f) => ownsFile(owned, f)
+
     /** Skip a file this plugin owns, saying so out loud rather than silently. */
     const applyUnlessOwned = (f) => {
-      if (owned.has(f)) {
+      if (isOwned(f)) {
         log(`    plugin-owned ${f} — left untouched`)
         return
       }
@@ -197,18 +265,31 @@ function main() {
     // GENERATED: the one per-plugin file.
     apply(path.join(destDir, 'agent-identity.mjs'), agentIdentitySource(plugin.name), 'agent-identity.mjs')
 
-    // UNIVERSAL: every plugin, every family.
-    for (const f of UNIVERSAL) applyUnlessOwned(f)
+    // UNIVERSAL: every plugin, every family. Tests ride along with their impl.
+    for (const f of withDerivedTests(UNIVERSAL)) applyUnlessOwned(f)
 
     if (plugin.family === 'local-poller') {
-      for (const f of LOCAL_POLLER) applyUnlessOwned(f)
+      for (const f of withDerivedTests(LOCAL_POLLER)) applyUnlessOwned(f)
     } else if (plugin.family === 'bridge') {
       log(
-        '    bridge-owned: poll / mirror / state / resolve-mcp-auth left untouched\n' +
+        '    bridge-owned: poll / mirror / state / resolve-mcp-auth (and their tests)\n' +
+          '      left untouched — a bridge test asserts the bridge design, not the shared one\n' +
           '      → reconcile shared-concern changes into them by hand (see docs/REMOTE-CONTROL-HOOK-SYNC.md)',
       )
     }
     log('')
+  }
+
+  // A canonical test that pairs with no synced implementation reaches nobody. Say so
+  // rather than letting it sit outside every list unnoticed — that silence is the
+  // whole defect behind b97a3521.
+  const orphans = orphanCanonicalTests()
+  if (orphans.length > 0) {
+    log(
+      `⚠ ${orphans.length} canonical test file(s) pair with no synced implementation, so no\n` +
+        `  downstream plugin runs them: ${orphans.join(', ')}\n` +
+        '  Either add the implementation to UNIVERSAL/LOCAL_POLLER, or delete the test.\n',
+    )
   }
 
   if (CHECK) {
@@ -223,4 +304,11 @@ function main() {
   log(wrote > 0 ? `✓ Done — wrote ${wrote} file(s).` : '✓ Done — everything already current.')
 }
 
-main()
+// Run the CLI only when executed directly. Without this guard, importing the module
+// to test its pairing logic would perform a REAL sync across every plugin repo —
+// the same footgun already removed from devspec-remote-wait.mjs.
+const isMain =
+  Boolean(process.argv[1]) &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+
+if (isMain) main()

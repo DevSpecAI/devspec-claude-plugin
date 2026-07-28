@@ -180,7 +180,8 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" \
 The poller (no LLM tokens while idle) runs **one long-poll** (`poll_connection`), held open by the server and answered the instant anything lands — there is no polling interval any more:
 - Carries the heartbeat, the dispatch inbox and the room delta in a single held request (~2 req/min, ~0 delivery latency).
 - Delivers **owner commands** (owner instructions + dispatched assignments) to the inbox as `owner_messages` + a `wake`, **with the room context attached to the same entry**; also writes **advisory room context** as `advisory_context` (no wake) as the durable record.
-- **Exit 1** only for terminal stop (disabled / UI End / idle_timeout / owner gone / connection ended). **Exit 2** = bad args.
+- **Exit 1** only for terminal stop (disabled / UI End / owner gone / connection stood down). **Exit 2** = bad args.
+- **Rides out a recoverable teardown by itself.** If the server says the connection is gone but will not attribute it to a person — the shape a Coolify redeploy produces — the poller retries rather than exiting. Only `end_reason` of `ui` or `local_stop` is a deliberate human end and stops it dead. You will see `recoverable, not a UI end; retrying` in its log; that is the poller working, not failing.
 
 **Wait-for-owner (wakes the model — required):** after the poller is up, run in background:
 
@@ -195,7 +196,18 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-id "$CONNECTION_ID" --owner-pid "$PPID" --pending
 ```
 
-Use **`run_in_background: true`**. Exit **0** → stdout has `room_context` (when the room has moved) then `owner_message` / `wake` → act → **re-arm only this wait with `--pending`**. Exit **1** → connection ended/disabled/owner gone — stop. Never re-arm with `--from-end`.
+Use **`run_in_background: true`**. Exit **0** → stdout has `room_context` (when the room has moved) then `owner_message` / `wake` → act → **re-arm only this wait with `--pending`**. Never re-arm with `--from-end`.
+
+Exit **1** → check WHY before you stand down, because "ended" and "ended by a human" are not the same thing:
+
+| What you find | What it means | What to do |
+|---|---|---|
+| `end_reason: 'ui'` / `ended_from_ui: true` in the state file, or the wait printed `ended_from_ui` | A person clicked End on the Agents page | **Stop.** Stay disconnected. |
+| `/devspec.remote-stop` was run (`local_stop`) | A person disconnected you | **Stop.** |
+| owner gone | Your host process died | Stop (nothing to return to). |
+| Anything else — any other `end_reason`, or none at all | The server will not vouch that a human did this. A redeploy looks exactly like this. | **Re-register the same bond once** (re-run the register + `write` steps with the SAME `local_id`) and re-arm. Do not stay dead. |
+
+Read the state file to tell them apart: `cat ~/.devspec/remote-control/connections/<connection_id>.json` and look at `end_reason` / `ended_from_ui`. Never infer a UI End from silence — that inference is exactly the bug that took every agent offline during a staging redeploy on 2026-07-28 (brief `e691c68a`).
 
 `--pending` also keeps your **"working" indicator** alive: a first arm ends any in-flight turn (it is the connect/reconnect case), a re-arm deliberately does not, because you re-arm *during* the turn. Your turn end is reported by the Stop hook. So `--from-end` on a re-arm both drops owner mail and tells your driver you have stopped working while you are still working.
 
@@ -260,7 +272,7 @@ Prefer **`/devspec.remote-stop`** — it detaches + marks the connection offline
 If `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-poll.mjs` does not exist, use this **exact** fallback (do not invent another):
 
 1. Call `poll_connection({ connection_id, cursor, dispatch_cursor, wait_ms: 25000 })` — ONE call that heartbeats, returns live dispatches, and returns the room delta already split into `commands` / `owner_ambient` / `room_context`. It holds open until something lands.
-2. `status: "not_found"` or `"ended"` → the connection is gone; stop and do not restart.
+2. `status: "not_found"` or `"ended"` → the connection is gone from the server, but check `end_reason` before standing down. Only `"ui"` or `"local_stop"` means a person ended you — stop and do not restart. Any other reason, or no reason at all, is recoverable: retry a few times (a redeploy clears in seconds), then re-register the same `local_id` and carry on.
 3. Act only on entries in `commands` whose `addressed_to.connection_id` is yours; both advisory tiers are context.
 4. Pass the response's `cursor` **and** `dispatch_cursor` back on the next call, then call again immediately — the hold is the wait, so no `sleep` is needed.
 

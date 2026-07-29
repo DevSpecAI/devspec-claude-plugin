@@ -85,6 +85,8 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" resolve-loca
 
 Prefer `CLAUDE_CODE_SESSION_ID` / `CLAUDE_SESSION_ID`. Keep `local_id` in working memory; pass `--local-id` on every subsequent call.
 
+**Never bond on `SHELL_SESSION_ID` / `TERM_SESSION_ID`.** They identify the host terminal, not this conversation, so every conversation run from one shell collides on a single id. Worse, a shell id in env pre-empts the hook's own conversation id (the Stop payload's `session_id`), so Stop resolves a bond matching no connection — and once two or more of your connections are live, `selectBoundState` fails closed, the turn marker is never cleared, and the poller re-asserts busy for up to an hour. That is the "Working spinner and bouncing dots stuck after the reply has landed" bug (items `a6b3f881` on Grok, `87117120` here).
+
 ### 4. Decide the action, then register the connection
 
 First check whether THIS conversation already has a connection:
@@ -222,6 +224,8 @@ Read the state file to tell them apart: `cat ~/.devspec/remote-control/connectio
 If you only have a session id (legacy), use the `session_id` on **this** owner_message/wake event — never one memorized at connect time.
 
 **Hooks (mechanical only):** when enabled, `UserPromptSubmit` may mirror a **local_prompt** bubble into the attached room; **Stop only updates busy/heartbeat** — it does not post your answer. **You** must `post_session_message` the direct answer when attached. Sessionless: hooks only update working; no chat.
+
+**End of turn is mechanical — don't hand-clear it.** Stop clears the turn marker, heartbeats `busy:false`, and calls `report_complete` so Working drops the moment your turn ends, without waiting for the poller's next tick. You do not need to call `report_complete` yourself. If you ever see the spinner or bouncing dots persist after your reply has landed, that is a bond bug worth reporting (see step 3) — not something to paper over with an extra call per turn.
 
 ### Attribute your writes (non-negotiable when connected)
 

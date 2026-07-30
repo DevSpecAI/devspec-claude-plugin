@@ -277,6 +277,197 @@ export function isOperationalChrome(text) {
   return false
 }
 
+/*
+ * ─── Listener enforcement (items 8b4ceaa3 + d655b2a4) ──────────────────────────
+ *
+ * Delivery used to be contingent on the model remembering to re-arm a one-shot
+ * listener at the end of every turn. Miss it once — trivially easy in a turn that
+ * also did six writes and a long reply — and the agent went permanently deaf while
+ * every external signal still said it was fine: the poller heartbeating, the Agents
+ * page showing Live and available, the inbox quietly filling up.
+ *
+ * The original v0.4.0 design never had this failure because ONE process both
+ * heartbeated and woke the agent, so losing the waker also lost the heartbeat and the
+ * chip went Disconnected — loud, and impossible to misread. Splitting liveness onto a
+ * keeper-managed poller (item e254c6fb) fixed "Live drops while the agent works" and
+ * left the wake channel with no keeper at all. So the thing still reporting Live is no
+ * longer the thing that wakes you.
+ *
+ * This is the missing keeper. Stop already fires at the end of every turn and already
+ * owns connection state, and a Stop hook can REFUSE the stop and hand the model a
+ * reason — so it can enforce mechanically what the skill could previously only ask
+ * for. Note what this deliberately does NOT do: it does not spawn the listener
+ * itself. A hook-spawned wait is not harness-managed, so its exit could never wake
+ * the model — proven by accident on item d655b2a4 (a detached wait survived, consumed
+ * the inbox, and woke nobody, which is strictly worse than no listener at all).
+ * Blocking makes the AGENT arm it, in the one way that actually wakes this host.
+ */
+
+function inboxPathFor(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.inbox.jsonl`)
+}
+
+function waitPidPathFor(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.wait.pid`)
+}
+
+/** EPERM = the pid exists and is not ours. Same probe the poller uses for its owner. */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return !!e && e.code === 'EPERM'
+  }
+}
+
+/**
+ * Is a listener armed for this connection right now?
+ *
+ * Proved with a live pid, never with the file's mere existence: a wait killed by
+ * SIGKILL leaves its pidfile behind, and believing a stale file would reproduce the
+ * exact bug this exists to catch.
+ */
+export function isListenerArmed(connectionId, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return false
+  try {
+    const pid = Number.parseInt(fs.readFileSync(waitPidPathFor(connectionId, dir), 'utf8').trim(), 10)
+    return pidAlive(pid)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * How many owner commands are sitting in the inbox that no listener has consumed?
+ *
+ * `inbox_byte_offset` is the wait's cursor, so anything past it has been delivered by
+ * the poller and read by nobody. Advisory entries are ignored on purpose — they never
+ * warranted a wake, so they must not hold a turn open either.
+ */
+export function countUnreadOwnerCommands(connectionId, offset, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return 0
+  const file = inboxPathFor(connectionId, dir)
+  let size = 0
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return 0
+  }
+  const from = Number.isInteger(offset) && offset >= 0 ? offset : size
+  if (size <= from) return 0
+  let text = ''
+  try {
+    const fd = fs.openSync(file, 'r')
+    try {
+      const buf = Buffer.alloc(size - from)
+      fs.readSync(fd, buf, 0, size - from, from)
+      text = buf.toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return 0
+  }
+  const lastNl = text.lastIndexOf('\n')
+  if (lastNl === -1) return 0
+  let count = 0
+  for (const line of text.slice(0, lastNl + 1).split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const obj = JSON.parse(line)
+      if (obj?.type === 'owner_messages' && Array.isArray(obj.messages)) count += obj.messages.length
+    } catch {
+      /* skip garbage */
+    }
+  }
+  return count
+}
+
+/**
+ * `stop_hook_active` is true when this Stop is itself the result of a previous Stop
+ * hook block. Blocking again from there is how you build an infinite loop, so we
+ * refuse to — the harness would override us anyway and log a warning.
+ */
+export function parseStopHookActive(hookInput) {
+  try {
+    return JSON.parse(hookInput || '{}').stop_hook_active === true
+  } catch {
+    return false
+  }
+}
+
+/** Bounded wait so a listener the agent armed moments ago is not called missing. */
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * Probe for an armed listener, tolerating the spawn race.
+ *
+ * The agent arms the wait as a background task and can finish its turn before that
+ * process has written its pidfile. A single probe would read "no listener", block a
+ * turn that did everything right, and cost a model turn to no purpose — so give the
+ * spawn a moment before believing it. Cheap: only the already-failing path pays, and
+ * the Stop hook's budget is 30s.
+ */
+export async function listenerArmedWithGrace(
+  connectionId,
+  { attempts = 4, delayMs = 250, dir = CONNECTIONS_DIR, probe = isListenerArmed } = {},
+) {
+  for (let i = 0; i < attempts; i++) {
+    if (probe(connectionId, dir)) return true
+    if (i < attempts - 1) await sleep(delayMs)
+  }
+  return false
+}
+
+/**
+ * Should this Stop be refused? Returns a `reason` string, or null to let the turn end.
+ *
+ * The decision hinges on ONE thing: is a listener armed? If one is, the turn may end
+ * freely — anything unread is that listener's job, and it will wake the agent again by
+ * exiting. We block only when nothing is listening, and the reason we give depends on
+ * whether mail is already stranded:
+ *   - stranded mail — commands the poller delivered and nobody read. This is the
+ *     2026-07-30 incident verbatim: the owner posted twice, concluded the tooling had
+ *     died, and everything was healthy except that nobody was listening.
+ *   - nothing yet — the turn is ending with nothing watching, so the NEXT command is
+ *     the one that would vanish.
+ */
+export function decideStopBlock({ connectionId, inboxOffset, stopHookActive, armed, dir = CONNECTIONS_DIR } = {}) {
+  if (!connectionId) return null
+  // Already blocked once this turn — say nothing and let the agent stop. The harness
+  // would force the stop through anyway and log a warning.
+  if (stopHookActive) return null
+  // A listener is on watch: not our problem to solve, and blocking would be noise.
+  if (armed) return null
+
+  const unread = countUnreadOwnerCommands(connectionId, inboxOffset, dir)
+
+  const rearm =
+    'node "$CLAUDE_PLUGIN_ROOT/hooks/scripts/devspec-remote-wait.mjs" ' +
+    `--connection-id ${connectionId} --owner-pid "$PPID" --pending` +
+    ' (run_in_background: true, and do NOT pass a timeout)'
+
+  if (unread > 0) {
+    return (
+      `DevSpec remote control: ${unread} owner command(s) are sitting unread in this ` +
+      `connection's inbox with no listener armed to consume them. Nothing is broken — ` +
+      `the poller delivered them correctly; you simply never saw them. Do not stop. ` +
+      `Re-arm the wait, then read and act on what it hands you:\n${rearm}`
+    )
+  }
+
+  return (
+    'DevSpec remote control: this turn is ending with NO wake listener armed, so the ' +
+    'next command your owner sends would land in the inbox and never reach you — ' +
+    'while the Agents page keeps showing you as Live and available. Do not stop. ' +
+    `Re-arm the wait first:\n${rearm}`
+  )
+}
+
 /**
  * Prepare agent Stop text for mirroring: strip known chrome; return null to skip.
  */
@@ -319,6 +510,23 @@ async function main() {
   // and silent misses when bonding failed.
   if (mode === 'stop') consumeExplicitReplyMarker(connectionId)
 
+  // Refuse a stop that would leave this connection deaf (items 8b4ceaa3, d655b2a4).
+  // Decided BEFORE the turn-lifecycle writes below, because a blocked stop is not a
+  // turn end: clearing busy here would tell the driver the agent finished while it is
+  // still going, which is the bug 68f7b30c already fixed once from the other side.
+  // Short-circuit before the grace probe when we already know we will not block —
+  // no reason to spend 750ms on a turn whose outcome is settled.
+  const stopHookActive = mode === 'stop' ? parseStopHookActive(raw) : false
+  const blockReason =
+    mode === 'stop' && connectionId && !stopHookActive
+      ? decideStopBlock({
+          connectionId,
+          inboxOffset: state.inbox_byte_offset,
+          stopHookActive,
+          armed: await listenerArmedWithGrace(connectionId),
+        })
+      : null
+
   try {
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
@@ -352,7 +560,8 @@ async function main() {
     // Turn lifecycle → "working" authority. user_prompt starts a turn (busy:true +
     // marker so the poller re-asserts); stop ends it (busy:false + clear marker).
     // Marker is keyed by connection_id (the poller reads it by connection_id).
-    const turnActive = mode === 'user_prompt'
+    // A blocked stop keeps the turn OPEN — the agent is about to re-arm and carry on.
+    const turnActive = mode === 'user_prompt' || !!blockReason
     if (turnActive) writeTurnMarker(connectionId)
     else clearTurnMarker(connectionId)
 
@@ -391,6 +600,15 @@ async function main() {
     }
   } catch (e) {
     process.stderr.write(`[devspec-remote] ${e instanceof Error ? e.message : String(e)}\n`)
+  }
+
+  // Decision control goes on stdout with exit 0 — deliberately NOT exit 2. The hook
+  // is registered as `node mirror-turn.mjs stop || true`, and that `|| true` would
+  // swallow an exit-2 block entirely, so the JSON form is the only one that actually
+  // works here. It is also the better contract: `reason` reaches the model as a
+  // system message it can act on.
+  if (blockReason) {
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: blockReason }) + '\n')
   }
   process.exit(0)
 }

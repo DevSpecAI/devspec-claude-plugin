@@ -19,7 +19,32 @@ import {
   prepareAgentMirrorText,
   explicitReplyMarkerPath,
   consumeExplicitReplyMarker,
+  isListenerArmed,
+  countUnreadOwnerCommands,
+  parseStopHookActive,
+  decideStopBlock,
+  listenerArmedWithGrace,
 } from './mirror-turn.mjs'
+
+/** A pid above any plausible pid_max — guaranteed ESRCH, i.e. provably dead. */
+const DEAD_PID = 2147483646
+
+function withConnDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-listener-'))
+  const conn = 'c0ffee00-0000-4000-8000-000000000001'
+  try {
+    return fn({
+      dir,
+      conn,
+      writePid: (pid) => fs.writeFileSync(path.join(dir, `${conn}.wait.pid`), String(pid)),
+      writeInbox: (lines) =>
+        fs.writeFileSync(path.join(dir, `${conn}.inbox.jsonl`), lines.map((l) => JSON.stringify(l) + '\n').join('')),
+      appendRaw: (raw) => fs.appendFileSync(path.join(dir, `${conn}.inbox.jsonl`), raw),
+    })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
 
 describe('resolveHookConversationId', () => {
   it('prefers CLAUDE_CODE_SESSION_ID env (the value write stamps)', () => {
@@ -245,5 +270,220 @@ describe('explicit-reply marker (double-post guard, item b9fb49a9)', () => {
     const p = explicitReplyMarkerPath(testConnectionId)
     assert.equal(path.basename(p), `${testConnectionId}.explicit-reply`)
     assert.equal(path.dirname(p), path.join(os.homedir(), '.devspec', 'remote-control', 'connections'))
+  })
+})
+
+/*
+ * Listener enforcement — items 8b4ceaa3 (a missed re-arm silently stops delivery)
+ * and d655b2a4 (exit 1 conflates "re-arm me" with "connection is over").
+ *
+ * The guarantee under test: a turn cannot end leaving this connection deaf. These
+ * encode the 2026-07-30 incident — poller alive, Agents page Live, two owner
+ * commands sitting in the inbox, and nothing listening.
+ */
+describe('isListenerArmed', () => {
+  it('is false with no pidfile at all — nothing has ever armed', () => {
+    withConnDir(({ dir, conn }) => {
+      assert.equal(isListenerArmed(conn, dir), false)
+    })
+  })
+
+  it('is TRUE for a live pid', () => {
+    withConnDir(({ dir, conn, writePid }) => {
+      writePid(process.pid)
+      assert.equal(isListenerArmed(conn, dir), true)
+    })
+  })
+
+  it('is false for a STALE pidfile — a SIGKILLed wait never cleans up after itself', () => {
+    // The critical case: believing a stale file would recreate the exact bug this
+    // check exists to catch (something claiming the connection can hear when it
+    // cannot). Liveness must be proved by the pid, never by the file existing.
+    withConnDir(({ dir, conn, writePid }) => {
+      writePid(DEAD_PID)
+      assert.equal(isListenerArmed(conn, dir), false)
+    })
+  })
+
+  it('is false for garbage in the pidfile', () => {
+    withConnDir(({ dir, conn, writePid }) => {
+      writePid('not-a-pid')
+      assert.equal(isListenerArmed(conn, dir), false)
+    })
+  })
+
+  it('is false without a connection id', () => {
+    assert.equal(isListenerArmed(null), false)
+  })
+})
+
+describe('countUnreadOwnerCommands', () => {
+  it('counts owner commands past the wait cursor', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([
+        { type: 'owner_messages', messages: [{ id: 'm1' }, { id: 'm2' }] },
+      ])
+      assert.equal(countUnreadOwnerCommands(conn, 0, dir), 2)
+    })
+  })
+
+  it('ignores advisory context — it never warranted a wake, so it must not hold a turn open', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([
+        { type: 'advisory_context', messages: [{ id: 'a1' }, { id: 'a2' }] },
+        { type: 'owner_messages', messages: [{ id: 'm1' }] },
+      ])
+      assert.equal(countUnreadOwnerCommands(conn, 0, dir), 1)
+    })
+  })
+
+  it('counts only what is PAST the offset — already-consumed mail is not unread', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      const consumed = JSON.stringify({ type: 'owner_messages', messages: [{ id: 'old' }] }) + '\n'
+      writeInbox([
+        { type: 'owner_messages', messages: [{ id: 'old' }] },
+        { type: 'owner_messages', messages: [{ id: 'new' }] },
+      ])
+      assert.equal(countUnreadOwnerCommands(conn, Buffer.byteLength(consumed, 'utf8'), dir), 1)
+    })
+  })
+
+  it('is 0 when the cursor is at the end — the healthy steady state', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
+      assert.equal(countUnreadOwnerCommands(conn, size, dir), 0)
+    })
+  })
+
+  it('ignores an incomplete trailing line the poller is still writing', () => {
+    withConnDir(({ dir, conn, writeInbox, appendRaw }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      appendRaw('{"type":"owner_messages","messages":[{"id":"hal')
+      assert.equal(countUnreadOwnerCommands(conn, 0, dir), 1)
+    })
+  })
+
+  it('treats an unknown offset as "all read" rather than inventing a backlog', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      assert.equal(countUnreadOwnerCommands(conn, undefined, dir), 0)
+    })
+  })
+
+  it('is 0 when no inbox file exists yet', () => {
+    withConnDir(({ dir, conn }) => {
+      assert.equal(countUnreadOwnerCommands(conn, 0, dir), 0)
+    })
+  })
+})
+
+describe('parseStopHookActive', () => {
+  it('reads the harness loop guard', () => {
+    assert.equal(parseStopHookActive('{"stop_hook_active":true}'), true)
+    assert.equal(parseStopHookActive('{"stop_hook_active":false}'), false)
+  })
+
+  it('defaults to false on absent or unparseable input', () => {
+    assert.equal(parseStopHookActive('{}'), false)
+    assert.equal(parseStopHookActive('not json'), false)
+    assert.equal(parseStopHookActive(''), false)
+  })
+})
+
+describe('decideStopBlock', () => {
+  it('BLOCKS a turn ending with no listener and stranded owner mail', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }, { id: 'm2' }] }])
+      const reason = decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, dir })
+      assert.ok(reason, 'must refuse the stop')
+      assert.match(reason, /2 owner command/)
+      // Must tell the agent the connection is FINE — the harmful reflex this bug
+      // provokes is concluding a disconnect and re-registering.
+      assert.match(reason, /Nothing is broken/)
+      assert.match(reason, /--pending/)
+    })
+  })
+
+  it('BLOCKS a turn ending with no listener even when no mail has arrived yet', () => {
+    withConnDir(({ dir, conn }) => {
+      const reason = decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, dir })
+      assert.ok(reason)
+      assert.match(reason, /NO wake listener armed/)
+      assert.match(reason, /--pending/)
+    })
+  })
+
+  it('does NOT block when a listener is armed — unread mail is that listener\'s job', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      assert.equal(decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: true, dir }), null)
+    })
+  })
+
+  it('does NOT block twice — stop_hook_active wins over everything', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      assert.equal(
+        decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, stopHookActive: true, dir }),
+        null,
+      )
+    })
+  })
+
+  it('does nothing without a connection — a non-remote session must never be held open', () => {
+    assert.equal(decideStopBlock({ connectionId: null, armed: false }), null)
+    assert.equal(decideStopBlock({}), null)
+  })
+
+  it('never blocks the healthy steady state (armed, cursor at end)', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
+      assert.equal(decideStopBlock({ connectionId: conn, inboxOffset: size, armed: true, dir }), null)
+    })
+  })
+})
+
+describe('listenerArmedWithGrace', () => {
+  it('tolerates the spawn race — a listener that appears on a later probe counts', async () => {
+    // The agent arms the wait as a background task and can finish its turn before
+    // that process writes its pidfile. A single probe would block a turn that did
+    // everything right.
+    let calls = 0
+    const armed = await listenerArmedWithGrace('conn', {
+      attempts: 4,
+      delayMs: 1,
+      probe: () => ++calls >= 3,
+    })
+    assert.equal(armed, true)
+    assert.equal(calls, 3)
+  })
+
+  it('gives up after its attempts and reports genuinely unarmed', async () => {
+    let calls = 0
+    const armed = await listenerArmedWithGrace('conn', {
+      attempts: 3,
+      delayMs: 1,
+      probe: () => {
+        calls++
+        return false
+      },
+    })
+    assert.equal(armed, false)
+    assert.equal(calls, 3)
+  })
+
+  it('returns immediately on the first probe when already armed', async () => {
+    let calls = 0
+    const armed = await listenerArmedWithGrace('conn', {
+      delayMs: 10_000,
+      probe: () => {
+        calls++
+        return true
+      },
+    })
+    assert.equal(armed, true)
+    assert.equal(calls, 1)
   })
 })

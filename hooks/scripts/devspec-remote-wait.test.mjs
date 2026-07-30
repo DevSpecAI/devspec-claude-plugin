@@ -23,6 +23,12 @@ import {
   applyArmTurnSemantics,
   armEndsTurn,
   clearTurnMarker,
+  waitPidPath,
+  isWaitArmed,
+  EXIT_WAKE,
+  EXIT_TERMINAL,
+  EXIT_BAD_ARGS,
+  EXIT_REARM,
 } from './devspec-remote-wait.mjs'
 
 describe('parseOwnerBatches', () => {
@@ -381,5 +387,76 @@ describe('arming and the working indicator (item 68f7b30c)', () => {
       assert.equal(applyArmTurnSemantics(null, { fromEnd: true }, dir), true)
       assert.equal(fs.existsSync(marker), true)
     })
+  })
+})
+
+/*
+ * Exit-code contract + proof of life — items d655b2a4 and 8b4ceaa3.
+ *
+ * d655b2a4: exit 1 used to mean BOTH "a human ended this connection" and "my arm
+ * aged out / was reaped". The skill documents exit 1 as "stop", so an agent that
+ * followed the instruction correctly tore down a perfectly live connection on a 24h
+ * rollover. Splitting the non-terminal case onto its own code is the fix, so these
+ * assert the codes stay distinct and keep their meanings.
+ */
+describe('exit-code contract', () => {
+  it('every code is distinct — the whole point is that they are not conflated', () => {
+    const codes = [EXIT_WAKE, EXIT_TERMINAL, EXIT_BAD_ARGS, EXIT_REARM]
+    assert.equal(new Set(codes).size, codes.length)
+  })
+
+  it('pins the documented numbers — the skill exit table hard-codes these', () => {
+    assert.equal(EXIT_WAKE, 0)
+    assert.equal(EXIT_TERMINAL, 1)
+    assert.equal(EXIT_BAD_ARGS, 2)
+    assert.equal(EXIT_REARM, 3)
+  })
+
+  it('keeps "re-arm me" separate from "connection is over"', () => {
+    // Regression guard for the exact conflation: if these ever collapse, a reaped
+    // wait once again reads to a compliant agent as a dead connection.
+    assert.notEqual(EXIT_REARM, EXIT_TERMINAL)
+  })
+})
+
+describe('armed-listener proof of life', () => {
+  const DEAD_PID = 2147483646
+
+  function withWaitDir(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-wait-pid-'))
+    const conn = 'feedface-0000-4000-8000-00000000000a'
+    try {
+      return fn({ dir, conn })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('names the pidfile per connection, so two terminals never collide', () => {
+    assert.equal(waitPidPath('abc', '/tmp/x'), path.join('/tmp/x', 'abc.wait.pid'))
+  })
+
+  it('reports armed for a live pid', () => {
+    withWaitDir(({ dir, conn }) => {
+      fs.writeFileSync(waitPidPath(conn, dir), String(process.pid))
+      assert.equal(isWaitArmed(conn, dir), true)
+    })
+  })
+
+  it('reports NOT armed for a stale pidfile — the SIGKILL case', () => {
+    withWaitDir(({ dir, conn }) => {
+      fs.writeFileSync(waitPidPath(conn, dir), String(DEAD_PID))
+      assert.equal(isWaitArmed(conn, dir), false)
+    })
+  })
+
+  it('reports NOT armed when no wait has ever run', () => {
+    withWaitDir(({ dir, conn }) => {
+      assert.equal(isWaitArmed(conn, dir), false)
+    })
+  })
+
+  it('reports NOT armed without a connection id', () => {
+    assert.equal(isWaitArmed(null), false)
   })
 })

@@ -79,6 +79,113 @@ function inboxPathForConnection(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.inbox.jsonl`)
 }
 
+/*
+ * ─── Listener standing (items 8b4ceaa3, d655b2a4) ──────────────────────────────
+ *
+ * The poller keeps a connection LIVE; it has never been able to WAKE the agent —
+ * that is the wait's job, and the wait had no keeper. So a connection could sit
+ * there heartbeating happily, advertised as Live and available, while nothing at all
+ * consumed its inbox. The owner sends a command, gets silence, and reasonably
+ * concludes the connection dropped.
+ *
+ * The poller is the only process in a position to notice: it is always up, it writes
+ * the inbox, and it can see whether a listener holds the pidfile. So it reports both
+ * facts on the heartbeat it already sends, and DevSpec can finally say "Not reading"
+ * instead of "Live".
+ */
+
+/** EPERM = the pid exists and is not ours. Same probe used for the owner anchor. */
+function pidIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return !!e && e.code === 'EPERM'
+  }
+}
+
+/**
+ * Is a wake listener armed for this connection right now? `null` = cannot tell.
+ *
+ * TWO rules, and the second one matters as much as the first:
+ *
+ * 1. **Armed is proved by a LIVE pid, never by the file existing.** A wait killed
+ *    with SIGKILL leaves its pidfile behind; reporting that as armed would tell
+ *    DevSpec the connection can hear when it cannot — the exact lie this signal
+ *    exists to stop.
+ *
+ * 2. **A missing pidfile is only evidence when this build writes them.** Waits armed
+ *    before the pidfile shipped never wrote one, so "no file" from such a connection
+ *    means "old build", not "deaf" — and reporting false there would brand every
+ *    perfectly healthy pre-upgrade agent as Not reading, all at once, at exactly the
+ *    moment people are deciding whether to trust the new badge. `wait_armed_at` in
+ *    state is stamped by the same arm that writes the pidfile, so its presence is
+ *    proof this connection has armed at least once under a build that participates.
+ *    Until then we report nothing and the connection classifies as hearing.
+ */
+export function readListenerArmed(connectionId, state, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return null
+  try {
+    const pid = Number.parseInt(
+      fs.readFileSync(path.join(dir, `${connectionId}.wait.pid`), 'utf8').trim(),
+      10,
+    )
+    if (pidIsAlive(pid)) return true
+  } catch {
+    /* fall through to the evidence check */
+  }
+  // No live listener. Only claim that as a fact if this connection has ever armed a
+  // pidfile-writing wait; otherwise stay silent rather than cry wolf.
+  return state && state.wait_armed_at ? false : null
+}
+
+/**
+ * Owner commands written to the inbox that no listener has consumed.
+ *
+ * `inbox_byte_offset` is the wait's own cursor, so anything past it was delivered by
+ * this poller and read by nobody. Advisory entries are excluded: they never warranted
+ * a wake, so counting them would inflate the number and cry wolf.
+ */
+export function countUnconsumedCommands(connectionId, inboxOffset, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return 0
+  const file = path.join(dir, `${connectionId}.inbox.jsonl`)
+  let size = 0
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return 0
+  }
+  const from = Number.isInteger(inboxOffset) && inboxOffset >= 0 ? inboxOffset : size
+  if (size <= from) return 0
+  let text = ''
+  try {
+    const fd = fs.openSync(file, 'r')
+    try {
+      const buf = Buffer.alloc(size - from)
+      fs.readSync(fd, buf, 0, size - from, from)
+      text = buf.toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return 0
+  }
+  const lastNl = text.lastIndexOf('\n')
+  if (lastNl === -1) return 0
+  let count = 0
+  for (const line of text.slice(0, lastNl + 1).split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const obj = JSON.parse(line)
+      if (obj?.type === 'owner_messages' && Array.isArray(obj.messages)) count += obj.messages.length
+    } catch {
+      /* skip garbage */
+    }
+  }
+  return count
+}
+
 // Two cadences, chosen by connection STATE (not elapsed idle time). With long-poll
 // these pick the HOLD LENGTH, not a gap between polls — both tiers deliver instantly:
 //   attended — attached to a session OR a turn is active. Slightly shorter hold so
@@ -797,6 +904,14 @@ async function main() {
   // to THIS connection, which is what stops one agent acting on another's dispatch
   // [devspec:3e76a6cc]. Nothing in the packaged response needs re-classifying here.
   async function pollOnce({ waitMs, busy, checkTier, catchUp = false }) {
+    // Sampled per poll rather than cached: the whole point is to notice the moment a
+    // listener stops existing, and a listener can die at any point during a hold.
+    const listenerState = readState(connectionId)
+    const listenerArmed = readListenerArmed(connectionId, listenerState)
+    const unreadCommands = countUnconsumedCommands(
+      connectionId,
+      listenerState?.inbox_byte_offset,
+    )
     return mcpToolsCall({
       mcpUrl,
       token,
@@ -810,6 +925,8 @@ async function main() {
         ...(busy !== null && busy !== undefined ? { busy } : {}),
         ...(checkTier ? { check_tier: checkTier } : {}),
         ...(catchUp ? { catch_up: true } : {}),
+        ...(listenerArmed !== null ? { listener_armed: listenerArmed } : {}),
+        unread_commands: unreadCommands,
       },
       // A held request MUST have a client ceiling — fetch has no default timeout, so
       // a silently-dropped connection would wedge the loop with no heartbeat at all.

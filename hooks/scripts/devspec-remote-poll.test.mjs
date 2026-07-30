@@ -6,6 +6,9 @@
  * Run: node --test hooks/scripts/devspec-remote-poll.test.mjs
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, it } from 'node:test'
 import {
   isDeliverableCommand,
@@ -19,6 +22,8 @@ import {
   errorBackoffMs,
   unansweredCommands,
   splitRoomWindow,
+  readListenerArmed,
+  countUnconsumedCommands,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
@@ -492,5 +497,120 @@ describe('installStopSignalHandlers (item b9e02835)', () => {
     installStopSignalHandlers(proc)
     assert.equal(typeof proc.handlers.SIGTERM, 'function')
     assert.equal(typeof proc.handlers.SIGINT, 'function')
+  })
+})
+
+/*
+ * Listener standing reporting — items 8b4ceaa3, d655b2a4.
+ *
+ * The poller is the only process positioned to notice that a connection has gone
+ * deaf: it is always up, it writes the inbox, and it can see whether a listener holds
+ * the pidfile. These lock in the two rules that make the report trustworthy — armed
+ * is proved by a live pid, and a missing pidfile is only evidence on a build that
+ * writes them.
+ */
+describe('readListenerArmed', () => {
+  const DEAD_PID = 2147483646
+
+  function withDir(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-poll-listener-'))
+    const conn = 'aaaaaaaa-0000-4000-8000-00000000000f'
+    try {
+      return fn({ dir, conn, writePid: (pid) => fs.writeFileSync(path.join(dir, `${conn}.wait.pid`), String(pid)) })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('reports TRUE for a live listener pid', () => {
+    withDir(({ dir, conn, writePid }) => {
+      writePid(process.pid)
+      assert.equal(readListenerArmed(conn, { wait_armed_at: 'x' }, dir), true)
+    })
+  })
+
+  it('reports FALSE for a stale pidfile once this build has armed one', () => {
+    withDir(({ dir, conn, writePid }) => {
+      writePid(DEAD_PID)
+      assert.equal(readListenerArmed(conn, { wait_armed_at: 'x' }, dir), false)
+    })
+  })
+
+  it('reports FALSE when the listener is simply gone and this build armed one before', () => {
+    withDir(({ dir, conn }) => {
+      assert.equal(readListenerArmed(conn, { wait_armed_at: 'x' }, dir), false)
+    })
+  })
+
+  it('reports NULL (not false) when no pidfile-writing wait has ever armed', () => {
+    // THE cry-wolf guard: a wait armed before pidfiles shipped never wrote one, so
+    // "no file" means "old build", not "deaf". Reporting false here would brand every
+    // healthy pre-upgrade agent as Not reading, all at once.
+    withDir(({ dir, conn }) => {
+      assert.equal(readListenerArmed(conn, {}, dir), null)
+      assert.equal(readListenerArmed(conn, null, dir), null)
+    })
+  })
+
+  it('a LIVE pid is trusted even without the state stamp — proof beats provenance', () => {
+    withDir(({ dir, conn, writePid }) => {
+      writePid(process.pid)
+      assert.equal(readListenerArmed(conn, {}, dir), true)
+    })
+  })
+
+  it('reports NULL without a connection id', () => {
+    assert.equal(readListenerArmed(null, {}), null)
+  })
+})
+
+describe('countUnconsumedCommands', () => {
+  function withInbox(lines, fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-poll-inbox-'))
+    const conn = 'bbbbbbbb-0000-4000-8000-00000000000f'
+    fs.writeFileSync(
+      path.join(dir, `${conn}.inbox.jsonl`),
+      lines.map((l) => JSON.stringify(l) + '\n').join(''),
+    )
+    try {
+      return fn({ dir, conn })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('counts owner commands past the wait cursor', () => {
+    withInbox([{ type: 'owner_messages', messages: [{ id: 'a' }, { id: 'b' }] }], ({ dir, conn }) => {
+      assert.equal(countUnconsumedCommands(conn, 0, dir), 2)
+    })
+  })
+
+  it('excludes advisory — it never warranted a wake, so it is not a backlog', () => {
+    withInbox(
+      [
+        { type: 'advisory_context', messages: [{ id: 'x' }, { id: 'y' }] },
+        { type: 'owner_messages', messages: [{ id: 'a' }] },
+      ],
+      ({ dir, conn }) => {
+        assert.equal(countUnconsumedCommands(conn, 0, dir), 1)
+      },
+    )
+  })
+
+  it('is 0 when the cursor is at the end (healthy steady state)', () => {
+    withInbox([{ type: 'owner_messages', messages: [{ id: 'a' }] }], ({ dir, conn }) => {
+      const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
+      assert.equal(countUnconsumedCommands(conn, size, dir), 0)
+    })
+  })
+
+  it('treats an unknown cursor as all-read rather than inventing a backlog', () => {
+    withInbox([{ type: 'owner_messages', messages: [{ id: 'a' }] }], ({ dir, conn }) => {
+      assert.equal(countUnconsumedCommands(conn, undefined, dir), 0)
+    })
+  })
+
+  it('is 0 with no inbox file', () => {
+    assert.equal(countUnconsumedCommands('nope', 0, '/tmp/definitely-not-here-xyz'), 0)
   })
 })

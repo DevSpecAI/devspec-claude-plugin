@@ -198,7 +198,18 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-id "$CONNECTION_ID" --owner-pid "$PPID" --pending
 ```
 
-Use **`run_in_background: true`**. Exit **0** → stdout has `room_context` (when the room has moved) then `owner_message` / `wake` → act → **re-arm only this wait with `--pending`**. Never re-arm with `--from-end`.
+Use **`run_in_background: true`**, and **do not pass a timeout.** The arm is meant to be long-lived; a plausible-looking timeout (10 minutes, say) is you creating the reap yourself. Your host may reap it anyway on its own schedule — that is normal, it is not a failure, and the exit codes below tell you which is which.
+
+**Exit codes — 1 and 3 are NOT the same thing, and this is the distinction that used to be missing:**
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| **0** | Owner command(s) delivered — stdout has `room_context` (when the room has moved) then `owner_message` / `wake` | Act on it, then **re-arm with `--pending`**. Never re-arm with `--from-end`. |
+| **3** | **Non-terminal.** This arm aged out with no owner mail. The connection is completely fine. | **Re-arm with `--pending`.** Do not investigate, do not re-register, do not stand down. |
+| **2** | Bad args | Fix the command line. |
+| **1** | Something ended or broke — *may or may not* be a human | **Check WHY before standing down** (table below). |
+
+Exit **3** exists because exit 1 used to mean both "a human ended this connection" and "my arm aged out", while the documented response to exit 1 was "stop" — so an agent following the instruction correctly tore down a perfectly live connection on a 24-hour rollover (item `d655b2a4`). A rollover or a reap can no longer read as an ending.
 
 Exit **1** → check WHY before you stand down, because "ended" and "ended by a human" are not the same thing:
 
@@ -226,6 +237,10 @@ If you only have a session id (legacy), use the `session_id` on **this** owner_m
 **Hooks (mechanical only):** when enabled, `UserPromptSubmit` may mirror a **local_prompt** bubble into the attached room; **Stop only updates busy/heartbeat** — it does not post your answer. **You** must `post_session_message` the direct answer when attached. Sessionless: hooks only update working; no chat.
 
 **End of turn is mechanical — don't hand-clear it.** Stop clears the turn marker, heartbeats `busy:false`, and calls `report_complete` so Working drops the moment your turn ends, without waiting for the poller's next tick. You do not need to call `report_complete` yourself. If you ever see the spinner or bouncing dots persist after your reply has landed, that is a bond bug worth reporting (see step 3) — not something to paper over with an extra call per turn.
+
+**Stop will refuse to let you end a turn deaf — you cannot silently lose the connection by forgetting the re-arm.** While armed, the wait owns `<connection_id>.wait.pid`, so the Stop hook can prove whether anything is actually listening. If a turn is about to end with no armed listener — or with owner commands sitting unread in the inbox — Stop blocks the stop and hands you the re-arm command. Re-arm, handle anything it delivers, and the next Stop passes cleanly.
+
+This is a backstop, not a licence to skip the re-arm: recovering through it costs a wasted turn, and it only fires at a turn *boundary*. Re-arm as the docs say and you will never see it. What it removes is the old failure where one dropped re-arm made the agent permanently deaf while the Agents page kept advertising it as Live and available (items `8b4ceaa3`, `d655b2a4`) — the shape that repeatedly got misdiagnosed as a dropped connection and "fixed" by re-registering, when nothing had dropped.
 
 ### Attribute your writes (non-negotiable when connected)
 

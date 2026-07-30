@@ -2,6 +2,21 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.6.5 - 2026-07-30
+
+### A remote agent can no longer go silently deaf while telling you it is fine
+
+- **The failure this fixes.** You send your agent a command from your phone. Nothing comes back. The Agents page still says Live and available, so you reasonably conclude the connection dropped and reconnect. Nothing had dropped: the poller was healthy and had delivered every message correctly, but the one-shot listener that turns a delivered message into an actual agent wake-up had not been re-armed, so nobody read them. Delivery depended on the agent remembering a bookkeeping step at the end of every turn, and there was no backstop when it forgot.
+- **Why it kept coming back.** The original design had one process that both heartbeated and woke the agent, so losing the waker also lost the heartbeat and the chip went Disconnected — loud and impossible to misread. Moving liveness onto a keeper-managed poller fixed "Live drops while the agent works" and left the wake channel with no keeper at all, so the thing still reporting Live was no longer the thing that wakes you.
+- **Stop now refuses to end a turn deaf.** While armed, the wait owns a per-connection pidfile, so the Stop hook can prove whether anything is actually listening — and if a turn is about to end with no listener, or with commands sitting unread, it blocks and hands the agent the re-arm command. The guarantee moved from "the agent remembers" to "the hook enforces". Liveness is proved by a live pid, never by a leftover file, so a hard-killed listener cannot masquerade as a healthy one.
+- **A blocked stop keeps you "working".** The turn genuinely has not ended, so the indicator stays on rather than reporting a finish that has not happened.
+- **A reaped or aged-out listener no longer reads as a dead connection.** The wait used to exit 1 both for "a human ended this" and for "my arm aged out" — and the documented response to exit 1 is *stop*, so an agent following the instructions correctly tore down a perfectly live connection on a 24-hour rollover. Non-terminal cases now exit **3**, meaning "re-arm me, nothing is wrong", and exit 1 is strictly "a human or the server ended this".
+- **The arming instructions now say not to pass a timeout**, since supplying a plausible-looking one was a way for an agent to manufacture this failure itself.
+
+Items `8b4ceaa3`, `d655b2a4`.
+
+> Note for maintainers: `devspec-remote-wait.mjs` is in the sync's UNIVERSAL list, so the next `sync-hooks` run would carry exit 3 to the other plugin families — whose exit tables still document only 0/1/2 and would misread it. Propagate the docs with the code. The `mirror-turn.mjs` change relies on Claude Code's Stop-hook decision control and is not portable as-is.
+
 ## 0.6.4 - 2026-07-27
 
 ### Every plugin's test suite now actually protects it

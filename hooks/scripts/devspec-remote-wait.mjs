@@ -34,8 +34,20 @@
  *
  * Exit codes:
  *   0  — one or more new owner_messages batches printed to stdout; agent should act
- *   1  — remote disabled / connection ended in state / owner gone / error
+ *   1  — TERMINAL: remote disabled / connection ended in state / owner gone / error
  *   2  — bad args
+ *   3  — NON-TERMINAL: this arm aged out with no owner mail. Re-arm; the connection
+ *        is fine. Split out of exit 1 for item d655b2a4: both cases used to exit 1,
+ *        and the skill's documented response to exit 1 is "stop", so a compliant
+ *        agent tore down a perfectly live connection on a 24h rollover or a harness
+ *        reap. Exit 1 is now strictly "a human or the server ended this".
+ *
+ * PROOF OF LIFE (item 8b4ceaa3). While armed, this process owns
+ * `<connection>.wait.pid`, and removes it on every exit path. That file is what lets
+ * anything else — specifically the Stop hook — tell "a listener is armed" from "this
+ * connection is live but deaf". Before it existed, a missed re-arm was undetectable:
+ * the poller kept heartbeating, the Agents page kept saying Live, the inbox kept
+ * filling, and nothing anywhere knew nobody was reading.
  */
 
 import fs from 'node:fs'
@@ -48,6 +60,87 @@ const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'c
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const POLL_MS = 500
 const MAX_WAIT_MS = 24 * 60 * 60 * 1000
+
+/** Wake delivered — act on it. */
+export const EXIT_WAKE = 0
+/** A human or the server ended this connection. Stand down. */
+export const EXIT_TERMINAL = 1
+/** Bad args. */
+export const EXIT_BAD_ARGS = 2
+/**
+ * This arm aged out with no owner mail. The connection is FINE — re-arm.
+ * Never conflate with EXIT_TERMINAL: that conflation is item d655b2a4.
+ */
+export const EXIT_REARM = 3
+
+/** Path of the armed-listener proof-of-life file. */
+export function waitPidPath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.wait.pid`)
+}
+
+/** Liveness probe shared with the poller's owner-pid logic. EPERM = alive, not ours. */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return !!e && e.code === 'EPERM'
+  }
+}
+
+/**
+ * Is a listener armed for this connection RIGHT NOW?
+ *
+ * Deliberately proves it with a live pid rather than trusting the file's existence:
+ * a wait killed with SIGKILL never runs its own cleanup, so a stale pidfile outlives
+ * it. Treating a stale file as "armed" would recreate the exact bug this is here to
+ * detect — something claiming the connection can hear when it cannot.
+ */
+export function isWaitArmed(connectionId, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return false
+  try {
+    const pid = Number.parseInt(fs.readFileSync(waitPidPath(connectionId, dir), 'utf8').trim(), 10)
+    return pidAlive(pid)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Claim the armed-listener marker for this process and drop it on every exit path.
+ *
+ * `process.exit()` fires 'exit', so the ordinary paths are covered; the signal
+ * handlers cover a host reaping this task, which — per item d655b2a4's measured
+ * evidence — is the COMMON case, not the rare one. A missed cleanup only ever
+ * degrades to "stale pidfile", which isWaitArmed already refuses to trust.
+ */
+function armWaitPidfile(connectionId, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return
+  const p = waitPidPath(connectionId, dir)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(p, String(process.pid), { mode: 0o600 })
+  } catch {
+    return // no marker is honest; a wrong one is not
+  }
+  const release = () => {
+    try {
+      const owner = Number.parseInt(fs.readFileSync(p, 'utf8').trim(), 10)
+      // Never delete a marker another arm has since claimed.
+      if (owner === process.pid) fs.rmSync(p, { force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  process.on('exit', release)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => {
+      release()
+      process.exit(EXIT_REARM)
+    })
+  }
+}
 
 /**
  * Remove the connection turn marker, so the continuous poller stops re-asserting
@@ -472,13 +565,13 @@ async function main() {
   const connectionId = args.connectionId
   if (!connectionId) {
     process.stderr.write('devspec-remote-wait: missing --connection-id\n')
-    process.exit(2)
+    process.exit(EXIT_BAD_ARGS)
   }
 
   const state = readState(connectionId)
   if (state && state.enabled === false) {
     process.stderr.write('devspec-remote-wait: remote control disabled\n')
-    process.exit(1)
+    process.exit(EXIT_TERMINAL)
   }
 
   // resolveOwnerPid validates the explicit --owner-pid before trusting it (falling
@@ -511,6 +604,11 @@ async function main() {
   // (see armEndsTurn). Turn end is the Stop hook's job, not the wait's.
   applyArmTurnSemantics(connectionId, args)
 
+  // Announce that this connection now has a listener. Written AFTER the offset is
+  // settled so the marker never claims we are listening from an unknown position.
+  armWaitPidfile(connectionId)
+  writeStatePatch(connectionId, { wait_pid: process.pid, wait_armed_at: new Date().toISOString() })
+
   const pollMs = args.pollMs || POLL_MS
   const started = Date.now()
   process.stderr.write(
@@ -521,20 +619,20 @@ async function main() {
     const live = readState(connectionId)
     if (live && live.enabled === false) {
       process.stderr.write('devspec-remote-wait: disabled — exit 1\n')
-      process.exit(1)
+      process.exit(EXIT_TERMINAL)
     }
     if (ownerAnchor && !ownerAlive(ownerAnchor)) {
       process.stdout.write(
         JSON.stringify({ type: 'session_ended', reason: 'owner_gone', connection_id: connectionId }) + '\n',
       )
       process.stderr.write(`devspec-remote-wait: owner process ${ownerAnchor} gone — exit 1\n`)
-      process.exit(1)
+      process.exit(EXIT_TERMINAL)
     }
     if (live?.end_reason === 'ui' || live?.ended_from_ui) {
       process.stdout.write(
         JSON.stringify({ type: 'session_ended', reason: 'ended_from_ui', connection_id: connectionId }) + '\n',
       )
-      process.exit(1)
+      process.exit(EXIT_TERMINAL)
     }
 
     const { lines, newOffset } = readNewLines(file, offset)
@@ -560,15 +658,18 @@ async function main() {
         process.stderr.write(
           `devspec-remote-wait: wake (${batches.reduce((n, b) => n + b.messages.length, 0)} msg) — exit 0\n`,
         )
-        process.exit(0)
+        process.exit(EXIT_WAKE)
       }
     }
 
     await sleep(pollMs)
   }
 
-  process.stderr.write('devspec-remote-wait: max wait elapsed — exit 1\n')
-  process.exit(1)
+  // Rollover, NOT an ending. Exit 3 says so in the one place an agent actually
+  // reads — the exit code — so the 24h cap can no longer end a live connection's
+  // ability to receive commands (item d655b2a4, criterion de3b4514).
+  process.stderr.write('devspec-remote-wait: max wait elapsed, connection is fine — exit 3 (re-arm)\n')
+  process.exit(EXIT_REARM)
 }
 
 // Run the CLI only when executed directly (skipped when imported for tests —

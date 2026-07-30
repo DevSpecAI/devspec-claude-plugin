@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.6.6 - 2026-07-30
+
+### DevSpec can now tell you an agent has stopped listening
+
+- **"Live" used to mean "the process is up", which is not the same as "work sent here will be read."** 0.6.5 stopped an agent going deaf in the first place; this reports the state honestly if it ever happens anyway. The poller now checks whether a wake listener actually holds the pidfile, counts any owner commands sitting unconsumed in the inbox, and sends both on the heartbeat it already makes. DevSpec shows such an agent as **Not reading** rather than Live, and stops offering it as available to dispatch to.
+- **Armed is proved by a live pid, never by a leftover file** — a hard-killed listener leaves its pidfile behind, and trusting that would report exactly the lie this is meant to catch.
+- **It will not cry wolf.** A missing pidfile only counts as evidence once this connection has armed a pidfile-writing wait at least once. Waits armed before that shipped never wrote one, so "no file" from them means "older build", not "deaf" — otherwise every healthy pre-upgrade agent would light up as Not reading at the very moment you were deciding whether to trust the new badge.
+
+Items `8b4ceaa3`, `d655b2a4`.
+
 ## 0.6.5 - 2026-07-30
 
 ### A remote agent can no longer go silently deaf while telling you it is fine

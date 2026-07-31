@@ -2,6 +2,26 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.7.0 - 2026-07-31
+
+### The wake channel is armed once per session, not once per turn
+
+- **The failure this fixes.** 0.6.5's Stop hook correctly refuses to let an agent end a turn with nothing listening. But the listener it asked for was a *background task*, and Claude Code reaps background tasks at turn end. So: the agent armed correctly, the Stop hook saw a live listener and passed, the host then reaped it, the reap started a new turn with nothing armed, the Stop hook blocked, the agent re-armed — round and round, **one model turn per lap, with no way out**. Reproduced five times consecutively. No amount of agent diligence touched it, because the agent was already doing everything right; the failure was in *who owned the process*.
+- **The wake no longer depends on something dying.** The listener used to wake the model by *exiting*, which is exactly what tied its lifetime to the turn. It can now run in `--stream` mode: it prints one line per owner command and keeps watching. Armed once with a persistent monitor, it lasts the whole session, so there is no re-arm to lose to a reaper — and nothing to forget.
+- **The Stop hook was not weakened to achieve this.** It still blocks a turn ending with no listener, on exactly the same condition as before. A session-long listener simply satisfies it on every turn from a single arm. What changed is the way *out* of the block, which used to name the reapable arm.
+- **"Live" and "will actually wake up" stop being different promises** on this host: the listener's lifetime is now the session's lifetime. 0.6.6's honest **Not reading** signal stays exactly as it is, for any host that cannot hold a stream.
+- **No command is lost in the switch.** The inbox cursor is unchanged, and now advances only *after* a command has been handed over — so an interrupted delivery repeats rather than vanishes.
+- The one-shot behaviour remains available for hosts with no persistent monitor; drop `--stream` and it exits on the first command as before.
+
+Item `be0a929a` (related: `8b4ceaa3`, `d655b2a4`).
+
+### Maintainers: plugin families are independent implementations now
+
+- **We no longer treat this plugin as canonical and port its scripts outward.** That practice produced a repeating cycle — fix one host, port the fix, break a second host, port *that* fix, introduce a third bug. What is shared is the DevSpec side: the MCP tool contract, the inbox format, the delivery contract, the skills, and the behaviour a connection must exhibit. **How** a host meets that contract is allowed to differ.
+- **`devspec-remote-wait.mjs` is now `HOST_OWNED` and is never synced.** How you wake a model is the most host-specific thing in the plugin: Claude Code needs a session-scoped stream, Grok Build's monitor already turns every stdout line into an event, and Codex is a bridge with no local waker at all. This also retires the 0.6.5 maintainer warning below — the exit-3 change can no longer be carried into families whose exit tables would misread it.
+- `sync-hooks.mjs` declares host-owned files on every run, so "owned by policy" can never again look identical to "somebody forgot to list it".
+- Fixed: `marketplace.json` had drifted to 0.5.1 while `plugin.json` was 0.6.6, despite being documented as lockstep. Both are 0.7.0.
+
 ## 0.6.6 - 2026-07-30
 
 ### DevSpec can now tell you an agent has stopped listening
@@ -26,6 +46,8 @@ Items `8b4ceaa3`, `d655b2a4`.
 Items `8b4ceaa3`, `d655b2a4`.
 
 > Note for maintainers: `devspec-remote-wait.mjs` is in the sync's UNIVERSAL list, so the next `sync-hooks` run would carry exit 3 to the other plugin families — whose exit tables still document only 0/1/2 and would misread it. Propagate the docs with the code. The `mirror-turn.mjs` change relies on Claude Code's Stop-hook decision control and is not portable as-is.
+>
+> **Resolved in 0.7.0:** the wake channel is `HOST_OWNED` and no longer synced anywhere, so this hazard is gone rather than merely noted. This warning is the reason the tier was wrong — it describes a file that could not safely be shared, sitting in the list of files that are shared.
 
 ## 0.6.4 - 2026-07-27
 

@@ -11,12 +11,28 @@
  * Code plugin the single source of truth and copies the shared files verbatim,
  * so a fix lands in one place and propagates everywhere instead of drifting.
  *
+ * DIRECTION CHANGE (2026-07-31, owner-set — see docs/REMOTE-CONTROL-HOOK-SYNC.md)
+ * ------------------------------------------------------------------------------
+ * Copying implementation scripts between plugin families is no longer the goal. The
+ * pattern it produced was: fix one host, port the fix, break a second host, port THAT
+ * fix, introduce a third bug. What is genuinely shared lives on the DevSpec side — the
+ * MCP tool contract, the inbox format, the delivery contract, the skills and the
+ * behaviour a connection must exhibit. A plugin's *mechanism* for meeting that contract
+ * is a property of its HOST and is allowed to differ.
+ *
+ * So this script is now the narrow tool it should always have been: it syncs the few
+ * files that really are host-independent, and it names the ones that are not so nobody
+ * has to guess. Prefer moving a file to HOST_OWNED over contorting it to fit every host.
+ *
  * THE MODEL (see docs/REMOTE-CONTROL-HOOK-SYNC.md for the full policy)
  * -------------------------------------------------------------------
  * Files fall into tiers:
  *
- *   UNIVERSAL   — pure transport/wait, identical for every tool. Synced to ALL
+ *   UNIVERSAL   — pure transport, identical for every tool. Synced to ALL
  *                 plugins (local-poller AND bridge).
+ *   HOST_OWNED  — behaviour is a property of the HOST, so every family keeps its own.
+ *                 Never synced, never counted as drift, and — unlike a file that is
+ *                 simply absent from every list — declared out loud.
  *   LOCAL_POLLER— the local-poller remote-control implementation. Synced to the
  *                 pure-local plugins (Grok Build, Cursor, Antigravity). NOT sent
  *                 to bridge-family plugins, which own a different implementation.
@@ -66,10 +82,28 @@ const CANONICAL_HOOKS = path.join(CLAUDE_ROOT, 'hooks', 'scripts')
 const PLUGINS_ROOT =
   process.env.DEVSPEC_PLUGINS_ROOT || path.join(CLAUDE_ROOT, '..', '..')
 
-// Files that are identical for every tool (transport + wait).
+// Files that are identical for every tool (transport).
 // List IMPLEMENTATIONS ONLY — a file's canonical test travels with it automatically
 // (see withDerivedTests). Never hand-add a `.test.mjs` entry here.
-const UNIVERSAL = ['mcp-call.mjs', 'devspec-remote-wait.mjs']
+export const UNIVERSAL = ['mcp-call.mjs']
+
+/**
+ * Files every family keeps its OWN copy of, because the behaviour is a property of the
+ * host rather than of DevSpec. Not synced, not drift — and deliberately declared, so
+ * "absent from every list" can never again mean "silently reaches nobody" (the blind
+ * spot behind item b97a3521).
+ *
+ * `devspec-remote-wait.mjs` — THE WAKE CHANNEL. It was UNIVERSAL, which was wrong on the
+ * facts: how you wake a model is the most host-specific thing in the whole plugin. Claude
+ * Code reaps tracked background tasks at turn end, so exit-to-wake there produced an
+ * unterminable re-arm loop (item be0a929a) and it needs a session-scoped `--stream` arm
+ * under a persistent monitor. Codex is an app-server bridge and wakes differently again;
+ * Grok Build's monitor turns every stdout line into an event, which its own entry below
+ * already documents. Syncing this file would push Claude's `--stream` default onto hosts
+ * that cannot honour it, which is precisely the port-a-fix-break-another-host cycle the
+ * 2026-07-31 direction change ends.
+ */
+export const HOST_OWNED = ['devspec-remote-wait.mjs']
 
 // The local-poller remote-control implementation. Implementations only — see above.
 const LOCAL_POLLER = [
@@ -126,16 +160,24 @@ export function ownsFile(owns, f) {
 }
 
 /**
- * Every canonical test file must pair with an implementation that is actually
- * synced, or it reaches nobody. Reported rather than silently ignored — a test with
- * no synced impl is the same blind spot as an impl with no synced test.
+ * Every canonical test file must pair with an implementation this script has an opinion
+ * about, or it reaches nobody. Reported rather than silently ignored — a test with no
+ * synced impl is the same blind spot as an impl with no synced test.
+ *
+ * HOST_OWNED counts as accounted for. A host-owned test is not an orphan: it asserts
+ * THIS plugin's implementation and is supposed to stay here, so warning about it would
+ * train maintainers to ignore the warning — which is how the b97a3521 blind spot got
+ * missed the first time.
  */
-function orphanCanonicalTests() {
-  const synced = new Set([...UNIVERSAL, ...LOCAL_POLLER])
+export function orphanCanonicalTests(
+  dir = CANONICAL_HOOKS,
+  accountedImpls = [...UNIVERSAL, ...LOCAL_POLLER, ...HOST_OWNED],
+) {
+  const accounted = new Set(accountedImpls)
   return fs
-    .readdirSync(CANONICAL_HOOKS)
+    .readdirSync(dir)
     .filter((f) => f.endsWith('.test.mjs'))
-    .filter((f) => !synced.has(f.replace(/\.test\.mjs$/, '.mjs')))
+    .filter((f) => !accounted.has(f.replace(/\.test\.mjs$/, '.mjs')))
 }
 
 // Downstream plugins. `hooksDir` is relative to PLUGINS_ROOT. Add a new plugin
@@ -249,6 +291,17 @@ function main() {
   log(
     `${CHECK ? 'Checking' : 'Syncing'} shared hook layer from canonical:\n  ${CANONICAL_HOOKS}\n`,
   )
+
+  // Stated up front, every run. A file that is host-owned by policy and a file someone
+  // forgot to list look identical from the outside — saying so is the difference.
+  if (HOST_OWNED.length > 0) {
+    log(
+      'host-owned — never synced, each family keeps its own (behaviour is a property\n' +
+        'of the host, not of DevSpec):\n' +
+        HOST_OWNED.map((f) => `    ${f}`).join('\n') +
+        '\n',
+    )
+  }
 
   for (const plugin of PLUGINS) {
     const destDir = path.join(PLUGINS_ROOT, plugin.hooksDir)

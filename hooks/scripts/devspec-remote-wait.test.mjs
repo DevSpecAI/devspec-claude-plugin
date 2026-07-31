@@ -14,7 +14,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
+  parseArgs,
   parseOwnerBatches,
   buildOwnerMessageEvents,
   describeAttachment,
@@ -30,6 +33,8 @@ import {
   EXIT_BAD_ARGS,
   EXIT_REARM,
 } from './devspec-remote-wait.mjs'
+
+const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 
 describe('parseOwnerBatches', () => {
   it('keeps only owner_messages lines with a non-empty messages array', () => {
@@ -458,5 +463,165 @@ describe('armed-listener proof of life', () => {
 
   it('reports NOT armed without a connection id', () => {
     assert.equal(isWaitArmed(null), false)
+  })
+})
+
+describe('--stream flag parsing', () => {
+  it('defaults to one-shot, so no existing caller silently changes shape', () => {
+    assert.equal(parseArgs(['--connection-id', 'c1']).stream, false)
+  })
+
+  it('sets stream when asked', () => {
+    assert.equal(parseArgs(['--connection-id', 'c1', '--stream']).stream, true)
+  })
+
+  it('composes with --from-end (the connect arm) and --pending (every other arm)', () => {
+    const connect = parseArgs(['--connection-id', 'c1', '--stream', '--from-end'])
+    assert.deepEqual([connect.stream, connect.fromEnd, connect.pending], [true, true, false])
+    const resume = parseArgs(['--connection-id', 'c1', '--stream', '--pending'])
+    assert.deepEqual([resume.stream, resume.fromEnd, resume.pending], [true, false, true])
+  })
+
+  it('keeps --pending winning over --from-end — streaming must not change that precedence', () => {
+    // Offset precedence is a safety property: --pending drains, --from-end skips. If
+    // --from-end could win, a resumed stream would jump the cursor past unread mail.
+    const args = parseArgs(['--connection-id', 'c1', '--stream', '--from-end', '--pending'])
+    assert.equal(args.pending, true)
+    assert.equal(args.fromEnd, false)
+  })
+})
+
+/**
+ * The core guarantee of item be0a929a, exercised against the real process.
+ *
+ * A unit test cannot show this: the bug was never in a pure function, it was that the
+ * wake WAS the process exit, so one arm could serve exactly one command and any host
+ * that reaped at turn end made the re-arm loop unterminable. The only assertion that
+ * proves the fix is "the same pid delivered a second command", so this spawns the
+ * script for real. HOME/USERPROFILE are redirected so it uses a temp connections dir
+ * rather than the developer's own ~/.devspec.
+ */
+describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
+  const STARTUP_MS = 5000
+
+  function connectionsDir(home) {
+    return path.join(home, '.devspec', 'remote-control', 'connections')
+  }
+
+  /** Poll a predicate rather than sleeping a guessed duration. */
+  async function until(predicate, { timeoutMs = 5000, label = 'condition' } = {}) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (predicate()) return
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    throw new Error(`timed out waiting for ${label}`)
+  }
+
+  function ownerBatch(id) {
+    return (
+      JSON.stringify({
+        type: 'owner_messages',
+        session_id: 's1',
+        messages: [{ id, content: `command ${id}` }],
+        context: { owner_ambient: [], room_context: [] },
+      }) + '\n'
+    )
+  }
+
+  it('delivers a second owner command through the SAME arm, without exiting', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-stream-home-'))
+    const conn = 'feedface-0000-4000-8000-00000000beef'
+    const dir = connectionsDir(home)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `${conn}.json`), JSON.stringify({ connection_id: conn, enabled: true }))
+    const inbox = path.join(dir, `${conn}.inbox.jsonl`)
+    fs.writeFileSync(inbox, '')
+
+    const child = spawn(
+      process.execPath,
+      [WAIT_SCRIPT, '--connection-id', conn, '--stream', '--from-end', '--poll-ms', '25'],
+      { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    let out = ''
+    let exited = null
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (d) => {
+      out += d
+    })
+    child.on('exit', (code) => {
+      exited = code
+    })
+    const wakes = () => out.split('\n').filter((l) => l.includes('"type":"wake"')).length
+
+    try {
+      await until(() => fs.existsSync(path.join(dir, `${conn}.wait.pid`)), {
+        timeoutMs: STARTUP_MS,
+        label: 'the pidfile that proves a listener is armed',
+      })
+
+      fs.appendFileSync(inbox, ownerBatch('m1'))
+      await until(() => wakes() === 1, { label: 'the first wake' })
+      assert.equal(exited, null, 'a stream must NOT exit when it delivers a wake')
+
+      // Advisory context must never wake the model, in either mode.
+      fs.appendFileSync(
+        inbox,
+        JSON.stringify({ type: 'advisory_context', session_id: 's1', messages: [{ id: 'a1' }] }) + '\n',
+      )
+
+      // The assertion the whole item turns on: a SECOND command, same process.
+      fs.appendFileSync(inbox, ownerBatch('m2'))
+      await until(() => wakes() === 2, { label: 'the second wake through the same arm' })
+
+      assert.equal(exited, null, 'the arm must still be alive after two deliveries')
+      assert.ok(out.includes('"id":"m1"'), 'first command delivered')
+      assert.ok(out.includes('"id":"m2"'), 'second command delivered')
+      assert.ok(!out.includes('"id":"a1"'), 'advisory context must not be delivered as a wake')
+
+      // The cursor is durable, so a stream that dies re-arms without replaying or skipping.
+      const state = JSON.parse(fs.readFileSync(path.join(dir, `${conn}.json`), 'utf8'))
+      assert.equal(state.inbox_byte_offset, fs.statSync(inbox).size)
+    } finally {
+      child.kill('SIGTERM')
+      await until(() => exited !== null, { label: 'the stream to shut down' }).catch(() => {})
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('exits 1 (terminal) as soon as the connection is disabled, so remote-stop needs no separate kill', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-stream-home-'))
+    const conn = 'feedface-0000-4000-8000-0000000dead0'
+    const dir = connectionsDir(home)
+    fs.mkdirSync(dir, { recursive: true })
+    const statePath = path.join(dir, `${conn}.json`)
+    fs.writeFileSync(statePath, JSON.stringify({ connection_id: conn, enabled: true }))
+    fs.writeFileSync(path.join(dir, `${conn}.inbox.jsonl`), '')
+
+    const child = spawn(
+      process.execPath,
+      [WAIT_SCRIPT, '--connection-id', conn, '--stream', '--from-end', '--poll-ms', '25'],
+      { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    let exited
+    const done = new Promise((resolve) => {
+      child.on('exit', (code) => {
+        exited = code
+        resolve()
+      })
+    })
+
+    try {
+      await until(() => fs.existsSync(path.join(dir, `${conn}.wait.pid`)), {
+        timeoutMs: STARTUP_MS,
+        label: 'the armed pidfile',
+      })
+      fs.writeFileSync(statePath, JSON.stringify({ connection_id: conn, enabled: false }))
+      await Promise.race([done, new Promise((_, rej) => setTimeout(() => rej(new Error('stream did not exit')), 5000))])
+      assert.equal(exited, EXIT_TERMINAL)
+    } finally {
+      child.kill('SIGKILL')
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 })

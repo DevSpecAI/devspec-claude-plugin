@@ -37,6 +37,8 @@ Multiple remotes may run on one machine.
    ```
    Connection-scoped: writes that connection's state `enabled: false`, marks matching local bonds `stopped` (soft-reconnect only for this conversation within ~30m), and SIGTERMs pollers whose argv includes this connection UUID only.
 
+   The **wake stream** needs no separate kill: it re-reads state every tick and exits **1** (terminal) the moment it sees `enabled: false`. Its monitor will therefore end on its own and report that exit — expected here, not a fault. `TaskStop` on the monitor is optional tidying.
+
 4. Print **in this local terminal only** (never into the session transcript):
    ```
    ✓ DevSpec remote control stopped

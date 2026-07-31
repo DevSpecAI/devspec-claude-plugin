@@ -5,10 +5,33 @@
  *
  * Complements continuous `devspec-remote-poll.mjs` (heartbeats + inbox writer).
  * This process does **not** heartbeat. It watches the per-connection inbox written
- * by the poller and **exits 0** when a new `owner_messages` line appears after the
- * saved byte offset — so:
- *   - Claude Code: run_in_background → process exit wakes the model
- *   - Grok Build:  monitor tool on this process stdout → chat notification
+ * by the poller and delivers new `owner_messages` in one of TWO wake shapes:
+ *
+ *   --stream (PREFERRED on this host, item be0a929a) — print the events and KEEP
+ *     WATCHING. The wake is a stdout LINE, not the process exit, so a single arm
+ *     serves the whole session. Claude Code's `Monitor` tool (persistent: true) turns
+ *     each line into a model-visible event and — unlike a tracked background task —
+ *     is scoped to the SESSION, not the turn.
+ *
+ *   one-shot (no --stream) — **exit 0** on the first batch, for a host that wakes the
+ *     model when a tracked background task EXITS. Kept as the fallback for any host
+ *     with no persistent-monitor primitive.
+ *
+ * WHY THE PREFERENCE MOVED (item be0a929a). Exit-to-wake makes the listener's lifetime
+ * the TURN's lifetime on any host that reaps background tasks at turn end: the agent
+ * arms correctly, the Stop hook sees a live pid and passes, the harness then reaps the
+ * task, the reap notification starts a NEW turn with no listener, the Stop hook blocks,
+ * the agent re-arms — forever, one model turn per lap. Reproduced 5/5 on Claude Code.
+ * No amount of agent compliance fixes it, because the failure is process OWNERSHIP:
+ * the thing proving liveness to the Stop hook is destroyed, by design, moments later.
+ * Streaming removes the coupling that caused it — nothing has to die for the model to
+ * be woken, so nothing has to be re-armed.
+ *
+ * Note what this is NOT: a detached watcher. `mirror-turn.mjs` records the accident on
+ * item d655b2a4 — a detached wait survived, consumed the inbox and woke NOBODY, which
+ * is strictly worse than no listener at all. A monitor is still harness-managed, so its
+ * stdout reaches the model; it is merely session-scoped instead of turn-scoped.
+ * Persistent ≠ detached, and that distinction is the whole fix.
  *
  * It wakes ONLY on `owner_messages` (server-stamped owner commands / dispatches).
  * `advisory_context` inbox entries (teammate / Dev / other-agent room context) are
@@ -25,15 +48,18 @@
  * only in a side file and Claude Code failed a live "1, 2, 3 … what's next?" test
  * while holding all three messages on disk.
  *
- * After the agent acts, re-arm THIS wait process only (not the poller) — with
- * `--pending`, which resumes from the saved inbox offset AND leaves the working
- * indicator alone, because a re-arm happens mid-turn by design (see armEndsTurn).
+ * In ONE-SHOT mode the agent must re-arm after acting — with `--pending`, which
+ * resumes from the saved inbox offset AND leaves the working indicator alone, because
+ * a re-arm happens mid-turn by design (see armEndsTurn). In `--stream` mode there is no
+ * re-arm to forget or to lose to a reaper: the arm outlives the turn.
  *
  * Usage:
- *   node devspec-remote-wait.mjs --connection-id <uuid> [--from-end|--pending] [--owner-pid <pid>]
+ *   node devspec-remote-wait.mjs --connection-id <uuid> [--stream] [--from-end|--pending] [--owner-pid <pid>]
  *
  * Exit codes:
- *   0  — one or more new owner_messages batches printed to stdout; agent should act
+ *   0  — one or more new owner_messages batches printed to stdout; agent should act.
+ *        NEVER returned in --stream mode, which delivers by LINE and does not exit on
+ *        a wake. A stream that exits has ended for one of the reasons below.
  *   1  — TERMINAL: remote disabled / connection ended in state / owner gone / error
  *   2  — bad args
  *   3  — NON-TERMINAL: this arm aged out with no owner mail. Re-arm; the connection
@@ -48,6 +74,12 @@
  * connection is live but deaf". Before it existed, a missed re-arm was undetectable:
  * the poller kept heartbeating, the Agents page kept saying Live, the inbox kept
  * filling, and nothing anywhere knew nobody was reading.
+ *
+ * In `--stream` mode that same pidfile is held for the WHOLE session, which is why the
+ * Stop hook needed no change for item be0a929a: it still blocks on exactly one
+ * condition — a live listener pid — and a session-long stream satisfies it on every
+ * turn. 8b4ceaa3's guarantee is preserved literally rather than relaxed; the re-arm
+ * loop disappears because there is no re-arm, not because the hook stopped enforcing.
  */
 
 import fs from 'node:fs'
@@ -189,18 +221,19 @@ export function applyArmTurnSemantics(connectionId, args, dir = CONNECTIONS_DIR)
   return true
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   // Default: resume from saved inbox_byte_offset so owner commands that arrived
   // while the agent was mid-turn are NOT skipped. --from-end is only for the
   // first arm after connect (ignore historical inbox). Live bug 2026-07-24:
   // re-arm with --from-end after a wake permanently dropped concurrent owner
   // mail that the poller had already written to the inbox.
-  const out = { fromEnd: false, pending: false }
+  const out = { fromEnd: false, pending: false, stream: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--connection-id' || a === '--connection_id' || a === '--connection') {
       out.connectionId = argv[++i]
-    } else if (a === '--from-end') out.fromEnd = true
+    } else if (a === '--stream') out.stream = true
+    else if (a === '--from-end') out.fromEnd = true
     else if (a === '--pending') {
       out.pending = true
       out.fromEnd = false
@@ -612,7 +645,8 @@ async function main() {
   const pollMs = args.pollMs || POLL_MS
   const started = Date.now()
   process.stderr.write(
-    `devspec-remote-wait: watching ${file} offset=${offset} connection=${connectionId}\n`,
+    `devspec-remote-wait: watching ${file} offset=${offset} connection=${connectionId} ` +
+      `mode=${args.stream ? 'stream (session-scoped, wake=stdout line)' : 'one-shot (wake=exit 0)'}\n`,
   )
 
   while (Date.now() - started < MAX_WAIT_MS) {
@@ -638,8 +672,7 @@ async function main() {
     const { lines, newOffset } = readNewLines(file, offset)
     if (lines.length > 0) {
       const batches = parseOwnerBatches(lines)
-      offset = newOffset
-      writeStatePatch(connectionId, { inbox_byte_offset: offset })
+      let delivered = 0
 
       if (batches.length > 0) {
         const attachmentDir = path.join(CONNECTIONS_DIR, `${connectionId}.attachments`)
@@ -654,11 +687,29 @@ async function main() {
           })) {
             process.stdout.write(JSON.stringify(event) + '\n')
           }
+          delivered += batch.messages.length
         }
+      }
+
+      // The cursor advances only AFTER the events are on stdout, so dying in between
+      // RE-delivers rather than swallows. At-least-once is the correct side to fail on:
+      // a duplicated owner command is visible and harmless, whereas a dropped one is
+      // precisely the "consumed the inbox and woke nobody" failure of item d655b2a4.
+      // This ordering matters far more in --stream mode, where one process survives
+      // many deliveries and so has many more chances to be killed mid-delivery than a
+      // one-shot arm that exited immediately after its only one.
+      offset = newOffset
+      writeStatePatch(connectionId, { inbox_byte_offset: offset })
+
+      if (delivered > 0) {
+        if (!args.stream) {
+          process.stderr.write(`devspec-remote-wait: wake (${delivered} msg) — exit 0\n`)
+          process.exit(EXIT_WAKE)
+        }
+        // The wake was the stdout line above. Staying alive is the whole point.
         process.stderr.write(
-          `devspec-remote-wait: wake (${batches.reduce((n, b) => n + b.messages.length, 0)} msg) — exit 0\n`,
+          `devspec-remote-wait: streamed wake (${delivered} msg) — still watching\n`,
         )
-        process.exit(EXIT_WAKE)
       }
     }
 
@@ -668,6 +719,23 @@ async function main() {
   // Rollover, NOT an ending. Exit 3 says so in the one place an agent actually
   // reads — the exit code — so the 24h cap can no longer end a live connection's
   // ability to receive commands (item d655b2a4, criterion de3b4514).
+  //
+  // The cap is deliberately kept for --stream as well. It bounds an arm that could not
+  // resolve an owner pid to anchor to, so a stream can never become the unkillable
+  // zombie the poller already refuses to start as. Once a day is a graceful re-arm;
+  // once a TURN was the bug (item be0a929a).
+  if (args.stream) {
+    process.stdout.write(
+      JSON.stringify({
+        type: 'listener_rollover',
+        connection_id: connectionId,
+        reason: 'max_wait_elapsed',
+        note:
+          'The wake stream aged out after 24h. The connection is FINE and owner mail is ' +
+          'still landing in the inbox — re-arm the stream to keep waking on it.',
+      }) + '\n',
+    )
+  }
   process.stderr.write('devspec-remote-wait: max wait elapsed, connection is fine — exit 3 (re-arm)\n')
   process.exit(EXIT_REARM)
 }

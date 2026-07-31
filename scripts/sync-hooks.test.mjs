@@ -15,7 +15,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
-import { withDerivedTests, ownsFile } from './sync-hooks.mjs'
+import {
+  withDerivedTests,
+  ownsFile,
+  orphanCanonicalTests,
+  UNIVERSAL,
+  HOST_OWNED,
+} from './sync-hooks.mjs'
 
 /** A throwaway canonical dir containing exactly the named files. */
 function withCanonical(files, fn) {
@@ -100,5 +106,36 @@ describe('ownsFile — owning an implementation owns its test', () => {
   it('does not treat an owned test as owning an unowned implementation', () => {
     // Ownership flows impl → test, never test → impl.
     assert.equal(ownsFile(['only.test.mjs'], 'only.mjs'), false)
+  })
+})
+
+/**
+ * The wake channel is host-owned (item be0a929a, and the 2026-07-31 direction change).
+ *
+ * It used to be UNIVERSAL, which was wrong on the facts — how you wake a model is the
+ * most host-specific thing in the plugin. These tests pin the re-tier, because a casual
+ * "restore the missing file to UNIVERSAL" would silently push Claude Code's `--stream`
+ * default onto hosts that cannot honour it, reviving the port-a-fix-break-another-host
+ * cycle the direction change exists to end.
+ */
+describe('HOST_OWNED — the wake channel is never synced', () => {
+  it('keeps the wake channel out of UNIVERSAL', () => {
+    assert.ok(!UNIVERSAL.includes('devspec-remote-wait.mjs'))
+    assert.ok(HOST_OWNED.includes('devspec-remote-wait.mjs'))
+  })
+
+  it('does NOT report a host-owned test as an orphan', () => {
+    // A host-owned test asserts THIS plugin's implementation and belongs here. Warning
+    // about it would train maintainers to ignore the orphan warning — which is how the
+    // b97a3521 blind spot survived as long as it did.
+    withCanonical(['shared.mjs', 'shared.test.mjs', 'wake.mjs', 'wake.test.mjs'], (dir) => {
+      assert.deepEqual(orphanCanonicalTests(dir, ['shared.mjs', 'wake.mjs']), [])
+    })
+  })
+
+  it('still reports a genuinely unaccounted-for test', () => {
+    withCanonical(['shared.mjs', 'shared.test.mjs', 'forgotten.test.mjs'], (dir) => {
+      assert.deepEqual(orphanCanonicalTests(dir, ['shared.mjs']), ['forgotten.test.mjs'])
+    })
   })
 })

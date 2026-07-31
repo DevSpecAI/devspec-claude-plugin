@@ -301,6 +301,14 @@ export function isOperationalChrome(text) {
  * the model — proven by accident on item d655b2a4 (a detached wait survived, consumed
  * the inbox, and woke nobody, which is strictly worse than no listener at all).
  * Blocking makes the AGENT arm it, in the one way that actually wakes this host.
+ *
+ * Item be0a929a then found the other half of that lesson. Harness-managed was the right
+ * requirement; TURN-scoped was the accident. A tracked background task is reaped at turn
+ * end, so the agent could comply perfectly and still be blocked on the next turn, for
+ * ever. The fix keeps this hook exactly as it is and changes what it points at: a
+ * `--stream` arm under a persistent monitor is still harness-managed (its stdout reaches
+ * the model) but session-scoped, so one arm satisfies every subsequent Stop. Persistent
+ * is not detached — that distinction is what makes it safe here.
  */
 
 function inboxPathFor(connectionId, dir = CONNECTIONS_DIR) {
@@ -446,17 +454,28 @@ export function decideStopBlock({ connectionId, inboxOffset, stopHookActive, arm
 
   const unread = countUnreadOwnerCommands(connectionId, inboxOffset, dir)
 
+  // The remediation must name the SESSION-SCOPED arm, never the turn-scoped one.
+  // Pointing the agent at a tracked background task is what made this block
+  // unterminable on a host that reaps at turn end (item be0a929a): it complied, got
+  // reaped, and was blocked again — one model turn per lap, forever. The `--stream`
+  // arm is made once and outlives the turn, so the very next Stop passes cleanly.
+  // Note this changes only the WAY OUT of the block. The decision above is untouched:
+  // a turn ending with nothing listening is still refused, exactly as 8b4ceaa3 shipped.
   const rearm =
     'node "$CLAUDE_PLUGIN_ROOT/hooks/scripts/devspec-remote-wait.mjs" ' +
-    `--connection-id ${connectionId} --owner-pid "$PPID" --pending` +
-    ' (run_in_background: true, and do NOT pass a timeout)'
+    `--connection-id ${connectionId} --owner-pid "$PPID" --stream --pending` +
+    '\nArm it with the Monitor tool (persistent: true) — NOT as a background task. It ' +
+    'prints one JSON line per owner command and keeps watching, so you arm it once and ' +
+    'never re-arm, and nothing reaps it at the end of this turn. If this host has no ' +
+    'persistent monitor, fall back to the one-shot form (drop --stream) as a background ' +
+    'task with no timeout, and re-arm it after every wake.'
 
   if (unread > 0) {
     return (
       `DevSpec remote control: ${unread} owner command(s) are sitting unread in this ` +
       `connection's inbox with no listener armed to consume them. Nothing is broken — ` +
       `the poller delivered them correctly; you simply never saw them. Do not stop. ` +
-      `Re-arm the wait, then read and act on what it hands you:\n${rearm}`
+      `Arm the wake stream, then read and act on what it hands you:\n${rearm}`
     )
   }
 
@@ -464,7 +483,7 @@ export function decideStopBlock({ connectionId, inboxOffset, stopHookActive, arm
     'DevSpec remote control: this turn is ending with NO wake listener armed, so the ' +
     'next command your owner sends would land in the inbox and never reach you — ' +
     'while the Agents page keeps showing you as Live and available. Do not stop. ' +
-    `Re-arm the wait first:\n${rearm}`
+    `Arm the wake stream first:\n${rearm}`
   )
 }
 

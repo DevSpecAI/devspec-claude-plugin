@@ -436,6 +436,18 @@ describe('decideStopBlock', () => {
     assert.equal(decideStopBlock({}), null)
   })
 
+  it('points the way out at the SESSION-scoped stream, not a reapable background task', () => {
+    withConnDir(({ dir, conn }) => {
+      const reason = decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, dir })
+      // Item be0a929a: the block was correct, but its remediation named a TURN-scoped
+      // arm. On a host that reaps at turn end the agent complied, got reaped, and was
+      // blocked again — one model turn per lap, with no exit. The way out has to be the
+      // arm that outlives the turn.
+      assert.match(reason, /--stream/)
+      assert.match(reason, /persistent: true/)
+    })
+  })
+
   it('never blocks the healthy steady state (armed, cursor at end)', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
       writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])

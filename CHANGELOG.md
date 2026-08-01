@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.7.1 - 2026-08-01
+
+### A 24-hour rollover no longer looks like a crash
+
+- **Observed in real use, one day after 0.7.0 shipped.** The wake stream hit its 24h cap exactly as designed, emitted its `listener_rollover` notice and exited 3 (non-terminal, "re-arm me"). The host then reported that as **"script failed (exit 3)"** — so a routine rollover reads, at a glance, like something broke. This is the same misreading `d655b2a4` was filed for, in new clothing: a non-terminal end that looks like an ending, which historically provokes the harmful reflex of re-registering a perfectly live connection.
+- **The rollover notice now says so explicitly** — that the host may label the exit a failure, that it is not one, and that nothing is lost because re-arming resumes from the same cursor. The exit table says the same, and to trust the event over the host's summary label. The truth goes where the agent actually reads it, rather than relying on it to interpret an exit code correctly.
+- No behaviour change: the cap, the exit code and the cursor are all unchanged.
+
+Also confirms 0.7.0 in the field: that stream ran a **full 24 hours** as a persistent monitor before its own cap ended it, across an entirely idle period, and the re-arm drained a cursor exactly level with the inbox — nothing skipped, nothing replayed.
+
+Item `be0a929a`.
+
 ## 0.7.0 - 2026-07-31
 
 ### The wake channel is armed once per session, not once per turn

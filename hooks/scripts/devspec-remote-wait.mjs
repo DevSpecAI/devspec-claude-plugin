@@ -724,6 +724,12 @@ async function main() {
   // resolve an owner pid to anchor to, so a stream can never become the unkillable
   // zombie the poller already refuses to start as. Once a day is a graceful re-arm;
   // once a TURN was the bug (item be0a929a).
+  // Say so on STDOUT, not only in the exit code. Observed live on 2026-08-01: a host
+  // running the stream under a monitor reports a non-zero exit as the monitor "failing",
+  // so the agent sees `script failed (exit 3)` for what is a routine rollover. That is
+  // the d655b2a4 misreading in a new costume — a non-terminal end that looks like an
+  // ending — and the defence is the same one: put the truth where the agent actually
+  // reads it. This line lands BEFORE the host's failure summary and outranks it.
   if (args.stream) {
     process.stdout.write(
       JSON.stringify({
@@ -732,7 +738,9 @@ async function main() {
         reason: 'max_wait_elapsed',
         note:
           'The wake stream aged out after 24h. The connection is FINE and owner mail is ' +
-          'still landing in the inbox — re-arm the stream to keep waking on it.',
+          'still landing in the inbox — re-arm the stream to keep waking on it. Your host ' +
+          'may label this exit a failure; it is not one. Nothing is lost: re-arm with ' +
+          '--stream --pending and the cursor resumes where this arm left off.',
       }) + '\n',
     )
   }

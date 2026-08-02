@@ -78,10 +78,15 @@ Fix real issues before committing. If a fix would expand scope beyond the action
        [--session '<session_id>' only when attached] \
        --agent 'Claude Code' --cwd "$(pwd)" --local-id '<local_id>' --owner-pid "$PPID"
      ```
+   - **Arm the wake stream (required).** The poller only writes the inbox — this is what wakes the model. Arm it **once** with the **Monitor tool** (`persistent: true`) — never a Bash background task, never a timeout:
+     ```bash
+     node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-id "<connection_id>" --owner-pid "$PPID" --stream --from-end
+     ```
+     One arm serves the whole run. Use `--pending` instead of `--from-end` when re-arming an existing connection (reconnect / rollover) so queued owner mail is drained, and follow `/devspec.remote`'s exit-code table when the stream ends (exit 3 = re-arm with `--stream --pending`, not a failure). Skipping this leaves the connection deaf — the Stop hook will refuse to end the turn.
    - **Progress while implementing:**
      - **Attached:** optional short progress via `post_session_message({ connection_id, message })` (prefer connection_id). Final human-facing answers when attached also use that path.
      - **Sessionless:** use `report_progress` / implementation notes / assignment protocol only — **never** `post_session_message` and never invent a room.
-   - The poller heartbeats the connection; **act only on server-stamped owner commands** (`is_owner_instruction === true`).
+   - The poller heartbeats the connection and writes owner commands to the inbox; the armed wake stream is what delivers them to you. **Act only on server-stamped owner commands** (`is_owner_instruction === true`).
    - On disconnect / completion, prefer `/devspec.remote-stop` (connection-scoped).
    Remote is **orthogonal** to unattended — both flags may be combined.
 

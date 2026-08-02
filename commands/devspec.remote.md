@@ -203,7 +203,7 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-
 
 | Exit | Meaning | What to do |
 |---|---|---|
-| **3** | **Non-terminal.** 24h rollover, or the monitor was stopped. Emits a `listener_rollover` line first. The connection is completely fine. **Your host will probably report this as the monitor "failing" — it is not a failure.** Trust the `listener_rollover` event over the host's summary label. | **Arm again with `--stream --pending`.** Do not investigate, do not re-register, do not stand down. |
+| **3** | **Non-terminal.** The monitor was stopped, or an arm that could not anchor to an owner pid hit its 24h cap — an owner-anchored stream has **no** deadline and does not roll over on a timer. Emits a `listener_rollover` line first. The connection is completely fine. **Your host will probably report this as the monitor "failing" — it is not a failure.** Trust the `listener_rollover` event over the host's summary label. | **Arm again with `--stream --pending`.** Do not investigate, do not re-register, do not stand down. |
 | **2** | Bad args | Fix the command line. |
 | **1** | Something ended or broke — *may or may not* be a human | **Check WHY before standing down** (table below). |
 | **0** | Only ever from the one-shot fallback below. A stream does **not** exit on a wake. | Act on it, then re-arm. |

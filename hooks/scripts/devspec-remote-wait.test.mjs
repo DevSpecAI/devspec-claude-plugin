@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   parseArgs,
+  resolveDeadline,
   parseOwnerBatches,
   buildOwnerMessageEvents,
   describeAttachment,
@@ -466,6 +467,44 @@ describe('armed-listener proof of life', () => {
   })
 })
 
+/**
+ * A deadline is a zombie backstop, not a policy (item be0a929a, observed 2026-08-02).
+ *
+ * The 24h cap fired on schedule two days running against an owner-anchored stream, and
+ * each firing cost a model turn on a wake with no owner mail plus a re-arm that changed
+ * nothing — while the host reported the non-zero exit as a failure on top. An anchored arm
+ * already self-terminates when its owner dies, which is the contract the poller has run on
+ * with no cap for years, so the cap was buying nothing there.
+ */
+describe('resolveDeadline', () => {
+  const startedAt = 1_000_000
+  const DAY = 24 * 60 * 60 * 1000
+
+  it('gives an anchored STREAM no deadline — owner death already ends it', () => {
+    assert.equal(resolveDeadline({ stream: true, ownerAnchor: 4242, startedAt }), null)
+  })
+
+  it('KEEPS the cap for a stream that could not anchor — nothing else proves it should die', () => {
+    // This is the zombie case the poller refuses to start as, so the clock is the only
+    // remaining guarantee and must not be given up.
+    assert.equal(
+      resolveDeadline({ stream: true, ownerAnchor: null, startedAt, maxWaitMs: 500 }),
+      startedAt + 500,
+    )
+  })
+
+  it('keeps the cap for one-shot even when anchored — exit-3-at-24h is d655b2a4 contract', () => {
+    assert.equal(
+      resolveDeadline({ stream: false, ownerAnchor: 4242, startedAt, maxWaitMs: 500 }),
+      startedAt + 500,
+    )
+  })
+
+  it('defaults to the 24h cap', () => {
+    assert.equal(resolveDeadline({ stream: false, ownerAnchor: null, startedAt }), startedAt + DAY)
+  })
+})
+
 describe('--stream flag parsing', () => {
   it('defaults to one-shot, so no existing caller silently changes shape', () => {
     assert.equal(parseArgs(['--connection-id', 'c1']).stream, false)
@@ -538,16 +577,33 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
     const inbox = path.join(dir, `${conn}.inbox.jsonl`)
     fs.writeFileSync(inbox, '')
 
+    // Anchored to a real live pid (this test process), so this also covers the uncapped
+    // path: an anchored stream must report no deadline and must not schedule its own death.
     const child = spawn(
       process.execPath,
-      [WAIT_SCRIPT, '--connection-id', conn, '--stream', '--from-end', '--poll-ms', '25'],
+      [
+        WAIT_SCRIPT,
+        '--connection-id',
+        conn,
+        '--stream',
+        '--from-end',
+        '--poll-ms',
+        '25',
+        '--owner-pid',
+        String(process.pid),
+      ],
       { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'pipe', 'pipe'] },
     )
     let out = ''
+    let err = ''
     let exited = null
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (d) => {
       out += d
+    })
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (d) => {
+      err += d
     })
     child.on('exit', (code) => {
       exited = code
@@ -575,6 +631,7 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
       await until(() => wakes() === 2, { label: 'the second wake through the same arm' })
 
       assert.equal(exited, null, 'the arm must still be alive after two deliveries')
+      assert.match(err, /deadline=none/, 'an owner-anchored stream must not set itself a deadline')
       assert.ok(out.includes('"id":"m1"'), 'first command delivered')
       assert.ok(out.includes('"id":"m2"'), 'second command delivered')
       assert.ok(!out.includes('"id":"a1"'), 'advisory context must not be delivered as a wake')

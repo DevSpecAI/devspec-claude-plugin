@@ -63,7 +63,9 @@
  *   1  — TERMINAL: remote disabled / connection ended in state / owner gone / error
  *   2  — bad args
  *   3  — NON-TERMINAL: this arm aged out with no owner mail. Re-arm; the connection
- *        is fine. Split out of exit 1 for item d655b2a4: both cases used to exit 1,
+ *        is fine. Only an arm that HAS a deadline can reach it — an owner-anchored
+ *        `--stream` arm has none (see resolveDeadline).
+ *        Split out of exit 1 for item d655b2a4: both cases used to exit 1,
  *        and the skill's documented response to exit 1 is "stop", so a compliant
  *        agent tore down a perfectly live connection on a 24h rollover or a harness
  *        reap. Exit 1 is now strictly "a human or the server ended this".
@@ -104,6 +106,32 @@ export const EXIT_BAD_ARGS = 2
  * Never conflate with EXIT_TERMINAL: that conflation is item d655b2a4.
  */
 export const EXIT_REARM = 3
+
+/**
+ * When must this arm give up on the clock alone?
+ *
+ * A deadline here is a ZOMBIE BACKSTOP, not a policy — so it is only needed by an arm
+ * that has no other proof it should die. An owner-anchored arm self-terminates the moment
+ * the owning agent process goes (checked every tick in the watch loop), which is precisely
+ * the contract `devspec-remote-poll.mjs` has always run on with no time cap at all; it was
+ * at 2d+ uptime while this was written. An UNANCHORED arm has no such proof, so it keeps
+ * the 24h cap rather than risk becoming the immortal process `remote-control-state.mjs`
+ * already refuses to start a poller as.
+ *
+ * Capping an anchored STREAM was measured as pure cost (item be0a929a, observed 2026-08-02):
+ * it fired on schedule two days running, and each firing spent a model turn on a wake
+ * carrying no owner mail plus a re-arm that changed nothing — while the host additionally
+ * reported the non-zero exit as a failure. The item's own intent names that cost: "in a
+ * metered product that is real money spent on zero work."
+ *
+ * The one-shot fallback keeps its cap unconditionally, and that asymmetry is deliberate: a
+ * one-shot arm is *expected* to be short-lived (it exits on the first command), so its 24h
+ * rollover is a rare edge case rather than a daily event, and exit-3-at-24h is a contract
+ * item d655b2a4 established on purpose.
+ */
+export function resolveDeadline({ stream, ownerAnchor, startedAt, maxWaitMs = MAX_WAIT_MS } = {}) {
+  return stream && ownerAnchor ? null : startedAt + maxWaitMs
+}
 
 /** Path of the armed-listener proof-of-life file. */
 export function waitPidPath(connectionId, dir = CONNECTIONS_DIR) {
@@ -644,12 +672,14 @@ async function main() {
 
   const pollMs = args.pollMs || POLL_MS
   const started = Date.now()
+  const deadline = resolveDeadline({ stream: args.stream, ownerAnchor, startedAt: started })
   process.stderr.write(
     `devspec-remote-wait: watching ${file} offset=${offset} connection=${connectionId} ` +
-      `mode=${args.stream ? 'stream (session-scoped, wake=stdout line)' : 'one-shot (wake=exit 0)'}\n`,
+      `mode=${args.stream ? 'stream (session-scoped, wake=stdout line)' : 'one-shot (wake=exit 0)'} ` +
+      `deadline=${deadline === null ? `none (anchored to owner pid ${ownerAnchor})` : new Date(deadline).toISOString()}\n`,
   )
 
-  while (Date.now() - started < MAX_WAIT_MS) {
+  while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
     if (live && live.enabled === false) {
       process.stderr.write('devspec-remote-wait: disabled — exit 1\n')
@@ -720,10 +750,9 @@ async function main() {
   // reads — the exit code — so the 24h cap can no longer end a live connection's
   // ability to receive commands (item d655b2a4, criterion de3b4514).
   //
-  // The cap is deliberately kept for --stream as well. It bounds an arm that could not
-  // resolve an owner pid to anchor to, so a stream can never become the unkillable
-  // zombie the poller already refuses to start as. Once a day is a graceful re-arm;
-  // once a TURN was the bug (item be0a929a).
+  // Reachable only by an arm that KEPT a deadline: a one-shot arm, or a stream that could
+  // not anchor to an owner pid. An anchored stream has no deadline to elapse — see
+  // resolveDeadline for why capping one was measured as pure cost.
   // Say so on STDOUT, not only in the exit code. Observed live on 2026-08-01: a host
   // running the stream under a monitor reports a non-zero exit as the monitor "failing",
   // so the agent sees `script failed (exit 3)` for what is a routine rollover. That is

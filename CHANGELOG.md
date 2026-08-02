@@ -2,6 +2,17 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.7.2 - 2026-08-02
+
+### A connected agent no longer wakes itself up once a day for nothing
+
+- **Measured, not theorised.** The 24h cap fired on schedule two days running against a healthy owner-anchored stream. Each firing spent a model turn on a wake that carried no owner mail and a re-arm that changed nothing — and the host reported the non-zero exit as a failure on top of that. `be0a929a`'s own intent named this cost before it happened: *"in a metered product that is real money spent on zero work."*
+- **The cap was buying nothing there.** A deadline is a zombie backstop, not a policy. An owner-anchored arm already exits the moment the owning agent process goes, which is exactly the contract the poller has always run on with **no** time cap — it was at 2d+ uptime while this was written. So an anchored `--stream` arm now has no deadline at all.
+- **An arm that cannot anchor still keeps the cap**, because for that one the clock is the only remaining guarantee that it cannot outlive its owner. That is the case `remote-control-state.mjs` already refuses to start a *poller* in, and it must not be given up here either.
+- **The one-shot fallback keeps its cap unconditionally.** That asymmetry is deliberate: a one-shot arm is expected to be short-lived, so its 24h rollover is a rare edge case rather than a daily event, and exit-3-at-24h is a contract `d655b2a4` established on purpose.
+
+Item `be0a929a`.
+
 ## 0.7.1 - 2026-08-01
 
 ### A 24-hour rollover no longer looks like a crash

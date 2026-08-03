@@ -183,7 +183,7 @@ The poller (no LLM tokens while idle) runs **one long-poll** (`poll_connection`)
 - Carries the heartbeat, the dispatch inbox and the room delta in a single held request (~2 req/min, ~0 delivery latency).
 - Delivers **owner commands** (owner instructions + dispatched assignments) to the inbox as `owner_messages` + a `wake`, **with the room context attached to the same entry**; also writes **advisory room context** as `advisory_context` (no wake) as the durable record.
 - **Exit 1** only for terminal stop (disabled / UI End / owner gone / connection stood down). **Exit 2** = bad args.
-- **Rides out a recoverable teardown by itself.** If the server says the connection is gone but will not attribute it to a person — the shape a Coolify redeploy produces — the poller retries rather than exiting. Only `end_reason` of `ui` or `local_stop` is a deliberate human end and stops it dead. You will see `recoverable, not a UI end; retrying` in its log; that is the poller working, not failing.
+- **Rides out a recoverable teardown by itself.** If the server says the connection is gone but will not attribute it to a person — the shape a server redeploy produces — the poller retries rather than exiting. Only `end_reason` of `ui` or `local_stop` is a deliberate human end and stops it dead. You will see `recoverable, not a UI end; retrying` in its log; that is the poller working, not failing.
 
 **Wake stream (wakes the model — required):** after the poller is up, arm the wake channel **once** with the **`Monitor` tool** (`persistent: true`):
 
@@ -219,7 +219,7 @@ Exit **1** → check WHY before you stand down, because "ended" and "ended by a 
 | owner gone | Your host process died | Stop (nothing to return to). |
 | Anything else — any other `end_reason`, or none at all | The server will not vouch that a human did this. A redeploy looks exactly like this. | **Re-register the same bond once** (re-run the register + `write` steps with the SAME `local_id`) and re-arm. Do not stay dead. |
 
-Read the state file to tell them apart: `cat ~/.devspec/remote-control/connections/<connection_id>.json` and look at `end_reason` / `ended_from_ui`. Never infer a UI End from silence — that inference is exactly the bug that took every agent offline during a staging redeploy on 2026-07-28 (brief `e691c68a`).
+Read the state file to tell them apart: `cat ~/.devspec/remote-control/connections/<connection_id>.json` and look at `end_reason` / `ended_from_ui`. Never infer a UI End from silence — that inference is exactly the bug that took every agent offline during a server redeploy on 2026-07-28 (brief `e691c68a`).
 
 **Fallback — a host with no persistent monitor.** Drop `--stream` and the script reverts to one-shot: it **exits 0** on the first batch, so a host that wakes the model when a tracked task exits still works. There you must re-arm after **every** wake, always with **`--pending`** — never `--from-end`, which jumps the cursor to EOF and permanently drops mail the poller already wrote. That is the shape that produced `be0a929a` on a reaping host, so prefer the stream wherever the host has one.
 

@@ -1,7 +1,7 @@
 ---
 name: devspec.done
 description: Just finished some work? Log it to DevSpec — commits, testing notes, and all
-allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__record_completed_work, mcp__devspec__record_criterion_verdicts
+allowed-tools: Bash, mcp__devspec__list_projects, mcp__devspec__record_completed_work, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion
 ---
 
 # DevSpec Done

@@ -2,6 +2,20 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.7.3 - 2026-08-04
+
+### Memory search returns a card now, so the plugin has to be able to read the body
+
+DevSpec's `search_memories` (and `get_decisions` / `get_conventions`) changed today: they return a **card** — title, one-line summary, id, state — instead of full memory bodies, because a 15-result search was returning over 600,000 characters. The full text now comes from a new `get_memory` tool.
+
+- **Five commands could have found a memory and never read it.** `devspec.brainstorm`, `devspec.remote`, `devspec.session-brainstorm`, `devspec.work` and the `autopilot` skill all allow-list `search_memories`, and an `allowed-tools:` list is a hard gate — a tool absent from it cannot be called. `get_memory` did not exist when those lists were written, so without this release those commands get cards and have no way to reach the body. Nothing errors; the agent just quietly has less to reason with.
+- **The instruction it broke was the safety-relevant one.** Four of those commands say "`search_memories` FIRST and `supersede_memory` the stale match instead of duplicating". Yesterday that judgement was made against full bodies. On cards alone, an agent would overwrite an entry in the team's shared decision record having read only its one-line summary. Each of those now says to `get_memory` the match and read it in full first — a card is enough to choose WHICH memory you mean, not enough to justify replacing it.
+- **The autopilot loop needed more than a tool name.** Its memory step is marked *MANDATORY — never skip* and tells the agent to treat what comes back as **hard constraints**. A constraint is exactly the thing you cannot safely obey from a summary: the summary states the decision, the body carries the qualifications and exceptions. That step now says to `get_memory` any card that looks like it binds the work — an unattended loop obeying a constraint without its exceptions is how it confidently does the wrong thing.
+
+Nothing else needs reinstalling for the DevSpec-side change: MCP tool definitions come from the server, so a reconnect picks up the renamed `body` parameter and the now-required `title` on `record_memory`. **This release is required only because `allowed-tools:` lists ship inside the plugin.**
+
+Item `93a851b5`.
+
 ## 0.7.2 - 2026-08-02
 
 ### A connected agent no longer wakes itself up once a day for nothing

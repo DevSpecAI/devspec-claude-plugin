@@ -25,7 +25,11 @@ Claude Code reaps tracked background tasks at turn end. Exit-to-wake would creat
 | Bond id | `CLAUDE_CODE_SESSION_ID` / `CLAUDE_SESSION_ID` |
 | Token | Plugin MCP / `CLAUDE_PLUGIN_OPTION_*` style resolution via shared auth helpers |
 | Agent name | `AGENT_NAME = 'Claude Code'` in `hooks/scripts/agent-identity.mjs` |
-| Identity file | Generated/synced; never hardcode a different name |
+| Identity file | Pinned by this repo’s `agent-identity.test.mjs`; never hardcode another host’s name |
+
+## Plugin independence (read this before editing scripts)
+
+This repo owns 100% of its scripts. No file crosses a repo boundary — no sync list, no `owns` tier, and **Claude Code is not the canonical source for the other plugins**. Sync tooling was deleted on 2026-08-03 because porting Claude's fixes outward kept breaking hosts that were working. If another plugin needs a fix that landed here, it gets applied there by hand, in that repo. See `docs/PLUGIN-INDEPENDENCE.md`.
 
 ## What not to change lightly
 
@@ -43,6 +47,6 @@ Claude Code reaps tracked background tasks at turn end. Exit-to-wake would creat
 
 - `commands/devspec.remote.md`, `commands/devspec.remote-stop.md`
 - `hooks/scripts/devspec-remote-poll.mjs`
-- `hooks/scripts/devspec-remote-wait.mjs` (owns `--stream`)
+- `hooks/scripts/devspec-remote-wait.mjs` (implements `--stream`)
 - `hooks/scripts/remote-control-state.mjs`, `mirror-turn.mjs`
-- `docs/REMOTE-CONTROL-HOOK-SYNC.md` (historical; plugins are independent — do not reintroduce cross-repo overwrite sync)
+- `docs/PLUGIN-INDEPENDENCE.md` (the convention: each plugin owns its scripts; no cross-repo sync, in any form)

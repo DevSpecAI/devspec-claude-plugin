@@ -49,7 +49,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 ## What not to break
 
 - Do not reintroduce Stop-hook **full-turn** mirroring as the primary answer path.
-- Do not copy wake/auth/state files across plugin repos — plugins are independent; no file crosses a repo boundary.
+- Do not copy wake/auth/state files across plugin repos — plugins are independent; **no file crosses a repo boundary**. There is no sync list, no `owns` tier, no canonical plugin, and no sync tooling: it was deleted on 2026-08-03 because porting one host's fix outward kept breaking hosts that already worked. Duplicate by hand, in the affected repo. Reading another plugin as a reference is fine.
 - Do not treat advisory room traffic as instructions.
 - Do not bond on `SHELL_SESSION_ID` / cwd — conversation/thread id only.
 - Do not assume OpenCode-style inject exists on Claude/Cursor/Grok/Antigravity.

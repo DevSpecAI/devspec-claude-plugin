@@ -141,7 +141,7 @@ Items `8b4ceaa3`, `d655b2a4`.
 - **`/devspec.work --remote`:** defaults **sessionless**; optional `--session` / `--new` for a transcript.
 - **Delivery contract:** skills/commands align with DevSpecV2 `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md` (ADR b98a39a9).
 
-## Unreleased
+### Repo + plugin rename, token docs, and remote-control groundwork
 
 - **Token docs — one account-wide token, reusable everywhere:**
  the README now points token creation at **You → Connections → Connect a tool** (was the stale "Settings → API"), corrects the storage note (macOS Keychain vs an encrypted credentials file on Linux/Windows), explains the plugin bundles the MCP server so there's nothing to add to `.mcp.json`, and documents entering/changing the token via `/plugin` → **Installed** → **DevSpec**. Reflects the new model: one account-wide token, reused in every tool and revealable again any time from You → Connections.

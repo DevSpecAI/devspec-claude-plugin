@@ -24,6 +24,8 @@ import {
   splitRoomWindow,
   readListenerArmed,
   countUnconsumedCommands,
+  materialiseMessageAttachments,
+  materialiseContextAttachments,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
@@ -612,5 +614,82 @@ describe('countUnconsumedCommands', () => {
 
   it('is 0 with no inbox file', () => {
     assert.equal(countUnconsumedCommands('nope', 0, '/tmp/definitely-not-here-xyz'), 0)
+  })
+})
+
+/**
+ * Write-time materialisation (item b237de43).
+ *
+ * The inbox line is the durable record AND the thing an agent opens by hand when the
+ * host truncates a long command in its notification. So the base64 must be gone
+ * before the line is written, not when a stream event is later printed — otherwise a
+ * reader that prints only `content` loses the attachment and nothing says so.
+ */
+describe('materialiseMessageAttachments (attachments never reach the inbox as base64)', () => {
+  const IMG = {
+    filename: 'shot.png',
+    mimeType: 'image/png',
+    type: 'image',
+    sizeBytes: 9,
+    content: Buffer.from('png-bytes').toString('base64'),
+  }
+
+  function writer() {
+    const writes = []
+    return { writes, writeFile: (target, buf) => writes.push({ target, bytes: buf.length }) }
+  }
+
+  it('swaps an image payload for an on-disk descriptor under the connection dir', () => {
+    const { writes, writeFile } = writer()
+    const out = materialiseMessageAttachments(ME, [command({ attachments: [IMG] })], writeFile)
+    const a = out[0].attachments[0]
+    assert.equal(a.delivery, 'file')
+    assert.equal(a.content, undefined)
+    assert.match(a.path, new RegExp(`${ME}\\.attachments`))
+    assert.equal(writes.length, 1)
+  })
+
+  it('leaves an ordinary text command untouched, by identity', () => {
+    const plain = command()
+    const out = materialiseMessageAttachments(ME, [plain], () => {})
+    assert.equal(out[0], plain)
+  })
+
+  it('serialises without any base64 left in the line', () => {
+    const out = materialiseMessageAttachments(ME, [command({ attachments: [IMG] })], () => {})
+    assert.equal(JSON.stringify(out).includes(IMG.content), false)
+  })
+
+  it('is a no-op for an empty or non-array batch', () => {
+    assert.deepEqual(materialiseMessageAttachments(ME, [], () => {}), [])
+    assert.deepEqual(materialiseMessageAttachments(ME, null, () => {}), [])
+  })
+})
+
+describe('materialiseContextAttachments (the advisory tiers get it too)', () => {
+  const IMG = {
+    filename: 'room.png',
+    mimeType: 'image/png',
+    type: 'image',
+    content: Buffer.from('room-bytes').toString('base64'),
+  }
+
+  it('materialises both owner_ambient and room_context', () => {
+    const ctx = {
+      dropped: 0,
+      owner_ambient: [{ id: 'a1', content: 'thinking aloud', attachments: [IMG] }],
+      room_context: [{ id: 'r1', content: 'teammate posted', attachments: [IMG] }],
+    }
+    const out = materialiseContextAttachments(ME, ctx, () => {})
+    assert.equal(out.owner_ambient[0].attachments[0].delivery, 'file')
+    assert.equal(out.room_context[0].attachments[0].delivery, 'file')
+    assert.equal(out.dropped, 0, 'other context fields survive')
+    assert.equal(JSON.stringify(out).includes(IMG.content), false)
+  })
+
+  it('returns the context by identity when there is nothing to materialise', () => {
+    const ctx = { owner_ambient: [], room_context: [], dropped: 3 }
+    assert.equal(materialiseContextAttachments(ME, ctx, () => {}), ctx)
+    assert.equal(materialiseContextAttachments(ME, null, () => {}), null)
   })
 })

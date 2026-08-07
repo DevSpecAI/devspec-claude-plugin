@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.7.4 - 2026-08-07
+
+### A screenshot can no longer go missing between the inbox and the agent
+
+- **The 0.6.2 fix only covered half the path, and the other half lost a screenshot six days later.** Attachments were decoded to disk when the wait script *printed a stream event*; the inbox line kept the raw payload, deliberately, as "the durable record". But a long owner command is **truncated** in the host's notification, so the only way to read the whole thing is to open `inbox.jsonl` — precisely the path the fix did not cover. The obvious reader there is `console.log(m.content)`, and the attachment vanishes with nothing said to anybody. That is what happened on 2 Aug, on a build that already had the fix.
+- **Decoding now happens when the inbox is WRITTEN, not when it is read.** The record is self-describing: every attachment in it is a descriptor naming a real file on disk. A reader that prints only `content` can no longer silently lose one, because there is no longer a payload hiding behind it. This also keeps the poller's own `.poll.log` free of base64 — 1.37MB per command for a 500KB screenshot.
+- **The advisory tiers get the same treatment.** `owner_ambient` and `room_context` are room messages like any other and can carry a teammate's screenshot. They are still never acted on, but an agent reading the room can now open what the room was looking at.
+- **Materialisation is idempotent, which is load-bearing rather than tidy.** The wait script still runs it over everything it reads. Without a pass-through for its own descriptors it would look for a payload, find none, and drop the attachment — a worse bug than the one being fixed. It is asserted directly in the tests, and it is also what keeps inbox lines written by an **older** poller working, since a running poller keeps the code it started with until the agent is relaunched.
+- **The command doc now says attachments exist at all.** It never did — so the only record of the trap was one agent's private memory on one machine. It now states that a `delivery: "file"` path is part of the instruction, and that an ad-hoc inbox reader must print `attachments` alongside `content`.
+
+Item `b237de43` (the write half of `99165e12`). Claude Code plugin only — the other families are independent and are not being synced.
+
 ## 0.7.3 - 2026-08-04
 
 ### Memory search returns a card now, so the plugin has to be able to read the body

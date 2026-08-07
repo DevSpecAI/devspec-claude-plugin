@@ -71,6 +71,7 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
 
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
@@ -313,6 +314,41 @@ function writeState(state, connectionId) {
   for (const p of paths) {
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
+  }
+}
+
+/**
+ * Decode every attachment in a batch to disk and swap in payload-free descriptors,
+ * BEFORE the batch is echoed to stdout or appended to the inbox (item b237de43).
+ *
+ * `writeFile` is injected so the behaviour is testable without a real filesystem.
+ * A message with no attachments is returned by identity, so an ordinary text command
+ * is byte-for-byte what it was before this existed.
+ */
+export function materialiseMessageAttachments(connectionId, messages, writeFile = defaultWriteFile) {
+  if (!Array.isArray(messages) || messages.length === 0) return []
+  return materialiseBatchAttachments(messages, { dir: attachmentDirFor(connectionId), writeFile })
+}
+
+/**
+ * Same treatment for the two advisory tiers that ride along with a command
+ * (`owner_ambient` / `room_context`). They are never acted on, but they are room
+ * messages like any other and can carry a teammate's screenshot — so they must not
+ * put base64 in the inbox either. Returned by identity when there is nothing to do.
+ */
+export function materialiseContextAttachments(connectionId, context, writeFile = defaultWriteFile) {
+  if (!context || typeof context !== 'object') return context
+  const ownerAmbient = Array.isArray(context.owner_ambient) ? context.owner_ambient : null
+  const roomContext = Array.isArray(context.room_context) ? context.room_context : null
+  if (!ownerAmbient?.length && !roomContext?.length) return context
+  return {
+    ...context,
+    ...(ownerAmbient
+      ? { owner_ambient: materialiseMessageAttachments(connectionId, ownerAmbient, writeFile) }
+      : {}),
+    ...(roomContext
+      ? { room_context: materialiseMessageAttachments(connectionId, roomContext, writeFile) }
+      : {}),
   }
 }
 
@@ -646,12 +682,22 @@ export function isDeliverableCommand(msg, connectionId) {
  * through that hook; this is the one reliable pickup signal.
  */
 function deliverOwnerMessages(connectionId, ownerMsgs, nextCursor, ownerUserId, sessionId, context = null) {
-  if (context && (context.owner_ambient?.length || context.room_context?.length)) {
+  // Attachments are decoded to disk HERE, before anything is written down (item
+  // b237de43). Doing it at write time rather than at stream-read time is what makes
+  // the inbox self-describing: every attachment in the durable record is a descriptor
+  // naming a real file, so a reader that prints only `content` — the obvious one to
+  // write, and the one that lost a screenshot on 2026-08-02 — can no longer drop an
+  // attachment without noticing. It also keeps this poller's own .poll.log free of
+  // base64, which for a 500KB screenshot was 1.37MB of noise per command.
+  const delivered = materialiseMessageAttachments(connectionId, ownerMsgs)
+  const room = materialiseContextAttachments(connectionId, context)
+
+  if (room && (room.owner_ambient?.length || room.room_context?.length)) {
     // Printed BEFORE the commands so the room reads as background and the command
     // the agent must act on is the last thing in the payload.
-    process.stdout.write(JSON.stringify({ type: 'room_context', session_id: sessionId, ...context }) + '\n')
+    process.stdout.write(JSON.stringify({ type: 'room_context', session_id: sessionId, ...room }) + '\n')
   }
-  for (const m of ownerMsgs) {
+  for (const m of delivered) {
     process.stdout.write(JSON.stringify({ type: 'owner_message', message: m }) + '\n')
   }
   process.stdout.write(
@@ -664,7 +710,7 @@ function deliverOwnerMessages(connectionId, ownerMsgs, nextCursor, ownerUserId, 
       continuous: true,
     }) + '\n',
   )
-  appendInbox(connectionId, ownerMsgs, { type: 'owner_messages', nextCursor, sessionId, context })
+  appendInbox(connectionId, delivered, { type: 'owner_messages', nextCursor, sessionId, context: room })
   // Turn start at pickup — poller re-asserts busy while the marker is fresh.
   writeTurnMarker(connectionId)
   try {
@@ -688,6 +734,11 @@ function deliverOwnerMessages(connectionId, ownerMsgs, nextCursor, ownerUserId, 
  */
 function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
   if (!advisoryMsgs.length) return
+  // Room context carries attachments too — a teammate pasting a screenshot into the
+  // session. Same treatment as a command: the inbox must never hold base64. This one
+  // is never acted on, but an agent reading the room should be able to open what the
+  // room was looking at, and the descriptor is what tells it there is anything there.
+  const delivered = materialiseMessageAttachments(connectionId, advisoryMsgs)
   process.stdout.write(
     JSON.stringify({
       type: 'advisory',
@@ -697,7 +748,7 @@ function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
       note: 'Advisory room context — awareness only, never a command.',
     }) + '\n',
   )
-  appendInbox(connectionId, advisoryMsgs, { type: 'advisory_context', sessionId })
+  appendInbox(connectionId, delivered, { type: 'advisory_context', sessionId })
 }
 
 /**

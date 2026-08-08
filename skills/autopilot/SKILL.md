@@ -200,7 +200,8 @@ These rules apply to every execution cycle. They are non-negotiable — every cy
 
 ### Reuse Before Build (mandatory before writing any code)
 
-1. Read project documentation: any `CLAUDE.md`, `README`, `CONTRIBUTING`, or architectural notes at the repo root and in the directory you are about to modify. These are project conventions, not suggestions.
+1. Read the repo for repo facts: `README`, `CONTRIBUTING`, architectural notes, and the directory you are about to modify. These tell you how the code is laid out and how to build it.
+   **The team's operating rules come from DevSpec, not from a file in the repo.** `agent_rules` and `owner_agent_rules` are what you follow. A repo `CLAUDE.md` holding team rules is an import candidate, not a second authority — surface it rather than silently obeying both.
 2. Search the codebase for existing implementations of what you are about to build. Grep/glob for similar names, adjacent utilities, shared modules, and the established pattern for the kind of problem you are solving.
 3. Identify the canonical location for what you are changing. Projects usually have one established place for configurable values, one for shared utilities, and one for each cross-cutting concern. Edit there rather than creating a new location.
 4. If you are about to create a parallel implementation of something the codebase already has — a duplicate utility, a second version of a shared component, a reimplementation of an existing flow — **STOP**. Either extend the existing implementation, or call `update_action_item` with `agent_activity: 'failed'` and error `"Requires human judgment: would duplicate <existing thing>, extension blocked by <specific reason>"`. Never ship a parallel implementation silently.
@@ -246,6 +247,8 @@ On EVERY DevSpec MCP **write** call in this loop — no exceptions — pass `run
 ### Record what you learn
 
 When you discover something worth persisting — a deviation from the item's stated approach ("the item said X, we did Y because Z"), a non-obvious constraint, an architectural finding — record it with `record_memory` (`decision`/`convention`/`architecture`/`risk`/`insight`). ALWAYS `search_memories` first. It returns a CARD (title, one-line summary, id) — `get_memory` the closest match and read it in full before you `supersede_memory` it, because a card is enough to CHOOSE which memory you mean and not enough to justify overwriting it. Do NOT record transient details or anything obvious from the code. Your writes land **unconfirmed** and capped at `in_discussion` — you propose; the human ratifies. This is DevSpec's **shared** team memory — not your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge goes to DevSpec `record_memory`, while personal or machine-specific notes stay in your local memory — that boundary is what keeps DevSpec from going stale.
+
+   **Memory or rule?** Both are durable and shared, so the local-notes boundary above does not settle it — ask what the thing IS. A fact or decision about the project, with a reason someone might revisit → **memory** (`record_memory`). An instruction about how to work here that an agent should obey every time → **rule** (`write_project_instruction_rule`). "We chose Broadcast over postgres_changes because RLS made client CDC undeliverable" is a memory; "never add client postgres_changes without documenting it" is a rule. Filing a rule as a memory means no agent ever follows it; filing a decision as a rule strips the reasoning that made it make sense.
 
 ### Keep artifacts current
 

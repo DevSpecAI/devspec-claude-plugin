@@ -49,6 +49,13 @@ When the conversation produces a durable decision, convention, architecture choi
    - If the owner already clearly decided, propose the memory text in your reply and record after a clear yes.
    - Always `search_memories` first; never duplicate — `supersede_memory` the closest match. Search returns a CARD (title, one-line summary, id), so `get_memory` the closest match and read it in full before superseding: the card tells you WHICH memory, not whether replacing it is right.
    - Types: `decision`, `convention`, `architecture`, `risk`, `insight`.
+2. **Rules** — when what was settled is an INSTRUCTION rather than a fact. A memory records what the team decided and why; a rule is what an agent is made to do about it, every time. Same conversation often produces both.
+   - Team rules: `write_project_instruction_rule` (`add` / `amend` / `retract`, one rule at a time — there is no way to replace a whole tier, deliberately). `get_project_instruction_rules` first to avoid duplicating one that exists.
+   - **Read the `outcome` and say what it actually says.** `committed` means live now. `queued_for_review` means NOT IN EFFECT — a maintainer has to accept it. You commit only if the owner is a maintainer and the run is interactive; everything else queues, and telling them "done" when it is queued leaves them believing their team's rules changed when they did not.
+   - Show the exact rule text and get a clear yes BEFORE writing, the same as for a memory.
+   - Safety-class rules (branch protection, force-push, secrets) are maintainer-only and need `confirm_safety_change` — never move a rule in or out of that class in passing.
+   - The owner's own machine/tooling rules: `update_personal_instructions` (append by default, `dry_run` to show them the result first). Use this when the owner tells you something about THEIR setup — installed tools, local ports — not when they state a team policy.
+   - A repo `CLAUDE.md` full of team rules: offer `import_instruction_rules`, which categorises it for their approval rather than pasting it in.
 2. **Artifacts** — short plans/ADRs/runbooks via `create_resource` / `update_resource` / `supersede_resource`.
 3. **Do not** rely on autopilot post-session extraction for this channel.
 4. Mirror the offer + capture confirmation into `post_session_message` (when attached) as a **short reply-only** line so the phone transcript shows knowledge landing — never paste status chrome or thinking.

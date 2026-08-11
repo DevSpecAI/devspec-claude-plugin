@@ -10,7 +10,7 @@ Bring your team's DevSpec work into Claude Code — and drive Claude from your b
 
 - **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread, while only you can actually steer it. → [Remote control](#-drive-a-session-from-devspec-remote-control)
 - **Work a task end to end.** Point Claude at an action item and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
-- **Let Claude clear a queue.** Approve a batch of tasks in DevSpec, then run **autopilot** — Claude works through them one by one on its own.
+- **Let Claude clear a queue.** Stage a batch of tasks in DevSpec, and any idle connected session of yours picks them up — Claude works through them one by one on its own.
 - **Small conveniences.** Create tasks, make tracked commits, and ask DevSpec's docs questions without leaving the terminal.
 
 Everything runs against your own DevSpec account and repositories, using an API token you control.
@@ -67,7 +67,7 @@ Run the DevSpec connection check
 
 You should see confirmation that you're connected as your DevSpec user. (If you're following DevSpec's setup wizard, this step turns green once the check passes.)
 
-Commands appear in Claude Code's `/` menu after install, namespaced under the plugin — for example `/devspec:devspec.remote` and `/devspec:autopilot.start`.
+Commands appear in Claude Code's `/` menu after install, namespaced under the plugin — for example `/devspec:devspec.remote` and `/devspec:devspec.work`.
 
 ## ⭐ Drive a session from DevSpec (remote control)
 
@@ -114,24 +114,11 @@ Two useful flags:
 - `--unattended` — don't pause to ask questions; run start to finish (a task that's too vague to do safely is failed rather than guessed at).
 - `--remote` — also connect this session to the Agents page so you can watch and steer from your browser.
 
-### Let autopilot clear a queue
+### Let a queue clear itself
 
-First, in DevSpec, mark the tasks you want Claude to handle as ready for autopilot (**Stage for Autopilot**, or approve a plan). Then:
+Stage the tasks in DevSpec (Action Items → **Stage for Autopilot**, or approve a plan). That's the whole setup: DevSpec hands the batch to one of your idle connected sessions — no command to start, nothing to enroll — and Claude works the members in order, the same way as `devspec.work`, recording progress on each task as it goes. When the batch finishes, the session simply goes back to being available.
 
-```
-/devspec:autopilot.start
-```
-
-Claude picks up each ready task, works it the same way as `devspec.work`, and moves to the next. By default it takes tasks assigned to you plus anything unassigned. Some variations:
-
-```
-/devspec:autopilot.start --drain                    # keep going until the queue is empty
-/devspec:autopilot.start --all                       # include tasks assigned to others
-/devspec:autopilot.start --project-id=<id>           # limit to one project
-/devspec:autopilot.start --items=<id1>,<id2>         # only these tasks
-```
-
-Check in with `/devspec:autopilot.status` and `/devspec:autopilot.history`, and stop after the current task with `/devspec:autopilot.stop`.
+Watch from the **Agents page** if you like: each batch shows which session holds it, and a batch still waiting says why (no idle session, or the tool it needs isn't running). A task Claude can't do safely is failed with a reason, not guessed at — and because that's tracked on the task itself, you're not paged into a room nobody is watching.
 
 **Want to review the plan first?** In DevSpec, use **Request Agent Plan** — Claude writes up its approach and waits. Nothing is coded until you **Approve & Queue**.
 
@@ -151,10 +138,6 @@ Every command is in Claude Code's `/` menu after install, under the `/devspec:` 
 | `/devspec:devspec.done` | Log work you already finished (commits, testing notes) |
 | `/devspec:devspec.help` | Ask a question and get an answer from DevSpec's docs |
 | `/devspec:devspec.verify-connection` | Confirm the plugin is connected |
-| `/devspec:autopilot.start` | Start working through approved tasks automatically |
-| `/devspec:autopilot.stop` | Stop after the current task finishes |
-| `/devspec:autopilot.status` | Show what autopilot is doing right now |
-| `/devspec:autopilot.history` | Show recent autopilot runs and their outcomes |
 
 ## How it finds the right project
 
@@ -162,13 +145,13 @@ You don't pass a project id in most cases. The plugin matches the git remote of 
 
 ## Settings that live in DevSpec
 
-How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you run a task by hand or via autopilot:
+How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you run a task by hand or it arrives as a staged batch:
 
 | Setting | Controls |
 |---|---|
 | Auto-push / Auto-merge | Whether branches are pushed, and merged into the target branch |
 | Target branch (per repo) | The branch Claude's work lands on |
-| Branch / commit prefixes | How autopilot names branches and commits |
+| Branch / commit prefixes | How Claude names branches and commits |
 | Test commands | What Claude runs after making a change (unit, E2E, typecheck) |
 | Protected paths | Files and folders Claude must not touch |
 | Custom instructions | Extra project rules Claude follows |
@@ -178,7 +161,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 - Changes are made on an **isolated branch** — your working checkout stays clean.
 - It **never force-pushes**, and it respects the protected paths you set.
 - **Nothing is marked done on its own.** Claude does the work and records it; a human reviews and verifies in DevSpec.
-- In autopilot or `--unattended` mode it won't stop to ask clarifying questions — a task that's too ambiguous to do safely is failed with a reason, not guessed at.
+- In `--unattended` runs and dispatched batches it won't stop to ask clarifying questions — a task that's too ambiguous to do safely is failed with a reason, not guessed at.
 - Commits it makes for a tracked task carry a small `[devspec:…]` tag so DevSpec can link the commit — and later the deployment — back to the task.
 
 ## Troubleshooting
@@ -191,8 +174,8 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 | Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Connections**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
 | Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
 | "No matching project" | Make sure the repo is tracked in DevSpec, or pass `--project-id=<id>` |
-| Autopilot says "no tasks" | Mark tasks ready for autopilot in DevSpec and confirm autopilot is enabled for the project |
-| "Claim failed" during autopilot | Another runner picked up that task first — this is normal; autopilot continues |
+| A staged batch isn't being picked up | Check the batch's lane on the Agents page — it says why (no idle session of yours, or the tool the batch needs isn't running) |
+| "Claim failed" in a batch | Another connection claimed that task first — this is normal; the batch continues |
 
 ## Contributing
 

@@ -2,6 +2,19 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.8.0 - 2026-08-11
+
+### The `/autopilot.*` commands are gone — staged work now arrives at any idle connection
+
+**Migration:** if you used `/devspec:autopilot.start` (or `--drain` / `--all` / `--items` / the other queue flags), there is nothing to relearn and nothing to install: stage the items in DevSpec (**Stage for Autopilot** / approve a plan) and keep an ordinary `/devspec:devspec.remote` session idle. DevSpec hands the batch to it. `/devspec:autopilot.status` / `.stop` / `.history` have no local loop left to report on — the Agents page is the status, `/devspec:devspec.remote-stop` is the stop, and run history is the assignment and item record.
+
+- **The plugin no longer chooses its own work.** The old loop pulled a global queue with `get_next_work_item` and decided locally what to take; the server now routes a staged batch to a connection and the plugin only ever works what it was handed. The filter flags existed only to steer that self-selection, so they die with it rather than being silently reinterpreted.
+- **Unattended is a mode, not a command.** The only real difference between an interactive agent and an unattended one was ever the instruction set — "read the room" versus "work the batch, fail loudly, don't chat". That second set is exactly what a dispatched assignment needs, so it now lives in one place: the dispatch-protocol section of `/devspec:devspec.remote` (step 8a), which states explicitly that batch rules override conversational rules for the duration of the batch. No replacement command, skill or `--unattended`-on-remote flag is created.
+- **`fail_work_item` joins the remote allow-list** so a batch member that can't be done safely fails loudly and the batch continues, instead of stalling on a question nobody is there to answer.
+- The same deletion lands across the Cursor, OpenCode, Grok, Antigravity and Codex plugins under the same item, so the concept doesn't survive in one tool after leaving another.
+
+Item `3f2f390c`.
+
 ## 0.7.4 - 2026-08-07
 
 ### A screenshot can no longer go missing between the inbox and the agent

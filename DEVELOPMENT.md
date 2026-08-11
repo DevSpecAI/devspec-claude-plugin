@@ -7,7 +7,7 @@ Maintainer notes for the DevSpec Claude Code plugin (`devspec`). End users don't
 Markdown skills/commands + a manifest + a handful of Node hook scripts. **There is no build step and no bundled binary.**
 
 - `.claude-plugin/plugin.json` — manifest (name, version, `userConfig`, `mcpServers`, component paths). This is the source of truth for the version.
-- `commands/*.md`, `skills/*/SKILL.md` — the slash commands and the autopilot skill.
+- `commands/*.md`, `skills/*/SKILL.md` — the slash commands and skills.
 - `hooks/scripts/*.mjs` — the remote-control poller and turn-mirroring hooks. **They import only Node built-ins** — no npm dependencies, so nothing to install.
 
 Keep it that way: don't reintroduce a `package.json`/build pipeline or npm dependencies in the hook scripts.

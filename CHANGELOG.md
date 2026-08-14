@@ -2,6 +2,17 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.10.0 - 2026-08-14
+
+### A session an agent opened is just a session
+
+- **`--new` no longer creates a private session.** It creates an ordinary shared one, visible to the project like any other. Privacy was never asked for — it was inherited from the entry point, so opening a channel from a terminal quietly produced a room your team could not see, and it stayed that way until somebody noticed.
+- **`--private` is the new opt-in.** `/devspec:devspec.remote --new --private` creates the session private, for the times you actually want that. On its own or with `--session` it does nothing, and the command says so rather than ignoring it silently. Access is still one dial away in the session's People panel afterwards, as it always was.
+- **The "Remote" badge is gone from the sessions list** (server side). How a session was opened is not a property worth labelling on every row; who is attached is already shown by the connection strip and the Agents page. The "Remote control" type filter still exists for anyone who wants to narrow to them.
+- **The "Private" badge now means what it says.** It was only ever drawn on remote-control rows, so a private ordinary session looked identical to a shared one. It now shows for any private session, whatever its type.
+
+Nothing about private sessions is removed — only the assumption that an agent wanted one. Item `32801088`; server side in DevSpecV2.
+
 ## 0.9.0 - 2026-08-14
 
 ### A folder with no repo can say which project it belongs to

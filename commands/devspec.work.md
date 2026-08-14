@@ -72,7 +72,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - `register_connection({ project_id, local_id, agent_name: "Claude Code", machine_hostname?, cwd? })` → store the returned **`connection_id`** (full UUID).
    - **Session attach (optional only):**
      - If the user passed `--session <uuid>` (or an existing live attach): `attach_connection({ connection_id, session_id })`.
-     - If the user explicitly wants a new private work transcript (`--new` / "with session"): `create_session({ session_type: "agent_remote_control", access: "private", agent_name: "Claude Code", project_id })`, then `attach_connection`.
+     - If the user wants a new work transcript (`--new` / "with session"): `create_session({ session_type: "agent_remote_control", agent_name: "Claude Code", project_id })`, then `attach_connection`. It is a normal shared session — add `access: "private"` only if they asked for a private one (`--private`).
      - **Otherwise leave sessionless** — no `create_session`. Work still runs; Agents page shows the connection.
    - Write connection state (resolves MCP token, bond mode 0600, auto-starts connection-keyed poller — do NOT hand-write JSON). Pass `--session` only when attached:
      ```bash

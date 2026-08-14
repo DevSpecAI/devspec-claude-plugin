@@ -1,7 +1,7 @@
 ---
 name: devspec.remote
 description: Connect this Claude Code conversation to DevSpec as a first-class agent connection — available on the Agents page, attach to a session for a live transcript, driven from phone/web. Not Claude's built-in /remote-control.
-argument-hint: "[--session <uuid>] [--new] [--title=\"label\"] [optional note]"
+argument-hint: "[--session <uuid>] [--new] [--private] [--title=\"label\"] [optional note]"
 allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__get_connection_dispatch, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__get_assignment, mcp__devspec__acknowledge_assignment, mcp__devspec__resolve_assignment, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution
 ---
 
@@ -35,7 +35,10 @@ This is **DevSpec** remote control — not Claude Code's built-in `/remote-contr
 |---|---|
 | bare `/devspec.remote` | Register this conversation as an **available, SESSIONLESS** connection — no `create_session`, no room. It shows on the Agents page ready to be attached or dispatched work. (Unless already live / soft-reconnect bond for this conversation.) |
 | `--session <uuid>` | Register the connection, then **attach** it to that session (optional shared context + live transcript). **Never** `create_session`. |
-| `--new` | Create a brand-new session, then register + attach the connection to it. |
+| `--new` | Create a brand-new session, then register + attach the connection to it. The session is an ordinary **shared** one — visible to the project like any other. |
+| `--private` | Only meaningful with `--new`: create that session as **private** (just you) instead of shared. On its own or with `--session` it does nothing — say so rather than silently ignoring it. |
+
+A session opened this way is **not special**. It is not private, not hidden, and carries no badge — it is a session that happens to have an agent attached. Privacy is a choice someone makes: `--private` at creation, or the People panel at any time. Never pass `access: "private"` because a terminal opened the channel.
 
 Never rejoin/attach a session because it shared a repo/cwd or another agent stopped recently. The bond is conversation-scoped (`CLAUDE_SESSION_ID` / local id), never cwd-scoped. Multiple terminals own independent connections.
 
@@ -73,6 +76,7 @@ When the conversation produces a durable decision, convention, architecture choi
 
 - `--session <uuid>` → attach the connection to that session (never create).
 - `--new` → create a new session, then attach.
+- `--private` → with `--new`, create that session private instead of shared. Ignored (with a one-line note to the user) on any other invocation.
 - bare → register a sessionless connection.
 - `--title="…"` and remaining free text → used for `--new` (session title / opening note) only.
 
@@ -126,7 +130,7 @@ Store the returned **`connection_id`** (full UUID) **and the returned `codename`
 Now handle the session attachment by invocation:
 - **bare** → nothing more; the connection is available and sessionless.
 - **`--session <uuid>`** → `attach_connection({ connection_id, session_id: <uuid> })`.
-- **`--new`** → `create_session({ session_type: "agent_remote_control", access: "private", agent_name: "Claude Code", project_id, session_codename?: from mint-codename, machine_hostname?, cwd?, title?, initial_message? })`, then `attach_connection({ connection_id, session_id })`.
+- **`--new`** → `create_session({ session_type: "agent_remote_control", agent_name: "Claude Code", project_id, session_codename?: from mint-codename, machine_hostname?, cwd?, title?, initial_message? })`, then `attach_connection({ connection_id, session_id })`. Pass **`access: "private"`** only when `--private` was given — omit the field entirely otherwise and let the server's shared default stand.
 
 Never scan by cwd. Other agents' files under `~/.devspec` are irrelevant.
 
@@ -136,8 +140,8 @@ Print **in this local terminal only** (never into the session transcript):
 ━━━ DevSpec Remote Control ━━━
 Agent:      Claude Code · {codename}
 Connection: {connection_id first 8}…
-Session:    {first 8}… | (none — available)
-Status:     registered | attached | reconnected | already live (private)
+Session:    {first 8}… (shared | private) | (none — available)
+Status:     registered | attached | reconnected | already live
 Open:       Agents page
 Stop with:  /devspec.remote-stop
 ─────────────────────────────

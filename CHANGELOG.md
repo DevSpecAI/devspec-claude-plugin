@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.8.1 - 2026-08-14
+
+### A quiet connection stays up while the host process is alive
+
+- **Removed the 72h idle-disconnect.** The poller no longer stamps `idle_timeout` and exits after three quiet days. A connection lives as long as its Claude Code process, unless you End it or run `/devspec:devspec.remote-stop`. Item `addbfdbf`.
+
 ## 0.8.0 - 2026-08-11
 
 ### The `/autopilot.*` commands are gone — staged work now arrives at any idle connection

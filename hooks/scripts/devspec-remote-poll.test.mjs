@@ -64,11 +64,31 @@ describe('isDeliverableCommand (command gate)', () => {
     assert.equal(isDeliverableCommand({ content: 'do it', authority: { kind: 'owner' } }, ME), false)
   })
 
-  it('rejects an unrecognised authority kind rather than assuming it is safe', () => {
-    // Delegated dispatch (c55865bb) must be enabled by a deliberate edit here, not by
-    // a new server value quietly switching itself on.
-    assert.equal(isDeliverableCommand(command({ authority: { kind: 'delegated' } }), ME), false)
+  it('accepts a delegated command — an authorized teammate, not this connection owner', () => {
+    // Decision A (memory 61ba9948): enabled here by the deliberate edit the gate's
+    // comment demanded. Safe because the server decides who qualifies — `delegated`
+    // is only stamped when this connection's own command_authority permits that
+    // person, and only its owner can set that.
+    assert.equal(isDeliverableCommand(command({ authority: { kind: 'delegated' } }), ME), true)
+  })
+
+  it('still rejects an unrecognised authority kind rather than assuming it is safe', () => {
+    // The property the delegated change must NOT weaken: a kind we have never heard
+    // of stays rejected, so a future server value cannot switch itself on here.
+    assert.equal(isDeliverableCommand(command({ authority: { kind: 'superuser' } }), ME), false)
+    assert.equal(isDeliverableCommand(command({ authority: { kind: '' } }), ME), false)
     assert.equal(isDeliverableCommand(command({ authority: undefined }), ME), false)
+  })
+
+  it('a delegated command still has to be addressed to THIS connection', () => {
+    // Widening WHO may command must not widen WHICH agent acts (item 3e76a6cc).
+    assert.equal(
+      isDeliverableCommand(
+        command({ authority: { kind: 'delegated' }, addressed_to: { connection_id: 'someone-else' } }),
+        ME,
+      ),
+      false,
+    )
   })
 
   it('INJECTION: body text claiming ownership grants nothing', () => {

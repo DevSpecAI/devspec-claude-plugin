@@ -54,7 +54,7 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - If the action item name matches multiple items, auto-select the highest-priority match (or the closest title match)
 
 1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide, so resolve which project this run targets before any project-scoped call:
-   - **Read the folder pin first.** If `.devspec/project.json` exists in the workspace root, read its `project_id`. This is how a folder with **no git repo yet** says which project it belongs to — a greenfield project whose code does not exist yet cannot have a remote to match on.
+   - **Read the folder pin first.** Look for `.devspec/project.json` in the working directory, then each parent up to and including the git repository root — never at or above your home directory, where `~/.devspec` is machine state rather than project config. The nearest one wins; read its `project_id`. This is how a folder with **no git repo yet** says which project it belongs to — a greenfield project whose code does not exist yet cannot have a remote to match on.
    - Run `git remote get-url origin` in the workspace root and call `list_projects({ git_remote: "<that remote>" })`.
    - Read `remote_match`: use `resolved_project_id` when non-null and store it as the session variable `project_id`.
    - If it is null with multiple `candidate_project_ids` (the repo is tracked by more than one project): **interactive mode** — present the candidate projects (use the `repos`/name info `list_projects` returns) and ask the user which one to use; **unattended mode** — fail the item with `"Requires human judgment: repo tracked by multiple DevSpec projects (<candidates>) — cannot pick one unattended"`.

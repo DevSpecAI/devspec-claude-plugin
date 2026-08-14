@@ -149,7 +149,7 @@ You don't pass a project id in most cases. The plugin matches the git remote of 
 { "project_id": "<your project uuid>" }
 ```
 
-in `.devspec/project.json` at the root of that folder. That's useful when you're starting a project in DevSpec before the code exists — plan the work, let your agent write it, then create the repo and connect it later.
+in `.devspec/project.json` at the root of that folder — agents look there and in any subdirectory beneath it, stopping at the repository root. That's useful when you're starting a project in DevSpec before the code exists — plan the work, let your agent write it, then create the repo and connect it later.
 
 Two things worth knowing. It holds a project id and **no file paths**, so moving or renaming the folder never breaks it. And it isn't a secret, so you can commit it — then anyone who clones the repo is pointed at the right project with no setup at all.
 

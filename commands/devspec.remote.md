@@ -85,6 +85,10 @@ list_projects({ git_remote: <url> })
 
 Use `remote_match.resolved_project_id` as `project_id`.
 
+**A folder with no git repo has no remote to match on** — a greenfield project whose code does not exist yet. For that case, read `.devspec/project.json` in the working folder: it holds `{ "project_id": "<uuid>" }`, the folder's own pin. Pass it as **`pinned_project_id`** on `register_connection` (and any other project-scoped call), NOT as `project_id`.
+
+That distinction is load-bearing, not cosmetic: `project_id` is an explicit override that outranks a verified git remote, whereas the pin is only a local assertion and the server deliberately ranks it BELOW a remote it can verify — so a stale pin copied in with a template self-corrects instead of hijacking the folder. Send `git_remote` when you have one, `pinned_project_id` when you have one, both when you have both, and **let the server arbitrate**. Never implement precedence here.
+
 ### 3. Resolve local conversation id (bond key)
 
 ```bash

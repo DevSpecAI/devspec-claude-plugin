@@ -54,11 +54,13 @@ Fix real issues before committing. If a fix would expand scope beyond the action
    - If the action item name matches multiple items, auto-select the highest-priority match (or the closest title match)
 
 1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide, so resolve which project this run targets before any project-scoped call:
+   - **Read the folder pin first.** If `.devspec/project.json` exists in the workspace root, read its `project_id`. This is how a folder with **no git repo yet** says which project it belongs to — a greenfield project whose code does not exist yet cannot have a remote to match on.
    - Run `git remote get-url origin` in the workspace root and call `list_projects({ git_remote: "<that remote>" })`.
    - Read `remote_match`: use `resolved_project_id` when non-null and store it as the session variable `project_id`.
    - If it is null with multiple `candidate_project_ids` (the repo is tracked by more than one project): **interactive mode** — present the candidate projects (use the `repos`/name info `list_projects` returns) and ask the user which one to use; **unattended mode** — fail the item with `"Requires human judgment: repo tracked by multiple DevSpec projects (<candidates>) — cannot pick one unattended"`.
-   - If there is no match at all, output `✗ No DevSpec project tracks this repo (<git_remote>). Connect it to a project first.` and stop.
+   - **If there is no match, or no remote at all:** when you have a pin, that is NOT a dead end — carry on and pass `pinned_project_id` (below) instead of resolving a `project_id` yourself. Only when there is **neither** a pin **nor** a matching remote, output `✗ No DevSpec project tracks this repo (<git_remote>), and there is no .devspec/project.json pin. Connect it to a project first.` and stop.
    - Thread this `project_id` on every project-scoped call below: `get_project_summary`, `get_action_items`, and `search_memories`. (Item-addressed calls — `claim_work_item`, `update_action_item`, `add_implementation_note`, `add_commit_reference`, `record_implementation`, `generate_commit_message`, `get_action_item_history`, `get_session_transcript` — self-resolve their project from the item id and take no `project_id`.)
+   - **Passing the pin: use `pinned_project_id`, never `project_id`.** They are not interchangeable. `project_id` is an explicit override that outranks a verified git remote; the pin is only a local assertion and the server deliberately ranks it BELOW a remote it can verify. Passing a pin as `project_id` reverses that. **Never decide precedence yourself** — send `git_remote` when you have one and `pinned_project_id` when you have one, both if both, and let the server arbitrate.
 
 
 1b. **Detect remote mode.** Check the user's input for `--remote` or `remote control`. Store as boolean `is_remote`. Optional `--session <uuid>` (or attach after) means also attach a transcript room.

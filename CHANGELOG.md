@@ -2,6 +2,17 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.9.0 - 2026-08-14
+
+### A folder with no repo can say which project it belongs to
+
+- **Reads `.devspec/project.json`.** A folder with no git remote — a project you started in DevSpec before the code existed — can now name its project with a one-line pin file: `{ "project_id": "<uuid>" }`. Every command that resolves a project reads it: `/devspec.work`, `/devspec.create`, `/devspec.done`, `/devspec.brainstorm`, `/devspec.remote`, `/devspec.verify-connection`.
+- **"No DevSpec project tracks this repo" is no longer a dead end.** That hard stop now fires only when there is neither a pin nor a matching remote. Before this, planning a project in DevSpec and having an agent write the code was impossible for anyone with more than one project: every call failed at resolution.
+- **The pin is passed as `pinned_project_id`, never as `project_id`.** They are not interchangeable. `project_id` is an explicit override that outranks a verified git remote; the pin is only a local assertion, and the server deliberately ranks it BELOW a remote it can verify. Commands send whichever signals they have and let the server arbitrate — precedence is never decided locally.
+- **A real remote always wins.** So a pin that arrives by copying a template or forking quietly stops mattering the moment the folder has its own repo, instead of hijacking it. And because the pin holds no file paths, moving or renaming the folder never breaks it.
+
+Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which was left at 0.8.0 by the previous release.
+
 ## 0.8.1 - 2026-08-14
 
 ### A quiet connection stays up while the host process is alive

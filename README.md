@@ -143,6 +143,18 @@ Every command is in Claude Code's `/` menu after install, under the `/devspec:` 
 
 You don't pass a project id in most cases. The plugin matches the git remote of the repo you're in to the DevSpec project that tracks it. If a single repo is tracked by more than one project, add `--project-id=<id>` to point at the one you mean.
 
+**No repo yet?** A folder with no git remote can still say which project it belongs to: put
+
+```json
+{ "project_id": "<your project uuid>" }
+```
+
+in `.devspec/project.json` at the root of that folder. That's useful when you're starting a project in DevSpec before the code exists — plan the work, let your agent write it, then create the repo and connect it later.
+
+Two things worth knowing. It holds a project id and **no file paths**, so moving or renaming the folder never breaks it. And it isn't a secret, so you can commit it — then anyone who clones the repo is pointed at the right project with no setup at all.
+
+A real git remote always wins over the pin. So if you pin a folder and later connect its repo to a different project, the repo is believed — and a pin that arrives by copying a template quietly stops mattering instead of hijacking your folder.
+
 ## Settings that live in DevSpec
 
 How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you run a task by hand or it arrives as a staged batch:

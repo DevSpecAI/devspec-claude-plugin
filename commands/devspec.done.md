@@ -17,7 +17,9 @@ Record work that was completed outside DevSpec's action item workflow. Creates a
    - `git branch --show-current` to get branch name
    - `git log --format="%H %s" -10` to get full SHAs and messages
 
-1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide, so name the project this work belongs to. Call `list_projects({ git_remote: "<remote from step 1>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, present them and ask the user which project. If there is no match, output `✗ No DevSpec project tracks this repo (<git_remote>).` and stop. Pass `project_id` on the `record_completed_work` call in step 4.
+1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide, so name the project this work belongs to. First, if `.devspec/project.json` exists in the workspace root, read its `project_id` — the folder pin, which is how a folder with **no git repo yet** names its project. Then call `list_projects({ git_remote: "<remote from step 1>" })`; use `remote_match.resolved_project_id` as `project_id`. If it is null with multiple `candidate_project_ids`, present them and ask the user which project. If there is no match (or no remote) **but you have a pin**, carry on and pass `pinned_project_id` on `record_completed_work` instead — only when there is neither a pin nor a matching remote, output `✗ No DevSpec project tracks this repo (<git_remote>), and there is no .devspec/project.json pin.` and stop. Otherwise pass `project_id` on the `record_completed_work` call in step 4.
+
+   **A pin goes in `pinned_project_id`, never `project_id`** — the server ranks the pin below a verified remote deliberately, and `project_id` outranks both. Send whichever you have and let the server arbitrate; never decide precedence yourself.
 
 2. **If no recent commits exist**, ask the user for a title and what they implemented, then skip to step 4.
 

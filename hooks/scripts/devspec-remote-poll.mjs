@@ -570,6 +570,29 @@ export function unansweredCommands(commands, roomContext) {
  *
  * The asymmetry is the whole point, so it is asserted rather than left to a comment.
  */
+/**
+ * Should this poll response be treated as HISTORY rather than new work?
+ *
+ * Two independent reasons, and they must OR together rather than one overwriting
+ * the other:
+ *
+ *   - `pending` — we already knew: our own reseed path (attachment changed) set it.
+ *   - `res.reseed` — the SERVER is telling us it could not honour the cursor we
+ *     sent, so what came back is the catch-up window, not a delta.
+ *
+ * The second exists because the first could never see a server-side cursor loss.
+ * A redeploy 502s the long-poll, the connection is ended, the cursor stops
+ * resolving, and the next successful poll returns the whole session — which looked
+ * exactly like a burst of fresh commands and on 2026-08-14 replayed 22 already
+ * answered ones (DevSpec item 89fc4063).
+ *
+ * A server that never sends the field leaves this exactly as it was.
+ */
+export function shouldTreatWindowAsHistory(res, pending = false) {
+  if (pending === true) return true
+  return !!res && res.reseed === true
+}
+
 export function splitRoomWindow({ commands, ownerAmbient, roomContext, seed = false } = {}) {
   const cmds = Array.isArray(commands) ? commands : []
   const ambient = Array.isArray(ownerAmbient) ? ownerAmbient : []
@@ -1286,7 +1309,25 @@ async function main() {
     }
 
     if (res.changed === true) {
-      const delivered = consumePollResult(res, { seed: needsSeed })
+      // `res.reseed` = the server could not honour the cursor we sent, so this
+      // window is HISTORY rather than new work (DevSpec item 89fc4063).
+      //
+      // The seed machinery below already does exactly the right thing with such a
+      // window — it was simply never reachable this way, because `needsSeed` only
+      // flipped on an attachment change WE detected. A server-side cursor loss
+      // (redeploy → 502 → connection ended → cursor no longer resolves) looked
+      // identical to a burst of fresh commands, and on 2026-08-14 that replayed 22
+      // already-answered dispatches as live ones.
+      //
+      // Reusing the existing flag rather than adding a parallel path keeps one
+      // definition of "treat this as history" instead of two that can drift.
+      const seedThisWindow = shouldTreatWindowAsHistory(res, needsSeed)
+      if (seedThisWindow && !needsSeed) {
+        process.stderr.write(
+          'devspec-remote-poll: server reports reseed (cursor not honoured) — treating window as history\n',
+        )
+      }
+      const delivered = consumePollResult(res, { seed: seedThisWindow })
       needsSeed = false
       if (delivered) {
         consecutiveEmpty = 0

@@ -22,6 +22,7 @@ import {
   errorBackoffMs,
   unansweredCommands,
   splitRoomWindow,
+  shouldTreatWindowAsHistory,
   readListenerArmed,
   countUnconsumedCommands,
   materialiseMessageAttachments,
@@ -711,5 +712,58 @@ describe('materialiseContextAttachments (the advisory tiers get it too)', () => 
     const ctx = { owner_ambient: [], room_context: [], dropped: 3 }
     assert.equal(materialiseContextAttachments(ME, ctx, () => {}), ctx)
     assert.equal(materialiseContextAttachments(ME, null, () => {}), null)
+  })
+})
+
+describe('shouldTreatWindowAsHistory (server-reported reseed)', () => {
+  it('treats a server reseed as history even when we had no local reason to', () => {
+    // The whole point: a server-side cursor loss is invisible to us. Before this,
+    // needsSeed only flipped on an attachment change WE detected, so a redeploy
+    // that dropped the connection replayed the session as live commands.
+    assert.equal(shouldTreatWindowAsHistory({ reseed: true }, false), true)
+  })
+
+  it('keeps our own pending seed when the server says nothing', () => {
+    assert.equal(shouldTreatWindowAsHistory({}, true), true)
+    assert.equal(shouldTreatWindowAsHistory({ reseed: false }, true), true)
+  })
+
+  it('leaves an ordinary delta alone', () => {
+    assert.equal(shouldTreatWindowAsHistory({ commands: [command()] }, false), false)
+  })
+
+  it('ignores anything other than a literal true — no truthy coercion on a security path', () => {
+    for (const v of ['true', 1, {}, [], 'yes']) {
+      assert.equal(shouldTreatWindowAsHistory({ reseed: v }, false), false)
+    }
+  })
+
+  it('is safe on a missing or malformed response', () => {
+    assert.equal(shouldTreatWindowAsHistory(null, false), false)
+    assert.equal(shouldTreatWindowAsHistory(undefined, false), false)
+    assert.equal(shouldTreatWindowAsHistory(null, true), true)
+  })
+})
+
+describe('reseed end-to-end shape (the 89fc4063 replay)', () => {
+  const at = (t) => `2026-08-14T11:${t}:00.000Z`
+  it('drops already-answered commands but keeps a genuinely live one', () => {
+    // Reproduces the real payload shape: a catch-up window holding old commands
+    // plus the agent replies that answered them, and one command that landed
+    // after the last reply and therefore still needs doing.
+    const res = {
+      reseed: true,
+      commands: [
+        command({ id: 'old-1', created_at: at('01') }),
+        command({ id: 'old-2', created_at: at('05') }),
+        command({ id: 'live', created_at: at('40') }),
+      ],
+    }
+    const room = [{ id: 'reply', message_type: 'external_agent', created_at: at('30') }]
+    const seed = shouldTreatWindowAsHistory(res, false)
+    const { wake, advisory } = splitRoomWindow({ commands: res.commands, roomContext: room, seed })
+    assert.deepEqual(wake.map((c) => c.id), ['live'])
+    // Advisory is never filtered by seed — a reconnecting agent still needs the room.
+    assert.equal(advisory.length, 1)
   })
 })

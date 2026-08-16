@@ -60,7 +60,9 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-connect.mjs" \
 
 Then arm the wake stream with the command it prints, using the **Monitor** tool (`persistent: true`). `/devspec.remote` holds the full rules — authority, attachments, the exit-code table, posting. Progress while implementing: attached → `post_session_message({ connection_id })`; sessionless → `report_progress` / implementation notes only, never invent a room.
 
-**4. Load settings.** `get_project_summary({ project_id })` → the `execution` block: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands` ({unit, e2e, typecheck}), `protected_paths`; plus top-level `owner_agent_rules`. Both instruction tiers also ride on the `claim_work_item` response, so after claiming this call is only for the other settings.
+**4. Load settings.** `get_project_summary({ project_id })` → the `execution` block: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands` ({unit, e2e, typecheck}), `protected_paths`; plus top-level `owner_agent_rules`. The instruction texts live on `execution` only — the `autopilot` / `local_plugin_settings` blocks are deprecated mirrors carrying operational values.
+
+**Keep `instruction_tiers_version` and `instruction_tiers_hash` from that response** and pass them to `claim_work_item` (step 10) as `known_instruction_tiers_version` / `known_instruction_tiers_hash`. The tiers ride on the claim response too, so without this a run pays ~4,800 characters for a second identical copy; matching values return `instructions_unchanged: true` instead. If you skipped this call or lost them, send neither and claim returns the tiers in full.
 
 Defaults when absent: `auto_push` true, `auto_merge` true, `branch_prefix` `work/action-item-`, no commit prefix, empty instructions, **no** test commands (skip testing — never assume a JS toolchain), no protected paths. `auto_merge` true implies `auto_push`. An interactive instruction not to push or merge *this run* overrides the stored value; unattended honours the stored value.
 
@@ -112,7 +114,7 @@ Save with `add_implementation_note(action_item_id, content: <summary>)` in markd
 
 ## Phase 3 — Implement
 
-**10. Claim.** `claim_work_item(action_item_id)`. Already claimed by another agent → `✗ Item already claimed`, stop. Already yours (returning for feedback) → skip.
+**10. Claim.** `claim_work_item(action_item_id)`, echoing the `known_instruction_tiers_version` / `known_instruction_tiers_hash` you kept from step 4. Already claimed by another agent → `✗ Item already claimed`, stop. Already yours (returning for feedback) → skip.
 
 **Read the originating conversation.** The response carries `session_context`. When `transcript_is_authoritative` is true — the item was *born* in that session — call `get_session_transcript({ session_id: session_context.originating_session_id, tail: 40 })` before implementing. Send `tail` (and `known_instruction_tiers_version` / `_hash` if you hold them): an unbounded seed re-pays the whole room, measured at ~26k tokens for a single catch-up. The response's `transcript_window` tells you whether more exists; page deliberately with `after_message_id` if it does. Don't skip this because the fields look complete — that is exactly the nuance it recovers. When `transcript_is_authoritative` is false the item fields are canonical and the transcript is optional background. If it reveals intent or criteria the item lacks, persist them with `update_action_item`.
 

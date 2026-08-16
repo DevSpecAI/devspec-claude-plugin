@@ -146,6 +146,26 @@ export function findProjectPin(cwd, { home = os.homedir(), root = undefined } = 
 /** Short display form for a uuid. */
 const short = (id) => (typeof id === 'string' && id.length >= 8 ? `${id.slice(0, 8)}…` : '—')
 
+/**
+ * Which cursor flag the printed arm command should carry.
+ *
+ * `--from-end` does not merely start at EOF: `devspec-remote-wait.mjs` WRITES the
+ * new `inbox_byte_offset`, so anything the poller had already written and nobody
+ * had read is discarded permanently. That is only safe on a connection that was
+ * created moments ago and cannot have an inbox yet.
+ *
+ * Every other case — a soft reconnect, an already-live conversation re-running
+ * connect, a connection being attached to a new session — may have owner mail
+ * sitting unread from before, so the cursor must resume from the saved offset.
+ *
+ * Shipped printing `--from-end` unconditionally, which meant an agent that
+ * followed the printed command literally after a reconnect silently dropped
+ * whatever arrived while it was away.
+ */
+export function armCursorFlag({ created } = {}) {
+  return created === true ? '--from-end' : '--pending'
+}
+
 /** The tier fields the server may hand back, in the order they should be read. */
 const TIER_FIELDS = [
   ['owner_custom_instructions', 'Your chat response style'],
@@ -326,9 +346,10 @@ async function main() {
   // The owner-pid the writer actually resolved (win32 self-resolves it), so the arm
   // line the model runs is already correct rather than something it must assemble.
   const ownerPid = written.owner_pid
+  const cursorFlag = armCursorFlag({ created: registration.created })
   const armCommand =
     `node ${JSON.stringify(WAIT_SCRIPT)} --connection-id ${connectionId}` +
-    `${ownerPid ? ` --owner-pid ${ownerPid}` : ''} --stream --from-end`
+    `${ownerPid ? ` --owner-pid ${ownerPid}` : ''} --stream ${cursorFlag}`
 
   const summary = {
     ok: true,
@@ -396,6 +417,12 @@ async function main() {
   lines.push('')
   lines.push('ARM THE WAKE STREAM NOW (Monitor tool, persistent: true):')
   lines.push(armCommand)
+  if (cursorFlag === '--pending') {
+    lines.push(
+      '  (--pending, not --from-end: this connection already existed, so mail may be waiting.' +
+        ' --from-end would discard it.)',
+    )
+  }
 
   if (seed?.transcript_window) {
     const w = seed.transcript_window

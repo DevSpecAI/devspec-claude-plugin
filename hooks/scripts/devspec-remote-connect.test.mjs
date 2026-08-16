@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { after, describe, it } from 'node:test'
-import { findProjectPin } from './devspec-remote-connect.mjs'
+import { armCursorFlag, findProjectPin } from './devspec-remote-connect.mjs'
 
 const tmpRoots = []
 
@@ -41,6 +41,31 @@ after(() => {
       /* best effort */
     }
   }
+})
+
+describe('armCursorFlag', () => {
+  // Regression guard: connect shipped printing --from-end unconditionally.
+  // devspec-remote-wait.mjs WRITES the new inbox_byte_offset for --from-end, so
+  // following the printed command after a reconnect permanently dropped owner
+  // mail that arrived while the agent was away.
+  it('uses --from-end only for a connection that was just created', () => {
+    assert.equal(armCursorFlag({ created: true }), '--from-end')
+  })
+
+  it('uses --pending for a reconnect or an already-live connection', () => {
+    assert.equal(armCursorFlag({ created: false }), '--pending')
+  })
+
+  it('defaults to --pending when the server did not say, since losing mail is worse', () => {
+    assert.equal(armCursorFlag({}), '--pending')
+    assert.equal(armCursorFlag(), '--pending')
+    assert.equal(armCursorFlag({ created: undefined }), '--pending')
+  })
+
+  it('does not treat a truthy non-true value as created', () => {
+    assert.equal(armCursorFlag({ created: 'yes' }), '--pending')
+    assert.equal(armCursorFlag({ created: 1 }), '--pending')
+  })
 })
 
 describe('findProjectPin', () => {

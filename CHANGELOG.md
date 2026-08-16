@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.11.1 - 2026-08-16
+
+### Reconnecting no longer throws away the mail that arrived while you were gone
+
+0.11.0's connect printed its wake-stream command with `--from-end` every time. That flag does not merely start reading at the end of the inbox — the wait script *writes* the new offset — so an agent that reconnected and ran the printed command exactly as given permanently discarded any owner message the poller had already written while it was disconnected. The command file said to use `--pending` when arming an existing connection; the script it told you to run contradicted it.
+
+Connect now prints `--from-end` only for a connection created moments earlier, which cannot have an inbox yet, and `--pending` for everything else — a soft reconnect, an already-live conversation re-running connect, or a connection being attached to a session. When it prints `--pending` it says why, so the difference is visible rather than mysterious.
+
+Found by using it: the first reconnect through the new path printed the wrong flag.
+
 ## 0.11.0 - 2026-08-16
 
 ### Connecting stopped being a ceremony

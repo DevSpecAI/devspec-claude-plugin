@@ -320,14 +320,22 @@ async function main() {
     noPoller: !!args.noPoller,
   })
 
+  // The session this connection is ON, which is not the same as one this
+  // invocation happened to attach. A bare re-run of an already-attached
+  // connection performs no attach, so the local `sessionId` is null while the
+  // connection is still very much in a room — reporting "none — available" there
+  // would tell the agent to answer with report_progress instead of posting to
+  // the room, i.e. answer somewhere the human cannot see.
+  const effectiveSessionId = written.session_id || null
+
   // 4. Orientation seed — bounded, and echoing the tier fingerprint we were just
   //    handed so the same texts are not sent twice inside one connect.
   let seed = null
-  if (sessionId) {
+  if (effectiveSessionId) {
     const tail = Math.max(1, Number.parseInt(String(args.tail ?? DEFAULT_TAIL), 10) || DEFAULT_TAIL)
     try {
       seed = await call('get_session_transcript', {
-        session_id: sessionId,
+        session_id: effectiveSessionId,
         tail,
         ...(registration.instruction_tiers_hash && registration.instruction_tiers_version
           ? {
@@ -357,7 +365,7 @@ async function main() {
     agent_name: agentName,
     codename,
     connection_id: connectionId,
-    session_id: sessionId,
+    session_id: effectiveSessionId,
     session_access: sessionAccess,
     local_id: localId,
     local_id_source: detected.source,
@@ -386,7 +394,7 @@ async function main() {
   lines.push(`Agent:      ${agentName} · ${codename || short(connectionId)}`)
   lines.push(`Connection: ${short(connectionId)}`)
   lines.push(
-    `Session:    ${sessionId ? `${short(sessionId)}${sessionAccess ? ` (${sessionAccess})` : ''}` : 'none — available'}`,
+    `Session:    ${effectiveSessionId ? `${short(effectiveSessionId)}${sessionAccess ? ` (${sessionAccess})` : ""}` : "none — available"}`,
   )
   lines.push(`Status:     ${status}`)
   lines.push('Open:       Agents page')

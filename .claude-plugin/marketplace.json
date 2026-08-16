@@ -10,7 +10,7 @@
       "name": "devspec",
       "source": "./",
       "description": "Connect Claude Code to DevSpec: work action items interactively or unattended, and drive sessions from the Agents page — staged batches dispatch to your idle connections.",
-      "version": "0.11.1",
+      "version": "0.11.2",
       "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items", "remote-control"]
     }
   ],

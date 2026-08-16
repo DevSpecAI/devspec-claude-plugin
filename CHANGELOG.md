@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.11.2 - 2026-08-16
+
+### Connect reports the session you are actually on
+
+Re-running connect on a conversation that was already attached printed `Session: none — available`. The connection was still in its room — the state file and the poller both had it — but the status block was reading the session *this invocation had attached*, and a bare re-run attaches nothing. So it reported a room-less connection that was in a room.
+
+That is not a cosmetic difference. An agent that believes it is sessionless answers with `report_progress` instead of `post_session_message`, which means its reply goes somewhere the person driving it cannot see. The same bug also skipped the orientation seed, so a re-connecting agent got no room context at all.
+
+Connect now reports what was persisted rather than what this run happened to do.
+
 ## 0.11.1 - 2026-08-16
 
 ### Reconnecting no longer throws away the mail that arrived while you were gone

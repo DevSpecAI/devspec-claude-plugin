@@ -17,6 +17,44 @@
 
 Claude Code reaps tracked background tasks at turn end. Exit-to-wake would create an infinite re-arm loop (item `be0a929a`). Prefer `--stream` + persistent Monitor. One-shot wait is fallback only.
 
+## Connect is mechanical (item `5a393e4c`)
+
+`hooks/scripts/devspec-remote-connect.mjs` performs the entire deterministic setup in one call. The command file used to walk the model through it step by step; measured on a cold Claude session, that ritual cost **34.5k tokens of messages** against an 87.7k total footprint, and none of the steps needed judgement.
+
+What the script does, in order:
+
+1. Node preflight; resolve cwd, `git remote get-url origin`, and the nearest `.devspec/project.json` pin.
+2. Resolve the conversation id and the local bond (`already_live` / `reconnect` / `register`).
+3. Resolve MCP auth, then `register_connection` **over raw JSON-RPC** (`mcp-call.mjs`).
+4. `attach_connection`, or `create_session` + attach for `--new`.
+5. `writeConnectionState(...)` — state file, conversation bond, dead-poller reap, poller start.
+6. A **bounded** `get_session_transcript` seed when attached.
+7. Print the status block, the tier texts, and the exact wake-stream arm command.
+
+Design rules for anyone editing it:
+
+- **It decides nothing.** It sends `git_remote` and/or `pinned_project_id` as facts and lets the server's `resolveProjectScope` arbitrate. Precedence is never implemented client-side — that is what lets a stale pin copied in with a template self-correct instead of hijacking a folder.
+- **No `list_projects` round-trip.** The router resolves the project from `git_remote` directly, so the extra call and its response were pure cost.
+- **Raw JSON-RPC, not host MCP tools.** Claude Code negotiates MCP capabilities **once per session**, so a server that starts advertising resources is invisible to every already-running session. The script layer never negotiates, so it can always reach the server even when the host cannot. Keep connect on `mcp-call.mjs` for that reason, not merely for tidiness.
+- **One writer.** `writeConnectionState` is shared with `remote-control-state.mjs write`. Do not grow a second state-writing path.
+- **Do not fold the pump in.** `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are proven and stay untouched.
+
+### Conditional tiers and bounded reads
+
+The server shipped both capabilities in item `e98b2859`; this plugin was an "old caller" on both until `5a393e4c`.
+
+- `register_connection` now echoes the `known_instruction_tiers_version` / `_hash` retained in the connection state file, so a reconnecting conversation receives `instructions_unchanged` rather than the full four tier texts again. The hash is only *overwritten* when the server actually re-sends tiers — an `instructions_unchanged` reply carries none, and must not clear what is stored.
+- The orientation seed sends `tail` (default 40) and echoes the fingerprint it was just handed, so the same tiers are not sent twice inside a single connect. It always reports `transcript_window` (matched / returned / has_more) — bounded, but never a silent truncation. An unbounded seed was measured at ~26k tokens for one catch-up read.
+
+## Fallback when the connect script is missing
+
+Only if `devspec-remote-connect.mjs` is absent. Do not invent a third path — fix the plugin instead.
+
+1. `register_connection({ local_id, agent_name, git_remote })`, then `attach_connection` if a session was named.
+2. `remote-control-state.mjs write --connection-id … --owner-pid "$PPID"` to write state and start the poller.
+3. If even the poller script is gone: call `poll_connection({ connection_id, cursor, dispatch_cursor, wait_ms: 25000 })` in a loop — one call heartbeats, returns live dispatches, and returns the room split into `commands` / `owner_ambient` / `room_context`. It holds open, so no `sleep` is needed; pass both cursors back each time. Act only on `commands[]` addressed to your connection.
+4. `status: "not_found"` / `"ended"` → check `end_reason` before standing down. Only `ui` or `local_stop` means a person ended you.
+
 ## Host specifics
 
 | Topic | Claude Code |

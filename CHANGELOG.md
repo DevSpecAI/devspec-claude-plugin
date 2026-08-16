@@ -2,6 +2,20 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.11.0 - 2026-08-16
+
+### Connecting stopped being a ceremony
+
+Connecting used to be something the model *performed*: check node, read the git remote, resolve the conversation id, look up the bond, list the projects, register, attach, write state, start the poller. Nine steps, each a tool call with a result and a line of narration — and not one of them needed judgement. Measured on a cold session, that ritual and the command file describing it accounted for **34.5k tokens** of an 87.7k connect footprint.
+
+- **One command now does all of it.** `hooks/scripts/devspec-remote-connect.mjs` resolves the facts, registers, attaches if you asked for a session, writes state, starts the poller, seeds the room, and prints both the status block and the exact wake-stream command to run next. `/devspec.remote` went from 39,061 to 14,889 bytes; `/devspec.work` from 45,643 to 24,278.
+- **It decides nothing.** It sends the git remote and the folder pin up as facts and lets the server arbitrate scope — which is what lets a stale pin copied in with a template correct itself instead of hijacking a folder. The `list_projects` round-trip is gone entirely: the server resolves the project from the remote.
+- **Reconnecting no longer re-reads what you already know.** The connection state now retains the instruction-tier fingerprint, so a reconnecting conversation is told the tiers are unchanged instead of being handed all four again. Orientation reads are bounded and echo that fingerprint, so the same texts are never sent twice inside one connect — and the seed always reports how much of the room it saw, so a bound is never a silent truncation.
+- **`/devspec.work` points at the product contract** (`devspec://product/implementation-contract/{attended,unattended}`) instead of restating its rules. DevSpec owns what an implementation must do; the command file owns only the Claude Code mechanics for doing it here.
+- The long-form background — the poller and wait protocol, the failure history, the no-plugin fallback — moved to `docs/remote-control/`, where it is available when someone is debugging and absent when they are not.
+
+Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are untouched. Item `5a393e4c`.
+
 ## 0.10.0 - 2026-08-14
 
 ### A session an agent opened is just a session

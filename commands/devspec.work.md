@@ -6,406 +6,214 @@ allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_pr
 
 # DevSpec Work
 
-Pick up a specific action item, optionally brainstorm on it, implement the changes, push/merge based on project settings, and record completion — all in one flow.
-
-## Implementation Quality Standards
-
-These rules apply throughout Phase 3 (Implement). Every commit passes the pre-commit self-critique before staging; violations must be fixed before committing.
-
-### Reuse Before Build (before writing any code)
-
-1. Read the repo for repo facts: `README`, `CONTRIBUTING`, architectural notes, and the directory you are about to modify. These tell you how the code is laid out and how to build it.
-   **The team's operating rules come from DevSpec, not from a file in the repo.** `agent_rules` and `owner_agent_rules` arrived with your claim (step 3) — those are what you follow. If the repo has a `CLAUDE.md` (or `AGENTS.md`) that contains team rules rather than repo facts, do not treat it as a rival authority: mention it to the user and offer `import_instruction_rules`, which sorts it into team rules, principles, personal machine settings and architecture decisions for them to approve. Two sources of operating rules that nobody reconciles is how an agent ends up obeying the stale one.
-2. Search the codebase for existing implementations of what you are about to build. Grep/glob for similar names, adjacent utilities, shared modules, and the established pattern for the kind of problem you are solving.
-3. Identify the canonical location for what you are changing. Projects usually have one established place for configurable values, one for shared utilities, and one for each cross-cutting concern. Edit there rather than creating a new location.
-4. If you are about to create a parallel implementation of something the codebase already has — a duplicate utility, a second version of a shared component, a reimplementation of an existing flow — **STOP**. Either extend the existing implementation, or (in unattended mode) fail the item with error `"Requires human judgment: would duplicate <existing thing>, extension blocked by <specific reason>"`. In interactive mode, ask the user before proceeding. Never ship a parallel implementation silently.
-
-### Forbidden Patterns
-
-- **Hardcoded values** (timeouts, limits, retry counts, URLs, version/model strings, provider choices, default parameters, feature flags) that an existing config/settings system already owns. If a config exists for this concern, write the value there and read from it — never inline.
-- **Silent error suppression**: no catch/except/rescue blocks that swallow the error without logging and without a clear justification. No "just make the test pass" catches. If you must swallow, log and add a one-line comment explaining why.
-- **Type, compiler, or linter escape hatches without justification**: disabling type checks, using unsafe casts, ignoring linter rules, suppressing warnings. Always add a one-line comment explaining why the tool is wrong.
-- **Placeholder work**: no `TODO: implement later`, no stub functions that only log, no disabled or feature-flagged paths the action item did not request.
-- **Duplicating utilities**: if the project has helpers for common concerns (formatting, validation, API access, parsing, state transitions, etc.), use them. Do not re-implement a helper that already exists.
-
-### Pre-Commit Self-Critique (mandatory before every commit in step 16)
-
-Before staging and running `git commit`, read your staged diff end-to-end with `git diff --staged` and ask honestly:
-
-1. Did I reuse the existing pattern, or did I build a parallel one?
-2. Is any value I hardcoded also owned by a config/settings system? If so, does the config drive the runtime default, or did I introduce drift?
-3. Did I swallow any errors silently? If yes, is there a log and a comment explaining why?
-4. Did I use any type, compiler, or linter escape hatches without explaining why?
-5. Did I leave TODOs, stubs, or "for now" paths that were not in the action item?
-6. If a reviewer with no context saw this diff, what is the first thing they would flag?
-
-Fix real issues before committing. If a fix would expand scope beyond the action item, add an implementation note explaining the trade-off — do not ship broken code. This pass is **not skippable** for "small" changes.
-
-## Steps
-
-### Phase 0 — Load Settings & Detect Mode
-
-1. **Detect unattended mode.** Check the user's input for `--unattended`, `unattended`, or `no interruptions`. Store as a boolean `is_unattended`.
-
-   When `is_unattended` is true, these rules apply for the ENTIRE session:
-   - **Never** stop to ask the user anything — no prompts, no confirmations, no "pick one" lists
-   - **Never** wait for user input
-   - If a decision requires human judgment, fail the item with a documented error rather than guessing
-   - If the action item name matches multiple items, auto-select the highest-priority match (or the closest title match)
-
-1b. **Resolve the project (account-wide token).** DevSpec MCP tokens are account-wide, so resolve which project this run targets before any project-scoped call:
-   - **Read the folder pin first.** Look for `.devspec/project.json` in the working directory, then each parent up to and including the git repository root — never at or above your home directory, where `~/.devspec` is machine state rather than project config. The nearest one wins; read its `project_id`. This is how a folder with **no git repo yet** says which project it belongs to — a greenfield project whose code does not exist yet cannot have a remote to match on. **If there is no pin and no git remote resolved, offer to create one** after the user names the project: with their agreement write `{ "project_id": "<uuid>" }` to `.devspec/project.json` at the git repository root, or at the working directory when there is no repo, so the folder answers for itself next time. Only offer when nothing else resolved — a folder whose remote already matches needs no pin. **Never write it silently**, put nothing but the project id in it (no path, hostname, user or timestamp — that is what makes it safe to commit), and if a pin already names a DIFFERENT project, say which one before replacing it.
-   - Run `git remote get-url origin` in the workspace root and call `list_projects({ git_remote: "<that remote>" })`.
-   - Read `remote_match`: use `resolved_project_id` when non-null and store it as the session variable `project_id`.
-   - If it is null with multiple `candidate_project_ids` (the repo is tracked by more than one project): **interactive mode** — present the candidate projects (use the `repos`/name info `list_projects` returns) and ask the user which one to use; **unattended mode** — fail the item with `"Requires human judgment: repo tracked by multiple DevSpec projects (<candidates>) — cannot pick one unattended"`.
-   - **If there is no match, or no remote at all:** when you have a pin, that is NOT a dead end — carry on and pass `pinned_project_id` (below) instead of resolving a `project_id` yourself. Only when there is **neither** a pin **nor** a matching remote, output `✗ No DevSpec project tracks this repo (<git_remote>), and there is no .devspec/project.json pin. Connect it to a project first.` and stop.
-   - Thread this `project_id` on every project-scoped call below: `get_project_summary`, `get_action_items`, and `search_memories`. (Item-addressed calls — `claim_work_item`, `update_action_item`, `add_implementation_note`, `add_commit_reference`, `record_implementation`, `generate_commit_message`, `get_action_item_history`, `get_session_transcript` — self-resolve their project from the item id and take no `project_id`.)
-   - **Passing the pin: use `pinned_project_id`, never `project_id`.** They are not interchangeable. `project_id` is an explicit override that outranks a verified git remote; the pin is only a local assertion and the server deliberately ranks it BELOW a remote it can verify. Passing a pin as `project_id` reverses that. **Never decide precedence yourself** — send `git_remote` when you have one and `pinned_project_id` when you have one, both if both, and let the server arbitrate.
-
-
-1b. **Detect remote mode.** Check the user's input for `--remote` or `remote control`. Store as boolean `is_remote`. Optional `--session <uuid>` (or attach after) means also attach a transcript room.
-
-   When `is_remote` is true, register this run as a first-class DevSpec **connection** on the Agents page. **Default is SESSIONLESS** (delivery contract ADR b98a39a9): claim/implement/record do **not** require a chat session. A session is optional shared context for human conversation, not a prerequisite for work.
-
-   Run the **connection-native** connect steps from `/devspec.remote` **before claiming work** (never invent an alternative):
-   - Resolve the local conversation id (bond key): `node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" resolve-local-id --agent "Claude Code"`. Keep `local_id` and pass it on every call.
-   - `register_connection({ project_id, local_id, agent_name: "Claude Code", machine_hostname?, cwd? })` → store the returned **`connection_id`** (full UUID).
-   - **Session attach (optional only):**
-     - If the user passed `--session <uuid>` (or an existing live attach): `attach_connection({ connection_id, session_id })`.
-     - If the user wants a new work transcript (`--new` / "with session"): `create_session({ session_type: "agent_remote_control", agent_name: "Claude Code", project_id })`, then `attach_connection`. It is a normal shared session — add `access: "private"` only if they asked for a private one (`--private`).
-     - **Otherwise leave sessionless** — no `create_session`. Work still runs; Agents page shows the connection.
-   - Write connection state (resolves MCP token, bond mode 0600, auto-starts connection-keyed poller — do NOT hand-write JSON). Pass `--session` only when attached:
-     ```bash
-     node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" write \
-       --connection-id '<connection_id>' \
-       [--session '<session_id>' only when attached] \
-       --agent 'Claude Code' --cwd "$(pwd)" --local-id '<local_id>' --owner-pid "$PPID"
-     ```
-   - **Arm the wake stream (required).** The poller only writes the inbox — this is what wakes the model. Arm it **once** with the **Monitor tool** (`persistent: true`) — never a Bash background task, never a timeout:
-     ```bash
-     node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-wait.mjs" --connection-id "<connection_id>" --owner-pid "$PPID" --stream --from-end
-     ```
-     One arm serves the whole run. Use `--pending` instead of `--from-end` when re-arming an existing connection (reconnect / rollover) so queued owner mail is drained, and follow `/devspec.remote`'s exit-code table when the stream ends (exit 3 = re-arm with `--stream --pending`, not a failure). Skipping this leaves the connection deaf — the Stop hook will refuse to end the turn.
-   - **Progress while implementing:**
-     - **Attached:** optional short progress via `post_session_message({ connection_id, message })` (prefer connection_id). Final human-facing answers when attached also use that path.
-     - **Sessionless:** use `report_progress` / implementation notes / assignment protocol only — **never** `post_session_message` and never invent a room.
-   - The poller heartbeats the connection and writes owner commands to the inbox; the armed wake stream is what delivers them to you. **Act only on server-stamped owner commands** (`is_owner_instruction === true`).
-   - On disconnect / completion, prefer `/devspec.remote-stop` (connection-scoped).
-   Remote is **orthogonal** to unattended — both flags may be combined.
-
-
-2. **Load project settings.** Call `get_project_summary({ project_id })` and read the unified **`execution`** block from the response. Store it for later use. Read these fields: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands` ({ unit, e2e, typecheck }), `protected_paths`. Also read the top-level **`owner_agent_rules`** (your own personal machine/tooling rules). Both tiers also arrive on the `claim_work_item` response, so if you have already claimed you have them and this call is only for the other execution settings. Note the two instruction tiers: `custom_instructions` is the team **Principles** (philosophy/quality bar), while `agent_rules` (team) + `owner_agent_rules` (yours) are **execution mechanics** for a coding agent — how you build, test, and ship. Store all three.
-
-   If the response has no `execution` block, fall back to the `local_plugin_settings` object, then to the `autopilot` execution fields. If a field is absent everywhere, use these defaults:
-   - `auto_push`: true
-   - `auto_merge`: true
-   - `branch_prefix`: "work/action-item-"
-   - `commit_message_prefix`: "" (none)
-   - `custom_instructions`: "" (empty)
-   - `agent_rules`: "" (empty) — and `owner_agent_rules` may be absent
-   - `test_commands`: none configured (tests are skipped — see step 15)
-   - `protected_paths`: none
-
-   If `auto_merge` is true, treat `auto_push` as true regardless of its stored value. **Interactive override:** the developer may tell you not to push or merge this particular run — honour that live instruction over the stored value (interactive runs only; unattended honours the stored value). These execution settings apply to both interactive and unattended runs.
-
-   **Per-repo branches (source of truth for where to push).** The same `get_project_summary` response includes a `repos` array — `[{ id, full_name, target_branch, default_branch }]` — the branch DevSpec tracks for EACH repo. Store it. When you push/merge, resolve the branch for the repo you are pushing from this array (see Phase 3, step 18b).
+Pick up an action item, optionally brainstorm, implement it in an isolated worktree, push/merge per project settings, and record what you did.
 
-3. **Record starting branch.** Run `git branch --show-current` and store the result as `starting_branch`. This is the developer's current branch and the FINAL merge-target fallback, used only if a repo has no `target_branch` in the `repos` map and no `default_branch`.
+## The contract you implement under
 
-### Phase 1 — Resolve
+**DevSpec owns the rules; this file owns the Claude Code mechanics.** Read the product contract at the start of a run:
 
-4. **Resolve the action item.** Extract an action item identifier from the user's input (ID, partial ID, or title keywords). Strip any `--unattended` flag from the input before matching.
-   - **CRITICAL: ALWAYS call the MCP tool to fetch current state.** Even if you worked on this item earlier in this session, your conversation context may be stale — the user may have re-staged the item with new feedback since your last interaction. Never rely on in-session memory for item lifecycle.
-   - If an ID (or partial ID) is provided, call `get_action_items({ project_id, status: "all" })` and match by ID prefix.
-   - If keywords are provided, call `get_action_items({ project_id, status: "all" })` and match by title.
-     - **Interactive mode:** If ambiguous (multiple matches), present a short numbered list and ask the user to pick one.
-     - **Unattended mode:** If ambiguous, auto-select the highest-priority match. If priorities are equal, pick the closest title match.
-   - **Interactive mode:** If nothing is provided, ask the user for an action item name or ID.
-   - **Unattended mode:** If nothing is provided, output `✗ No action item specified` and stop.
-   - If no match is found, output: `✗ No action item found matching: {input}`
-   - **CRITICAL:** Once resolved, store the **complete UUID** (e.g. `f43c187c-23e0-4764-885f-ef3a733d08df`) in working memory as `resolved_action_item_id`. Never truncate, pad, or reconstruct this value — always use the exact string returned by the API in every subsequent tool call.
-
-5. **Load context.** Once resolved, **you MUST call these MCP tools** — do not skip them even if you worked on this item earlier in the session:
-   - `get_action_item_history(action_item_id)` — prior notes, commits, lifecycle changes, **and verification feedback**
-   - `search_memories({ project_id, query: "<action item title>" })` — related decisions, conventions, risks
-
-   These calls are mandatory because the item's state may have changed since you last touched it (e.g., user re-staged with new feedback).
-
-   **Understand the intent.** Read the item's spec fields: `intent` (the WHY — the problem and desired outcome), `acceptance_criteria` (your definition of done — the diff must satisfy it), and `ai_instructions` (constraints). `acceptance_criteria` is your target; a diff that doesn't meet it is not done. Don't judge the fields "complete enough" and move on — the originating conversation often holds nuance the fields lost. You pull that conversation right after you claim the item (Phase 3, step 12), because the claim response is what tells you whether the transcript is authoritative.
-
-6. **Handle non-staged activities.** After loading the history (from the MCP response, NOT from conversation memory), check the item's current `agent_activity`:
-
-   - **`awaiting_verification`**: Scan the history for verification feedback (entries with type `verification_report`, `verification_failed`, `feedback`, or `comment` that were added *after* the most recent `completed` event). Pay special attention to `verification_report` entries with `change_data.verified === false` — these contain user feedback from the testing page. If feedback exists that indicates something is broken or missing:
-     - Present the feedback prominently:
-       ```
-       ⚠ Verification feedback found:
-       {feedback content}
-       ```
-     - **Interactive mode:** Ask `Address this feedback? (y/n)`
-     - **Unattended mode:** Proceed automatically to fix the issues
-     - If proceeding, treat the feedback as additional requirements and continue to Phase 3 (skip brainstorm). The item does NOT need to be re-claimed — it is already in progress.
-     - If no actionable feedback exists, inform the user the item is awaiting verification with no outstanding issues and stop.
-
-   - **`done`**: Same as `awaiting_verification` — check for post-completion feedback. If none, inform the user and stop.
-
-   - **`in_progress`** (claimed by another agent): Output `✗ Item is currently being worked on by another agent` and stop. If claimed by this agent in a prior session, proceed.
-
-   - **`staged`** or **`ready`**: Proceed normally to Step 7.
-
-7. **Present the item:**
-   ```
-   ━━━ Work ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   Title:    {title}
-   ID:       {first 8 chars of id}  (display only — full UUID stored in working memory)
-   Type:     {type}
-   Lifecycle: {lifecycle}
-   Priority: {priority or "not set"}
-   Mode:     {unattended or interactive}
-   ─────────────────────────────────────────────────────────
-   {description or "No description"}
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ```
-   If there are `ai_instructions`, show them under an `Instructions:` line. If there are prior implementation notes or related memories, mention them briefly (e.g., "2 prior notes, 1 related decision").
-
-### Phase 2 — Brainstorm (Optional)
-
-8. **Unattended mode:** Skip this entire phase — proceed directly to Phase 3.
-
-9. **Interactive mode — ask once:** `Brainstorm before starting? (y/n)`
-
-10. **If yes**, run the brainstorm loop in **rounds of 5 questions**, drawn from this taxonomy (pick the most impactful gaps first):
-
-     **Scope & Intent** — What is the core problem? What is out of scope?
-     **Approach & Alternatives** — Implementation strategies? Existing patterns to follow?
-     **Data & State** — Migrations, new entities, state transitions?
-     **Edge Cases & Failure Modes** — Invalid inputs, concurrency, timeouts?
-     **Dependencies & Integration** — Other systems, downstream impact?
-     **Acceptance & Verification** — How do we know it's done? What does a tester verify?
-
-   - For each question:
-     - Provide a suggested answer: `**Suggested:** <proposal> — <1-sentence reasoning>`
-     - Ask: `Agree, adjust, or provide your own answer.`
-     - Accept on "yes"/"agree"/"suggested", skip on "skip"
-   - **After each round of 5 questions:**
-     - If all high-impact areas are covered and no meaningful questions remain, end the loop automatically: `All key areas covered — wrapping up brainstorm.`
-     - Otherwise, ask: `Continue brainstorming? (y/n)`
-       - If **yes**: ask another round of up to 5 questions, covering taxonomy areas not yet explored or diving deeper.
-       - If **no**: end the loop.
-     - This continues indefinitely until the user declines or all areas are exhausted.
-   - **Early exit:** If the user signals done at any point ("done", "good", "that's it", "stop"), end the loop immediately.
-   - Compile a brainstorm summary and save it via `add_implementation_note(action_item_id, content: <summary>)`. Use markdown formatting — bullet lists, **bold** for key decisions, `code` for file/function names.
-   - Output: `✓ Brainstorm saved`
-
-11. **If no**, proceed directly to Phase 3.
-
-### Phase 3 — Implement
-
-12. **Claim the item.** Call `claim_work_item(action_item_id)`. If the claim fails (already claimed by another agent), output `✗ Item already claimed` and stop. If the item was already claimed by this agent (e.g., returning to fix verification feedback), skip this step.
-
-    **Read the originating conversation.** The claim response carries a `session_context` object when the item is tied to a session. If `session_context.transcript_is_authoritative` is `true` — the item was *born* in that session — and you have not already read that conversation, call `get_session_transcript({ session_id: session_context.originating_session_id })` **before implementing**; it carries the human intent and nuance behind the item. Do NOT skip this because the spec fields "look complete": fully-specified fields can still have lost the conversation's nuance, which is exactly what this recovers. Because `/devspec:work` is usually a cold pickup of a named item, this normally fires — skip it only when you're continuing that same session interactively and already have it in context. If `transcript_is_authoritative` is `false` (filed externally then attributed), the item fields are canonical; pull the transcript only as optional background. When the transcript reveals intent or criteria the item lacks, persist it back with `update_action_item({ action_item_id, intent, acceptance_criteria })` so it's captured for next time.
-
-13. **Create an isolated worktree (not a branch-in-place).**
-    All implementation work happens inside a git worktree — a sibling directory with its own working tree that shares the main repo's object database. This is what makes concurrent `/devspec:work` sessions safe: the main repo never switches branches and never holds another session's uncommitted changes, so a commit here captures only *this* item's work.
-
-    a. **Record the main repo path:** run `pwd` and store as `main_repo`. Every path below is derived from it, and you return here before merging.
-
-    b. **Compute `branch_name`** = `{branch_prefix}{id_first_8_chars}`. If `branch_prefix` is empty, fall back to `work/action-item-`.
-
-    c. **Compute `worktree_path`** as a hidden sibling directory of the main repo:
-    ```
-    <parent_of_main_repo>/.<basename(main_repo)>-worktrees/task-<id_first_8_chars>-<unix_timestamp>
-    ```
-    The `<unix_timestamp>` suffix guarantees a unique path even across retries or parallel runs.
-
-    d. **Create the worktree:**
-    ```bash
-    git worktree add "<worktree_path>" -b "<branch_name>"
-    ```
-    **Returning for verification feedback** (the branch already exists from a prior run): attach a worktree to the existing branch instead of creating it — omit `-b`. If the branch ref is missing locally, fetch it first:
-    ```bash
-    git fetch origin "<branch_name>"          # only if the local branch ref is missing
-    git worktree add "<worktree_path>" "<branch_name>"
-    ```
-    If `git worktree add` fails (path or branch already exists), go to Failure Handling — do not force-overwrite.
-
-    e. **Link `node_modules` into the worktree** so lint/tests can run without a fresh install (best-effort — if there is no `node_modules` or the link fails, note that dependency-based checks may be skipped and continue; never fall into `npm install`):
-    ```bash
-    ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules"
-    ```
-
-    f. **Change into the worktree.** Every `git` and test command from here through the push (step 17) runs with the worktree as the working directory:
-    ```bash
-    cd "<worktree_path>"
-    ```
-
-14. **Implement the changes.** Follow the action item description and any `ai_instructions`. Read existing files before editing. You are working inside the worktree from step 13 (a full checkout of the branch) — read and edit files there as normal. Follow existing code conventions. If the action item has brainstorm notes or prior implementation notes, use them to guide implementation. If returning to address verification feedback, focus specifically on the issues raised in the feedback.
-
-    **Principles + Agent Rules (mandatory):** Apply the instruction tiers you loaded in step 2:
-    - `custom_instructions` (team **Principles**): engineering philosophy and quality bar — no hacky workarounds, prefer the proper/secure solution, use platform tools properly. These shape *how* you build.
-    - `agent_rules` (team **Agent Execution Rules**) + `owner_agent_rules` (**your** personal machine/tooling rules): concrete execution mechanics — e.g. run typecheck/build (and any test commands) before pushing, never `git stash`, commit only your own files, honour the target branch, plus any personal tooling you have set up. These are mechanics for a coding agent, so they apply to you here.
-
-    Treat all three as mandatory requirements, not suggestions. Precedence: your personal rules govern local working-style, but the shared-repo-safety rules always hold. Skip any tier whose field is empty/absent.
-
-    During implementation, whenever you complete a significant milestone (e.g., finished a major component, wired up an integration, completed a migration):
-    - Call `add_implementation_note(action_item_id, content: <what was done and why>)` to keep a running log. Use markdown formatting — bullet lists, **bold** for key terms, `code` for file/function names. Never write as a single prose paragraph.
-
-    **Database migrations (if this item adds or edits a DB migration).** Do NOT assume which database to apply it to — applying to the wrong one is a real, destructive failure. The `get_project_summary` response you loaded in Phase 0 includes a `database_targets` array: each connected database with its non-secret `identity` (for Supabase, `identity.externalId` is the project ref), declared `environment`, and the `branch_name` whose migrations target it.
-    - **(a)** Pick the target whose `branch_name` matches the branch you push the migration's repo to — the repo's resolved branch from the `repos` map (Phase 0 step 2 / Phase 3 step 18b) — or one with `branch_name: null` (applies to all branches).
-    - **(b)** Apply the migration with your OWN database tooling pointed at that target's `identity` — for Supabase, ensure your Supabase MCP/CLI targets that exact project ref, not whatever it defaults to. DevSpec does not apply migrations for you and never hands you the credential.
-    - **(c)** Never select the target by `name` (names can collide). If the matching target has `needs_reconnect: true` / a null `identity`, or your tooling cannot reach it, STOP and fail the item (`"Requires human judgment: cannot reach migration target <identity.externalId>"`) rather than applying to a different or default database. Be especially careful when `environment` is `production`.
-
-15. **Test.** After implementation, run the project's configured `test_commands` from the execution settings loaded in step 2 — each only if it is set:
-    - Unit: `{test_commands.unit}` (if configured)
-    - E2E: `{test_commands.e2e}` (if configured)
-    - Typecheck: `{test_commands.typecheck}` (if configured)
-    - Plus any test commands mentioned in the action item's `ai_instructions`
-
-    Continue on failure but note it. If **no** test commands are configured, skip testing gracefully (note it in the implementation notes) — do **not** assume `npm`/a JS toolchain or invent commands; this project may not be a Node project.
-
-16. **Commit.** Stage only the files you changed — never use `git add -A`:
-    ```bash
-    git diff --name-only
-    git add <file1> <file2> ...
-    ```
-    Then call `generate_commit_message` with:
-    - `action_item_id`: the action item ID
-    - `summary`: short summary of what the commit does (under 72 chars)
-    - `type`: infer from the work (`feat`, `fix`, `refactor`, etc.)
-
-    Use the returned message (which includes the `[devspec:<id>]` tracking tag) to commit:
-    ```bash
-    git commit -m "{generated_message}"
-    ```
-    The `[devspec:<id>]` tag in the message is what DevSpec uses to link the commit and track the deployment — do NOT construct the message yourself.
-
-17. **Integrate the fresh target, then push** (if auto_push is enabled or implied by auto_merge).
-
-    When `auto_merge` is enabled, first integrate the target branch into your work branch **in the worktree** — another session or agent may have landed work since you branched (resolve `{merge_target}` per step 18b):
-    ```bash
-    git fetch origin {merge_target}
-    git merge origin/{merge_target} --no-edit
-    ```
-    - Conflicts here are normal, not an error: resolve them yourself on the work branch — read both sides, produce the correct combined code (never resolve by discarding the other side's changes), `git add` the resolved files and `git commit`. If you cannot produce a confident resolution, `git merge --abort` and go to Failure Handling.
-    - If the merge brought in any new commits, re-run the step-15 checks against the combined state before pushing.
-
-    Then push:
-    ```bash
-    git push -u origin {branch_name}
-    ```
-
-18. **Return to the main repo, merge, and remove the worktree.**
-
-    a. **Return to the main repo.** The worktree has `{branch_name}` checked out, so the merge must run from the main repo (git refuses to check out the same branch in two worktrees):
-    ```bash
-    cd "<main_repo>"
-    ```
-
-    b. **Merge** (only if `auto_merge` is enabled). Determine the merge target **for the repo you are pushing** by resolving its branch in this order: (1) the `target_branch` of its entry in the `repos` map from step 2 — match the entry whose `full_name` matches this repo's `origin` remote; (2) that entry's `default_branch` if its `target_branch` is null/empty; (3) `starting_branch`. A multi-repo item pushes EACH changed repo to ITS OWN resolved branch.
-
-    Merges serialize git-natively against concurrent sessions and parallel runners: **push atomicity is the lock**. Sync the local target exactly to the remote, merge, push:
-    ```bash
-    git fetch origin {merge_target}
-    git checkout {merge_target}
-    git merge --ff-only origin/{merge_target}
-    git merge {branch_name} --no-ff --no-edit
-    git push origin {merge_target}
-    ```
-    - If the `--ff-only` sync fails, the LOCAL target has commits the remote doesn't. If they're your own leftover from a rejected attempt of THIS item, discard them with `git reset --hard origin/{merge_target}`; anything else (e.g. the developer's local work) — do NOT discard; go to Failure Handling and say so.
-    - The `{branch_name}` merge must be CLEAN — conflict resolution happened on the work branch in step 17. If it conflicts anyway, the target moved again: `git merge --abort` and repeat step 17's integrate (in the worktree — do this BEFORE removing it) then retry here.
-    - **Push rejected (non-fast-forward)?** Someone landed between your fetch and push — normal. Retry, bounded at 3 attempts: repeat step 17's integrate (new commits → resolve → re-run checks → re-push branch), then this step. After the third rejection, go to Failure Handling — the branch is already pushed, so the developer can resolve it manually.
-
-    c. **Remove the worktree** — MANDATORY on every path, whether or not you merged (the branch and its commits live in the repo independently of the worktree). **Drop the `node_modules` link FIRST, then remove the worktree.** On Windows `node_modules` is a junction into the MAIN checkout; `git worktree remove --force` recurses through it and wipes the main checkout's real `node_modules` if the link is still there (the isSymbolicLink guard means only the link is ever removed, never a real dir):
-    ```bash
-    node -e "const fs=require('fs'),p='<worktree_path>/node_modules';try{if(fs.lstatSync(p).isSymbolicLink()){try{fs.unlinkSync(p)}catch{fs.rmdirSync(p)}}}catch{}"
-    git worktree remove "<worktree_path>" --force
-    ```
-    Run this from `main_repo`. If removal fails (e.g. a file lock from a just-finished process), wait a moment and retry once; if it still fails, warn but do not block completion (`git worktree prune` can reap it later).
-
-### Phase 4 — Done
-
-19. **Report completion.** Call these in order:
-
-    **a)** `add_implementation_note` — final summary of what was changed: which files were modified/created, what the changes do, and any decisions made. **MUST use markdown formatting** — bullet lists, `**bold**` for key terms, `` `code` `` for file/function names, and blank lines between sections. Never write as a single prose paragraph.
-
-    **b)** `add_commit_reference` — with the commit SHA and message.
-
-    **c)** `record_implementation` with ALL of these fields (never skip any):
-      - `action_item_id`
-      - `commit_sha`: the final commit SHA
-      - `agent_merged`: true if auto_merge was performed, false otherwise
-      - `affected_files`: list of changed files from `git diff --name-only`
-      - `completion_note`: technical summary of what was done
-      - `completion_summary`: A concise, end-user-friendly changelog-style summary (2-4 sentences). Written for non-developers — explain *what changed* and *why it matters* in plain language. Use markdown for formatting. Example:
-        ```
-        Added a "Testing" page to projects where testers can review completed work items with deployment status and testing instructions. Project members can now be assigned the new "Tester" role, which grants access to this page. The testing briefs are grouped by date and show deployment status alongside each item.
-        ```
-      - `testing_notes`: Step-by-step instructions a tester can follow to manually verify the change. Use markdown with numbered steps. Be specific — reference exact URLs, UI elements, and expected outcomes. For non-user-facing changes (refactors, infra), describe how to verify correctness (e.g. "Run `npm run typecheck` and confirm zero errors"). Example:
-        ```
-        1. Navigate to **Project → Members** and invite a user with the "Tester" role
-        2. Log in as that user and verify the **Testing** nav item appears in the project sidebar
-        3. Click **Testing** and verify completed action items appear grouped by date
-        4. Expand an item and verify testing notes and description are shown
-        5. Click "View action item" and confirm it links to the correct detail page
-        ```
-      - `usage_notes`: Where users can find this feature in the UI (e.g. "Navigate to Settings → Integrations → GitHub"). Set to empty string for non-user-facing work (refactors, infra, invisible bug fixes).
-      - `verification_report`: Structured assessment of the change:
-        - `verification_type`: `"automated"` if all checks passed, `"human_required"` if tests couldn't cover it, `"partial"` if some checks passed but human review is still needed
-        - `automated_checks_passed`: list of checks that passed, e.g. `["typecheck", "unit tests"]`. Include every test command that was run and passed. If a check was skipped (e.g. node_modules unavailable), do not include it.
-        - `human_review_needed`: list of things a human should verify and why, e.g. `["Visual layout of the new testing page — no automated visual regression tests", "Role-based access — requires logging in as different roles"]`. Be specific about *what* and *why*.
-        - `confidence`: 0.0-1.0 score. 0.9+ = straightforward change with passing tests. 0.7-0.9 = tests pass but change is complex or touches critical paths. Below 0.7 = significant uncertainty.
-      - `provider`: always pass `"claude_code"`
-      - `local_session_id`: the real Claude Code session UUID, so the developer can later resume *this exact session* with `claude --resume <id>` straight from the DevSpec UI. Get it by running this bash command and using the bare UUID it prints: `echo "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"`. Pass that concrete value (e.g. `7ef055ed-4716-44f8-a68f-abfa27d61e77`) — **never** pass the literal text `${CLAUDE_SESSION_ID}` / `${CLAUDE_CODE_SESSION_ID}`: MCP arguments are not shell-expanded, so a placeholder is stored verbatim and is useless. Only if that command prints an empty line do you omit this field entirely rather than sending a placeholder or non-UUID value. Do NOT pass `machine_user_id`: the server defaults it to you (the authenticated DevSpec user), which is exactly the developer whose machine ran this session.
-
-    **d)** `record_memory` — **only if** the work taught you something durable about the *project* (a decision, convention, architecture fact, or risk that outlives this item — e.g. "the item said X, we did Y because Z", a non-obvious constraint you had to honour). `search_memories` FIRST — it returns a CARD (title, one-line summary, id), so `get_memory` the closest match and read it in full before you act on it — then `supersede_memory`/`retract_memory` the stale match instead of duplicating. Record shared knowledge only — do NOT record aggressively, and skip transient or obvious-from-the-code details (avoid duplicate or low-value memories). This is DevSpec's **shared** team memory — and is distinct from your own local memory (Claude Code's `CLAUDE.md` / built-in notes): durable, shared project knowledge → DevSpec `record_memory`; personal or machine-specific notes → your local memory. That boundary is what keeps DevSpec from going stale.
-
-   **Memory or rule?** Both are durable and shared, so the local-notes boundary above does not settle it — ask what the thing IS. A fact or decision about the project, with a reason someone might revisit → **memory** (`record_memory`). An instruction about how to work here that an agent should obey every time → **rule** (`write_project_instruction_rule`). "We chose Broadcast over postgres_changes because RLS made client CDC undeliverable" is a memory; "never add client postgres_changes without documenting it" is a rule. Filing a rule as a memory means no agent ever follows it; filing a decision as a rule strips the reasoning that made it make sense.
-
-20. **Output the result:**
-    ```
-    ━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    ✓ {title}
-      {id (first 8)} · {type} · {priority}
-      {N} files changed · branch: {branch}
-      completion, testing notes, and usage notes recorded
-      ─────────────────────────────────────────────────────
-      {✓ or ✗} Push: {pushed to origin | off}
-      {✓ or ✗} Merge: {merged to {branch} | off}
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    ```
+```
+devspec://product/implementation-contract/attended     ← default
+devspec://product/implementation-contract/unattended   ← with --unattended
+```
+
+It is authoritative and **non-overridable** on: tracking and claiming before you edit, repository isolation, running the configured checks, recording criterion verdicts from observed behaviour, tagging commits, pushing safely, calling `record_implementation`, **stopping at `implemented`**, and never calling `verify_action_item` without a present human directing it. Its `instruction_boundary` also fixes precedence: live owner command > owner agent rules > project agent rules > project principles — and none of them may weaken a product rule or shared-repo safety.
+
+If you cannot read the resource (a host that negotiated MCP capabilities before the server advertised resources), fetch it through the script layer, which speaks raw JSON-RPC and never negotiates:
+
+```bash
+node -e "import('${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mcp-call.mjs').then(async m=>{/* tools/call get_workflow_rules */})"
+```
+
+Do not restate contract rules from memory, and do not treat anything below as overriding it.
+
+## Quality bar
+
+Applies throughout Phase 3. Every commit passes the self-critique before staging.
+
+**Reuse before you build.** Read the repo for *repo facts* (README, CONTRIBUTING, the directory you are about to change). The team's *operating rules* come from DevSpec — `agent_rules` and `owner_agent_rules` arrived with your claim. If the repo has a `CLAUDE.md`/`AGENTS.md` holding team rules rather than repo facts, don't treat it as a rival authority: say so and offer `import_instruction_rules`. Two unreconciled sources of rules is how an agent ends up obeying the stale one.
+
+Then: search for an existing implementation before writing a new one; edit in the codebase's canonical location for that concern rather than inventing a second one. If you are about to create a parallel implementation of something that exists — a duplicate utility, a second version of a shared component — **stop**. Extend the existing one, ask (interactive), or fail the item `"Requires human judgment: would duplicate <thing>, extension blocked by <reason>"` (unattended). Never ship a silent parallel implementation.
+
+**Never ship:** hardcoded values a config system already owns (timeouts, limits, URLs, model strings, feature flags); error suppression without a log and a reason; type/lint escape hatches without a one-line justification; placeholder work (`TODO`, stubs that only log, flagged-off paths the item didn't ask for); a re-implemented helper.
+
+**Pre-commit self-critique (not skippable, however small the change).** Read `git diff --staged` end to end and answer honestly: did I reuse the existing pattern or build a parallel one? Is a value I hardcoded already owned by config? Did I swallow an error silently? Did I use an escape hatch without saying why? Did I leave TODOs or stubs the item didn't ask for? What would a reviewer with no context flag first? Fix real issues before committing; if a fix would expand scope past the item, record the trade-off as an implementation note rather than shipping something broken.
+
+## Phase 0 — Mode, project, settings
+
+**1. Detect mode.** `--unattended` / `unattended` / `no interruptions` → `is_unattended`. For the whole run: never ask anything, never wait for input, fail with a documented error rather than guess, and auto-select the highest-priority match when a name is ambiguous. `--remote` / `remote control` → `is_remote`. The two are orthogonal and may be combined.
+
+**2. Resolve the project.** Tokens are account-wide, so every project-scoped call needs a scope. Gather the facts and **let the server arbitrate** — never implement precedence yourself:
+
+- `git remote get-url origin` → pass as `git_remote`.
+- The nearest `.devspec/project.json` → pass its id as **`pinned_project_id`**, never as `project_id`. They differ on purpose: `project_id` is an explicit override that outranks a verified remote, while the pin ranks *below* one, so a stale pin copied in with a template self-corrects instead of hijacking the folder. Search the working directory, then each parent up to and including the git root, never at or above your home directory.
+- Send whichever you have, or both.
+
+Only if the server reports the repo is tracked by **more than one** project do you call `list_projects({ git_remote })` and disambiguate: interactive — show the candidates and ask; unattended — fail `"Requires human judgment: repo tracked by multiple DevSpec projects"`. With neither a pin nor a matching remote, print `✗ No DevSpec project tracks this repo, and there is no .devspec/project.json pin.` and stop — or, once the user names the project, offer to write the pin (`{"project_id":"<uuid>"}`, nothing else in it, never silently, and say which project you are replacing if one is already named).
+
+**3. Remote mode (`is_remote`).** Register this run as a connection on the Agents page **before claiming work**. Default is **sessionless** — a chat session is optional shared context, never a prerequisite (delivery contract ADR `b98a39a9`).
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-connect.mjs" \
+  --agent "Claude Code" --owner-pid "$PPID" [--session <uuid> | --new] [--private]
+```
+
+Then arm the wake stream with the command it prints, using the **Monitor** tool (`persistent: true`). `/devspec.remote` holds the full rules — authority, attachments, the exit-code table, posting. Progress while implementing: attached → `post_session_message({ connection_id })`; sessionless → `report_progress` / implementation notes only, never invent a room.
+
+**4. Load settings.** `get_project_summary({ project_id })` → the `execution` block: `auto_push`, `auto_merge`, `branch_prefix`, `commit_message_prefix`, `custom_instructions`, `agent_rules`, `test_commands` ({unit, e2e, typecheck}), `protected_paths`; plus top-level `owner_agent_rules`. Both instruction tiers also ride on the `claim_work_item` response, so after claiming this call is only for the other settings.
+
+Defaults when absent: `auto_push` true, `auto_merge` true, `branch_prefix` `work/action-item-`, no commit prefix, empty instructions, **no** test commands (skip testing — never assume a JS toolchain), no protected paths. `auto_merge` true implies `auto_push`. An interactive instruction not to push or merge *this run* overrides the stored value; unattended honours the stored value.
+
+Store the `repos` array — `[{ id, full_name, target_branch, default_branch }]` — it is the source of truth for where each repo pushes. Store `database_targets` too if the item touches migrations.
+
+**5. Record `starting_branch`** (`git branch --show-current`) — the final merge-target fallback.
+
+## Phase 1 — Resolve the item
+
+**6. Find it.** Always call the MCP tool for current state even if you touched this item earlier — the user may have re-staged it with feedback since. `get_action_items({ project_id, status: "all" })`, match by id prefix or title. Ambiguous → interactive asks, unattended takes the highest priority then closest title. Nothing given → interactive asks, unattended prints `✗ No action item specified` and stops. No match → `✗ No action item found matching: {input}`.
+
+Store the **complete UUID** returned by the API. Never truncate, pad or reconstruct it.
+
+**7. Load context** (mandatory, not skippable from session memory):
+- `get_action_item_history(action_item_id)` — prior notes, commits, lifecycle, and verification feedback.
+- `search_memories({ project_id, query: "<title>" })` — related decisions, conventions, risks.
+
+Read `intent` (the why), `acceptance_criteria` (your definition of done — a diff that misses it is not done) and `ai_instructions` (constraints). Don't judge the fields complete and move on; the originating conversation often holds nuance they lost, which you pull after claiming (step 10).
+
+**8. Non-staged activity.** Check `agent_activity` from the MCP response, not memory:
+- **`awaiting_verification` / `done`** — scan history for feedback added *after* the last `completed` event (`verification_report` with `change_data.verified === false` is user feedback from the testing page). Show it, then interactive asks `Address this feedback? (y/n)`, unattended proceeds. Treat it as extra requirements and go to Phase 3 — no re-claim needed. No actionable feedback → say so and stop.
+- **`in_progress`** by another agent → `✗ Item is currently being worked on by another agent`, stop. Claimed by you in a prior session → proceed.
+- **`staged` / `ready`** → proceed.
+
+**9. Present it:**
+```
+━━━ Work ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Title:     {title}
+ID:        {first 8}  (display only — full UUID in working memory)
+Type:      {type}
+Lifecycle: {lifecycle}
+Priority:  {priority or "not set"}
+Mode:      {unattended or interactive}
+─────────────────────────────────────────────────────────
+{description}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+Add an `Instructions:` line for `ai_instructions`, and mention prior notes/memories briefly ("2 prior notes, 1 related decision").
+
+## Phase 2 — Brainstorm (interactive only)
+
+Unattended skips this entirely.
+
+Ask once: `Brainstorm before starting? (y/n)`. If yes, run **rounds of 5 questions** drawn from: scope & intent · approach & alternatives · data & state · edge cases & failure modes · dependencies & integration · acceptance & verification. Pick the most impactful gaps first.
+
+Each question offers `**Suggested:** <proposal> — <one-sentence reasoning>` then `Agree, adjust, or provide your own answer.` After each round, end automatically if the high-impact areas are covered (`All key areas covered — wrapping up brainstorm.`), otherwise ask `Continue brainstorming? (y/n)`. Stop immediately on "done"/"good"/"that's it"/"stop".
+
+Save with `add_implementation_note(action_item_id, content: <summary>)` in markdown, then `✓ Brainstorm saved`.
+
+## Phase 3 — Implement
+
+**10. Claim.** `claim_work_item(action_item_id)`. Already claimed by another agent → `✗ Item already claimed`, stop. Already yours (returning for feedback) → skip.
+
+**Read the originating conversation.** The response carries `session_context`. When `transcript_is_authoritative` is true — the item was *born* in that session — call `get_session_transcript({ session_id: session_context.originating_session_id, tail: 40 })` before implementing. Send `tail` (and `known_instruction_tiers_version` / `_hash` if you hold them): an unbounded seed re-pays the whole room, measured at ~26k tokens for a single catch-up. The response's `transcript_window` tells you whether more exists; page deliberately with `after_message_id` if it does. Don't skip this because the fields look complete — that is exactly the nuance it recovers. When `transcript_is_authoritative` is false the item fields are canonical and the transcript is optional background. If it reveals intent or criteria the item lacks, persist them with `update_action_item`.
+
+**11. Isolated worktree** (never a branch-in-place — the main repo must never switch branches or hold another session's changes):
+
+a. `pwd` → `main_repo`. Every path below derives from it, and you return here to merge.
+b. `branch_name` = `{branch_prefix}{first 8 of id}` (fallback prefix `work/action-item-`).
+c. `worktree_path` = `<parent_of_main_repo>/.<basename(main_repo)>-worktrees/task-<first8>-<unix_timestamp>` — the timestamp keeps retries and parallel runs from colliding.
+d. `git worktree add "<worktree_path>" -b "<branch_name>"`. **Returning to an existing branch:** omit `-b`, and `git fetch origin "<branch_name>"` first if the local ref is missing. If the add fails, go to Failure Handling — never force-overwrite.
+e. Link deps so checks can run without an install (best-effort; if it fails, note that dependency-based checks may be skipped and continue — never fall into `npm install`): `ln -s "<main_repo>/node_modules" "<worktree_path>/node_modules"`.
+f. `cd "<worktree_path>"` — every git and test command through the push runs here.
+
+**12. Implement.** Read files before editing. Follow existing conventions, the item's `ai_instructions`, brainstorm and prior notes. Apply the instruction tiers from step 4: `custom_instructions` (principles — how you build), `agent_rules` + `owner_agent_rules` (execution mechanics — checks before pushing, never `git stash`, commit only your own files, honour the target branch). Personal rules specialize local working style; shared-repo-safety rules always hold. Skip an empty tier.
+
+Log milestones as you go with `add_implementation_note` — markdown, bullets, never one prose paragraph.
+
+**Database migrations.** Never assume which database. `database_targets` from step 4 gives each connected DB with its non-secret `identity` (Supabase: `identity.externalId` is the project ref), `environment`, and the `branch_name` whose migrations target it.
+- Pick the target whose `branch_name` matches the branch this repo pushes to (step 14b), or one with `branch_name: null` (all branches).
+- Apply it with **your own** tooling pointed at that `identity` — DevSpec never applies migrations and never hands you the credential.
+- Never select by `name` (they collide). If the match has `needs_reconnect: true`, a null `identity`, or your tooling can't reach it, **stop** and fail `"Requires human judgment: cannot reach migration target <identity.externalId>"` rather than applying to a default database. Be especially careful when `environment` is `production`.
+
+**13. Check.** Run the configured `test_commands` that are set (unit, e2e, typecheck) plus anything the item's `ai_instructions` names. Continue on failure but note it. No commands configured → skip gracefully and note it; never invent commands or assume a toolchain.
+
+**14. Commit, integrate, push, merge.**
+
+a. Stage only what you changed — `git diff --name-only`, then `git add <file> …`, never `git add -A`. Get the message from `generate_commit_message({ action_item_id, summary, type })` and commit it verbatim: it carries the `[devspec:<id>]` tag DevSpec links commits and deployments by. Do not hand-write it.
+
+b. **Resolve the merge target for the repo you are pushing**, in order: its entry's `target_branch` in the `repos` map (match `full_name` to this repo's origin) → that entry's `default_branch` → `starting_branch`. A multi-repo item pushes each repo to **its own** resolved branch.
+
+c. **Integrate before pushing** (when merging): in the worktree, `git fetch origin {merge_target}` then `git merge origin/{merge_target} --no-edit`. Conflicts here are normal — resolve them yourself, never by discarding the other side; re-run step 13's checks if new commits arrived. Can't resolve confidently → `git merge --abort` and go to Failure Handling. Then `git push -u origin {branch_name}`.
+
+d. **Merge from the main repo** (`cd "<main_repo>"` — git refuses the same branch in two worktrees). Push atomicity is the lock:
+```bash
+git fetch origin {merge_target}
+git checkout {merge_target}
+git merge --ff-only origin/{merge_target}
+git merge {branch_name} --no-ff --no-edit
+git push origin {merge_target}
+```
+- `--ff-only` fails → the local target has commits the remote lacks. Your own leftovers from a rejected attempt at THIS item → `git reset --hard origin/{merge_target}`. Anything else (the developer's local work) → do not discard; Failure Handling, and say so.
+- The `{branch_name}` merge must be clean; conflicts were resolved in (c). If it conflicts, the target moved again → `git merge --abort`, repeat (c) **in the worktree, before removing it**, retry.
+- Push rejected (non-fast-forward) → someone landed between fetch and push. Retry, bounded at 3: repeat (c), then this step. After the third, Failure Handling — the branch is pushed, so it can be resolved by hand.
+
+e. **Remove the worktree — mandatory on every path**, merged or not (the branch and commits live in the repo independently). **Drop the `node_modules` link first:** on Windows it is a junction into the main checkout and `--force` recurses through it, wiping the real one (the `isSymbolicLink` guard means only a link is ever removed).
+```bash
+node -e "const fs=require('fs'),p='<worktree_path>/node_modules';try{if(fs.lstatSync(p).isSymbolicLink()){try{fs.unlinkSync(p)}catch{fs.rmdirSync(p)}}}catch{}"
+git worktree remove "<worktree_path>" --force
+```
+Run from `main_repo`. If it fails (a file lock), wait and retry once; still failing → warn but don't block completion (`git worktree prune` reaps it later).
+
+## Phase 4 — Done
+
+**15. Report,** in order:
+
+a. `add_implementation_note` — final summary: files changed, what they do, decisions made. Markdown with bullets, never one paragraph.
+
+b. `add_commit_reference` — commit SHA and message.
+
+c. `record_implementation` — **every field, none skipped**: `action_item_id`, `commit_sha`, `agent_merged`, `affected_files`, `completion_note` (technical), plus:
+- `completion_summary` — 2–4 sentences for a non-developer: what changed and why it matters, plain language.
+- `testing_notes` — numbered steps a non-developer can follow, naming exact URLs and UI elements. For invisible work, how to verify correctness ("Run `npm run typecheck` and confirm zero errors").
+- `usage_notes` — where to find it in the UI; empty string for non-user-facing work.
+- `verification_report` — `verification_type` (`automated` / `human_required` / `partial`), `automated_checks_passed` (every check that ran AND passed; omit skipped ones), `human_review_needed` (specific what and why), `confidence` (0.9+ straightforward and green; 0.7–0.9 complex or critical paths; <0.7 real uncertainty).
+- `provider`: `"claude_code"`.
+- `local_session_id` — the real UUID from `echo "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"`, so the developer can resume this exact session from the DevSpec UI. Pass the concrete value; **never** the literal `${CLAUDE_SESSION_ID}` text — MCP arguments are not shell-expanded, so a placeholder is stored verbatim and is useless. Empty output → omit the field. Never pass `machine_user_id`; the server defaults it to you.
+
+d. `record_memory` — **only if** the work taught you something durable about the *project*. `search_memories` first: it returns a card, so `get_memory` the closest match and read it in full, then `supersede_memory`/`retract_memory` the stale one rather than duplicating. Don't record aggressively or capture what the code already says.
+
+**Memory or rule?** A fact or decision, with reasoning someone might revisit → **memory**. An instruction an agent should obey every time → **rule** (`write_project_instruction_rule`). *"We chose Broadcast over postgres_changes because RLS made client CDC undeliverable"* is a memory; *"never add client postgres_changes without documenting it"* is a rule. Filing a rule as a memory means nobody follows it; filing a decision as a rule strips the reasoning that justified it. Read the `outcome`: `queued_for_review` means **not in effect** until a maintainer accepts — never report it as done.
+
+**16. Output:**
+```
+━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ {title}
+  {id first 8} · {type} · {priority}
+  {N} files changed · branch: {branch}
+  completion, testing notes, and usage notes recorded
+  ─────────────────────────────────────────────────────
+  {✓ or ✗} Push: {pushed to origin | off}
+  {✓ or ✗} Merge: {merged to {branch} | off}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
 
 ## Failure Handling
 
-Runs as a "finally" block — it MUST execute no matter which Phase 3 / Phase 4 step failed. Order matters: abort any in-flight git operation and clean up the worktree so the main repo is left safe, THEN record the failure.
+A "finally" block — it runs whichever Phase 3/4 step failed. Order matters: leave the main repo safe first, then record.
 
-1. **Abort any in-flight git operation and return to the main repo** (best-effort — these fail harmlessly if there is nothing to abort):
-   ```bash
-   cd "<main_repo>"
-   git merge --abort
-   git rebase --abort
-   ```
-2. **Remove the worktree** (MANDATORY, best-effort at the edges). From `main_repo`, **first drop the `node_modules` link, then remove the worktree** (on Windows the `--force` remove otherwise recurses through the `node_modules` junction and wipes the main checkout's real `node_modules`):
-   ```bash
-   node -e "const fs=require('fs'),p='<worktree_path>/node_modules';try{if(fs.lstatSync(p).isSymbolicLink()){try{fs.unlinkSync(p)}catch{fs.rmdirSync(p)}}}catch{}"
-   git worktree remove "<worktree_path>" --force
-   ```
-   Wait briefly and retry once if it fails. If the worktree was never created (the failure happened before step 13 added it), skip this silently. The feature branch and any pushed commits survive worktree removal, so the work can still be picked up.
-3. Call `add_implementation_note` documenting what was attempted, which step failed, and whether the worktree was cleaned up.
-4. Call `update_action_item` with `agent_activity: 'failed'` and `agent_error: <description>`.
-5. Output: `✗ Failed: {reason}`
+1. From `main_repo`: `git merge --abort`, `git rebase --abort` (harmless if there is nothing to abort).
+2. **Remove the worktree** — drop the `node_modules` link first, exactly as in step 14e. Retry once after a brief wait. Never created (failed before step 11) → skip silently. The branch and pushed commits survive, so the work can be picked up.
+3. `add_implementation_note` — what was attempted, which step failed, whether the worktree was cleaned up.
+4. `update_action_item` with `agent_activity: 'failed'` and `agent_error: <description>`.
+5. `✗ Failed: {reason}`
 
 ## Rules
 
-- Do NOT output filler text between steps — let symbols and structure communicate progress
-- Do NOT ask the user to confirm or review the completion fields — infer everything from git and the action item
-- In **interactive mode**, the ONLY user interaction is: picking the action item (if ambiguous) and the brainstorm phase
-- In **unattended mode**, there is NO user interaction — zero prompts, zero confirmations
-- Always read a file before editing it
-- Stage specific files only — never `git add -A` or `git add .`
-- Implementation, testing, and the commit/push all happen inside the worktree from step 13; the merge and the worktree removal happen from the main repo. Never run `git checkout -b` in the main repo — that pollutes a shared checkout and collides with other concurrent sessions.
-- Write the title and description fields as requirements (imperative tense), not past-tense summaries
-- The completion_summary is for end users, not developers
-- The testing_notes MUST be numbered step-by-step instructions a non-developer can follow
-- ALL completion fields are required — do not skip any
-- If the action item is too vague or requires human judgment to proceed, fail it with error "Requires human judgment" rather than guessing
-- `record_implementation` lands the item at `implemented`, NOT `done`. NEVER offer to verify or "mark it done", and never call `verify_action_item` — reaching `done` is a separate decision a present human makes. After recording, report the item as implemented (plus its check status) and stop. In `--unattended` mode you never verify under any circumstances.
-- **Parking vs. dropping an item.** Beyond shipping, an item can be set aside: `update_action_item(lifecycle: 'deferred')` parks it (consciously "not now" — reversible, resume with `update_action_item(lifecycle: 'open')`). `deferred` counts as resolved, so a deferred child no longer holds its parent brief open (a brief auto-completes once every child is verified, dismissed, OR deferred). It is distinct from `dismissed` (won't-do, terminal) and `blocked` (waiting on a dependency). When a parked child is genuinely SEPARATE future work that shouldn't reopen the original brief later, use `spin_off_action_item({ action_item_id, defer? })` instead — it extracts the child into a standalone follow-up item, detaches it from the brief, records a `derived_from` provenance link, and (by default) parks the new item as deferred. Never invent a `deferred` shortcut on `record_implementation`; these are explicit `update_action_item` / `spin_off_action_item` calls.
+- No filler between steps — let the structure carry it.
+- Never ask the user to confirm or review completion fields; infer them from git and the item.
+- Interactive: the only interaction is picking an ambiguous item and the brainstorm. Unattended: none at all.
+- Always read a file before editing it. Stage specific files only.
+- Implementation, checks and push happen in the worktree; merge and removal happen from `main_repo`. Never `git checkout -b` in the main repo — it pollutes a shared checkout and collides with concurrent sessions.
+- Write titles and descriptions as requirements (imperative), not past-tense summaries.
+- Too vague to do without guessing → fail `"Requires human judgment: …"`.
+- **`record_implementation` lands the item at `implemented`, never `done`.** Reaching done is a separate decision a present human makes — see `core.stop-at-implemented` and `core.preserve-human-verification-authority` in the contract. Report the item as implemented plus its check status, and stop.
+- **Parking vs dropping.** `update_action_item(lifecycle: 'deferred')` parks it — reversible, and it counts as resolved so a deferred child stops holding its parent brief open. Distinct from `dismissed` (won't-do, terminal) and `blocked` (waiting on a dependency). When the parked work is genuinely *separate* future work that shouldn't reopen the brief, use `spin_off_action_item({ action_item_id, defer? })` — it extracts a standalone follow-up, detaches it from the brief, records a `derived_from` link and parks it. There is no `deferred` shortcut on `record_implementation`.

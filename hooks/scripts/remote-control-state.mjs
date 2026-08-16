@@ -796,6 +796,153 @@ export function resolveLocalAction({
   }
 }
 
+/**
+ * Persist connection state + the local conversation bond, then (by default) start
+ * the continuous poller. This is the whole of what `write` does, extracted so the
+ * mechanical connect path (devspec-remote-connect.mjs) reaches it by CALLING it
+ * rather than by re-implementing state writing a second time.
+ *
+ * `knownInstructionTiers` is the {version, hash} the server just handed back. It is
+ * persisted so the NEXT register on this conversation can echo it and receive
+ * `instructions_unchanged` instead of the full tier texts again (item e98b2859).
+ */
+export function writeConnectionState({
+  connectionId,
+  sessionId,
+  agent,
+  cwd,
+  localId: localIdArg,
+  ownerPid: ownerPidArg,
+  codename,
+  title,
+  url,
+  hostToken: hostTokenArg,
+  instructionTiers = null,
+  noPoller = false,
+  env = process.env,
+}) {
+  const resolvedCwd = cwd || process.cwd()
+  // Token symmetry (item 74b29c76): heartbeat under the SAME bearer that registered.
+  const hostToken =
+    (typeof hostTokenArg === 'string' && hostTokenArg.trim() ? hostTokenArg.trim() : null) ||
+    hostTokenFromEnv(env)
+  const auth = resolveDevspecMcpAuth(resolvedCwd, { hostToken })
+  const prev = readJson(connectionPath(connectionId)) || {}
+  const agentName = agent || prev.agent_name || AGENT_NAME
+  const localId = localIdArg ?? detectLocalId({}, env).local_id
+  const resolvedSessionId =
+    typeof sessionId === 'string' && sessionId.length >= 8 ? sessionId : (prev.session_id ?? null)
+  const ownerPid = resolveOwnerPid(ownerPidArg, prev.owner_pid)
+
+  // Retain the tier fingerprint only when the server actually re-sent tiers; an
+  // `instructions_unchanged` reply carries no hash and must not clear the stored one.
+  const tiersVersion =
+    instructionTiers?.version ?? prev.instruction_tiers_version ?? null
+  const tiersHash = instructionTiers?.hash ?? prev.instruction_tiers_hash ?? null
+
+  const state = {
+    ...prev,
+    enabled: true,
+    connection_id: connectionId,
+    session_id: resolvedSessionId,
+    agent_name: agentName,
+    local_id: localId ?? prev.local_id ?? null,
+    owner_pid: ownerPid,
+    mcp_url: url || auth.mcp_url || prev.mcp_url || 'https://devspec.ai/api/mcp',
+    token: auth.token || prev.token || undefined,
+    auth_source: auth.source || auth.error || prev.auth_source || null,
+    auth_ok: !!auth.ok || !!prev.auth_ok,
+    cwd: resolvedCwd,
+    session_codename: codename || prev.session_codename || prev.codename || null,
+    title: title || prev.title || null,
+    instruction_tiers_version: tiersVersion,
+    instruction_tiers_hash: tiersHash,
+    ended_from_ui: false,
+    end_reason: null,
+    updated_at: new Date().toISOString(),
+  }
+  const perPath = connectionPath(connectionId)
+  writeJson(perPath, state)
+  // Legacy pointer = most recently connected connection (backward compatible).
+  writeJson(LEGACY_PATH, state)
+
+  let bond = null
+  if (localId) {
+    bond = writeLocalBond(agentName, localId, {
+      status: 'live',
+      connection_id: connectionId,
+      session_id: resolvedSessionId,
+      session_codename: state.session_codename,
+      title: state.title,
+      cwd: resolvedCwd,
+      end_reason: null,
+      cursor_after_message_id: prev.cursor_after_message_id || null,
+    })
+  }
+
+  const result = {
+    ok: true,
+    path: perPath,
+    legacy_path: LEGACY_PATH,
+    connection_id: state.connection_id,
+    session_id: state.session_id,
+    session_codename: state.session_codename,
+    title: state.title,
+    mcp_url: state.mcp_url,
+    auth_ok: state.auth_ok,
+    auth_source: state.auth_source,
+    token_present: !!state.token,
+    local_id: localId,
+    owner_pid: ownerPid,
+    bond_path: bond ? localBondPath(agentName, localId) : null,
+  }
+  if (!state.auth_ok) result.warning = auth.error
+  if (!localId) {
+    result.warning_local =
+      'No --local-id / conversation env; soft-reconnect and already_live will not work until write is called with a local id.'
+  }
+
+  const wantPoller = state.auth_ok && !noPoller
+  if (wantPoller) {
+    try {
+      const reaped = reapDeadPollers({ agent: agentName, exceptConnectionId: connectionId })
+      if (reaped.length) result.reaped = reaped
+    } catch {
+      /* non-fatal */
+    }
+    // Same token/url/owner → the live poller keeps serving this connection
+    // (session attach/detach reaches it via the server heartbeat echo), so a
+    // `write --session` never restarts it. Only a real identity change takes
+    // the kill→respawn path — and even then the dying poller exits silently
+    // (item b9e02835).
+    const reuseRunning =
+      !!prev.token &&
+      prev.token === state.token &&
+      (prev.mcp_url || null) === (state.mcp_url || null) &&
+      (Number(prev.owner_pid) || null) === (Number(state.owner_pid) || null)
+    const poller = ensurePollerForConnection(connectionId, {
+      cwd: resolvedCwd,
+      ownerPid,
+      sessionId: resolvedSessionId,
+      reuseRunning,
+    })
+    result.poller = poller
+    if (!poller.ok) result.warning_poller = poller.error
+  } else if (noPoller) {
+    result.poller = { ok: true, skipped: true, reason: 'no-poller' }
+  }
+
+  return result
+}
+
+/** The tier fingerprint previously retained for this conversation's connection. */
+export function knownInstructionTiersFor(connectionId) {
+  if (!connectionId) return null
+  const prev = readJson(connectionPath(connectionId))
+  if (!prev?.instruction_tiers_hash || !prev?.instruction_tiers_version) return null
+  return { version: prev.instruction_tiers_version, hash: prev.instruction_tiers_hash }
+}
+
 // --- CLI entry (skipped when imported for tests) ---
 const isMain =
   Boolean(process.argv[1]) &&
@@ -1143,129 +1290,25 @@ if (isMain) {
       )
       process.exit(2)
     }
-    const cwd = args.cwd || process.cwd()
-    // Token symmetry (item 74b29c76): prefer the SAME bearer the host MCP client
-    // used for register_connection so the poller heartbeats THIS connection under
-    // the same identity — otherwise the server rejects with "connection belongs to
-    // a different token" and dispatch delivery spams. The host token comes from an
-    // explicit --host-token (the write "receives one") or the reachable plugin
-    // userConfig env Claude Code exports (an env "carries it"); it wins over the
-    // .mcp.json walk but not an explicit DEVSPEC_MCP_TOKEN. Absent on non-Claude
-    // plugins / dev-from-source setups → resolution is unchanged. See resolve-mcp-auth.mjs.
-    const hostToken =
-      (typeof args['host-token'] === 'string' && args['host-token'].trim()
-        ? args['host-token'].trim()
-        : null) || hostTokenFromEnv(process.env)
-    const auth = resolveDevspecMcpAuth(cwd, { hostToken })
-    const prev = readJson(connectionPath(connectionId)) || {}
-    const agentName = args.agent || prev.agent_name || AGENT_NAME
-    // The conversation this write belongs to — stamped INTO the per-connection state
-    // so the mirror hook can bind strictly to THIS conversation.
-    const localId = detectLocalId(args, process.env).local_id
-    // Optional attached session (present for --session / --new; absent = sessionless).
-    const sessionId =
-      typeof args.session === 'string' && args.session.length >= 8 ? args.session : prev.session_id ?? null
-    // Owner-process anchor for self-termination (see devspec-remote-poll.mjs and
-    // resolveOwnerPid / resolveOwnerPidAutoWindows above for the win32 self-resolve path).
-    const ownerPid = resolveOwnerPid(args['owner-pid'], prev.owner_pid)
-    const state = {
-      ...prev,
-      enabled: true,
-      connection_id: connectionId,
-      session_id: sessionId,
-      agent_name: agentName,
-      local_id: localId ?? prev.local_id ?? null,
-      owner_pid: ownerPid,
-      mcp_url: args.url || auth.mcp_url || prev.mcp_url || 'https://devspec.ai/api/mcp',
-      token: auth.token || prev.token || undefined,
-      auth_source: auth.source || auth.error || prev.auth_source || null,
-      auth_ok: !!auth.ok || !!prev.auth_ok,
-      cwd,
-      session_codename: args.codename || prev.session_codename || prev.codename || null,
-      title: args.title || prev.title || null,
-      ended_from_ui: false,
-      end_reason: null,
-      updated_at: new Date().toISOString(),
-    }
-    const perPath = connectionPath(connectionId)
-    writeJson(perPath, state)
-    // Legacy pointer = most recently connected connection (backward compatible).
-    writeJson(LEGACY_PATH, state)
-
-    // Bind local conversation → this connection (live).
-    let bond = null
-    if (localId) {
-      bond = writeLocalBond(agentName, localId, {
-        status: 'live',
-        connection_id: connectionId,
-        session_id: sessionId,
-        session_codename: state.session_codename,
-        title: state.title,
-        cwd,
-        end_reason: null,
-        cursor_after_message_id: prev.cursor_after_message_id || null,
-      })
-    }
-
-    const result = {
-      ok: true,
-      path: perPath,
-      legacy_path: LEGACY_PATH,
-      connection_id: state.connection_id,
-      session_id: state.session_id,
-      session_codename: state.session_codename,
-      title: state.title,
-      mcp_url: state.mcp_url,
-      auth_ok: state.auth_ok,
-      auth_source: state.auth_source,
-      token_present: !!state.token,
-      local_id: localId,
-      bond_path: bond ? localBondPath(agentName, localId) : null,
-    }
-    if (!state.auth_ok) {
-      result.warning = auth.error
-    }
-    if (!localId) {
-      result.warning_local =
-        'No --local-id / conversation env; soft-reconnect and already_live will not work until write is called with a local id.'
-    }
-
-    // Default: start the continuous heartbeat poller after a successful write.
-    const wantPoller = state.auth_ok && !args.noPoller
-    if (wantPoller) {
-      try {
-        const reaped = reapDeadPollers({ agent: agentName, exceptConnectionId: connectionId })
-        if (reaped.length) result.reaped = reaped
-      } catch {
-        /* non-fatal */
-      }
-      // Same token/url/owner → the live poller keeps serving this connection
-      // (session attach/detach reaches it via the server heartbeat echo), so a
-      // `write --session` never restarts it. Only a real identity change takes
-      // the kill→respawn path — and even then the dying poller exits silently
-      // (item b9e02835).
-      const reuseRunning =
-        !!prev.token &&
-        prev.token === state.token &&
-        (prev.mcp_url || null) === (state.mcp_url || null) &&
-        (Number(prev.owner_pid) || null) === (Number(state.owner_pid) || null)
-      const poller = ensurePollerForConnection(connectionId, {
-        cwd,
-        ownerPid,
-        sessionId,
-        reuseRunning,
-      })
-      result.poller = poller
-      if (!poller.ok) {
-        result.warning_poller = poller.error
-        process.stderr.write(`remote-control-state: ensure-poller failed — ${poller.error}\n`)
-      }
-    } else if (args.noPoller) {
-      result.poller = { ok: true, skipped: true, reason: 'no-poller' }
+    const result = writeConnectionState({
+      connectionId,
+      sessionId: args.session,
+      agent: args.agent,
+      cwd: args.cwd || process.cwd(),
+      localId: detectLocalId(args, process.env).local_id,
+      ownerPid: args['owner-pid'],
+      codename: args.codename,
+      title: args.title,
+      url: args.url,
+      hostToken: args['host-token'],
+      noPoller: !!args.noPoller,
+    })
+    if (result.warning_poller) {
+      process.stderr.write(`remote-control-state: ensure-poller failed — ${result.warning_poller}\n`)
     }
 
     process.stdout.write(JSON.stringify(result, null, 2) + '\n')
-    process.exit(state.auth_ok ? 0 : 1)
+    process.exit(result.auth_ok ? 0 : 1)
   }
 
   process.stderr.write(`Unknown command: ${cmd}\n`)

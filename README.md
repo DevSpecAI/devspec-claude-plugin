@@ -67,7 +67,7 @@ Run the DevSpec connection check
 
 You should see confirmation that you're connected as your DevSpec user. (If you're following DevSpec's setup wizard, this step turns green once the check passes.)
 
-Commands appear in Claude Code's `/` menu after install, namespaced under the plugin — for example `/devspec:devspec.remote` and `/devspec:devspec.work`.
+Two commands appear in Claude Code's `/` menu after install, namespaced under the plugin: `/devspec:devspec.remote` and `/devspec:devspec.remote-stop`. Everything else you might want is a sentence — see [Other workflows](#other-workflows).
 
 ## ⭐ Drive a session from DevSpec (remote control)
 
@@ -101,42 +101,55 @@ The result is a shared, watchable session the whole team can weigh in on — whi
 
 ## Other workflows
 
+**There is no command for these, and that is the point.** The plugin ships two
+commands because connecting and disconnecting run a real setup script. Working
+on an item does not — your agent already has the DevSpec tools, so you ask for
+what you want in plain language.
+
 ### Work on a single task
 
 ```
-/devspec:devspec.work <task name or id>
+Work on DevSpec action item 4f2a
 ```
 
-Claude claims the task, creates an isolated git branch, implements the change, runs your project's configured tests, and commits. When it's done, it records what it did — the files it touched, tests it ran, and a summary — back on the task in DevSpec, ready for a human to review and mark complete.
+Claude reserves it so no other agent takes it mid-run, claims it, creates an
+isolated git worktree, implements the change, runs your project's configured
+tests, and commits. Then it records what it did — files touched, tests run, a
+summary — back on the item, ready for a human to review.
 
-One useful flag:
+Ask it to "also connect to the Agents page" and it will open a remote-control
+channel while it works, so you can watch and steer from your browser.
 
-- `--remote` — also connect this session to the Agents page so you can watch and steer from your browser.
+### Work several tasks in order
 
-### Let a queue clear itself
+```
+Work these DevSpec items in order: 4f2a, 9c1b, 2e7d
+```
 
-Stage the tasks in DevSpec (Action Items → **Stage for Autopilot**, or approve a plan). That's the whole setup: DevSpec hands the batch to one of your idle connected sessions — no command to start, nothing to enroll — and Claude works the members in order, the same way as `devspec.work`, recording progress on each task as it goes. When the batch finishes, the session simply goes back to being available.
+One agent holds all three up front — that is what stops a second agent picking
+up the third while the first is still in progress — and works them one at a
+time. DevSpec's web app has a copy button that writes this line for you from a
+multi-select.
 
-Watch from the **Agents page** if you like: each batch shows which session holds it, and a batch still waiting says why (no idle session, or the tool it needs isn't running). A task Claude can't do safely is failed with a reason, not guessed at — and because that's tracked on the task itself, you're not paged into a room nobody is watching.
+### Everything else
 
-**Want to review the plan first?** In DevSpec, use **Request Agent Plan** — Claude writes up its approach and waits. Nothing is coded until you **Approve & Queue**.
+Ask for it. "Log a DevSpec item for the login bug." "I just finished the caching
+fix — record it." "Write the commit message for 4f2a." "Link commit a1b2c3d to
+4f2a." "How do I set up a deployment target?" Each maps to a DevSpec MCP tool
+your agent can already see.
+
+There used to be nine more commands here. Every one was a page of prose telling
+a model to call a tool it already had, kept in six repositories with no way to
+notice when one drifted out of date.
 
 ## All commands
 
-Every command is in Claude Code's `/` menu after install, under the `/devspec:` prefix.
+Both commands are in Claude Code's `/` menu after install, under the `/devspec:` prefix.
 
 | Command | What it does |
 |---|---|
 | `/devspec:devspec.remote` | ⭐ Connect this session to DevSpec's Agents page (see above) |
 | `/devspec:devspec.remote-stop` | Disconnect this session from the Agents page |
-| `/devspec:devspec.work` | Pick up an action item, implement it, and record the work |
-| `/devspec:devspec.brainstorm` | Talk through scope and approach before writing code |
-| `/devspec:devspec.create` | Create a new action item from the terminal |
-| `/devspec:devspec.commit` | Write a tracked commit message and commit |
-| `/devspec:devspec.link` | Link an existing commit to an action item |
-| `/devspec:devspec.done` | Log work you already finished (commits, testing notes) |
-| `/devspec:devspec.help` | Ask a question and get an answer from DevSpec's docs |
-| `/devspec:devspec.verify-connection` | Confirm the plugin is connected |
 
 ## How it finds the right project
 

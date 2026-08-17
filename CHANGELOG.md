@@ -2,6 +2,47 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.14.0 - 2026-08-17
+
+### Nine commands removed — two remain
+
+`/devspec.work`, `.create`, `.commit`, `.link`, `.help`, `.done`, `.brainstorm`,
+`.session-brainstorm` and `.verify-connection` are deleted. `/devspec.remote` and
+`/devspec.remote-stop` stay.
+
+**Why these two survive and the others do not.** Connecting runs a deterministic
+script — resolve the project, pin the folder, register the connection, arm the
+poller, write state — that a model improvises badly and that can be tested. That
+is what earns a command. The other nine were a page of prose each, telling a
+model to call one MCP tool it could already see.
+
+**Nothing was lost.** What those commands actually taught now lives in the tool
+schemas themselves, server-side, where it is written once and reaches every host
+the moment it changes — instead of being copied into six repositories with no
+way to notice when one drifts. `create_action_item` already coached intent and
+acceptance criteria; `record_completed_work` already covered imperative titles
+and who testing notes are written for.
+
+**What you do instead:** say it.
+
+    Work on DevSpec action item 4f2a
+    Work these in order: 4f2a, 9c1b, 2e7d
+    Log a DevSpec item for the login bug
+    Write the commit message for 4f2a
+
+DevSpec's web app copy buttons emit exactly these lines, so "copy" and "type it
+yourself" produce the same thing. A sentence also works in a host with no plugin
+at all, which a slash command never could.
+
+**`--plan` note for Cursor users:** `devspec.brainstorm` was the only route to
+Cursor's plan mode from DevSpec, so that goes with it. If you want plan mode it
+should come back as a deliberate feature, not as a leftover.
+
+**The README's "Stage for Autopilot" section is also gone.** It described work
+being handed to an idle session — a dispatch model deleted some time ago
+(`13958ab4`). Nothing is ever sent work now: an agent reserves what it was asked
+to do.
+
 ## 0.13.0 - 2026-08-17
 
 ### An agent reserves its work — nothing is dispatched to it any more

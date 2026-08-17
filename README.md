@@ -109,9 +109,8 @@ The result is a shared, watchable session the whole team can weigh in on — whi
 
 Claude claims the task, creates an isolated git branch, implements the change, runs your project's configured tests, and commits. When it's done, it records what it did — the files it touched, tests it ran, and a summary — back on the task in DevSpec, ready for a human to review and mark complete.
 
-Two useful flags:
+One useful flag:
 
-- `--unattended` — don't pause to ask questions; run start to finish (a task that's too vague to do safely is failed rather than guessed at).
 - `--remote` — also connect this session to the Agents page so you can watch and steer from your browser.
 
 ### Let a queue clear itself
@@ -173,7 +172,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 - Changes are made on an **isolated branch** — your working checkout stays clean.
 - It **never force-pushes**, and it respects the protected paths you set.
 - **Nothing is marked done on its own.** Claude does the work and records it; a human reviews and verifies in DevSpec.
-- In `--unattended` runs and dispatched batches it won't stop to ask clarifying questions — a task that's too ambiguous to do safely is failed with a reason, not guessed at.
+- It won't stall on a question nobody may be reading: a task too ambiguous to do safely is failed with a reason, not guessed at.
 - Commits it makes for a tracked task carry a small `[devspec:…]` tag so DevSpec can link the commit — and later the deployment — back to the task.
 
 ## Troubleshooting

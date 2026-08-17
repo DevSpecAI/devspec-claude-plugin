@@ -1,6 +1,6 @@
 ---
 name: devspec.work
-description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --unattended for fire-and-forget execution and --remote to open a DevSpec remote-control channel (Agents page).
+description: Pick up a DevSpec action item by name, optionally brainstorm, implement it in an isolated worktree, push/merge per settings, and record the implementation. Supports --remote to open a DevSpec remote-control channel (Agents page).
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent, mcp__devspec__list_projects, mcp__devspec__get_project_summary, mcp__devspec__get_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_action_item_history, mcp__devspec__get_session_transcript, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__claim_work_item, mcp__devspec__update_action_item, mcp__devspec__spin_off_action_item, mcp__devspec__add_implementation_note, mcp__devspec__add_commit_reference, mcp__devspec__record_implementation, mcp__devspec__generate_commit_message, mcp__devspec__create_session, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__get_connection_dispatch, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__preview_conflict_resolution
 ---
 
@@ -13,9 +13,10 @@ Pick up an action item, optionally brainstorm, implement it in an isolated workt
 **DevSpec owns the rules; this file owns the Claude Code mechanics.** Read the product contract at the start of a run:
 
 ```
-devspec://product/implementation-contract/attended     ← default
-devspec://product/implementation-contract/unattended   ← with --unattended
+devspec://product/implementation-contract
 ```
+
+One document. There used to be an `/attended` and an `/unattended` variant selected by a flag; the execution mode is gone, and nothing replaced it — whether to ask is a judgement you make from the item's intent and criteria, like any other.
 
 It is authoritative and **non-overridable** on: tracking and claiming before you edit, repository isolation, running the configured checks, recording criterion verdicts from observed behaviour, tagging commits, pushing safely, calling `record_implementation`, **stopping at `implemented`**, and never calling `verify_action_item` without a present human directing it. Its `instruction_boundary` also fixes precedence: live owner command > owner agent rules > project agent rules > project principles — and none of them may weaken a product rule or shared-repo safety.
 
@@ -33,15 +34,17 @@ Applies throughout Phase 3. Every commit passes the self-critique before staging
 
 **Reuse before you build.** Read the repo for *repo facts* (README, CONTRIBUTING, the directory you are about to change). The team's *operating rules* come from DevSpec — `agent_rules` and `owner_agent_rules` arrived with your claim. If the repo has a `CLAUDE.md`/`AGENTS.md` holding team rules rather than repo facts, don't treat it as a rival authority: say so and offer `import_instruction_rules`. Two unreconciled sources of rules is how an agent ends up obeying the stale one.
 
-Then: search for an existing implementation before writing a new one; edit in the codebase's canonical location for that concern rather than inventing a second one. If you are about to create a parallel implementation of something that exists — a duplicate utility, a second version of a shared component — **stop**. Extend the existing one, ask (interactive), or fail the item `"Requires human judgment: would duplicate <thing>, extension blocked by <reason>"` (unattended). Never ship a silent parallel implementation.
+Then: search for an existing implementation before writing a new one; edit in the codebase's canonical location for that concern rather than inventing a second one. If you are about to create a parallel implementation of something that exists — a duplicate utility, a second version of a shared component — **stop**. Extend the existing one, or fail the item `"Requires human judgment: would duplicate <thing>, extension blocked by <reason>"`. Never ship a silent parallel implementation.
 
 **Never ship:** hardcoded values a config system already owns (timeouts, limits, URLs, model strings, feature flags); error suppression without a log and a reason; type/lint escape hatches without a one-line justification; placeholder work (`TODO`, stubs that only log, flagged-off paths the item didn't ask for); a re-implemented helper.
 
 **Pre-commit self-critique (not skippable, however small the change).** Read `git diff --staged` end to end and answer honestly: did I reuse the existing pattern or build a parallel one? Is a value I hardcoded already owned by config? Did I swallow an error silently? Did I use an escape hatch without saying why? Did I leave TODOs or stubs the item didn't ask for? What would a reviewer with no context flag first? Fix real issues before committing; if a fix would expand scope past the item, record the trade-off as an implementation note rather than shipping something broken.
 
-## Phase 0 — Mode, project, settings
+## Phase 0 — Project and settings
 
-**1. Detect mode.** `--unattended` / `unattended` / `no interruptions` → `is_unattended`. For the whole run: never ask anything, never wait for input, fail with a documented error rather than guess, and auto-select the highest-priority match when a name is ambiguous. `--remote` / `remote control` → `is_remote`. The two are orthogonal and may be combined.
+**1. Read the invocation.** `--remote` / `remote control` → `is_remote`. That is the only modifier: it opens a control channel, it does not change what you are allowed to decide.
+
+There is no attended/unattended mode. Two rules cover what it used to: **ask only what is not yours to decide** (never a detail the recorded intent and criteria already settle), and **do not assume someone is waiting to answer**. Before you have claimed anything, an unanswerable question means printing what you need and stopping. After you have claimed, it means `fail_work_item` with a precise reason — never a silent wait.
 
 **2. Resolve the project.** Tokens are account-wide, so every project-scoped call needs a scope. Gather the facts and **let the server arbitrate** — never implement precedence yourself:
 
@@ -49,7 +52,7 @@ Then: search for an existing implementation before writing a new one; edit in th
 - The nearest `.devspec/project.json` → pass its id as **`pinned_project_id`**, never as `project_id`. They differ on purpose: `project_id` is an explicit override that outranks a verified remote, while the pin ranks *below* one, so a stale pin copied in with a template self-corrects instead of hijacking the folder. Search the working directory, then each parent up to and including the git root, never at or above your home directory.
 - Send whichever you have, or both.
 
-Only if the server reports the repo is tracked by **more than one** project do you call `list_projects({ git_remote })` and disambiguate: interactive — show the candidates and ask; unattended — fail `"Requires human judgment: repo tracked by multiple DevSpec projects"`. With neither a pin nor a matching remote, print `✗ No DevSpec project tracks this repo, and there is no .devspec/project.json pin.` and stop — or, once the user names the project, offer to write the pin (`{"project_id":"<uuid>"}`, nothing else in it, never silently, and say which project you are replacing if one is already named).
+Only if the server reports the repo is tracked by **more than one** project do you call `list_projects({ git_remote })`, show the candidates and ask which one — you cannot pick for someone. Nothing is claimed yet, so with no answer there is simply nothing to work on: print `✗ Requires human judgment: repo tracked by multiple DevSpec projects` and stop. With neither a pin nor a matching remote, print `✗ No DevSpec project tracks this repo, and there is no .devspec/project.json pin.` and stop — or, once the user names the project, offer to write the pin (`{"project_id":"<uuid>"}`, nothing else in it, never silently, and say which project you are replacing if one is already named).
 
 **3. Remote mode (`is_remote`).** Register this run as a connection on the Agents page **before claiming work**. Default is **sessionless** — a chat session is optional shared context, never a prerequisite (delivery contract ADR `b98a39a9`).
 
@@ -64,7 +67,7 @@ Then arm the wake stream with the command it prints, using the **Monitor** tool 
 
 **Keep `instruction_tiers_version` and `instruction_tiers_hash` from that response** and pass them to `claim_work_item` (step 10) as `known_instruction_tiers_version` / `known_instruction_tiers_hash`. The tiers ride on the claim response too, so without this a run pays ~4,800 characters for a second identical copy; matching values return `instructions_unchanged: true` instead. If you skipped this call or lost them, send neither and claim returns the tiers in full.
 
-Defaults when absent: `auto_push` true, `auto_merge` true, `branch_prefix` `work/action-item-`, no commit prefix, empty instructions, **no** test commands (skip testing — never assume a JS toolchain), no protected paths. `auto_merge` true implies `auto_push`. An interactive instruction not to push or merge *this run* overrides the stored value; unattended honours the stored value.
+Defaults when absent: `auto_push` true, `auto_merge` true, `branch_prefix` `work/action-item-`, no commit prefix, empty instructions, **no** test commands (skip testing — never assume a JS toolchain), no protected paths. `auto_merge` true implies `auto_push`. An instruction in this run not to push or merge overrides the stored value; with no such instruction, honour it.
 
 Store the `repos` array — `[{ id, full_name, target_branch, default_branch }]` — it is the source of truth for where each repo pushes. Store `database_targets` too if the item touches migrations.
 
@@ -72,7 +75,7 @@ Store the `repos` array — `[{ id, full_name, target_branch, default_branch }]`
 
 ## Phase 1 — Resolve the item
 
-**6. Find it.** Always call the MCP tool for current state even if you touched this item earlier — the user may have re-staged it with feedback since. `get_action_items({ project_id, status: "all" })`, match by id prefix or title. Ambiguous → interactive asks, unattended takes the highest priority then closest title. Nothing given → interactive asks, unattended prints `✗ No action item specified` and stops. No match → `✗ No action item found matching: {input}`.
+**6. Find it.** Always call the MCP tool for current state even if you touched this item earlier — it may have picked up feedback since. `get_action_items({ project_id, status: "all" })`, match by id prefix or title. Which item was meant is never yours to decide: ambiguous → show the candidates and ask; nothing given → `✗ No action item specified`; no match → `✗ No action item found matching: {input}`. In each case stop rather than guessing — nothing is claimed, so nothing is left dangling.
 
 Store the **complete UUID** returned by the API. Never truncate, pad or reconstruct it.
 
@@ -83,7 +86,7 @@ Store the **complete UUID** returned by the API. Never truncate, pad or reconstr
 Read `intent` (the why), `acceptance_criteria` (your definition of done — a diff that misses it is not done) and `ai_instructions` (constraints). Don't judge the fields complete and move on; the originating conversation often holds nuance they lost, which you pull after claiming (step 10).
 
 **8. Non-staged activity.** Check `agent_activity` from the MCP response, not memory:
-- **`awaiting_verification` / `done`** — scan history for feedback added *after* the last `completed` event (`verification_report` with `change_data.verified === false` is user feedback from the testing page). Show it, then interactive asks `Address this feedback? (y/n)`, unattended proceeds. Treat it as extra requirements and go to Phase 3 — no re-claim needed. No actionable feedback → say so and stop.
+- **`awaiting_verification` / `done`** — scan history for feedback added *after* the last `completed` event (`verification_report` with `change_data.verified === false` is user feedback from the testing page). Show it, then act on it: the feedback IS the instruction, so treat it as extra requirements and go to Phase 3 — no re-claim needed, nothing to ask. No actionable feedback → say so and stop.
 - **`in_progress`** by another agent → `✗ Item is currently being worked on by another agent`, stop. Claimed by you in a prior session → proceed.
 - **`staged` / `ready`** → proceed.
 
@@ -95,18 +98,17 @@ ID:        {first 8}  (display only — full UUID in working memory)
 Type:      {type}
 Lifecycle: {lifecycle}
 Priority:  {priority or "not set"}
-Mode:      {unattended or interactive}
 ─────────────────────────────────────────────────────────
 {description}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 Add an `Instructions:` line for `ai_instructions`, and mention prior notes/memories briefly ("2 prior notes, 1 related decision").
 
-## Phase 2 — Brainstorm (interactive only)
+## Phase 2 — Brainstorm (only when asked for)
 
-Unattended skips this entirely.
+Run this phase only when the invocation asked for it — the `/devspec.brainstorm` command, or `brainstorm` in the input. A plain work run skips it without asking.
 
-Ask once: `Brainstorm before starting? (y/n)`. If yes, run **rounds of 5 questions** drawn from: scope & intent · approach & alternatives · data & state · edge cases & failure modes · dependencies & integration · acceptance & verification. Pick the most impactful gaps first.
+Run **rounds of 5 questions** drawn from: scope & intent · approach & alternatives · data & state · edge cases & failure modes · dependencies & integration · acceptance & verification. Pick the most impactful gaps first.
 
 Each question offers `**Suggested:** <proposal> — <one-sentence reasoning>` then `Agree, adjust, or provide your own answer.` After each round, end automatically if the high-impact areas are covered (`All key areas covered — wrapping up brainstorm.`), otherwise ask `Continue brainstorming? (y/n)`. Stop immediately on "done"/"good"/"that's it"/"stop".
 
@@ -218,7 +220,7 @@ A "finally" block — it runs whichever Phase 3/4 step failed. Order matters: le
 
 - No filler between steps — let the structure carry it.
 - Never ask the user to confirm or review completion fields; infer them from git and the item.
-- Interactive: the only interaction is picking an ambiguous item and the brainstorm. Unattended: none at all.
+- The only thing you interrupt for in a work run is which item was meant. Everything else comes from the item, the instruction tiers and the contract.
 - Always read a file before editing it. Stage specific files only.
 - Implementation, checks and push happen in the worktree; merge and removal happen from `main_repo`. Never `git checkout -b` in the main repo — it pollutes a shared checkout and collides with concurrent sessions.
 - Write titles and descriptions as requirements (imperative), not past-tense summaries.

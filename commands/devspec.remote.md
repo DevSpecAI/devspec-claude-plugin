@@ -129,9 +129,9 @@ A dispatch arrives as an owner command carrying an assignment reference. **Work 
 3. Per member **in `position` order**: `claim_work_item(action_item_id, agent_branch)`, implement in an isolated worktree, `record_implementation` when done (`report_progress` for long ones, `release_work_item` to hand one back).
 4. `resolve_assignment(assignment_id, outcome: "completed" | "released")`.
 
-**How to implement is the product's contract, not this file's.** Read `devspec://product/implementation-contract/attended` or `…/unattended` — the assignment names its version and resource URI. It is authoritative on worktree isolation, verification, evidence, commits and the boundary at `implemented`. Never restate it from memory here.
+**How to implement is the product's contract, not this file's.** Read `devspec://product/implementation-contract` — the assignment names its version, and there is exactly one resource. It is authoritative on worktree isolation, verification, evidence, commits and the boundary at `implemented`. Never restate it from memory here.
 
-**Batch mode overrides conversation mode, for the batch only.** From `acknowledge_assignment` to `resolve_assignment`: do not answer the room, do not react to ambient chatter, do not pause for clarification. There may be nobody watching — a staged batch is exactly when the owner walked away. When it resolves you are ordinary available capacity again. This is why there is no separate unattended command or flag: the mode is the dispatch, not the launch.
+**There is no batch mode, because there is no mode at all.** Working a batch does not install a different set of rules for its duration, and resolving one does not clear anything. What was true of a batch is true of every run: ask only what is not yours to decide, never assume someone is waiting to answer, and fail the member with a precise reason rather than stalling on a question nobody may read.
 
 **Fail loudly, never by chatting.** A member you cannot do safely → `fail_work_item` with a precise `error` (plus `partial_work_notes`), then continue with the next. A blocked member fails the member, not the batch. Never post a question and wait — nobody may be there.
 

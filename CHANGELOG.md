@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.12.0 - 2026-08-17
+
+### `--unattended` is gone, and nothing replaced it
+
+The work command took a flag that installed a mode for the whole run: never ask, never wait, auto-pick when a name is ambiguous. It read like a safety feature and was really a licence to guess, and on this host it was not even true — a run marked unattended still narrates its whole result into the terminal, so the operator sits watching a live terminal anyway. The mode existed in the protocol and not in reality.
+
+It is deleted: the flag, the `Mode:` line in the item header, the per-step "interactive asks / unattended does X" forks, and the two mode-specific contract resources (`devspec://product/implementation-contract/attended` and `…/unattended`) which are now one document at `devspec://product/implementation-contract`.
+
+Nothing takes its place — no timeout, no patience window, no ask-policy setting. Two rules already cover it. **Ask only what is not yours to decide**, never a detail the recorded intent and acceptance criteria already settle. And **do not assume someone is waiting to answer**: before you have claimed anything, an unanswerable question means saying what you need and stopping; after you have claimed, it means failing the item with a precise reason. Neither depends on whether a human happens to be watching, which is the thing the mode was pretending to know.
+
+The brainstorm phase no longer asks whether you want it — it runs when the invocation asked for it, and a plain work run skips it silently.
+
 ## 0.11.2 - 2026-08-16
 
 ### Connect reports the session you are actually on

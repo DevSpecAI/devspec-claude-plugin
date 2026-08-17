@@ -156,7 +156,7 @@ A real git remote always wins over the pin. So if you pin a folder and later con
 
 ## Settings that live in DevSpec
 
-How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you run a task by hand or it arrives as a staged batch:
+How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you work one item by hand or a batch you were asked to take:
 
 | Setting | Controls |
 |---|---|
@@ -185,7 +185,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 | Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Connections**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
 | Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
 | "No matching project" | Make sure the repo is tracked in DevSpec, or pass `--project-id=<id>` |
-| A staged batch isn't being picked up | Check the batch's lane on the Agents page — it says why (no idle session of yours, or the tool the batch needs isn't running) |
+| A batch you asked for isn't being worked | Nothing routes work — an agent only holds what it reserved. Check the Agents page: it shows which agents are connected and what each is holding, so an unheld item means nobody was asked, not that delivery failed |
 | "Claim failed" in a batch | Another connection claimed that task first — this is normal; the batch continues |
 
 ## Contributing

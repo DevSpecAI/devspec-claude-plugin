@@ -89,10 +89,10 @@ Read `skipped` in the response and SAY what it says: an item another agent alrea
 
 Read `intent` (the why), `acceptance_criteria` (your definition of done — a diff that misses it is not done) and `ai_instructions` (constraints). Don't judge the fields complete and move on; the originating conversation often holds nuance they lost, which you pull after claiming (step 10).
 
-**8. Non-staged activity.** Check `agent_activity` from the MCP response, not memory:
+**8. What state is it actually in?** Check `agent_activity` from the MCP response, not memory:
 - **`awaiting_verification` / `done`** — scan history for feedback added *after* the last `completed` event (`verification_report` with `change_data.verified === false` is user feedback from the testing page). Show it, then act on it: the feedback IS the instruction, so treat it as extra requirements and go to Phase 3 — no re-claim needed, nothing to ask. No actionable feedback → say so and stop.
 - **`in_progress`** by another agent → `✗ Item is currently being worked on by another agent`, stop. Claimed by you in a prior session → proceed.
-- **`staged` / `ready`** → proceed.
+- **`idle`** → nobody holds it: proceed.
 
 **9. Present it:**
 ```

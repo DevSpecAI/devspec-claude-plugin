@@ -2,6 +2,24 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.13.0 - 2026-08-17
+
+### An agent reserves its work — nothing is dispatched to it any more
+
+`get_assignment`, `acknowledge_assignment` and `resolve_assignment` are gone from the server, along with `get_next_work_item`. There was nothing left for them to do: the dispatch model that sent work to an agent was deleted, so there is no batch to receive, no receipt to give, and nothing to close.
+
+What replaces them is one verb. **`reserve_work_items({ action_item_ids, connection_id })`** — the ordered set you are about to work, held so no other agent takes it mid-run — then `claim_work_item` per item as you reach it. The batch closes itself when its last member is recorded, failed or released.
+
+**`/devspec.work id1,id2,id3` now reserves the set up front.** The app has emitted one command carrying several ids since 0.12; until now the agent claimed them one at a time with nothing holding the rest, so a second agent could take id3 while the first was still on id1.
+
+**Read `skipped`.** An item another agent already holds comes back with a reason naming the holder rather than failing the call — and reporting the batch as yours anyway is how an owner ends up believing work is in progress that nobody has.
+
+### Only the agent holding an item can release or fail it
+
+`release_work_item` and `fail_work_item` had no ownership check at all, and `claim_work_item`'s compared USERS — which cannot tell two of your own agents apart, because a DevSpec token is account-wide. On 2026-08-16 a sibling connection released work another agent was actively on, leaving the item unclaimed while the reservation still said claimed.
+
+All three now check the reservation against the `connection_id` you pass, server-side. Pass it. A stale hold — an agent that died mid-run — is still always releasable with `force` and a reason, and is recorded as a takeover naming who did it, rather than reading like the holder handing work back.
+
 ## 0.12.0 - 2026-08-17
 
 ### `--unattended` is gone, and nothing replaced it

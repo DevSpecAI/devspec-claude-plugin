@@ -2,7 +2,7 @@
 name: devspec.remote
 description: Connect this Claude Code conversation to DevSpec as a first-class agent connection — available on the Agents page, attach to a session for a live transcript, driven from phone/web. Not Claude's built-in /remote-control.
 argument-hint: "[--session <uuid>] [--new] [--private] [--title=\"label\"] [optional note]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__get_connection_dispatch, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__get_assignment, mcp__devspec__acknowledge_assignment, mcp__devspec__resolve_assignment, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__get_connection_dispatch, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__reserve_work_items, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution
 ---
 
 # DevSpec Remote Control
@@ -120,18 +120,20 @@ Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop
 
 ---
 
-## 5. Dispatched assignments
+## 5. Working a batch of items
 
-A dispatch arrives as an owner command carrying an assignment reference. **Work it, don't chat it:**
+**Nothing is ever sent work.** No dispatch, no routing, no queue to be handed from. When you are asked to work several items — in a command, in the room, by your owner — you take them yourself, and holding them is what stops another agent taking them mid-run:
 
-1. `get_assignment` → the batch and its ordered members.
-2. `acknowledge_assignment(assignment_id)` — the durable receipt, once, before claiming.
-3. Per member **in `position` order**: `claim_work_item(action_item_id, agent_branch)`, implement in an isolated worktree, `record_implementation` when done (`report_progress` for long ones, `release_work_item` to hand one back).
-4. `resolve_assignment(assignment_id, outcome: "completed" | "released")`.
+1. **`reserve_work_items({ action_item_ids: [...], connection_id })`** — in the order you will work them. One reservation per connection at a time.
+2. **Read `skipped` and say what it says.** An item another agent already holds comes back with a reason naming the holder, not an error. Silently working four of the five you were given is how an owner ends up believing something is in progress that nobody has.
+3. Per item **in order**: `claim_work_item(action_item_id, agent_branch)` — pass your `connection_id` — implement in an isolated worktree, `record_implementation` when done (`report_progress` for long ones, `release_work_item` to hand one back).
+4. **Nothing to resolve.** The batch closes itself when its last member is recorded, failed or released.
 
-**How to implement is the product's contract, not this file's.** Read `devspec://product/implementation-contract` — the assignment names its version, and there is exactly one resource. It is authoritative on worktree isolation, verification, evidence, commits and the boundary at `implemented`. Never restate it from memory here.
+**How to implement is the product's contract, not this file's.** Read `devspec://product/implementation-contract` — the reserve response names its version, and there is exactly one resource. It is authoritative on worktree isolation, verification, evidence, commits and the boundary at `implemented`. Never restate it from memory here.
 
-**There is no batch mode, because there is no mode at all.** Working a batch does not install a different set of rules for its duration, and resolving one does not clear anything. What was true of a batch is true of every run: ask only what is not yours to decide, never assume someone is waiting to answer, and fail the member with a precise reason rather than stalling on a question nobody may read.
+**Only the agent holding an item may claim, release or fail it**, and the server enforces that against your `connection_id` — not against your user, because your token is account-wide and cannot tell two of your own agents apart. Pass `connection_id` on those calls. An item held by an agent that died is released with `force` and a reason, which is always allowed and is recorded as a takeover naming who did it.
+
+**There is no batch mode, because there is no mode at all.** Working a batch does not install a different set of rules for its duration, and finishing one does not clear anything. What was true of a batch is true of every run: ask only what is not yours to decide, never assume someone is waiting to answer, and fail the member with a precise reason rather than stalling on a question nobody may read.
 
 **Fail loudly, never by chatting.** A member you cannot do safely → `fail_work_item` with a precise `error` (plus `partial_work_notes`), then continue with the next. A blocked member fails the member, not the batch. Never post a question and wait — nobody may be there.
 

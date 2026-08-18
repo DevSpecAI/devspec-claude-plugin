@@ -305,6 +305,7 @@ describe('direct git commit-producing gate', () => {
     `git merge branch -m "merge [devspec:${ITEM}]"`,
     'git merge --no-commit branch',
     'git merge --squash branch',
+    'git merge --ff-only work/some-branch',
     'git cherry-pick --no-commit abc123',
     'git revert -n abc123',
     'git status --short',

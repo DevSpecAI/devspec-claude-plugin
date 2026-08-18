@@ -492,7 +492,9 @@ function segmentCommitReason(words, actionItemId) {
     return messageHasClaimTag(args, actionItemId) ? null : `git commit needs [devspec:${actionItemId}] in -m/--message`
   }
   if (subcommand === 'merge') {
-    if (args.includes('--no-commit') || args.includes('--squash')) return null
+    // --ff-only either moves the ref or aborts; it cannot author a commit, so
+    // requiring a claim tag in a message it never writes only blocked shipping.
+    if (args.includes('--no-commit') || args.includes('--squash') || args.includes('--ff-only')) return null
     return messageHasClaimTag(args, actionItemId) ? null : `git merge needs [devspec:${actionItemId}] in -m/--message or --no-commit/--squash`
   }
   if (subcommand === 'cherry-pick' || subcommand === 'revert') {

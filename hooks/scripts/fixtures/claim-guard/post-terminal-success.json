@@ -10,7 +10,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"success\":true,\"action_item_id\":\"cdd7a494-ed6a-414b-9f8f-bd0741b9de55\",\"error\":null}"
+        "text": "{\"id\":\"cdd7a494-ed6a-414b-9f8f-bd0741b9de55\",\"title\":\"Make track-before-mutation reliable across DevSpec and all seven plugin hosts\",\"lifecycle\":\"implemented\",\"agent_activity\":\"finished\",\"agent_commit_sha\":\"8bf141a6e8d3228eccdaf1bb9717fe5ab8864163\",\"agent_merged\":true,\"project_id\":\"24c4abaa-2cb9-496a-8492-cf1f1aa1090b\",\"reservation\":{\"member_state\":\"recorded\",\"assignment_id\":\"c1a1c0de-1111-4111-8111-111111111111\",\"assignment_state\":\"settled\"},\"verification_required\":false}"
       }
     ]
   }

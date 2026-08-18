@@ -2,6 +2,46 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.15.1 - 2026-08-18
+
+### The claim guard could never unlock, and blocked the plugin's own commands
+
+0.15.0 shipped a gate that no claim could open. Four fixes, all in
+`hooks/scripts/claim-guard.mjs`:
+
+- **A real claim is now observed.** `claim_work_item` answers with the claimed
+  row spread beside the server's own flag — `{ ...claimed, claim_success: true,
+  work_claim_ref }` — so the item is named by `id`. The guard demanded exactly one
+  uuid in the whole payload and an `action_item_id` key, and a real response
+  carries neither: it also contains `project_id`, `parent_action_item_id` and an
+  id per acceptance criterion. No claim was ever recorded, so every `Write`,
+  `Edit`, `NotebookEdit` and non-allowlisted `Bash` call was denied permanently,
+  in every session. The suite passed because its fixtures were hand-written to a
+  shape no server sends; they are now captured from real responses.
+- **Evidence clears again.** Only `release_work_item` returns `success: true`.
+  `record_implementation` and `fail_work_item` return the updated row, so
+  requiring a success flag left a finished claim authorising mutation until it
+  aged out.
+- **`/devspec.remote` and `/devspec.remote-stop` work without a claim.** Both are
+  `node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/…"` invocations, and `node` is not a
+  read-only program, so both were denied — a deadlock, because remote control is
+  how an agent becomes reachable for work in the first place. The allowance is
+  keyed on script identity (resolved into this guard's own directory, one of five
+  named control-plane scripts), never on the `node` program: `node -e`, `-p`,
+  `--require`, `--input-type`, a same-named script elsewhere and backtick or
+  `$(…)` arguments are all still denied.
+- **Quoting is understood.** One tokenizer now parses the command, so a path
+  containing a space survives: `git -C "/DevSpec Autopilot Plugin/repo" log`
+  previously arrived as the verb `b/c`-style fragment and was denied, which is
+  every plugin checkout on a normal machine. `<`, `>` and backticks inside quotes
+  are literal text rather than a whole-command veto, and each segment of a
+  compound is judged on its own — so `git add … && git commit -m "… [devspec:id]"`
+  is possible again instead of being refused as "chained".
+
+Unquoted redirection, subshells, command substitution, pipes into writers,
+env-prefix attacks, `find -delete`, `git branch -D` and untagged commit
+production are all still denied, with regressions for each.
+
 ## 0.15.0 - 2026-08-18
 
 ### A successful claim is required before mutation

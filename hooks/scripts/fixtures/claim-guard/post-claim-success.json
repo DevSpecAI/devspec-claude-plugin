@@ -10,7 +10,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"claim_success\":true,\"action_item_id\":\"cdd7a494-ed6a-414b-9f8f-bd0741b9de55\",\"error\":null}"
+        "text": "{\"id\":\"cdd7a494-ed6a-414b-9f8f-bd0741b9de55\",\"title\":\"Make track-before-mutation reliable across DevSpec and all seven plugin hosts\",\"type\":\"feature\",\"lifecycle\":\"open\",\"agent_activity\":\"implementing\",\"agent_branch\":\"work/track-before-mutation-cdd7a494\",\"project_id\":\"24c4abaa-2cb9-496a-8492-cf1f1aa1090b\",\"user_id\":\"61d17c8b-e9dd-44b5-a4f3-88d6ac1bfff1\",\"parent_action_item_id\":\"d39af2b0-1b6a-4c4d-8d4c-3b911c0f6a75\",\"acceptance_criteria\":[{\"id\":\"3389c42f-e13f-4d76-8997-801706dfc4a7\",\"text\":\"The product implementation contract distinguishes read-only work from mutation.\"}],\"claim_success\":true,\"work_claim_ref\":\"6357624f-1f47-4d01-89cc-0bb111654b51\",\"instruction_tiers_version\":1,\"unresolved_conflicts\":[],\"forced\":false,\"force_warning\":null}"
       }
     ]
   }

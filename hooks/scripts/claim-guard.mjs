@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
 export const EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -167,21 +167,16 @@ function responseHasError(values) {
   })
 }
 
-function responseItemIds(values) {
-  const ids = new Set()
-  for (const value of values) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
-    for (const key of ['action_item_id', 'actionItemId', 'item_id', 'itemId']) {
-      if (UUID_RE.test(value[key] || '')) ids.add(value[key].toLowerCase())
-    }
-    for (const key of ['action_item', 'actionItem', 'work_item', 'workItem']) {
-      if (UUID_RE.test(value[key]?.id || '')) ids.add(value[key].id.toLowerCase())
-    }
-    if (UUID_RE.test(value.id || '') && ['action_item', 'work_item'].includes(String(value.type || value.kind || '').toLowerCase())) {
-      ids.add(value.id.toLowerCase())
-    }
+/** The action item one response object is about, or null. */
+function itemIdOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  for (const key of ['action_item_id', 'actionItemId', 'item_id', 'itemId', 'id']) {
+    if (UUID_RE.test(value[key] || '')) return String(value[key]).toLowerCase()
   }
-  return ids
+  for (const key of ['action_item', 'actionItem', 'work_item', 'workItem']) {
+    if (UUID_RE.test(value[key]?.id || '')) return String(value[key].id).toLowerCase()
+  }
+  return null
 }
 
 function successfulClaimItemId(response, requestedItemId) {
@@ -189,20 +184,36 @@ function successfulClaimItemId(response, requestedItemId) {
   const requested = requestedItemId.toLowerCase()
   const values = decodedResponseValues(response)
   if (values.length === 0 || responseHasError(values)) return null
-  // Captured DevSpec claim results expose this server-authored boolean. A
-  // completed PostToolUse event or an item-shaped payload alone is not a claim.
-  if (!values.some((value) => value?.claim_success === true)) return null
-  const ids = responseItemIds(values)
-  if (ids.size !== 1 || !ids.has(requested)) return null
-  return requested
+  // The server returns the claimed row spread with its own boolean:
+  // `{ ...claimed, claim_success: true, work_claim_ref }`. The claim identity is
+  // the id ON that object. Requiring exactly one uuid in the whole payload never
+  // matched a real response — project_id, parent_action_item_id and every
+  // acceptance_criteria[].id are in there too — so no claim was ever observed
+  // and the guard blocked every mutation permanently (devspec:4910e673).
+  for (const value of values) {
+    if (value?.claim_success !== true) continue
+    if (itemIdOf(value) === requested) return requested
+  }
+  return null
 }
 
+/**
+ * Only `release_work_item` answers with `{ success: true, action_item_id }`.
+ * `record_implementation` and `fail_work_item` return the updated row —
+ * `{ ...updated, reservation, … }` — with no success flag at all, so demanding
+ * one meant evidence was never cleared for two of the three terminal verbs and a
+ * finished claim kept authorising mutation until it aged out (devspec:4910e673).
+ *
+ * The caller has already checked that the tool_input names the item this session
+ * holds, so what remains is: the result is not an error, and it is about that
+ * same item. Erring towards clearing is the safe direction — clearing re-locks
+ * the gate, while failing to clear leaves it open.
+ */
 function successfulTerminalResult(response, expectedItemId) {
   const values = decodedResponseValues(response)
   if (values.length === 0 || responseHasError(values)) return false
-  if (!values.some((value) => value?.success === true || value?.ok === true)) return false
-  const ids = responseItemIds(values)
-  return ids.size === 1 && ids.has(expectedItemId)
+  if (values.some((value) => value?.success === false || value?.ok === false)) return false
+  return values.some((value) => itemIdOf(value) === expectedItemId)
 }
 
 function deny(reason) {
@@ -219,40 +230,105 @@ function commandFrom(input) {
   return typeof input?.tool_input?.command === 'string' ? input.tool_input.command.trim() : ''
 }
 
-function readOnlySegments(command) {
-  if (typeof command !== 'string' || !command.trim() || command.length > 16384 || /`|\$\(|[<>]/.test(command)) return null
+/**
+ * One quote-aware tokenizer, shared by both gates: returns the command as a list
+ * of segments, each a list of words, or null when the command cannot be parsed
+ * safely.
+ *
+ * The previous implementation stripped quote characters while scanning and then
+ * re-split each segment on whitespace, so `git -C "/a b/c" log` reached the git
+ * check as `-C`, `/a`, `b/c`, `log`: `-C` consumed two words, the verb became
+ * `b/c`, and every path containing a space was denied. Every DevSpec plugin
+ * checkout on a normal machine sits under such a path (devspec:4910e673).
+ *
+ * It also rejected the whole command when `<`, `>`, a backtick or `$(` appeared
+ * anywhere, including inside quotes where the shell treats them as text.
+ *
+ * Structure is therefore decided here, with quoting respected:
+ *  - `&&`, `||`, `|`, `;` and newlines separate segments; a bare `&` (background)
+ *    is refused outright.
+ *  - Unquoted `<`, `>`, `(`, `)` and backticks are real shell structure: refused.
+ *  - A backtick inside double quotes still substitutes, so it is refused too;
+ *    inside single quotes it is literal text.
+ *  - `\` + newline is a line continuation, which the documented multi-line
+ *    control-plane invocations rely on.
+ *  - `$` is preserved as an ordinary character. Deciding what expansion means is
+ *    each gate's business: the read-only classifier rejects arguments containing
+ *    it (bar the one tolerated `git -C "$VAR"` form), and the commit gate treats
+ *    any git command containing it as unverifiable.
+ */
+function shellSegments(command) {
+  if (typeof command !== 'string' || !command.trim() || command.length > 16384) return null
   const segments = []
-  let current = ''
+  let words = []
+  let word = ''
+  let started = false
   let quote = null
-  let escaped = false
+
+  const endWord = () => {
+    if (started) { words.push(word); word = ''; started = false }
+  }
+  const endSegment = (requireContent) => {
+    endWord()
+    if (words.length) { segments.push(words); words = []; return true }
+    return !requireContent
+  }
+
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index]
-    if (escaped) { current += char; escaped = false; continue }
-    if (char === '\\' && quote !== "'") { escaped = true; continue }
-    if (quote) { if (char === quote) quote = null; else current += char; continue }
-    if (char === "'" || char === '"') { quote = char; continue }
-    if (char === '&' && command[index + 1] !== '&') return null
-    if ((char === '&' || char === '|') && command[index + 1] === char) {
-      if (!current.trim()) return null
-      segments.push(current.trim()); current = ''; index += 1; continue
-    }
-    if (char === ';' || char === '\n' || char === '|') {
-      if (current.trim()) segments.push(current.trim())
-      current = ''; continue
-    }
-    if (char === '(' || char === ')') return null
-    current += char
-  }
-  if (quote || escaped) return null
-  if (current.trim()) segments.push(current.trim())
-  return segments.length ? segments : null
-}
 
-function readOnlyWords(segment) {
-  return segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((word) =>
-    word.length >= 2 && ((word[0] === '"' && word.at(-1) === '"') || (word[0] === "'" && word.at(-1) === "'"))
-      ? word.slice(1, -1) : word,
-  ) || []
+    if (quote === "'") {
+      if (char === "'") quote = null
+      else word += char
+      started = true
+      continue
+    }
+    if (quote === '"') {
+      if (char === '"') { quote = null; started = true; continue }
+      if (char === '`') return null
+      if (char === '\\') {
+        const next = command[++index]
+        if (next === undefined) return null
+        if (next !== '\n') word += next
+        started = true
+        continue
+      }
+      word += char
+      started = true
+      continue
+    }
+
+    if (char === "'" || char === '"') { quote = char; started = true; continue }
+    if (char === '`' || char === '(' || char === ')' || char === '<' || char === '>') return null
+    if (char === '\\') {
+      const next = command[++index]
+      if (next === undefined) return null
+      if (next === '\n') continue
+      word += next
+      started = true
+      continue
+    }
+    if (char === '&') {
+      if (command[index + 1] !== '&') return null
+      if (!endSegment(true)) return null
+      index += 1
+      continue
+    }
+    if (char === '|') {
+      if (command[index + 1] === '|') index += 1
+      if (!endSegment(true)) return null
+      continue
+    }
+    if (char === ';' || char === '\n') { endSegment(false); continue }
+    if (/\s/.test(char)) { endWord(); continue }
+
+    word += char
+    started = true
+  }
+
+  if (quote) return null
+  endSegment(false)
+  return segments.length ? segments : null
 }
 
 function readOnlyGit(args) {
@@ -275,10 +351,10 @@ function readOnlyGit(args) {
 
 /** Conservative read-only compounds are available before tracking; every segment must be safe. */
 export function isReadOnlyBootstrapCommand(command) {
-  const segments = readOnlySegments(command)
+  const segments = shellSegments(command)
   if (!segments) return false
   return segments.every((segment) => {
-    const words = readOnlyWords(segment)
+    const words = [...segment]
     while (words[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
       const assignment = words.shift()
       const name = assignment.slice(0, assignment.indexOf('='))
@@ -296,58 +372,71 @@ export function isReadOnlyBootstrapCommand(command) {
   })
 }
 
-function shellWords(command) {
-  const words = []
-  let word = ''
-  let quote = null
-  let started = false
-  for (let i = 0; i < command.length; i += 1) {
-    const char = command[i]
-    if (quote === "'") {
-      if (char === "'") quote = null
-      else word += char
-      started = true
-      continue
-    }
-    if (quote === '"') {
-      if (char === '"') quote = null
-      else if (char === '\\') {
-        const next = command[++i]
-        if (next === undefined) return null
-        word += next
-      } else if (char === '$' || char === '`') return null
-      else word += char
-      started = true
-      continue
-    }
-    if (char === "'" || char === '"') {
-      quote = char
-      started = true
-    } else if (/\s/.test(char)) {
-      if (started) { words.push(word); word = ''; started = false }
-      if (char === '\n' || char === '\r') return null
-    } else if (';&|()<>`$'.includes(char)) return null
-    else if (char === '\\') {
-      const next = command[++i]
-      if (next === undefined) return null
-      word += next
-      started = true
-    } else {
-      word += char
-      started = true
-    }
-  }
-  if (quote) return null
-  if (started) words.push(word)
-  return words
+/**
+ * This plugin's own control-plane scripts, which a session must be able to run
+ * before it holds anything.
+ *
+ * `/devspec.remote` and `/devspec.remote-stop` are the two commands the plugin
+ * still ships, and both are `node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/…"`
+ * invocations. Gating them on a claim deadlocked the product: remote control is
+ * how an agent becomes reachable for work in the first place, so no claim could
+ * ever arrive through that channel (devspec:4910e673).
+ *
+ * The allowance is deliberately keyed on script identity rather than on the
+ * `node` program — a general `node` allowance would be an arbitrary-code hole,
+ * since `node -e` mutates anything. The first argument must resolve to a file in
+ * this guard's own directory, so an attacker would already need write access to
+ * the installed plugin, and the script's own name must be one of these. None of
+ * them write to the repository: connect resolves the project, registers the
+ * connection and writes state under the user's home directory.
+ */
+const CONTROL_PLANE_SCRIPTS = new Set([
+  'devspec-remote-connect.mjs',
+  'devspec-remote-wait.mjs',
+  'devspec-remote-poll.mjs',
+  'remote-control-state.mjs',
+  'mcp-call.mjs',
+])
+
+const GUARD_SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
+
+/** A bare `$NAME` is the documented form (`--owner-pid "$PPID"`); nothing richer. */
+function safeControlPlaneArgument(argument) {
+  if (argument.includes('`') || argument.includes('${')) return false
+  return !/\$(?![A-Za-z_][A-Za-z0-9_]*)/.test(argument)
 }
 
-function directGitInvocation(command) {
-  const words = shellWords(command)
-  if (!words) return /\bgit\b/i.test(command) ? { unverifiable: true } : null
+export function isPluginControlPlaneCommand(command) {
+  const segments = shellSegments(command)
+  if (!segments || segments.length !== 1) return false
+  const words = [...segments[0]]
+  if (words.shift() !== 'node') return false
+
+  const script = words.shift()
+  // Any leading option is refused: that covers -e/-p/--eval/--print/--require
+  // and --input-type, i.e. every form where the code is not the named file.
+  if (!script || script.startsWith('-') || !path.isAbsolute(script)) return false
+  if (!words.every(safeControlPlaneArgument)) return false
+
+  let resolved
+  let directory
+  try {
+    resolved = fs.realpathSync(script)
+    directory = fs.realpathSync(GUARD_SCRIPT_DIR)
+  } catch {
+    return false
+  }
+  if (path.dirname(resolved) !== directory) return false
+  return CONTROL_PLANE_SCRIPTS.has(path.basename(resolved))
+}
+
+function gitInvocationOf(words) {
   const gitIndex = words.findIndex((word) => word === 'git' || /(?:^|[\\/])git(?:\.exe)?$/i.test(word))
   if (gitIndex < 0) return null
   if (words[gitIndex] !== 'git') return { unverifiable: true }
+  // Expansion could still produce `commit`, so a git segment carrying `$` is
+  // never treated as verified — `git co$EMPTYmit -m fix` must not slip through.
+  if (words.some((word) => word.includes('$'))) return { unverifiable: true }
   let index = gitIndex + 1
   const valueOptions = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'])
   while (index < words.length && words[index].startsWith('-')) {
@@ -374,9 +463,27 @@ function messageHasClaimTag(args, actionItemId) {
  * Return a deny reason for direct git operations that can create commits
  * without the claim tag. An opaque script/alias remains ordinary claimed Bash
  * and is deliberately documented as a host-observability residual.
+ *
+ * Each segment of a compound is judged on its own. Refusing every chained git
+ * command outright, as this did before, made the ordinary
+ * `git add … && git commit -m "… [devspec:<id>]"` impossible for a correctly
+ * tracked agent while blocking nothing an attacker could not do in two separate
+ * calls (devspec:4910e673).
  */
 export function commitGateReason(command, actionItemId) {
-  const invocation = directGitInvocation(command)
+  const segments = shellSegments(command)
+  if (!segments) {
+    return /\bgit\b/i.test(command) ? 'an expanded or chained git command cannot be verified as non-committing' : null
+  }
+  for (const segment of segments) {
+    const reason = segmentCommitReason(segment, actionItemId)
+    if (reason) return reason
+  }
+  return null
+}
+
+function segmentCommitReason(words, actionItemId) {
+  const invocation = gitInvocationOf(words)
   if (!invocation) return null
   if (invocation.unverifiable) return 'an expanded or chained git command cannot be verified as non-committing'
   const { subcommand, args } = invocation
@@ -400,8 +507,9 @@ export function commitGateReason(command, actionItemId) {
 
 /** Backward-compatible test helper for the explicit git commit form. */
 export function commitCommandHasClaimTag(command, actionItemId) {
-  const invocation = directGitInvocation(command)
-  return invocation?.subcommand === 'commit' && commitGateReason(command, actionItemId) === null
+  const segments = shellSegments(command)
+  if (!segments || segments.length !== 1) return false
+  return gitInvocationOf(segments[0])?.subcommand === 'commit' && commitGateReason(command, actionItemId) === null
 }
 
 function canonicalMutationTarget(input, repoRoot) {
@@ -474,8 +582,13 @@ export function handlePre(input, options = {}) {
   }
   const evidence = readEvidence(scope, options)
   if (!evidence) {
-    if (tool === 'Bash' && isReadOnlyBootstrapCommand(commandFrom(input))) return null
-    return deny(`DevSpec denied ${tool}: claim the covering work item and retry; read-only investigation remains available (${CONTRACT_URI}).`)
+    if (tool === 'Bash') {
+      const command = commandFrom(input)
+      if (isReadOnlyBootstrapCommand(command) || isPluginControlPlaneCommand(command)) return null
+    }
+    return deny(
+      `DevSpec denied ${tool}: claim the covering work item and retry. Read-only shell investigation and this plugin's own remote-control commands stay available without a claim (${CONTRACT_URI}).`,
+    )
   }
   if (tool === 'Bash') {
     const reason = commitGateReason(commandFrom(input), evidence.action_item_id)

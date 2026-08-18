@@ -15,6 +15,7 @@ import {
   handlePost,
   handlePre,
   handleSessionStart,
+  isPluginControlPlaneCommand,
   isReadOnlyBootstrapCommand,
 } from './claim-guard.mjs'
 
@@ -63,10 +64,46 @@ function claim(cwd = repoA, sessionId = SESSION, itemId = ITEM, response = undef
     tool_response: response ?? {
       content: [{
         type: 'text',
-        text: JSON.stringify({ claim_success: true, action_item_id: itemId, error: null }),
+        text: JSON.stringify(serverClaimPayload(itemId)),
       }],
     },
   }), { env })
+}
+
+/**
+ * The shape `claim_work_item` actually returns: the claimed row spread with the
+ * server's own boolean — `{ ...claimed, claim_success: true, work_claim_ref }`.
+ * The item is identified by `id`, and the payload is full of other uuids. The
+ * suite used to assert against a hand-written `{claim_success, action_item_id}`
+ * object no server ever sends, which is how a guard that could never observe a
+ * real claim shipped green (devspec:4910e673).
+ */
+function serverClaimPayload(itemId = ITEM) {
+  return {
+    id: itemId,
+    title: 'Fixture item',
+    type: 'bug',
+    lifecycle: 'open',
+    agent_activity: 'implementing',
+    project_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    user_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    parent_action_item_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    acceptance_criteria: [{ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', text: 'a criterion' }],
+    claim_success: true,
+    work_claim_ref: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+  }
+}
+
+/** `record_implementation` returns `{ ...updated, reservation, ... }` — no success flag. */
+function serverRecordPayload(itemId = ITEM) {
+  return {
+    id: itemId,
+    title: 'Fixture item',
+    lifecycle: 'implemented',
+    agent_activity: 'finished',
+    verification_required: false,
+    reservation: { member_state: 'recorded', assignment_id: 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+  }
 }
 
 function fixture(name) {
@@ -303,4 +340,156 @@ describe('direct git commit-producing gate', () => {
       assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command } }), { env })), 'deny')
     })
   }
+
+  it('checks each segment of a compound instead of refusing every chained git command', () => {
+    assert.equal(commitGateReason('git add file && git status --short', ITEM), null)
+    assert.equal(commitGateReason(`git add file && git commit -m "fix [devspec:${ITEM}]"`, ITEM), null)
+    assert.ok(commitGateReason('git add file && git commit -m fix', ITEM))
+  })
+})
+
+describe('observation of the shapes the DevSpec server actually returns', () => {
+  it('records evidence from a real claim_work_item result', () => {
+    claim()
+    assert.equal(handlePre(mutationInput('Write'), { env }), null)
+  })
+
+  it('requires the claimed id to sit on the object carrying claim_success', () => {
+    claim(repoA, SESSION, ITEM, {
+      content: [{ type: 'text', text: JSON.stringify({ claim_success: true, data: { id: ITEM } }) }],
+    })
+    assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
+  })
+
+  it('ignores a real-shaped claim result for a different item', () => {
+    claim(repoA, SESSION, ITEM, {
+      content: [{ type: 'text', text: JSON.stringify(serverClaimPayload(OTHER_ITEM)) }],
+    })
+    assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
+  })
+
+  it('clears evidence from a real record_implementation result', () => {
+    claim()
+    assert.equal(handlePre(mutationInput('Write'), { env }), null)
+    handlePost(input('mcp__devspec__record_implementation', repoA, {
+      hook_event_name: 'PostToolUse',
+      tool_input: { action_item_id: ITEM },
+      tool_response: { content: [{ type: 'text', text: JSON.stringify(serverRecordPayload()) }] },
+    }), { env })
+    assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
+  })
+
+  it('keeps evidence when a terminal result names another item or reports an error', () => {
+    for (const response of [
+      { content: [{ type: 'text', text: JSON.stringify(serverRecordPayload(OTHER_ITEM)) }] },
+      { content: [{ type: 'text', text: JSON.stringify({ ...serverRecordPayload(), error: 'nope' }) }] },
+    ]) {
+      claim()
+      handlePost(input('mcp__devspec__record_implementation', repoA, {
+        hook_event_name: 'PostToolUse',
+        tool_input: { action_item_id: ITEM },
+        tool_response: response,
+      }), { env })
+      assert.equal(handlePre(mutationInput('Write'), { env }), null)
+    }
+  })
+})
+
+describe('quote-aware classification of unclaimed shell commands', () => {
+  it('allows read-only git inspection of a path containing spaces', () => {
+    const spaced = path.join(sandbox, 'repo with space')
+    gitInit(spaced)
+    for (const command of [
+      `git -C "${spaced}" log --oneline -3`,
+      `git -C "${spaced}" status --short --branch`,
+      `ls "${spaced}"`,
+      `cat "${path.join(spaced, 'missing file.txt')}"`,
+    ]) {
+      assert.equal(isReadOnlyBootstrapCommand(command), true, command)
+      assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null, command)
+    }
+  })
+
+  it('allows a compound cross-repository inspection when both paths contain spaces', () => {
+    const spacedA = path.join(sandbox, 'repo one with space')
+    const spacedB = path.join(sandbox, 'repo two with space')
+    gitInit(spacedA)
+    gitInit(spacedB)
+    const command = [
+      `git -C "${spacedA}" status --short --branch`,
+      `git -C "${spacedB}" diff --stat`,
+      `git -C "${spacedB}" log --oneline --decorate -8`,
+    ].join(' && ')
+    assert.equal(isReadOnlyBootstrapCommand(command), true)
+    assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
+  })
+
+  for (const command of ['grep -n "=>" README.md', 'grep -rn "a < b" .', "grep -n 'x > y' README.md"]) {
+    it(`treats a redirection character inside quotes as literal text: ${command}`, () => {
+      assert.equal(isReadOnlyBootstrapCommand(command), true)
+      assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
+    })
+  }
+
+  for (const command of [
+    'git diff > out', 'cat < in', 'echo `touch owned`', 'echo "`touch owned`"',
+    '(touch owned)', 'git status --short; touch owned', 'ls "unterminated',
+  ]) {
+    it(`still denies real shell structure: ${JSON.stringify(command)}`, () => {
+      assert.equal(isReadOnlyBootstrapCommand(command), false)
+      assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command } }), { env })), 'deny')
+    })
+  }
+})
+
+describe('DevSpec control-plane commands before any claim', () => {
+  const CONNECT = path.join(HERE, 'devspec-remote-connect.mjs')
+  const STATE = path.join(HERE, 'remote-control-state.mjs')
+  const WAIT = path.join(HERE, 'devspec-remote-wait.mjs')
+
+  it('allows the documented /devspec.remote connect invocation', () => {
+    const command = `node "${CONNECT}" \\\n  --agent "Claude Code" --owner-pid "$PPID"`
+    assert.equal(isPluginControlPlaneCommand(command), true)
+    assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
+  })
+
+  it('allows the /devspec.remote-stop and wait-stream invocations', () => {
+    for (const command of [
+      `node "${STATE}" resolve-local --agent "Claude Code"`,
+      `node "${STATE}" disable --connection-id dddddddd-dddd-4ddd-8ddd-dddddddddddd`,
+      `node "${WAIT}" --connection-id dddddddd-dddd-4ddd-8ddd-dddddddddddd --owner-pid "$PPID" --stream --from-end`,
+    ]) {
+      assert.equal(isPluginControlPlaneCommand(command), true, command)
+      assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null, command)
+    }
+  })
+
+  it('keys the allowance on script identity, not on the node program', () => {
+    const impostor = path.join(sandbox, 'devspec-remote-connect.mjs')
+    fs.writeFileSync(impostor, 'process.exit(0)\n')
+    for (const command of [
+      'node -e "fs.writeFileSync(0,0)"',
+      'node -p 1',
+      'node --eval "1"',
+      `node --require /tmp/preload.js "${CONNECT}"`,
+      `node --input-type=module -e "1"`,
+      `node "${impostor}"`,
+      `node "${path.join(HERE, 'claim-guard.mjs')}" pre`,
+      `node "${CONNECT}" --agent \`whoami\``,
+      `node "${CONNECT}" --agent "$(whoami)"`,
+      `node "${CONNECT}" && touch owned`,
+      `node "${CONNECT}" > owned`,
+      `NODE_OPTIONS=--require/tmp/x node "${CONNECT}"`,
+      `node "${path.relative(process.cwd(), CONNECT)}"`,
+    ]) {
+      assert.equal(isPluginControlPlaneCommand(command), false, command)
+      assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command } }), { env })), 'deny', command)
+    }
+  })
+
+  it('does not turn into a general node allowance once claimed or unclaimed', () => {
+    assert.equal(isPluginControlPlaneCommand('node --test'), false)
+    assert.equal(isPluginControlPlaneCommand('node script.js'), false)
+    assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command: 'node --test' } }), { env })), 'deny')
+  })
 })

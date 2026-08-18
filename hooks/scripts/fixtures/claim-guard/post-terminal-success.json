@@ -1,0 +1,17 @@
+{
+  "session_id": "fixture-session-1234",
+  "cwd": "__REPO__",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__devspec__record_implementation",
+  "tool_input": {
+    "action_item_id": "cdd7a494-ed6a-414b-9f8f-bd0741b9de55"
+  },
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"success\":true,\"action_item_id\":\"cdd7a494-ed6a-414b-9f8f-bd0741b9de55\",\"error\":null}"
+      }
+    ]
+  }
+}

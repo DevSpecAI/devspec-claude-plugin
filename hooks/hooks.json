@@ -1,7 +1,40 @@
 {
-  "description": "When DevSpec remote control is active (~/.devspec/remote-control.json), mirror turns to DevSpec deterministically via Stop/UserPromptSubmit hooks, and tear the poller down on SessionEnd. The `command -v node` guard makes the hook a silent no-op when Node.js is not installed, so sessions without Node never see a per-turn hook error (remote control just isn't available until Node is installed). SessionEnd is a best-effort prompt teardown for graceful ends (/clear, logout); the poller's owner-PID self-termination + connect-time reaper cover the ends SessionEnd never fires for (terminal close, crash, SIGKILL). PostToolUse marks explicit post_session_message replies so Stop never mirrors the same turn twice.",
+  "description": "Load the canonical DevSpec implementation contract pointer, enforce a session/repository-scoped successful claim before mutation, and mirror remote-control turns. Claim evidence is observed only from successful DevSpec tool results and is cleared by successful terminal work-item verbs.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v node >/dev/null 2>&1; then node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/claim-guard.mjs\" session-start; else printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"DevSpec implementation contract: devspec://product/implementation-contract\"}}'; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v node >/dev/null 2>&1; then node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/claim-guard.mjs\" pre || printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"DevSpec denied mutation because the claim guard failed.\"}}'; else printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"DevSpec claim guard unavailable: Node.js is required before mutation.\"}}'; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
+      {
+        "matcher": "mcp__devspec__claim_work_item|mcp__devspec__record_implementation|mcp__devspec__fail_work_item|mcp__devspec__release_work_item",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v node >/dev/null 2>&1; then node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/claim-guard.mjs\" post; else printf '%s\\n' 'DevSpec claim observation failed: Node.js is required.' >&2; exit 1; fi",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "mcp__devspec__post_session_message",
         "hooks": [

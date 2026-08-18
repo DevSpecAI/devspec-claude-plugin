@@ -2,6 +2,22 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.15.0 - 2026-08-18
+
+### A successful claim is required before mutation
+
+- Session start points Claude Code to the canonical implementation contract at
+  `devspec://product/implementation-contract` rather than embedding a lifecycle
+  copy in the plugin.
+- `Write`, `Edit`, `NotebookEdit`, and mutating `Bash` calls are denied until
+  this session has observed the server's successful `claim_work_item` result for
+  this repository. File/notebook targets must remain inside that repository;
+  successful matching record, fail, or release results clear the evidence.
+- Direct commit-producing git commands are gated mechanically. Passing the guard
+  never auto-approves a tool: Claude's ordinary permissions still apply.
+  Arbitrary claimed Bash remains possible, so opaque scripts and configured git
+  aliases are outside the command-text gate and remain an explicit residual.
+
 ## 0.14.0 - 2026-08-17
 
 ### Nine commands removed — two remain

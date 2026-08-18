@@ -67,15 +67,33 @@ function ensurePrivateDirectory(dir, platform = process.platform) {
   restrictMode(dir, 0o700, platform)
 }
 
+/**
+ * The repository a claim belongs to — deliberately the repository, not the
+ * checkout it is being worked from.
+ *
+ * `--show-toplevel` answers "which working tree am I in", and a linked worktree
+ * answers with itself. Keying evidence on that lost the claim the moment the
+ * session cwd moved into a worktree: `Agent(isolation: 'worktree')` gave a
+ * delegated subagent a cwd its parent's claim could not cover, so the subagent
+ * could not write and could not rescue itself either — the item was already
+ * claimed by its parent. The implementation contract asks agents to isolate work
+ * in a branch or worktree, and this punished them for it (devspec:a0a90df4).
+ *
+ * `--git-common-dir` is the same path from the main checkout and from every
+ * linked worktree, so one repository is one identity. Session scoping is
+ * untouched: another session still cannot see this claim. A directory that is
+ * not a repository at all still falls back to its canonical self.
+ */
 function canonicalRepo(cwd) {
   if (typeof cwd !== 'string' || cwd.length === 0 || cwd.includes('\0')) throw new Error('missing hook cwd')
   const canonicalCwd = fs.realpathSync(cwd)
   try {
-    const root = execFileSync('git', ['-C', canonicalCwd, 'rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-    return fs.realpathSync(root)
+    const repository = execFileSync(
+      'git',
+      ['-C', canonicalCwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    return fs.realpathSync(repository)
   } catch {
     return canonicalCwd
   }

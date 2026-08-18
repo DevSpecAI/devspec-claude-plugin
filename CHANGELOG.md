@@ -2,6 +2,39 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.15.3 - 2026-08-18
+
+### A claim covers the repository, so a worktree keeps it
+
+Claim evidence was keyed on `git rev-parse --show-toplevel`, and a linked
+worktree answers that with *itself*. So the claim vanished the moment the session
+moved into one — which is precisely what the implementation contract asks agents
+to do, and what `Agent(isolation: "worktree")` does to a delegated subagent.
+
+Observed, with a claim held by the parent:
+
+    ordinary subagent    -> ALLOWED
+    worktree-isolated    -> DENIED (cwd .claude/worktrees/agent-<id>)
+
+The isolated subagent could not write, and could not rescue itself either: the
+item was already claimed by its parent, so its own `claim_work_item` would have
+needed `force`. Delegating implementation to a subagent is a normal way to work,
+and it silently lost the claim.
+
+Evidence is now keyed on `git rev-parse --path-format=absolute --git-common-dir`,
+which is the same path from the main checkout and from every linked worktree. One
+repository, one identity. `EnterWorktree` mid-task keeps working for the same
+reason. Session scoping is untouched — another session still cannot see your
+claim — and a directory that is not a repository still falls back to itself.
+
+**One-time effect when you upgrade:** the evidence key changes, so a claim you
+are holding right now stops being recognised and needs claiming once more. There
+is no dual-key compatibility path, deliberately.
+
+Ordinary subagents were already fine and stay fine: the hook payload carries the
+parent's `session_id`, not an agent-scoped one, so a delegated agent inherits the
+claim it is working under. That is now covered by a test rather than assumed.
+
 ## 0.15.2 - 2026-08-18
 
 ### The guard works on Windows, and stops gating writes it has no interest in

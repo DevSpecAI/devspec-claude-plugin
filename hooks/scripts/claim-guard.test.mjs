@@ -11,7 +11,6 @@ import {
   EVIDENCE_MAX_AGE_MS,
   commitCommandHasClaimTag,
   commitGateReason,
-  evidencePathFor,
   handlePost,
   handlePre,
   handleSessionStart,
@@ -34,6 +33,20 @@ let env
 function gitInit(dir) {
   fs.mkdirSync(dir)
   const result = spawnSync('git', ['init', '-q', dir], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+}
+
+function gitCommit(dir) {
+  const result = spawnSync(
+    'git',
+    ['-C', dir, '-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '--allow-empty', '-q', '-m', 'init'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(result.status, 0, result.stderr)
+}
+
+function addWorktree(repo, target) {
+  const result = spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', '--detach', target], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
 }
 
@@ -261,8 +274,11 @@ describe('session, repository, and target-path isolation', () => {
     assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
     fs.chmodSync(env.DEVSPEC_CLAUDE_STATE_DIR, 0o700)
 
-    const file = evidencePathFor({ sessionId: SESSION, repoRoot: fs.realpathSync(repoA) }, env)
-    fs.writeFileSync(file, '{broken', { mode: 0o600 })
+    // Corrupt the file the guard actually wrote rather than re-deriving its
+    // path here: a test that recomputes the key silently stops testing anything
+    // the moment the key changes, which is exactly what happened when evidence
+    // moved from the checkout to the repository (devspec:a0a90df4).
+    fs.writeFileSync(path.join(env.DEVSPEC_CLAUDE_STATE_DIR, files[0]), '{broken', { mode: 0o600 })
     assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
   })
 })
@@ -623,5 +639,53 @@ describe('writes the mutation gate has no interest in', () => {
   it('leaves ordinary repository writes denied', () => {
     assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
     assert.equal(decision(handlePre(mutationInput('Write', path.join(repoB, 'x.ts')), { env })), 'deny')
+  })
+})
+
+describe('evidence is scoped to the repository, not the checkout', () => {
+  let worktree
+
+  beforeEach(() => {
+    gitCommit(repoA)
+    worktree = path.join(sandbox, 'wt-a')
+    addWorktree(repoA, worktree)
+  })
+
+  function writeIn(directory, overrides = {}) {
+    return input('Write', directory, { tool_input: { file_path: path.join(directory, 'x.ts') }, ...overrides })
+  }
+
+  /**
+   * A worktree's `--show-toplevel` is the worktree, so keying on it lost the
+   * claim the moment the session cwd moved into one — which is exactly what the
+   * implementation contract tells an agent to do, and what `Agent(isolation:
+   * 'worktree')` does to a delegated subagent (devspec:a0a90df4).
+   */
+  it('shows a claim made in the main checkout to a session working in its worktree', () => {
+    claim(repoA)
+    assert.equal(handlePre(writeIn(worktree), { env }), null)
+    assert.equal(handlePre(input('Bash', worktree, { tool_input: { command: 'node --test' } }), { env }), null)
+  })
+
+  it('shows a claim made in a worktree to the main checkout', () => {
+    claim(worktree)
+    assert.equal(handlePre(mutationInput('Write'), { env }), null)
+  })
+
+  it('still isolates another repository and another session', () => {
+    claim(repoA)
+    assert.equal(decision(handlePre(writeIn(repoB), { env })), 'deny')
+    assert.equal(
+      decision(handlePre(writeIn(worktree, { session_id: 'another-session-1234' }), { env })),
+      'deny',
+    )
+  })
+
+  it('falls back to the canonical directory outside a repository', () => {
+    const plain = path.join(sandbox, 'not-a-repo')
+    fs.mkdirSync(plain)
+    claim(plain)
+    assert.equal(handlePre(writeIn(plain), { env }), null)
+    assert.equal(decision(handlePre(writeIn(repoB), { env })), 'deny')
   })
 })

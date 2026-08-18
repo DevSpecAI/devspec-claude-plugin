@@ -2,6 +2,47 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.15.2 - 2026-08-18
+
+### The guard works on Windows, and stops gating writes it has no interest in
+
+**Windows was blocked outright.** `readEvidence` required `(mode & 0o077) === 0`
+on both the state directory and the evidence file. Node synthesises permission
+bits on Windows — directories report `0o777`, and `chmod` only toggles the
+read-only attribute — so those checks were permanently true there and no claim
+was ever readable: every mutation denied, for ever, exactly like 0.15.0 but
+scoped to one platform. Restrictive modes are still set everywhere as a best
+effort; they are only *asserted* where the platform can express them.
+
+**Windows paths survive tokenisation.** Inside double quotes a backslash escaped
+every character, so `"C:\Users\x\hooks\scripts\devspec-remote-connect.mjs"`
+became `C:Usersxhooksscriptsdevspec-remote-connect.mjs` and resolved to nothing.
+POSIX escapes only `$`, a backtick, `"`, `\` and a newline inside double quotes,
+which is now what happens — a tokenizer that disagrees with the shell about a
+word is the bug, not the safeguard. `\` + CRLF is a line continuation like `\` +
+LF, so the documented multi-line connect invocation survives Windows line
+endings, and `node.exe` is accepted alongside `node`.
+
+**Your agent memory and scratchpad are no longer gated.** With no claim the guard
+denied every write regardless of target, so an agent could not keep a note or
+write its own memory — and the timing was the sharp end: the moment a lesson is
+worth writing down is right after `record_implementation`, which is precisely
+what clears the claim evidence. Writes inside `~/.claude/projects/*/memory/` and
+a session scratchpad are now outside the gate, because nothing written there can
+reach a commit.
+
+That allowance is deliberately narrow. `~/.claude` is **not** permitted broadly —
+`settings.json`, `CLAUDE.md` and `plugins/` live there and a write to any of them
+could remove this hook. The temp directory is **not** permitted broadly — the
+claim evidence lives under it, and an agent able to write there could mint its
+own claim. Both exclusions are tests. Targets are canonicalised before the
+comparison, so a symlink out of the memory directory into a repository resolves
+and is denied, and containment holds on case-insensitive filesystems.
+
+Real Windows and macOS execution was not performed for this release: platform
+behaviour is injected and covered by simulation, and the path rules use `path`
+APIs throughout rather than hand-rolled separators.
+
 ## 0.15.1 - 2026-08-18
 
 ### The claim guard could never unlock, and blocked the plugin's own commands

@@ -33,14 +33,38 @@ export function stateDir(env = process.env) {
   return env.DEVSPEC_CLAUDE_STATE_DIR || defaultStateDir()
 }
 
-function ensurePrivateDirectory(dir) {
+/**
+ * POSIX permission bits are a real access control on Linux and macOS and a
+ * synthesised fiction on Windows, where Node reports 0o777 for directories and
+ * chmod only toggles the read-only attribute.
+ *
+ * So: set restrictive modes everywhere as a best effort, but only ASSERT them
+ * where the platform can express them. Asserting them unconditionally made
+ * `readEvidence` reject every claim on Windows, which denied all mutation there
+ * for ever — the same total block as devspec:4910e673, scoped to one platform
+ * (devspec:730bf485). The plugin's own remote-control-state.mjs already sets
+ * modes without asserting them; this follows it.
+ */
+function enforcesPosixModes(platform) {
+  return platform !== 'win32'
+}
+
+function restrictMode(target, mode, platform) {
+  try {
+    fs.chmodSync(target, mode)
+  } catch (error) {
+    if (enforcesPosixModes(platform)) throw error
+  }
+}
+
+function ensurePrivateDirectory(dir, platform = process.platform) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const stat = fs.lstatSync(dir)
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('claim state path is not a directory')
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
     throw new Error('claim state directory is not owned by this user')
   }
-  fs.chmodSync(dir, 0o700)
+  restrictMode(dir, 0o700, platform)
 }
 
 function canonicalRepo(cwd) {
@@ -76,8 +100,8 @@ export function evidencePathFor(scope, env = process.env) {
   return path.join(stateDir(env), `${digest}.json`)
 }
 
-function atomicWritePrivate(file, value) {
-  ensurePrivateDirectory(path.dirname(file))
+function atomicWritePrivate(file, value, platform = process.platform) {
+  ensurePrivateDirectory(path.dirname(file), platform)
   const temp = `${file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
   let fd
   try {
@@ -87,7 +111,7 @@ function atomicWritePrivate(file, value) {
     fs.closeSync(fd)
     fd = undefined
     fs.renameSync(temp, file)
-    fs.chmodSync(file, 0o600)
+    restrictMode(file, 0o600, platform)
   } finally {
     if (fd !== undefined) fs.closeSync(fd)
     try { fs.unlinkSync(temp) } catch { /* rename succeeded or no temp was created */ }
@@ -105,16 +129,18 @@ function removeEvidence(scope, env = process.env) {
   }
 }
 
-export function readEvidence(scope, { env = process.env, now = Date.now() } = {}) {
+export function readEvidence(scope, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
   const file = evidencePathFor(scope, env)
+  const assertModes = enforcesPosixModes(platform)
   try {
     const directory = fs.lstatSync(path.dirname(file))
-    if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0) return null
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return null
+    if (assertModes && (directory.mode & 0o077) !== 0) return null
     if (typeof process.getuid === 'function' && directory.uid !== process.getuid()) return null
     const stat = fs.lstatSync(file)
     if (!stat.isFile() || stat.isSymbolicLink()) return null
     if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return null
-    if ((stat.mode & 0o077) !== 0) return null
+    if (assertModes && (stat.mode & 0o077) !== 0) return null
     const evidence = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (
       evidence?.schema !== 1 ||
@@ -257,7 +283,7 @@ function commandFrom(input) {
  *    it (bar the one tolerated `git -C "$VAR"` form), and the commit gate treats
  *    any git command containing it as unverifiable.
  */
-function shellSegments(command) {
+export function shellSegments(command) {
   if (typeof command !== 'string' || !command.trim() || command.length > 16384) return null
   const segments = []
   let words = []
@@ -287,9 +313,24 @@ function shellSegments(command) {
       if (char === '"') { quote = null; started = true; continue }
       if (char === '`') return null
       if (char === '\\') {
-        const next = command[++index]
+        // POSIX: inside double quotes a backslash escapes only $ ` " \ and a
+        // newline. Everything else keeps the backslash, which is what makes a
+        // Windows path survive — "C:\Users\x" must not become C:Usersx, and a
+        // tokenizer that disagrees with the shell about a word is the bug, not
+        // the safeguard (devspec:730bf485).
+        const next = command[index + 1]
         if (next === undefined) return null
-        if (next !== '\n') word += next
+        if (next === '\n' || (next === '\r' && command[index + 2] === '\n')) {
+          index += next === '\r' ? 2 : 1
+          started = true
+          continue
+        }
+        if (next === '$' || next === '`' || next === '"' || next === '\\') {
+          word += next
+          index += 1
+        } else {
+          word += char
+        }
         started = true
         continue
       }
@@ -303,7 +344,10 @@ function shellSegments(command) {
     if (char === '\\') {
       const next = command[++index]
       if (next === undefined) return null
+      // Line continuation, LF or CRLF — the documented multi-line control-plane
+      // invocation uses one, and on Windows it arrives as CRLF.
       if (next === '\n') continue
+      if (next === '\r' && command[index + 1] === '\n') { index += 1; continue }
       word += next
       started = true
       continue
@@ -410,7 +454,10 @@ export function isPluginControlPlaneCommand(command) {
   const segments = shellSegments(command)
   if (!segments || segments.length !== 1) return false
   const words = [...segments[0]]
-  if (words.shift() !== 'node') return false
+  // `node` or `node.exe` — the bare program only. A path-qualified interpreter
+  // is not accepted, since what makes this safe is the script's identity below.
+  const program = words.shift()
+  if (program !== 'node' && program !== 'node.exe') return false
 
   const script = words.shift()
   // Any leading option is refused: that covers -e/-p/--eval/--print/--require
@@ -514,7 +561,12 @@ export function commitCommandHasClaimTag(command, actionItemId) {
   return gitInvocationOf(segments[0])?.subcommand === 'commit' && commitGateReason(command, actionItemId) === null
 }
 
-function canonicalMutationTarget(input, repoRoot) {
+/**
+ * The canonical absolute path a file-mutating tool would write to, with symlinks
+ * resolved as far as the path exists. A symlink out of a permitted directory
+ * therefore resolves to its real destination before anything decides about it.
+ */
+function canonicalTargetPath(input) {
   const tool = input.tool_name ?? input.toolName
   const key = tool === 'NotebookEdit' ? 'notebook_path' : 'file_path'
   const supplied = input?.tool_input?.[key]
@@ -533,8 +585,71 @@ function canonicalMutationTarget(input, repoRoot) {
       target = parent
     }
   }
-  const relative = path.relative(repoRoot, target)
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)) ? target : null
+  return target
+}
+
+/**
+ * Containment by canonical path, never by string prefix. Windows and default
+ * macOS are case-insensitive, so a case-sensitive prefix comparison is not a
+ * containment test there — and lowercasing instead would wrongly merge distinct
+ * paths on Linux. Canonicalising both sides is the only answer that holds on all
+ * three. `segmentsFrom` returns null when the root cannot be resolved, so a
+ * caller deciding whether to ALLOW fails closed.
+ */
+function segmentsFrom(root, target) {
+  let canonicalRoot
+  try {
+    canonicalRoot = fs.realpathSync(root)
+  } catch {
+    return null
+  }
+  const relative = path.relative(canonicalRoot, target)
+  if (relative === '' || path.isAbsolute(relative)) return null
+  const segments = relative.split(path.sep)
+  return segments[0] === '..' ? null : segments
+}
+
+/** Deny-side containment: an unresolvable root still blocks its lexical form. */
+function isWithin(root, target) {
+  if (segmentsFrom(root, target)) return true
+  const relative = path.relative(path.resolve(root), target)
+  if (relative === '' || path.isAbsolute(relative)) return false
+  return relative.split(path.sep)[0] !== '..'
+}
+
+/**
+ * Writes this gate has no interest in (decision 5181f5dd).
+ *
+ * The guard exists so that a change to a PRODUCT is traceable to a work item. A
+ * write that cannot reach a repository, a commit or a deploy has no provenance
+ * to protect. Two such places, and the timing is why it matters: the moment a
+ * lesson is worth writing down is right after `record_implementation`, which is
+ * exactly what clears the claim evidence.
+ *
+ * Narrow on purpose, because the obvious version of this is an off switch:
+ *  - NOT `~/.claude` broadly — `settings.json` and `plugins/` live there, and a
+ *    write to either can remove this hook.
+ *  - NOT the temp directory broadly — the claim evidence lives under it, and an
+ *    agent that can write there can mint its own claim. Excluded explicitly.
+ */
+/** USERPROFILE on Windows, HOME on POSIX, and whatever Node resolves otherwise. */
+function homeDirectory(env) {
+  return env.USERPROFILE || env.HOME || os.homedir()
+}
+
+function isNonProductWriteTarget(target, env = process.env) {
+  if (isWithin(stateDir(env), target)) return false
+
+  const memoryRoot = path.join(homeDirectory(env), '.claude', 'projects')
+  const memorySegments = segmentsFrom(memoryRoot, target)
+  if (memorySegments && memorySegments.length >= 3 && memorySegments[1] === 'memory') return true
+
+  const scratchSegments = segmentsFrom(os.tmpdir(), target)
+  if (scratchSegments && scratchSegments[0].startsWith('claude-') && scratchSegments.includes('scratchpad')) {
+    return true
+  }
+
+  return false
 }
 
 export function handleSessionStart() {
@@ -546,7 +661,7 @@ export function handleSessionStart() {
   }
 }
 
-export function handlePost(input, { env = process.env, now = Date.now() } = {}) {
+export function handlePost(input, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
   const tool = input?.tool_name ?? input?.toolName
   if (tool !== CLAIM_TOOL && !TERMINAL_TOOLS.has(tool)) return null
   let scope
@@ -561,9 +676,9 @@ export function handlePost(input, { env = process.env, now = Date.now() } = {}) 
       repo_root: scope.repoRoot,
       action_item_id: actionItemId,
       claimed_at: now,
-    })
+    }, platform)
   } else {
-    const evidence = readEvidence(scope, { env, now })
+    const evidence = readEvidence(scope, { env, now, platform })
     const requested = input?.tool_input?.action_item_id
     if (
       evidence &&
@@ -587,9 +702,12 @@ export function handlePre(input, options = {}) {
     if (tool === 'Bash') {
       const command = commandFrom(input)
       if (isReadOnlyBootstrapCommand(command) || isPluginControlPlaneCommand(command)) return null
+    } else {
+      const target = canonicalTargetPath(input)
+      if (target && isNonProductWriteTarget(target, options.env ?? process.env)) return null
     }
     return deny(
-      `DevSpec denied ${tool}: claim the covering work item and retry. Read-only shell investigation and this plugin's own remote-control commands stay available without a claim (${CONTRACT_URI}).`,
+      `DevSpec denied ${tool}: claim the covering work item and retry. Read-only shell investigation, this plugin's own remote-control commands, and writes to your agent memory or scratchpad stay available without a claim (${CONTRACT_URI}).`,
     )
   }
   if (tool === 'Bash') {

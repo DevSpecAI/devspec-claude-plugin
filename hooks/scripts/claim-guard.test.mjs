@@ -17,6 +17,7 @@ import {
   handleSessionStart,
   isPluginControlPlaneCommand,
   isReadOnlyBootstrapCommand,
+  shellSegments,
 } from './claim-guard.mjs'
 
 const ITEM = 'cdd7a494-ed6a-414b-9f8f-bd0741b9de55'
@@ -492,5 +493,135 @@ describe('DevSpec control-plane commands before any claim', () => {
     assert.equal(isPluginControlPlaneCommand('node --test'), false)
     assert.equal(isPluginControlPlaneCommand('node script.js'), false)
     assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command: 'node --test' } }), { env })), 'deny')
+  })
+
+  it('accepts node.exe for the same script', () => {
+    assert.equal(isPluginControlPlaneCommand(`node.exe "${CONNECT}" --agent "Claude Code"`), true)
+    assert.equal(isPluginControlPlaneCommand(`node.exe -e "1"`), false)
+  })
+})
+
+describe('cross-platform tokenisation', () => {
+  it('keeps a backslash literal inside double quotes so Windows paths survive', () => {
+    const spaced = path.join(sandbox, 'repo with space')
+    gitInit(spaced)
+    // A real shell only treats \ as an escape before $ ` " \ or a newline.
+    assert.deepEqual(shellSegments('echo "C:\\Users\\x\\hooks"'), [['echo', 'C:\\Users\\x\\hooks']])
+    assert.deepEqual(shellSegments('echo "a\\"b"'), [['echo', 'a"b']])
+    assert.deepEqual(shellSegments('echo "a\\\\b"'), [['echo', 'a\\b']])
+    assert.equal(isReadOnlyBootstrapCommand(`ls "${spaced}"`), true)
+  })
+
+  it('treats a backslash before a newline as a line continuation, LF or CRLF', () => {
+    assert.deepEqual(shellSegments('echo one \\\n  two'), [['echo', 'one', 'two']])
+    assert.deepEqual(shellSegments('echo one \\\r\n  two'), [['echo', 'one', 'two']])
+    assert.deepEqual(shellSegments('echo "one \\\r\ntwo"'), [['echo', 'one two']])
+  })
+
+  it('allows the connect invocation when it arrives with CRLF line endings', () => {
+    const command = `node "${path.join(HERE, 'devspec-remote-connect.mjs')}" \\\r\n  --agent "Claude Code" --owner-pid "$PPID"`
+    assert.equal(isPluginControlPlaneCommand(command), true)
+    assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
+  })
+})
+
+describe('POSIX permission bits are asserted only where they mean something', () => {
+  function claimThen(platform) {
+    claim()
+    return handlePre(mutationInput('Write'), { env, platform })
+  }
+
+  it('reads back a claim on a platform whose directory mode is synthetic', () => {
+    claim()
+    const dir = env.DEVSPEC_CLAUDE_STATE_DIR
+    // What Node reports on Windows: 0o777 directories, 0o666 files.
+    fs.chmodSync(dir, 0o777)
+    fs.chmodSync(path.join(dir, fs.readdirSync(dir)[0]), 0o666)
+    assert.equal(handlePre(mutationInput('Write'), { env, platform: 'win32' }), null)
+    assert.equal(decision(handlePre(mutationInput('Write'), { env, platform: 'linux' })), 'deny')
+  })
+
+  it('still enforces the private modes on a POSIX platform', () => {
+    assert.equal(claimThen('linux'), null)
+    fs.chmodSync(env.DEVSPEC_CLAUDE_STATE_DIR, 0o755)
+    assert.equal(decision(handlePre(mutationInput('Write'), { env, platform: 'linux' })), 'deny')
+    fs.chmodSync(env.DEVSPEC_CLAUDE_STATE_DIR, 0o700)
+  })
+
+  it('records a claim without throwing where chmod cannot express the mode', () => {
+    handlePost(input('mcp__devspec__claim_work_item', repoA, {
+      hook_event_name: 'PostToolUse',
+      tool_input: { action_item_id: ITEM },
+      tool_response: { content: [{ type: 'text', text: JSON.stringify(serverClaimPayload()) }] },
+    }), { env, platform: 'win32' })
+    assert.equal(handlePre(mutationInput('Write'), { env, platform: 'win32' }), null)
+  })
+})
+
+describe('writes the mutation gate has no interest in', () => {
+  let home
+  let memoryDir
+  let scratchRoot
+  let scratchDir
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(sandbox, 'home-'))
+    memoryDir = path.join(home, '.claude', 'projects', '-home-someone-project', 'memory')
+    fs.mkdirSync(memoryDir, { recursive: true })
+    // A real scratchpad root, but a unique one: <tmp>/claude-<uid>/… is where
+    // live sessions keep theirs, and this suite must never remove those.
+    scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-guardtest-'))
+    scratchDir = path.join(scratchRoot, 'proj', 'sess', 'scratchpad')
+    fs.mkdirSync(scratchDir, { recursive: true })
+    env = { ...env, HOME: home, USERPROFILE: home }
+  })
+
+  afterEach(() => fs.rmSync(scratchRoot, { recursive: true, force: true }))
+
+  it('allows a memory write with no claim, and still allows it after the claim is settled', () => {
+    const target = path.join(memoryDir, 'MEMORY.md')
+    assert.equal(handlePre(mutationInput('Write', target), { env }), null)
+
+    claim()
+    handlePost(input('mcp__devspec__record_implementation', repoA, {
+      hook_event_name: 'PostToolUse',
+      tool_input: { action_item_id: ITEM },
+      tool_response: { content: [{ type: 'text', text: JSON.stringify(serverRecordPayload()) }] },
+    }), { env })
+    assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny', 'repo writes re-lock')
+    assert.equal(handlePre(mutationInput('Write', target), { env }), null, 'memory writes do not')
+  })
+
+  it('allows a scratchpad write with no claim', () => {
+    assert.equal(handlePre(mutationInput('Write', path.join(scratchDir, 'notes.md')), { env }), null)
+  })
+
+  it('never permits the claim state directory', () => {
+    const forged = path.join(env.DEVSPEC_CLAUDE_STATE_DIR, 'forged.json')
+    assert.equal(decision(handlePre(mutationInput('Write', forged), { env })), 'deny')
+  })
+
+  it('permits the memory directory only, not the rest of ~/.claude', () => {
+    for (const target of [
+      path.join(home, '.claude', 'settings.json'),
+      path.join(home, '.claude', 'CLAUDE.md'),
+      path.join(home, '.claude', 'plugins', 'evil.mjs'),
+      path.join(home, '.claude', 'projects', '-home-someone-project', 'notes.md'),
+      path.join(home, '.claude', 'projects', 'settings.json'),
+    ]) {
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      assert.equal(decision(handlePre(mutationInput('Write', target), { env })), 'deny', target)
+    }
+  })
+
+  it('resolves a symlink out of the memory directory before deciding', () => {
+    const escape = path.join(memoryDir, 'escape')
+    fs.symlinkSync(repoA, escape, 'dir')
+    assert.equal(decision(handlePre(mutationInput('Write', path.join(escape, 'pwned.ts')), { env })), 'deny')
+  })
+
+  it('leaves ordinary repository writes denied', () => {
+    assert.equal(decision(handlePre(mutationInput('Write'), { env })), 'deny')
+    assert.equal(decision(handlePre(mutationInput('Write', path.join(repoB, 'x.ts')), { env })), 'deny')
   })
 })

@@ -199,20 +199,14 @@ describe('session, repository, and target-path isolation', () => {
     assert.equal(decision(handlePre(input('Write', repoB, { tool_input: { file_path: path.join(repoB, 'x') } }), { env })), 'deny')
   })
 
-  it('contains Write, Edit, and NotebookEdit targets within the claimed repository', () => {
+  it('treats the project claim as provenance authority across repository targets', () => {
     claim()
-    fs.mkdirSync(path.join(repoA, 'nested'))
-    fs.writeFileSync(path.join(repoA, 'existing.txt'), 'x')
-    fs.symlinkSync(repoB, path.join(repoA, 'escape-link'))
-    for (const [tool, target, expected] of [
-      ['Write', path.join(repoA, 'new.txt'), null],
-      ['Edit', path.join(repoA, 'existing.txt'), null],
-      ['NotebookEdit', path.join(repoA, 'nested', 'book.ipynb'), null],
-      ['Write', path.join(repoB, 'outside.txt'), 'deny'],
-      ['Edit', '../repo-b/outside.txt', 'deny'],
-      ['NotebookEdit', path.join(repoA, 'escape-link', 'outside.ipynb'), 'deny'],
+    for (const [tool, target] of [
+      ['Write', path.join(repoA, 'new.txt')],
+      ['Edit', path.join(repoB, 'existing.txt')],
+      ['NotebookEdit', path.join(repoB, 'book.ipynb')],
     ]) {
-      assert.equal(decision(handlePre(mutationInput(tool, target), { env })), expected, `${tool}: ${target}`)
+      assert.equal(handlePre(mutationInput(tool, target), { env }), null, `${tool}: ${target}`)
     }
   })
 
@@ -242,7 +236,23 @@ describe('unclaimed Bash allowlist and shell escapes', () => {
       assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
     })
   }
-  for (const command of ['pwd; rm -rf .', 'git status --short && touch owned', 'git diff --name-only > evidence', 'git diff --ext-diff', 'cat README.md', 'echo $(touch owned)', 'git status\nrm -rf .']) {
+  it('allows the reported compound inspection against another repository', () => {
+    const command = [
+      `WT=${repoB}`, "printf '%s\\n' status", 'git -C "$WT" status --short --branch',
+      'git -C "$WT" diff --stat', 'git -C "$WT" ls-files --others --exclude-standard',
+      'git -C "$WT" log --oneline --decorate -8',
+    ].join('\n')
+    assert.equal(isReadOnlyBootstrapCommand(command), true)
+    assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
+  })
+
+  for (const command of [
+    'pwd; rm -rf .', 'git status --short && touch owned', 'git status | tee evidence',
+    'git diff --name-only > evidence', 'git diff --ext-diff', 'echo $(touch owned)', 'git status\nrm -rf .',
+    'sort input -o owned', 'uniq input owned', 'find . -fprint0 owned', 'X=-delete; find . "$X"',
+    'PATH=.:$PATH git status', 'GIT_EXTERNAL_DIFF=rm git diff', 'git -c alias.status=touch status',
+    'git branch -D main', 'printf -v PATH .',
+  ]) {
     it(`denies escape/mutation: ${JSON.stringify(command)}`, () => {
       assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command } }), { env })), 'deny')
     })
@@ -286,6 +296,7 @@ describe('direct git commit-producing gate', () => {
     `git co''mmit -m fix`,
     'git co$EMPTYmit -m fix',
     'git $(printf commit) -m fix',
+    `/usr/bin/git commit -m "fix [devspec:${ITEM}]"`,
   ]) {
     it(`denies direct/unverifiable commit production: ${command}`, () => {
       assert.ok(commitGateReason(command, ITEM))

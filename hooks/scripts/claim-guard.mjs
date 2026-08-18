@@ -219,9 +219,81 @@ function commandFrom(input) {
   return typeof input?.tool_input?.command === 'string' ? input.tool_input.command.trim() : ''
 }
 
-/** Commands allowed before a claim. No shell operators, paths, expansion, or redirection. */
+function readOnlySegments(command) {
+  if (typeof command !== 'string' || !command.trim() || command.length > 16384 || /`|\$\(|[<>]/.test(command)) return null
+  const segments = []
+  let current = ''
+  let quote = null
+  let escaped = false
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]
+    if (escaped) { current += char; escaped = false; continue }
+    if (char === '\\' && quote !== "'") { escaped = true; continue }
+    if (quote) { if (char === quote) quote = null; else current += char; continue }
+    if (char === "'" || char === '"') { quote = char; continue }
+    if (char === '&' && command[index + 1] !== '&') return null
+    if ((char === '&' || char === '|') && command[index + 1] === char) {
+      if (!current.trim()) return null
+      segments.push(current.trim()); current = ''; index += 1; continue
+    }
+    if (char === ';' || char === '\n' || char === '|') {
+      if (current.trim()) segments.push(current.trim())
+      current = ''; continue
+    }
+    if (char === '(' || char === ')') return null
+    current += char
+  }
+  if (quote || escaped) return null
+  if (current.trim()) segments.push(current.trim())
+  return segments.length ? segments : null
+}
+
+function readOnlyWords(segment) {
+  return segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((word) =>
+    word.length >= 2 && ((word[0] === '"' && word.at(-1) === '"') || (word[0] === "'" && word.at(-1) === "'"))
+      ? word.slice(1, -1) : word,
+  ) || []
+}
+
+function readOnlyGit(args) {
+  let index = 0
+  if (args[index] === '-C') {
+    const target = args[index + 1]
+    if (!target || (target.includes('$') && !/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(target))) return false
+    index += 2
+  }
+  while (['--no-pager', '--no-optional-locks'].includes(args[index])) index += 1
+  const verb = args[index]
+  const rest = args.slice(index + 1)
+  if (!verb || rest.some((arg) => arg.includes('$') || ['--output', '--ext-diff', '--textconv'].includes(arg) || arg.startsWith('--output='))) return false
+  if (['status', 'diff', 'log', 'show', 'ls-files', 'ls-tree', 'rev-parse', 'grep', 'blame', 'describe', 'for-each-ref', 'cat-file', 'diff-tree', 'diff-index', 'diff-files', 'merge-base', 'shortlog'].includes(verb)) return true
+  if (verb === 'branch') return rest.length === 0 || rest.every((arg) => /^(?:-a|--all|-r|--remotes|--list|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--format=|--sort=)/.test(arg))
+  if (verb === 'worktree') return rest[0] === 'list'
+  if (verb === 'remote') return rest.length === 0 || ['-v', 'show', 'get-url'].includes(rest[0])
+  return false
+}
+
+/** Conservative read-only compounds are available before tracking; every segment must be safe. */
 export function isReadOnlyBootstrapCommand(command) {
-  return /^(?:pwd|git rev-parse --show-toplevel|git status(?: (?:--short|--porcelain|--branch|-s|-b|-sb))*|git diff (?:--stat|--name-only)(?: --cached)?)$/.test(command)
+  const segments = readOnlySegments(command)
+  if (!segments) return false
+  return segments.every((segment) => {
+    const words = readOnlyWords(segment)
+    while (words[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
+      const assignment = words.shift()
+      const name = assignment.slice(0, assignment.indexOf('='))
+      const value = assignment.slice(assignment.indexOf('=') + 1)
+      if (/^(?:PATH|GIT_|LD_|DYLD_|NODE_OPTIONS|BASH_ENV|ENV|SHELL|IFS)/.test(name) || value.includes('$')) return false
+    }
+    const program = words.shift()
+    if (!program) return true
+    if (program === 'git') return readOnlyGit(words)
+    if (words.some((arg) => arg.includes('$'))) return false
+    if (program === 'find') return !words.some((arg) => /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(arg))
+    if (program === 'rg') return !words.some((arg) => arg === '--pre' || arg.startsWith('--pre='))
+    if (program === 'printf' && words.includes('-v')) return false
+    return ['pwd', 'printf', 'echo', 'ls', 'cat', 'head', 'tail', 'grep', 'cut', 'wc', 'stat', 'file', 'readlink', 'realpath', 'basename', 'dirname', 'true', 'false', 'test', '[', 'cd', 'pushd', 'popd'].includes(program)
+  })
 }
 
 function shellWords(command) {
@@ -273,8 +345,9 @@ function shellWords(command) {
 function directGitInvocation(command) {
   const words = shellWords(command)
   if (!words) return /\bgit\b/i.test(command) ? { unverifiable: true } : null
-  const gitIndex = words.indexOf('git')
+  const gitIndex = words.findIndex((word) => word === 'git' || /(?:^|[\\/])git(?:\.exe)?$/i.test(word))
   if (gitIndex < 0) return null
+  if (words[gitIndex] !== 'git') return { unverifiable: true }
   let index = gitIndex + 1
   const valueOptions = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'])
   while (index < words.length && words[index].startsWith('-')) {
@@ -402,7 +475,7 @@ export function handlePre(input, options = {}) {
   const evidence = readEvidence(scope, options)
   if (!evidence) {
     if (tool === 'Bash' && isReadOnlyBootstrapCommand(commandFrom(input))) return null
-    return deny(`DevSpec denied ${tool}: successfully claim a work item first (${CONTRACT_URI}).`)
+    return deny(`DevSpec denied ${tool}: claim the covering work item and retry; read-only investigation remains available (${CONTRACT_URI}).`)
   }
   if (tool === 'Bash') {
     const reason = commitGateReason(commandFrom(input), evidence.action_item_id)
@@ -411,9 +484,8 @@ export function handlePre(input, options = {}) {
     // ordinary permission system. The hook cannot inspect opaque subprocesses.
     return null
   }
-  if (!canonicalMutationTarget(input, scope.repoRoot)) {
-    return deny(`DevSpec denied ${tool}: the target path must stay inside the claimed repository.`)
-  }
+  // A project-level claim is provenance authority, not filesystem permission.
+  // Cross-repository file work still passes through Claude's normal permissions.
   // Silence means this guard passed; Claude's normal permissions still apply.
   return null
 }

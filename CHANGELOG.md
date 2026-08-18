@@ -10,9 +10,10 @@ All notable changes to this plugin are documented here. This project follows [Se
   `devspec://product/implementation-contract` rather than embedding a lifecycle
   copy in the plugin.
 - `Write`, `Edit`, `NotebookEdit`, and mutating `Bash` calls are denied until
-  this session has observed the server's successful `claim_work_item` result for
-  this repository. File/notebook targets must remain inside that repository;
-  successful matching record, fail, or release results clear the evidence.
+  this session has observed the server's successful `claim_work_item` result.
+  Conservative read-only shell compounds remain available before claim, and a
+  project-level claim may cover file targets in several repositories. Successful
+  matching record, fail, or release results clear the evidence.
 - Direct commit-producing git commands are gated mechanically. Passing the guard
   never auto-approves a tool: Claude's ordinary permissions still apply.
   Arbitrary claimed Bash remains possible, so opaque scripts and configured git

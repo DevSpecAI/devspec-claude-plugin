@@ -2,6 +2,76 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.15.4 - 2026-08-19
+
+### The guard only applies in DevSpec project folders
+
+The PreToolUse hook fires on every `Write`, `Edit` and `Bash`. The plugin is
+normally installed at *user* scope, so that means every folder on the machine —
+and each one was gated on a DevSpec claim. In a folder that has nothing to do with
+DevSpec no such claim can ever arrive, so ordinary work in unrelated projects was
+simply blocked.
+
+Jurisdiction is now positive and local: the folder must carry a DevSpec marker,
+either a `.devspec/project.json` pin or a project-scoped config that registers
+DevSpec (`.mcp.json`, `.claude/settings.json`, `.claude/settings.local.json`,
+`.claude/mcp.json` — an `mcpServers` entry, an `enabledMcpjsonServers` entry, or
+an `enabledPlugins` entry). No marker means "not ours", not "unknown, so deny".
+The search runs from the working directory up to the repository root — never at or
+above your home directory, where a stray marker would otherwise claim everything
+you own — **and** at the repository's main working tree, because worktrees are
+routinely created outside the repository root and these config files are usually
+untracked, so a linked worktree's own checkout has no marker even though its
+repository plainly is a DevSpec project.
+
+**Check your setup if you relied on the guard.** If a DevSpec project folder has
+no marker at all — the DevSpec MCP server registered only at user scope, no pin —
+the guard now stands down there. Add a `.devspec/project.json` pin, or register
+DevSpec in the project's `.mcp.json`, to keep it.
+
+Two things deliberately do not change. A held claim keeps the guard fully active
+regardless of markers, so a session that is already tracking work still owes the
+commit gate its claim tag. And jurisdiction follows the *session's* folder, so
+from a non-DevSpec folder the guard no longer gates an absolute-path write into a
+DevSpec repository — which is this guard's long-standing stance rather than a new
+one: a claim is provenance authority, not filesystem permission, and
+cross-repository file work has always passed through Claude's own permissions.
+
+### A shell redirection no longer denies the command carrying it
+
+The tokenizer returned "unparseable" for any unquoted `<` or `>`, and every gate
+fails closed on unparseable. So a redirect — the most ordinary thing in a shell
+command — denied the whole command:
+
+    node …/devspec-remote-connect.mjs --owner-pid "$PPID" 2>&1   -> DENIED
+    node …/devspec-remote-connect.mjs --owner-pid "$PPID"        -> allowed
+
+That first line is what `/devspec.remote` prints. It is the one command that must
+work *before* a claim can exist, because remote control is how an agent becomes
+reachable for work at all — the same dead end 0.15.1 was released to fix, reached
+by a different route. The read-only investigation the deny message explicitly
+promises was broken the same way: `grep x y 2>/dev/null` was refused as though it
+were a mutation.
+
+Redirections are now parsed rather than refused, and kept out of the command words
+(a redirect is not an argument). Each one is then judged on what it can actually
+do. A file-descriptor duplication (`2>&1`), a read (`< file`) and a write to
+`/dev/null` are inert. Anything that can create, truncate or append to a real path
+is a write and still needs a claim, so `echo x > src/thing.ts` stays denied — as
+does `node …/devspec-remote-connect.mjs > some/file`, which would otherwise be an
+arbitrary write wearing an allow-listed script's name.
+
+Two details worth naming. `>&word` duplicates a descriptor only when `word` is a
+descriptor number; with any other word bash sends *both* streams to that file, so
+`>&out.txt` is correctly treated as a write. And heredocs and herestrings (`<<`,
+`<<<`) are still refused outright: their bodies are not modelled, so they keep
+failing closed rather than being half-understood.
+
+For a session that already holds a claim, the commit gate now ignores redirections
+entirely, since a redirect cannot author a commit: `git log > out.txt` is no longer
+refused as unverifiable, while `git commit -m "…" > out.txt` still needs its claim
+tag.
+
 ## 0.15.3 - 2026-08-18
 
 ### A claim covers the repository, so a worktree keeps it

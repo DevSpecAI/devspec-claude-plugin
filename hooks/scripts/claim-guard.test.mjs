@@ -50,6 +50,25 @@ function addWorktree(repo, target) {
   assert.equal(result.status, 0, result.stderr)
 }
 
+/**
+ * What makes a folder a DevSpec project folder as far as this guard is concerned.
+ *
+ * A real one carries a `.mcp.json` registering the DevSpec MCP server — and note it
+ * is normally UNTRACKED, which is why a linked worktree cannot inherit it through
+ * git and the main-checkout fallback exists.
+ */
+function writeDevspecMarker(dir) {
+  fs.writeFileSync(
+    path.join(dir, '.mcp.json'),
+    JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }),
+  )
+}
+
+function writeProjectPin(dir, projectId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee') {
+  fs.mkdirSync(path.join(dir, '.devspec'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.devspec', 'project.json'), JSON.stringify({ project_id: projectId }))
+}
+
 function input(toolName, cwd = repoA, overrides = {}) {
   return {
     session_id: SESSION,
@@ -68,6 +87,11 @@ function mutationInput(toolName, target = path.join(repoA, 'target.txt'), overri
 
 function decision(result) {
   return result?.hookSpecificOutput?.permissionDecision ?? null
+}
+
+/** A parsed segment carrying no redirections — the shape `shellSegments` returns. */
+function words(...list) {
+  return { words: list, redirects: [] }
 }
 
 function claim(cwd = repoA, sessionId = SESSION, itemId = ITEM, response = undefined, requestedId = itemId) {
@@ -146,6 +170,10 @@ beforeEach(() => {
   repoB = path.join(sandbox, 'repo-b')
   gitInit(repoA)
   gitInit(repoB)
+  // Both stand in for folders that belong to a DevSpec project; without a marker the
+  // guard has no jurisdiction and correctly ignores them (see its own describe below).
+  writeDevspecMarker(repoA)
+  writeDevspecMarker(repoB)
   env = { ...process.env, DEVSPEC_CLAUDE_STATE_DIR: path.join(sandbox, 'state') }
 })
 
@@ -450,7 +478,7 @@ describe('quote-aware classification of unclaimed shell commands', () => {
   }
 
   for (const command of [
-    'git diff > out', 'cat < in', 'echo `touch owned`', 'echo "`touch owned`"',
+    'git diff > out', 'echo `touch owned`', 'echo "`touch owned`"',
     '(touch owned)', 'git status --short; touch owned', 'ls "unterminated',
   ]) {
     it(`still denies real shell structure: ${JSON.stringify(command)}`, () => {
@@ -458,6 +486,224 @@ describe('quote-aware classification of unclaimed shell commands', () => {
       assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command } }), { env })), 'deny')
     })
   }
+})
+
+describe('redirections are parsed, not refused', () => {
+  function bash(command, cwd = repoA) {
+    return handlePre(input('Bash', cwd, { tool_input: { command } }), { env })
+  }
+
+  it('parses a redirection out of the words instead of rejecting the command', () => {
+    assert.deepEqual(shellSegments('ls -a 2>&1'), [
+      { words: ['ls', '-a'], redirects: [{ fd: '2', op: '>&', target: '1' }] },
+    ])
+    assert.deepEqual(shellSegments('grep x y 2>/dev/null'), [
+      { words: ['grep', 'x', 'y'], redirects: [{ fd: '2', op: '>', target: '/dev/null' }] },
+    ])
+    assert.deepEqual(shellSegments('cat < in'), [
+      { words: ['cat'], redirects: [{ fd: null, op: '<', target: 'in' }] },
+    ])
+    assert.deepEqual(shellSegments('echo hi >> log.txt'), [
+      { words: ['echo', 'hi'], redirects: [{ fd: null, op: '>>', target: 'log.txt' }] },
+    ])
+    assert.deepEqual(shellSegments('make &> out'), [
+      { words: ['make'], redirects: [{ fd: null, op: '&>', target: 'out' }] },
+    ])
+  })
+
+  it('reads a digit as a descriptor only when it touches the operator', () => {
+    // The shell writes "2" into the file here; the 2 is an argument, not an fd.
+    assert.deepEqual(shellSegments('echo 2 > file'), [
+      { words: ['echo', '2'], redirects: [{ fd: null, op: '>', target: 'file' }] },
+    ])
+  })
+
+  it('refuses shapes it cannot model rather than half-understanding them', () => {
+    for (const command of ['cat <<EOF', 'cat <<<"x"', 'ls >', 'ls > ; echo hi', 'ls > > f']) {
+      assert.equal(shellSegments(command), null, command)
+      assert.equal(isReadOnlyBootstrapCommand(command), false, command)
+    }
+  })
+
+  /**
+   * The defect this fixes: a redirect made the command unparseable, so every gate
+   * failed closed and the deny message's promise of read-only investigation was
+   * false for anything as ordinary as `2>/dev/null` (devspec:7be7469f).
+   */
+  it('allows read-only investigation carrying an inert redirection', () => {
+    for (const command of [
+      'grep -n x README.md 2>/dev/null',
+      'ls -a 2>&1',
+      'cat < in',
+      'git -C . status --short 2>/dev/null',
+      'ls -a 2>&1 | head -20',
+      'grep -rn x . 2>/dev/null && ls 2>&1',
+      'ls >/dev/null 2>&1',
+    ]) {
+      assert.equal(isReadOnlyBootstrapCommand(command), true, command)
+      assert.equal(bash(command), null, command)
+    }
+  })
+
+  it('still denies a redirection that can write to a real path', () => {
+    for (const command of [
+      'echo x > out.txt',
+      'ls >> listing.txt',
+      'cat a >| b',
+      'ls &> everything.log',
+      'ls >& everything.log',
+      'grep x y 2> errors.log',
+      'ls > "$HOME/x"',
+      'cat a <> b',
+    ]) {
+      assert.equal(isReadOnlyBootstrapCommand(command), false, command)
+      assert.equal(decision(bash(command)), 'deny', command)
+    }
+  })
+
+  it('treats a duplication as inert only when its target is a descriptor', () => {
+    for (const command of ['ls 2>&1', 'ls 2>&-', 'ls 2>&1-', 'ls <&0']) {
+      assert.equal(isReadOnlyBootstrapCommand(command), true, command)
+    }
+    assert.equal(isReadOnlyBootstrapCommand('ls 2>&out'), false, 'bash sends both streams to a file here')
+  })
+
+  it('judges every segment of a compound, not just the first', () => {
+    assert.equal(isReadOnlyBootstrapCommand('ls 2>&1 && echo x > owned'), false)
+    assert.equal(isReadOnlyBootstrapCommand('ls 2>&1 | tee owned'), false)
+  })
+})
+
+describe('the commit gate ignores redirections', () => {
+  function bash(command) {
+    return handlePre(input('Bash', repoA, { tool_input: { command } }), { env })
+  }
+
+  it('no longer calls a redirected read-only git command unverifiable', () => {
+    claim()
+    assert.equal(commitGateReason('git log --oneline -5 > out.txt', ITEM), null)
+    assert.equal(bash('git log --oneline -5 > out.txt'), null)
+  })
+
+  it('still requires the claim tag on a commit that redirects its output', () => {
+    claim()
+    const command = 'git commit -m "no tag" > out.txt'
+    assert.match(commitGateReason(command, ITEM), /needs \[devspec:/)
+    assert.equal(decision(bash(command)), 'deny')
+  })
+
+  it('accepts a tagged commit that redirects its output', () => {
+    claim()
+    const command = `git commit -m "fix: thing [devspec:${ITEM}]" > out.txt`
+    assert.equal(commitGateReason(command, ITEM), null)
+    assert.equal(bash(command), null)
+  })
+
+  it('keeps failing closed on a git shape it cannot parse', () => {
+    assert.match(commitGateReason('git commit <<EOF', ITEM), /cannot be verified/)
+  })
+})
+
+/**
+ * The guard is installed at USER scope, so its PreToolUse hook fires in every folder
+ * on the machine. Gating each one on a DevSpec claim blocked ordinary work in
+ * unrelated projects, where no such claim can ever arrive (devspec:7be7469f).
+ */
+describe('jurisdiction — only folders that belong to a DevSpec project', () => {
+  let outside
+
+  function writeIn(directory, tool = 'Write') {
+    const key = tool === 'NotebookEdit' ? 'notebook_path' : 'file_path'
+    return input(tool, directory, { tool_input: { [key]: path.join(directory, 'x.ts') } })
+  }
+
+  beforeEach(() => {
+    outside = path.join(sandbox, 'unrelated')
+    gitInit(outside)
+  })
+
+  it('ignores every mutation in a folder carrying no DevSpec marker', () => {
+    for (const tool of ['Write', 'Edit', 'NotebookEdit']) {
+      assert.equal(handlePre(writeIn(outside, tool), { env }), null, tool)
+    }
+    for (const command of ['echo x > out.txt', 'rm -rf .', 'git commit -m "untagged"']) {
+      assert.equal(handlePre(input('Bash', outside, { tool_input: { command } }), { env }), null, command)
+    }
+  })
+
+  it('takes jurisdiction from a .mcp.json that registers DevSpec', () => {
+    writeDevspecMarker(outside)
+    assert.equal(decision(handlePre(writeIn(outside), { env })), 'deny')
+  })
+
+  it('takes jurisdiction from a .devspec/project.json pin', () => {
+    writeProjectPin(outside)
+    assert.equal(decision(handlePre(writeIn(outside), { env })), 'deny')
+  })
+
+  it('takes jurisdiction from a project that enables the DevSpec plugin', () => {
+    fs.mkdirSync(path.join(outside, '.claude'), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, '.claude', 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'devspec-autopilot@devspec': true } }),
+    )
+    assert.equal(decision(handlePre(writeIn(outside), { env })), 'deny')
+  })
+
+  it('does not take jurisdiction from a config that merely mentions devspec', () => {
+    fs.writeFileSync(path.join(outside, '.mcp.json'), JSON.stringify({
+      mcpServers: { supabase: { url: 'https://mcp.supabase.com/mcp' } },
+      note: 'the devspec project lives elsewhere',
+    }))
+    assert.equal(handlePre(writeIn(outside), { env }), null)
+  })
+
+  it('ignores an unreadable or malformed marker rather than throwing', () => {
+    fs.writeFileSync(path.join(outside, '.mcp.json'), '{not json')
+    assert.equal(handlePre(writeIn(outside), { env }), null)
+  })
+
+  it('finds the marker from a subdirectory of the project', () => {
+    const nested = path.join(repoA, 'apps', 'web')
+    fs.mkdirSync(nested, { recursive: true })
+    assert.equal(decision(handlePre(writeIn(nested), { env })), 'deny')
+  })
+
+  /**
+   * The contract asks agents to work in a linked worktree, worktrees are routinely
+   * created outside the repository root, and `.mcp.json` is untracked — so the
+   * worktree's own checkout has no marker. Keying on the cwd chain alone would switch
+   * the guard off for exactly the isolation the contract tells agents to use.
+   */
+  it('gives a linked worktree the repository jurisdiction its own checkout lacks', () => {
+    gitCommit(repoA)
+    const worktree = path.join(sandbox, 'wt-jurisdiction')
+    addWorktree(repoA, worktree)
+    assert.equal(fs.existsSync(path.join(worktree, '.mcp.json')), false, 'the marker is genuinely absent')
+    assert.equal(decision(handlePre(writeIn(worktree), { env })), 'deny')
+  })
+
+  it('never takes jurisdiction from a marker at or above the home directory', () => {
+    const home = fs.mkdtempSync(path.join(sandbox, 'home-'))
+    writeDevspecMarker(home)
+    const plain = path.join(home, 'somewhere')
+    fs.mkdirSync(plain)
+    assert.equal(handlePre(writeIn(plain), { env: { ...env, HOME: home, USERPROFILE: home } }), null)
+  })
+
+  it('keeps a tracking session fully gated even where jurisdiction is absent', () => {
+    claim(outside)
+    assert.equal(
+      decision(handlePre(input('Bash', outside, { tool_input: { command: 'git commit -m "untagged"' } }), { env })),
+      'deny',
+      'a held claim still owes the commit gate its tag',
+    )
+  })
+
+  it('stands down instead of denying when the hook input has no usable scope', () => {
+    assert.equal(handlePre(input('Write', repoA, { session_id: '' }), { env }), null)
+    assert.equal(handlePre(input('Write', path.join(sandbox, 'missing'), {}), { env }), null)
+  })
 })
 
 describe('DevSpec control-plane commands before any claim', () => {
@@ -469,6 +715,34 @@ describe('DevSpec control-plane commands before any claim', () => {
     const command = `node "${CONNECT}" \\\n  --agent "Claude Code" --owner-pid "$PPID"`
     assert.equal(isPluginControlPlaneCommand(command), true)
     assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null)
+  })
+
+  /**
+   * The reported failure: `/devspec.remote` prints this command, an agent appends the
+   * redirect to capture stderr, and the guard denied the one command that must work
+   * before a claim can exist — so remote control could not be reached at all.
+   */
+  it('allows the connect invocation when it carries a stderr redirection', () => {
+    for (const command of [
+      `node "${CONNECT}" --agent "Claude Code" --owner-pid "$PPID" 2>&1`,
+      `node "${CONNECT}" --agent "Claude Code" 2>/dev/null`,
+      `node "${CONNECT}" --agent "Claude Code" >/dev/null 2>&1`,
+    ]) {
+      assert.equal(isPluginControlPlaneCommand(command), true, command)
+      assert.equal(handlePre(input('Bash', repoA, { tool_input: { command } }), { env }), null, command)
+    }
+  })
+
+  it('refuses a control-plane script whose redirection writes a file', () => {
+    for (const command of [
+      `node "${CONNECT}" > owned`,
+      `node "${CONNECT}" 2> owned`,
+      `node "${CONNECT}" >& owned`,
+      `node "${CONNECT}" &> owned`,
+    ]) {
+      assert.equal(isPluginControlPlaneCommand(command), false, command)
+      assert.equal(decision(handlePre(input('Bash', repoA, { tool_input: { command } }), { env })), 'deny', command)
+    }
   })
 
   it('allows the /devspec.remote-stop and wait-stream invocations', () => {
@@ -522,16 +796,16 @@ describe('cross-platform tokenisation', () => {
     const spaced = path.join(sandbox, 'repo with space')
     gitInit(spaced)
     // A real shell only treats \ as an escape before $ ` " \ or a newline.
-    assert.deepEqual(shellSegments('echo "C:\\Users\\x\\hooks"'), [['echo', 'C:\\Users\\x\\hooks']])
-    assert.deepEqual(shellSegments('echo "a\\"b"'), [['echo', 'a"b']])
-    assert.deepEqual(shellSegments('echo "a\\\\b"'), [['echo', 'a\\b']])
+    assert.deepEqual(shellSegments('echo "C:\\Users\\x\\hooks"'), [words('echo', 'C:\\Users\\x\\hooks')])
+    assert.deepEqual(shellSegments('echo "a\\"b"'), [words('echo', 'a"b')])
+    assert.deepEqual(shellSegments('echo "a\\\\b"'), [words('echo', 'a\\b')])
     assert.equal(isReadOnlyBootstrapCommand(`ls "${spaced}"`), true)
   })
 
   it('treats a backslash before a newline as a line continuation, LF or CRLF', () => {
-    assert.deepEqual(shellSegments('echo one \\\n  two'), [['echo', 'one', 'two']])
-    assert.deepEqual(shellSegments('echo one \\\r\n  two'), [['echo', 'one', 'two']])
-    assert.deepEqual(shellSegments('echo "one \\\r\ntwo"'), [['echo', 'one two']])
+    assert.deepEqual(shellSegments('echo one \\\n  two'), [words('echo', 'one', 'two')])
+    assert.deepEqual(shellSegments('echo one \\\r\n  two'), [words('echo', 'one', 'two')])
+    assert.deepEqual(shellSegments('echo "one \\\r\ntwo"'), [words('echo', 'one two')])
   })
 
   it('allows the connect invocation when it arrives with CRLF line endings', () => {
@@ -684,6 +958,9 @@ describe('evidence is scoped to the repository, not the checkout', () => {
   it('falls back to the canonical directory outside a repository', () => {
     const plain = path.join(sandbox, 'not-a-repo')
     fs.mkdirSync(plain)
+    // Marked, so this still tests claim scoping rather than passing for want of
+    // jurisdiction — a pinned folder with no repo is the greenfield case.
+    writeProjectPin(plain)
     claim(plain)
     assert.equal(handlePre(writeIn(plain), { env }), null)
     assert.equal(decision(handlePre(writeIn(repoB), { env })), 'deny')

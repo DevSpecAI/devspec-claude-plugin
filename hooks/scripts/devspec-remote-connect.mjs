@@ -28,14 +28,13 @@
  * Exit 0 = connected. Exit 1 = connect failed (message on stderr). Exit 2 = bad args.
  */
 
-import { execFileSync } from 'node:child_process'
-import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import {
   detectLocalId,
   resolveLocalAction,
@@ -76,72 +75,13 @@ function parseArgs(argv) {
   return out
 }
 
-/** `git remote get-url origin`, or null when there is no repo / no origin. */
-export function gitRemoteOrigin(cwd) {
-  try {
-    const out = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5000,
-    })
-    return out.trim() || null
-  } catch {
-    return null
-  }
-}
-
-/** The git repository root for `cwd`, or null when this is not a repo. */
-function gitRoot(cwd) {
-  try {
-    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5000,
-    })
-    return out.trim() ? path.resolve(out.trim()) : null
-  } catch {
-    return null
-  }
-}
-
 /**
- * The folder's own `.devspec/project.json` pin: `{ "project_id": "<uuid>" }`.
- *
- * Searched from `cwd` upward, stopping at (and including) the git repository root,
- * and never at or above the home directory — a pin in `~` would silently claim every
- * folder the user owns. The nearest pin wins.
+ * Folder identity — the git remote and the `.devspec/project.json` pin — is shared
+ * with the claim guard, which asks the same questions before every mutation, so one
+ * implementation lives in `devspec-scope.mjs`. Re-exported here because this module's
+ * own callers and tests import them from it.
  */
-export function findProjectPin(cwd, { home = os.homedir(), root = undefined } = {}) {
-  const stopAt = root === undefined ? gitRoot(cwd) : root
-  const homeResolved = path.resolve(home)
-  let dir = path.resolve(cwd)
-
-  /** True when `dir` IS the home directory or an ancestor of it (`~`, `/home`, `/`). */
-  const atOrAboveHome = (d) => {
-    const rel = path.relative(d, homeResolved)
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
-  }
-
-  for (;;) {
-    if (atOrAboveHome(dir)) return null
-    const candidate = path.join(dir, '.devspec', 'project.json')
-    try {
-      if (fs.existsSync(candidate)) {
-        const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8'))
-        const id = typeof parsed?.project_id === 'string' ? parsed.project_id.trim() : ''
-        if (id) return { project_id: id, path: candidate }
-      }
-    } catch {
-      /* an unreadable or malformed pin is simply not a pin */
-    }
-    if (stopAt && dir === stopAt) return null
-    const parent = path.dirname(dir)
-    if (parent === dir) return null
-    dir = parent
-  }
-}
+export { findProjectPin, gitRemoteOrigin }
 
 /** Short display form for a uuid. */
 const short = (id) => (typeof id === 'string' && id.length >= 8 ? `${id.slice(0, 8)}…` : '—')

@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { devspecFolderMarker } from './devspec-scope.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
 export const EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -84,19 +85,35 @@ function ensurePrivateDirectory(dir, platform = process.platform) {
  * untouched: another session still cannot see this claim. A directory that is
  * not a repository at all still falls back to its canonical self.
  */
-function canonicalRepo(cwd) {
+function canonicalCwd(cwd) {
   if (typeof cwd !== 'string' || cwd.length === 0 || cwd.includes('\0')) throw new Error('missing hook cwd')
-  const canonicalCwd = fs.realpathSync(cwd)
+  return fs.realpathSync(cwd)
+}
+
+function canonicalRepo(canonicalCwdPath) {
   try {
     const repository = execFileSync(
       'git',
-      ['-C', canonicalCwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      ['-C', canonicalCwdPath, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim()
     return fs.realpathSync(repository)
   } catch {
-    return canonicalCwd
+    return canonicalCwdPath
   }
+}
+
+/**
+ * The repository's MAIN working tree, derived from the common git dir it already
+ * resolved: `<main>/.git` → `<main>`. Null for a bare repository or a cwd that is
+ * not a repository at all, where no such checkout exists.
+ *
+ * This is what lets a linked worktree inherit its repository's DevSpec identity —
+ * see `devspecFolderMarker`, which needs it because worktrees are routinely created
+ * outside the repository root and the marker files are typically untracked.
+ */
+function mainWorktreeOf(repoRoot) {
+  return path.basename(repoRoot) === '.git' ? path.dirname(repoRoot) : null
 }
 
 function validSessionId(value) {
@@ -107,7 +124,9 @@ function scopeFrom(input) {
   if (!input || typeof input !== 'object' || !validSessionId(input.session_id)) {
     throw new Error('missing or malformed hook session_id')
   }
-  return { sessionId: input.session_id, repoRoot: canonicalRepo(input.cwd) }
+  const cwd = canonicalCwd(input.cwd)
+  const repoRoot = canonicalRepo(cwd)
+  return { sessionId: input.session_id, cwd, repoRoot, mainWorktree: mainWorktreeOf(repoRoot) }
 }
 
 export function evidencePathFor(scope, env = process.env) {
@@ -275,8 +294,8 @@ function commandFrom(input) {
 }
 
 /**
- * One quote-aware tokenizer, shared by both gates: returns the command as a list
- * of segments, each a list of words, or null when the command cannot be parsed
+ * One quote-aware tokenizer, shared by every gate: returns the command as a list of
+ * segments, each `{ words, redirects }`, or null when the command cannot be parsed
  * safely.
  *
  * The previous implementation stripped quote characters while scanning and then
@@ -291,7 +310,16 @@ function commandFrom(input) {
  * Structure is therefore decided here, with quoting respected:
  *  - `&&`, `||`, `|`, `;` and newlines separate segments; a bare `&` (background)
  *    is refused outright.
- *  - Unquoted `<`, `>`, `(`, `)` and backticks are real shell structure: refused.
+ *  - Unquoted `(`, `)` and backticks are real shell structure: refused.
+ *  - Redirections are PARSED, not refused, and kept out of `words` — a redirect is
+ *    not an argument. Refusing them made EVERY gate fail closed on a command as
+ *    ordinary as `… 2>&1`: the read-only classifier the deny message promises stays
+ *    available, and the plugin's own connect command, which is the one command that
+ *    must work before a claim can exist (devspec:7be7469f). Each parses to
+ *    `{ fd, op, target }`; whether one is harmless is a gate's decision, not the
+ *    tokenizer's (see `redirectIsInert`).
+ *  - A heredoc or herestring (`<<`, `<<<`) is still refused: its body is not
+ *    modelled, so it keeps failing closed rather than being half-understood.
  *  - A backtick inside double quotes still substitutes, so it is refused too;
  *    inside single quotes it is literal text.
  *  - `\` + newline is a line continuation, which the documented multi-line
@@ -305,16 +333,35 @@ export function shellSegments(command) {
   if (typeof command !== 'string' || !command.trim() || command.length > 16384) return null
   const segments = []
   let words = []
+  let redirects = []
   let word = ''
   let started = false
   let quote = null
+  /** A redirection operator whose target word has not been read yet. */
+  let pending = null
 
   const endWord = () => {
-    if (started) { words.push(word); word = ''; started = false }
+    if (!started) return
+    if (pending) {
+      pending.target = word
+      redirects.push(pending)
+      pending = null
+    } else {
+      words.push(word)
+    }
+    word = ''
+    started = false
   }
   const endSegment = (requireContent) => {
     endWord()
-    if (words.length) { segments.push(words); words = []; return true }
+    // A redirection with no target (`ls >`) is not a command this can reason about.
+    if (pending) return false
+    if (words.length || redirects.length) {
+      segments.push({ words, redirects })
+      words = []
+      redirects = []
+      return true
+    }
     return !requireContent
   }
 
@@ -358,7 +405,35 @@ export function shellSegments(command) {
     }
 
     if (char === "'" || char === '"') { quote = char; started = true; continue }
-    if (char === '`' || char === '(' || char === ')' || char === '<' || char === '>') return null
+    if (char === '`' || char === '(' || char === ')') return null
+    if (char === '<' || char === '>' || (char === '&' && command[index + 1] === '>')) {
+      // Two operators with nothing between them is not a command shape we model.
+      if (pending) return null
+      let fd = null
+      let op
+      if (char === '&') {
+        // `&>` / `&>>` — bash's "both streams to one target". No fd may precede it.
+        endWord()
+        index += 1
+        if (command[index + 1] === '>') { index += 1; op = '&>>' } else { op = '&>' }
+      } else if (char === '<' && command[index + 1] === '<') {
+        return null
+      } else {
+        // A digit-only word TOUCHING the operator names the descriptor it applies to
+        // (`2>file`). Separated by a space it is an ordinary argument, exactly as the
+        // shell reads it: `echo 2 > file` writes "2" into the file.
+        if (started && /^\d+$/.test(word)) { fd = word; word = ''; started = false }
+        endWord()
+        const next = command[index + 1]
+        if (char === '>' && next === '>') { index += 1; op = '>>' }
+        else if (next === '&') { index += 1; op = `${char}&` }
+        else if (char === '>' && next === '|') { index += 1; op = '>|' }
+        else if (char === '<' && next === '>') { index += 1; op = '<>' }
+        else op = char
+      }
+      pending = { fd, op }
+      continue
+    }
     if (char === '\\') {
       const next = command[++index]
       if (next === undefined) return null
@@ -381,7 +456,7 @@ export function shellSegments(command) {
       if (!endSegment(true)) return null
       continue
     }
-    if (char === ';' || char === '\n') { endSegment(false); continue }
+    if (char === ';' || char === '\n') { if (!endSegment(false)) return null; continue }
     if (/\s/.test(char)) { endWord(); continue }
 
     word += char
@@ -389,8 +464,31 @@ export function shellSegments(command) {
   }
 
   if (quote) return null
-  endSegment(false)
+  if (!endSegment(false)) return null
   return segments.length ? segments : null
+}
+
+/**
+ * Is this redirection harmless to a gate that has not seen a claim?
+ *
+ * Inert means it cannot create, truncate or append to a file: a file-descriptor
+ * duplication (`2>&1`), a read (`< file`), or a write to the null device. Anything
+ * else IS a filesystem write and still needs a claim like any other mutation, so
+ * `echo x > src/thing.ts` stays denied while `grep x y 2>/dev/null` does not.
+ *
+ * The bash subtlety worth spelling out: `>&word` duplicates a descriptor only when
+ * `word` is a descriptor number (or `-`, meaning close, or `N-`, meaning move). With
+ * any other word bash sends BOTH streams to that file, so `>&out.txt` is a write.
+ *
+ * A target carrying `$` is never inert: what it expands to is unknown here, and this
+ * gate does not guess (the same stance the rest of the file takes on expansion).
+ */
+function redirectIsInert(redirect) {
+  const target = redirect?.target
+  if (typeof target !== 'string' || target.length === 0 || target.includes('$')) return false
+  if (redirect.op === '>&' || redirect.op === '<&') return /^(?:\d+-?|-)$/.test(target)
+  if (redirect.op === '<') return true
+  return target === '/dev/null'
 }
 
 function readOnlyGit(args) {
@@ -416,7 +514,8 @@ export function isReadOnlyBootstrapCommand(command) {
   const segments = shellSegments(command)
   if (!segments) return false
   return segments.every((segment) => {
-    const words = [...segment]
+    if (!segment.redirects.every(redirectIsInert)) return false
+    const words = [...segment.words]
     while (words[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
       const assignment = words.shift()
       const name = assignment.slice(0, assignment.indexOf('='))
@@ -471,7 +570,10 @@ function safeControlPlaneArgument(argument) {
 export function isPluginControlPlaneCommand(command) {
   const segments = shellSegments(command)
   if (!segments || segments.length !== 1) return false
-  const words = [...segments[0]]
+  // `2>&1` on a connect command is ordinary; `> some/file` would make this an
+  // arbitrary write wearing an allow-listed script's name.
+  if (!segments[0].redirects.every(redirectIsInert)) return false
+  const words = [...segments[0].words]
   // `node` or `node.exe` — the bare program only. A path-qualified interpreter
   // is not accepted, since what makes this safe is the script's identity below.
   const program = words.shift()
@@ -541,7 +643,9 @@ export function commitGateReason(command, actionItemId) {
     return /\bgit\b/i.test(command) ? 'an expanded or chained git command cannot be verified as non-committing' : null
   }
   for (const segment of segments) {
-    const reason = segmentCommitReason(segment, actionItemId)
+    // Redirections are ignored here on purpose: a redirect cannot author a commit,
+    // so `git log > out.txt` is as verifiably non-committing as `git log`.
+    const reason = segmentCommitReason(segment.words, actionItemId)
     if (reason) return reason
   }
   return null
@@ -576,7 +680,7 @@ function segmentCommitReason(words, actionItemId) {
 export function commitCommandHasClaimTag(command, actionItemId) {
   const segments = shellSegments(command)
   if (!segments || segments.length !== 1) return false
-  return gitInvocationOf(segments[0])?.subcommand === 'commit' && commitGateReason(command, actionItemId) === null
+  return gitInvocationOf(segments[0].words)?.subcommand === 'commit' && commitGateReason(command, actionItemId) === null
 }
 
 /**
@@ -670,6 +774,35 @@ function isNonProductWriteTarget(target, env = process.env) {
   return false
 }
 
+/**
+ * Does this guard have any business in this folder?
+ *
+ * It used to assume yes, everywhere. The plugin is normally installed at USER scope,
+ * so the PreToolUse hook fires on every Write, Edit and Bash in every folder on the
+ * machine — and each one was gated on a DevSpec claim. In a folder that has nothing
+ * to do with DevSpec no such claim can ever arrive, so ordinary work in unrelated
+ * projects was simply blocked (devspec:7be7469f).
+ *
+ * Jurisdiction is therefore POSITIVE: the folder must carry a DevSpec marker (a
+ * `.devspec/project.json` pin, or a project-scoped config registering DevSpec — see
+ * `devspecFolderMarker`). No marker is not "unknown, so deny"; it is "not ours".
+ *
+ * Two consequences, both deliberate:
+ *  - A held claim keeps the guard fully active regardless — see `handlePre`. Nothing
+ *    about jurisdiction can weaken a session that is already tracking work.
+ *  - Jurisdiction follows the SESSION's folder, so from a non-DevSpec folder this no
+ *    longer gates an absolute-path write into a DevSpec repository. That is the
+ *    existing stance of this file, not a new one: a claim is provenance authority,
+ *    not filesystem permission, and cross-repository file work has always passed
+ *    through Claude's ordinary permissions instead.
+ */
+function hasDevSpecJurisdiction(scope, env = process.env) {
+  return Boolean(devspecFolderMarker(scope.cwd, {
+    home: homeDirectory(env),
+    mainWorktree: scope.mainWorktree,
+  }))
+}
+
 export function handleSessionStart() {
   return {
     hookSpecificOutput: {
@@ -713,10 +846,15 @@ export function handlePre(input, options = {}) {
   if (!MUTATION_TOOLS.has(tool)) return null
   let scope
   try { scope = scopeFrom(input) } catch {
-    return deny('DevSpec denied mutation because the hook input has no valid session and repository scope.')
+    // Without a session and a real folder there is no way to establish that this
+    // guard has jurisdiction here, and a guard that denies when it cannot tell where
+    // it is has twice been a total block (devspec:4910e673, devspec:730bf485). The
+    // host builds this payload, not the agent, so nothing can provoke it either.
+    return null
   }
   const evidence = readEvidence(scope, options)
   if (!evidence) {
+    if (!hasDevSpecJurisdiction(scope, options.env ?? process.env)) return null
     if (tool === 'Bash') {
       const command = commandFrom(input)
       if (isReadOnlyBootstrapCommand(command) || isPluginControlPlaneCommand(command)) return null

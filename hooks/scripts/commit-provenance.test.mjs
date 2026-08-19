@@ -197,6 +197,38 @@ describe('reading a commit message only where it is unambiguous', () => {
     assert.equal(simpleGitCommit('git commit -a -m "hello"').message, 'hello')
   })
 
+  /**
+   * The forms that actually reach a worktree. Claude resets the shell cwd every call,
+   * so isolated work — which the implementation contract requires — can only commit
+   * through one of these two. Refusing them left the check unable to read any commit
+   * real agent work produces.
+   */
+  it('reads the two forms that reach a worktree', () => {
+    assert.equal(simpleGitCommit('cd /tmp/wt && git commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('cd "/tmp/a b/wt" && git commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('git -C /tmp/wt commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('git -C /tmp/wt commit -a -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('git --no-pager commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('cd /tmp/wt && git -C /other commit -m "hello"').message, 'hello')
+  })
+
+  it('still refuses prefixes and separators it cannot vouch for', () => {
+    for (const command of [
+      'cd /tmp/wt; git commit -m "x"',            // ; is not the separator it reads
+      'cd /tmp/a && cd /tmp/b && git commit -m "x"', // more than one separator
+      'npm test && git commit -m "x"',            // prefix is not cd
+      'git add -A && git commit -m "x"',          // prefix is not cd
+      'cd -P /tmp/wt && git commit -m "x"',       // cd with an option
+      'cd && git commit -m "x"',                  // cd with no path
+      'cd /a /b && git commit -m "x"',            // cd with two words
+      'git -C commit -m "x"',                     // -C swallowing the verb
+      'git --git-dir=/x commit -m "x"',           // an option that could take a value
+    ]) {
+      assert.equal(simpleGitCommit(command), null, command)
+      assert.equal(decision(bash(command)), null, `${command} must be allowed`)
+    }
+  })
+
   it('keeps shell-special characters that are legitimate message text', () => {
     // Refusing these would hand ordinary messages to the analyzer for no reason.
     assert.equal(simpleGitCommit('git commit -m "fix(api): handle {a,b}; done"').message, 'fix(api): handle {a,b}; done')
@@ -213,7 +245,6 @@ describe('reading a commit message only where it is unambiguous', () => {
       'git commit --amend -m "x"',
       'git commit -C HEAD',
       'git commit --squash HEAD -m "x"',
-      'git -C /elsewhere commit -m "x"',              // global option shifts the verb
       '/usr/bin/git commit -m "x"',                   // path-qualified
       'g commit -m "x"',                              // alias
       'git add -A && git commit -m "x"',              // compound
@@ -279,6 +310,22 @@ describe('stamping, only when exactly one claim is unambiguous', () => {
     )
     assert.equal(updated(bash("git commit -m 'single quoted'")), `git commit -m 'single quoted [devspec:${ITEM}]'`)
     assert.equal(updated(bash('git commit -m"joined"')), `git commit -m"joined [devspec:${ITEM}]"`)
+  })
+
+  it('stamps the worktree-reaching forms at the right offset', () => {
+    claim(ITEM)
+    assert.equal(
+      updated(bash('cd /tmp/wt && git commit -m "fix: thing"')),
+      `cd /tmp/wt && git commit -m "fix: thing [devspec:${ITEM}]"`,
+    )
+    assert.equal(
+      updated(bash('git -C /tmp/wt commit -m "fix: thing"')),
+      `git -C /tmp/wt commit -m "fix: thing [devspec:${ITEM}]"`,
+    )
+    assert.equal(
+      updated(bash('cd "/tmp/a b/wt" && git commit -a -m "subject" --no-verify')),
+      `cd "/tmp/a b/wt" && git commit -a -m "subject [devspec:${ITEM}]" --no-verify`,
+    )
   })
 
   it('refuses to guess between two active claims', () => {

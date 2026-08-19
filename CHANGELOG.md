@@ -2,6 +2,46 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.16.1 - 2026-08-19
+
+### The commit check can now read the commits real work actually makes
+
+0.16.0 could only read a bare `git commit -m "…"` run in the session's own working
+directory. That sounded reasonable and was nearly useless, for a reason that only shows
+up in practice: Claude Code resets the shell cwd on every Bash call, and the
+implementation contract requires work to happen in an isolated worktree. So a real
+commit is always one of
+
+```
+cd <worktree> && git commit -m "…"
+git -C <worktree> commit -m "…"
+```
+
+and 0.16.0 refused both — compound command, and a global option before the verb. Since
+refusing means allowing, the check simply never fired for isolated work. Teeth that look
+mechanical and never bite are worse than none, because the capability table claims them.
+
+Both forms are now read, and reading past them is honest for one reason: neither can
+author a commit or change which verb runs. `cd` only moves; `-C` only names a directory
+and takes exactly one value, so the verb's position stays known. `--no-pager` and
+`--no-optional-locks` are accepted on the same grounds.
+
+Still refused, and therefore still allowed: a second separator (`cd a && cd b && …`), a
+prefix that is not exactly `cd <one-path>` (`npm test && git commit …`,
+`git add -A && git commit …`), `cd` with an option or without a path, any other global
+option, `;` as a separator, and everything 0.16.0 already declined — aliases,
+path-qualified git, `--amend`, `-F`, expansions, `-m` twice.
+
+### Upgrade note for anyone coming from 0.15.x
+
+If a Claude session is **already running** when you upgrade, run `/reload-plugins`
+before doing anything else. The 0.15.x hook manifest pointed at `claim-guard.mjs` and
+was written to *deny when the hook fails*; 0.16.0 deletes that script, so a session
+still holding the old manifest refuses every `Bash`, `Write` and `Edit` with "DevSpec
+denied mutation because the claim guard failed" until it reloads. New and reloaded
+sessions are unaffected, and the 0.16.x manifest cannot do this — its failure path
+allows. This was observed for real during the 0.16.0 rollout, not theorised.
+
 ## 0.16.0 - 2026-08-19
 
 ### Editing and running code are never blocked again; commits carry the provenance

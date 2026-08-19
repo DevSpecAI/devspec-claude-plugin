@@ -231,11 +231,19 @@ function writeClaims(scope, claims, { env = process.env, now = Date.now(), platf
 export function simpleGitCommit(command) {
   if (typeof command !== 'string' || command.length === 0 || command.length > 8192) return null
 
-  const words = []
+  const segments = [[]]
   let word = ''
   let started = false
   let quote = null
   let wordStart = -1
+
+  const endWord = (at) => {
+    if (!started) return
+    segments[segments.length - 1].push({ value: word, start: wordStart, end: at })
+    word = ''
+    started = false
+    wordStart = -1
+  }
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index]
@@ -262,13 +270,23 @@ export function simpleGitCommit(command) {
       started = true
       continue
     }
+    // `&&` is the one separator this reads, and only for the `cd … && git commit`
+    // shape checked below. A lone `&` (background) still refuses.
+    if (char === '&') {
+      if (command[index + 1] !== '&') return null
+      if (segments.length > 1) return null // at most one separator
+      endWord(index)
+      segments.push([])
+      index += 1
+      continue
+    }
     // Unquoted shell structure or expansion: not a shape this can read honestly.
-    // Note these are refused only OUTSIDE quotes — a commit message may legitimately
-    // contain braces, parentheses or a semicolon, and refusing those would hand every
-    // ordinary message to the analyzer for no reason.
-    if ('|&;<>(){}`$\\\n\r'.includes(char)) return null
+    // Refused only OUTSIDE quotes — a commit message may legitimately contain braces,
+    // parentheses or a semicolon, and refusing those would hand every ordinary message
+    // to the analyzer for no reason.
+    if ('|;<>(){}`$\\\n\r'.includes(char)) return null
     if (/\s/.test(char)) {
-      if (started) { words.push({ value: word, start: wordStart, end: index }); word = ''; started = false; wordStart = -1 }
+      endWord(index)
       continue
     }
     if (!started) wordStart = index
@@ -276,15 +294,49 @@ export function simpleGitCommit(command) {
     started = true
   }
   if (quote) return null
-  if (started) words.push({ value: word, start: wordStart, end: command.length })
+  endWord(command.length)
+
+  /**
+   * Which segment carries the commit.
+   *
+   * The isolated-worktree workflow the implementation contract requires cannot be
+   * expressed as a bare `git commit`: Claude resets the shell cwd on every call, so
+   * reaching a worktree needs `cd <path> &&` or `git -C <path>`. Refusing both left
+   * the check unable to read the only commits real agent work produces — teeth that
+   * looked mechanical and never fired (devspec:e21d7d4b, follow-up).
+   *
+   * Both are safe to read past, and for the same reason: neither can author a commit
+   * nor change which verb runs. `cd` only moves; `-C` only names a directory and takes
+   * exactly one value, so the verb's position stays known. Anything else before the
+   * verb, a second separator, or a first segment that is not exactly `cd <one-path>`
+   * still refuses — and refusing still means allow.
+   */
+  if (segments.length === 2) {
+    const prefix = segments[0]
+    if (prefix.length !== 2 || prefix[0].value !== 'cd') return null
+    if (prefix[1].value.startsWith('-')) return null
+  }
+  const words = segments[segments.length - 1]
 
   if (words.length === 0) return null
   if (words[0].value !== 'git') return null
 
-  // A global option could take a value and shift which word is the verb. Refuse.
-  if (words[1]?.value?.startsWith('-')) return null
-  if (words[1]?.value !== 'commit') return null
-  const index = 1
+  let index = 1
+  while (index < words.length && words[index].value.startsWith('-')) {
+    const option = words[index].value
+    if (option === '-C') {
+      if (!words[index + 1] || words[index + 1].value.startsWith('-')) return null
+      index += 2
+      continue
+    }
+    if (option === '--no-pager' || option === '--no-optional-locks') {
+      index += 1
+      continue
+    }
+    // Any other global option may take a value and shift the verb. Refuse.
+    return null
+  }
+  if (words[index]?.value !== 'commit') return null
 
   const rest = words.slice(index + 1)
   const REFUSED = new Set([

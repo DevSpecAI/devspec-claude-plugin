@@ -16,7 +16,7 @@ Antigravity each answer these rows for themselves.
 |---|---|---|---|
 | **Edit events** (`Write`, `Edit`, `NotebookEdit`) | `PreToolUse` fires with the target path before the write | **Never denies.** Emits at most one `systemMessage` reminder per session+repository when no claim is held | — |
 | **Arbitrary execution** (`Bash`) | `PreToolUse` fires with the raw command string | **Never denies** for lack of a claim. No allowlist, no tokenizer over arbitrary commands, no path rules | — |
-| **Commit message inspection** | The command string is visible, but only *a string* — Claude has no first-class commit event | Reads the message only from the narrow unambiguous `git commit … -m <quoted>` shape (`simpleGitCommit`). Every other shape is allowed untouched | Server-side commit ingestion + unlinked-commit analyzer |
+| **Commit message inspection** | The command string is visible, but only *a string* — Claude has no first-class commit event | Reads the message from the narrow unambiguous `git commit … -m <quoted>` shape, optionally behind a single `cd <path> &&` prefix or a `git -C <path>` form (`simpleGitCommit`). Every other shape is allowed untouched | Server-side commit ingestion + unlinked-commit analyzer |
 | **Commit message transformation** | **Yes** — `hookSpecificOutput.updatedInput` is honoured for `PreToolUse` (verified in 2.1.235; Claude logs "modified tool input keys") | Appends `[devspec:<uuid>]` inside the quoted message when exactly one claim is active, and reports it via `systemMessage` | — |
 | **Push observation** | `PreToolUse` on the `git push` command string | **Recognised but never blocked.** No safe non-destructive recovery for already-created commits is implemented, and the ADR forbids blocking without one | Analyzer |
 | **Project association** | No association event of its own; `/devspec.remote` resolves the project and *offers* to write `.devspec/project.json` | Jurisdiction requires a positive local marker (pin, or a project-scoped config registering DevSpec), searched cwd→repo root and at the repository's main working tree. The hook itself writes nothing | Ingestion never depends on a pin |
@@ -36,6 +36,20 @@ Only two cases, and both are certain:
 Everything else allows, including: a reference already present (any item, claimed or
 not), a shape we cannot read, no jurisdiction, unreadable claim state, malformed hook
 input, a crashed hook, and a missing Node runtime.
+
+## Why `cd <path> &&` and `git -C <path>` are readable
+
+They are the only two ways to commit into a worktree from Claude Code, because the
+shell cwd resets on every Bash call — and the implementation contract *requires*
+isolated work. Refusing them (as 0.16.0 did) left the check able to read only a bare
+`git commit` in the session's own cwd, which isolated work never produces. The teeth
+looked mechanical and never fired.
+
+Reading past them stays honest for one reason: neither can author a commit or change
+which verb runs. `cd` only moves; `-C` only names a directory and takes exactly one
+value, so the verb's position remains known. A second separator, a prefix that is not
+exactly `cd <one-path>`, or any other global option still refuses — and refusing still
+means allow.
 
 ## Two deliberate holes
 

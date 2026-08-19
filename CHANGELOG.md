@@ -2,6 +2,71 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.16.0 - 2026-08-19
+
+### Editing and running code are never blocked again; commits carry the provenance
+
+The plugin no longer tries to work out whether a command is a "mutation". It could not
+do that reliably, and the attempt is what produced every frustration you hit: blocked
+reads, blocked tests and typechecks, blocked `git fetch`, blocked worktrees, blocked
+cross-repository work, blocked post-implementation verification, and a redirect or a
+`$VAR` turning an ordinary command into a refusal. Denying on *uncertainty* was the
+defect, not the missing allowlist entry.
+
+`claim-guard.mjs` is **deleted**, not disabled. With it go the shell tokenizer, the
+read-only command allowlist, redirect classification, the `$`-expansion rule, the
+scratch/memory write exceptions, the allowance the plugin needed for its own commands,
+and the claim-scoped repository permission model. Nothing needs allowing when nothing
+is denied.
+
+What replaces it acts on the one thing that is actually decidable — a commit message
+either carries a `[devspec:<uuid>]` reference or it does not:
+
+- **Edits and execution are never denied.** No claim, no marker, unattended, delegated,
+  mid-worktree, offline — irrelevant. Nothing is blocked.
+- **One reminder, once.** The first unclaimed edit in a repository prints a single
+  note that a commit will need a reference. It never repeats and never blocks.
+- **Commits are read only where the shape is unambiguous** — a plain
+  `git commit … -m "message"`. Aliases, compound shell, `--amend`, `-F`, expansions,
+  `git -C`, merge/rebase/cherry-pick and GUI commits are allowed untouched and
+  reconciled server-side by the unlinked-commit analyzer instead.
+- **A reference is a link; a live claim is not required.** This is the fix for the
+  worst of the old behaviour: a valid reference now passes after
+  `record_implementation` has released the claim, on follow-up work, and across
+  repositories.
+- **DevSpec appends the reference for you.** When exactly one claim is active, the
+  reference is added inside your commit message and reported. Two active claims are
+  never guessed between.
+- **Only two things are ever refused:** a readable commit with no reference and no
+  single claim to stamp from, and the ambiguous two-claim case. Both come with the
+  complete recovery — reuse or create the smallest item, add the reference, retry —
+  and neither ends the turn. A thin last-mile item is a perfectly good answer.
+
+Everything uncertain allows: unreadable state, malformed hook input, a crashed hook,
+a missing Node runtime, uncertain project jurisdiction. The hook makes **no network
+call**, so offline work is unaffected.
+
+`git push` is recognised but never blocked. Blocking it would need a safe,
+non-destructive way to link commits that already exist, and until that exists the ADR
+forbids the block.
+
+Project jurisdiction is unchanged from 0.15.4 and still required for any of this: the
+folder needs a `.devspec/project.json` pin or a project-scoped config registering
+DevSpec, found in the folder chain or the repository's main checkout. The pin governs
+only local behaviour — DevSpec's own commit ingestion and audit trail never depend on
+it.
+
+**One deliberate limitation, stated plainly:** a reference is checked for *shape*, not
+verified to exist. A correct short code with a wrong uuid suffix will pass this hook.
+Catching it would mean a network call and an auth dependency in front of every commit,
+for a case the server already resolves. The full capability table, including what
+Claude Code genuinely exposes and what it does not, is in
+[`docs/commit-provenance.md`](docs/commit-provenance.md).
+
+Implements ADR `71c23b46` under brief `e3d3b54f` (item `e21d7d4b`). The items that
+built the previous architecture — `cdd7a494`, `dfa86f3f`, `4910e673`, `730bf485` —
+remain accurate history; this supersedes their enforcement model, not their record.
+
 ## 0.15.4 - 2026-08-19
 
 ### The guard only applies in DevSpec project folders

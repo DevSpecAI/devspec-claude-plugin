@@ -38,7 +38,18 @@ because every outcome that must allow is a transport failure — including one t
 the installed manifest command against a server answering `not_found` and asserts the
 denial arrives through the real hook.
 
-`resolveDevspecMcpAuth` now takes an optional `env`, so the hook resolves credentials
+### Credentials are found from the main worktree, like jurisdiction already was
+
+Driving the finished change at the real server immediately exposed a second instance of
+the bug 0.16.0 had: `.mcp.json` is normally untracked, so a linked worktree carries no
+credentials, and the contract *requires* work to happen in one. Resolving only from the
+cwd left the new check silently inert for the only workflow it protects — allowing every
+commit and looking, from the outside, exactly like a server that always says yes.
+
+Credentials are now resolved from the cwd chain and then from the repository's main
+working tree, which is what `devspecFolderMarker` has always done for jurisdiction.
+
+`resolveDevspecMcpAuth` also takes an optional `env`, so the hook resolves credentials
 from the environment it was handed rather than the ambient process. Existing callers are
 unchanged.
 

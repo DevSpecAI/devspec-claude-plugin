@@ -807,6 +807,46 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
     assert.equal(sent.git_remote, 'git@github.com:Acme/App.git')
   })
 
+  /**
+   * Found by driving the real server, not by reading the code: credentials live in an
+   * untracked `.mcp.json`, a linked worktree therefore has none, and the contract
+   * REQUIRES work to happen in one. Resolving only from the cwd left the check inert
+   * for the only workflow it protects — the same mistake 0.16.0 made about the commit
+   * shape, one layer down.
+   */
+  it('finds credentials from the main worktree when the linked one has none', async () => {
+    const worktree = path.join(sandbox, 'linked')
+    const git = (...args) => spawnSync('git', [
+      '-C', repo,
+      '-c', 'user.email=test@example.invalid',
+      '-c', 'user.name=test',
+      '-c', 'commit.gpgsign=false',
+      ...args,
+    ], { encoding: 'utf8' })
+    const seeded = git('commit', '-q', '--allow-empty', '-m', 'seed')
+    assert.equal(seeded.status, 0, seeded.stderr)
+    const added = git('worktree', 'add', '--detach', worktree)
+    assert.equal(added.status, 0, added.stderr)
+    fs.writeFileSync(
+      path.join(repo, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          devspec: { type: 'http', url: endpoint(), headers: { Authorization: 'Bearer from-main-worktree' } },
+        },
+      }),
+    )
+    assert.ok(!fs.existsSync(path.join(worktree, '.mcp.json')), 'the linked worktree carries no config')
+
+    reply = (res) => sendJson(res, answer('not_found'))
+    const result = await handlePre(
+      input('Bash', { command: `git commit -m "from a worktree [devspec:${ITEM}]"` }, { cwd: worktree }),
+      { env },
+    )
+    assert.equal(decision(result), 'deny', 'the check must reach the server from a worktree')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].authorization, 'Bearer from-main-worktree')
+  })
+
   it('bounds itself well inside the manifest hook timeout', () => {
     const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks
     const budgetMs = hooks.PreToolUse[0].hooks[0].timeout * 1000

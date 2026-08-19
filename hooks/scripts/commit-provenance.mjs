@@ -434,19 +434,15 @@ export function referenceIn(message) {
 export async function confirmReferenceOnline(commitMessage, options = {}) {
   const {
     cwd,
+    mainWorktree = null,
     marker = null,
     env = process.env,
     timeoutMs = ONLINE_TIMEOUT_MS,
     call = mcpToolsCall,
   } = options
 
-  let auth
-  try {
-    auth = resolveDevspecMcpAuth(cwd, { env, hostToken: hostTokenFromEnv(env) })
-  } catch {
-    return 'unavailable'
-  }
-  if (!auth?.ok || !auth.token || !auth.mcp_url) return 'unavailable'
+  const auth = resolveAuth(cwd, mainWorktree, env)
+  if (!auth) return 'unavailable'
 
   // Jurisdiction hints, so the server answers for the project this folder belongs to
   // instead of guessing from an account-wide token. Both are best-effort: without them
@@ -526,6 +522,31 @@ function recoveryText(claims) {
     'last-mile item is fine), then add [devspec:<full-uuid>] to the commit message and retry.',
     `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
+}
+
+/**
+ * Credentials for the one call, from the cwd chain and then from the repository's main
+ * working tree.
+ *
+ * The second place is not a nicety. `.mcp.json` and `.claude/settings.local.json` are
+ * normally untracked, so a linked worktree carries neither — and the implementation
+ * contract *requires* work to happen in one. Looking only at the cwd would leave this
+ * check silently inert for exactly the workflow it exists to protect, which is the same
+ * mistake 0.16.0 made about the commit shape. Jurisdiction already consults the main
+ * worktree for the same reason (`devspecFolderMarker`).
+ */
+function resolveAuth(cwd, mainWorktree, env) {
+  const hostToken = hostTokenFromEnv(env)
+  for (const dir of [cwd, mainWorktree]) {
+    if (!dir) continue
+    try {
+      const auth = resolveDevspecMcpAuth(dir, { env, hostToken })
+      if (auth?.ok && auth.token && auth.mcp_url) return auth
+    } catch {
+      /* an unreadable config is simply not a source of credentials */
+    }
+  }
+  return null
 }
 
 /**
@@ -657,6 +678,7 @@ export async function handlePre(input, options = {}) {
     // local, which is why offline work and the unclaimed case never touch it.
     const outcome = await confirmReferenceOnline(commit.message, {
       cwd: scope.cwd,
+      mainWorktree: scope.mainWorktree,
       marker,
       env,
       timeoutMs: options.timeoutMs,

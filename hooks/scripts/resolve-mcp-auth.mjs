@@ -133,9 +133,17 @@ export function hostTokenFromEnv(env = process.env) {
   return typeof t === 'string' && t.trim() ? t.trim() : null
 }
 
+/**
+ * `opts.env` exists so a caller that is already handed an environment can resolve
+ * against THAT one instead of the ambient process — the commit-provenance hook takes
+ * `env` for everything else it does, and credentials silently ignoring it would make
+ * the same call answer differently under test than in the field. Defaults to
+ * `process.env`, so every existing caller is unchanged.
+ */
 export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
-  const envToken = process.env.DEVSPEC_MCP_TOKEN || process.env.DEVSPEC_TOKEN || null
-  const envUrl = process.env.DEVSPEC_MCP_URL || null
+  const env = opts.env || process.env
+  const envToken = env.DEVSPEC_MCP_TOKEN || env.DEVSPEC_TOKEN || null
+  const envUrl = env.DEVSPEC_MCP_URL || null
   if (envToken) {
     return {
       ok: true,
@@ -185,8 +193,8 @@ export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
   // installed user's token reaches the remote-control hooks/poller — they never
   // put it in .mcp.json. Kept last so an explicit local .mcp.json wins.
   const pluginOptionToken =
-    process.env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN ||
-    process.env.CLAUDE_PLUGIN_OPTION_devspec_token ||
+    env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN ||
+    env.CLAUDE_PLUGIN_OPTION_devspec_token ||
     null
   if (pluginOptionToken) {
     return {

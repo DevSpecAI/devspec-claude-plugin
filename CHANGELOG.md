@@ -2,6 +2,46 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.17.0 - 2026-08-19
+
+### A reference is now confirmed to exist, not just to look right
+
+`[devspec:<uuid>]` was checked for shape only. Shape is not existence: a correct short
+code with a wrong uuid tail is well formed, reads as linked to every human who sees it,
+and links to nothing. That is not a hypothetical — it reached shared `staging` during
+this programme and was recovered only by the authoritative link `record_implementation`
+wrote afterwards.
+
+0.16.x declined to check online because no purpose-built endpoint existed and the
+alternative was an auth-bearing round trip in front of every commit. `validate_commit_reference`
+now exists, so a present reference is confirmed against the project this folder belongs
+to, using the jurisdiction the folder already carries — a `.devspec/project.json` pin and
+`git remote get-url origin`.
+
+**Only a definitive `not_found` denies**, and the message names the cause rather than the
+rule: a wrong uuid tail, or an item belonging to another project. It is recoverable in
+place like the other two denials.
+
+### The network dependency cannot stop you working
+
+- A commit with **no** reference makes no network call at all. The nudge, the stamp and
+  both local denials still work with the machine unplugged.
+- The one call is bounded at **2.5s** — a fifth of the hook's own 10s budget. No answer
+  is not an answer.
+- Timeout, refused connection, DNS or TLS failure, HTTP error, MCP error, an unresolvable
+  project, an unparseable body and absent credentials all resolve to "no answer", which
+  allows. The contract's four outcomes are honoured exactly: `unavailable` and
+  `indeterminate` are never collapsed into `not_found`.
+
+The tests drive a real HTTP server and a real closed port rather than a stubbed caller,
+because every outcome that must allow is a transport failure — including one that spawns
+the installed manifest command against a server answering `not_found` and asserts the
+denial arrives through the real hook.
+
+`resolveDevspecMcpAuth` now takes an optional `env`, so the hook resolves credentials
+from the environment it was handed rather than the ambient process. Existing callers are
+unchanged.
+
 ## 0.16.1 - 2026-08-19
 
 ### The commit check can now read the commits real work actually makes

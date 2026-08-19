@@ -68,6 +68,31 @@ describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)'
     assert.equal(r.token, 'from-mcp-json')
   })
 
+  /**
+   * A caller that already holds an environment resolves against THAT one. The commit
+   * provenance hook takes `env` for everything else it does, and credentials silently
+   * reading the ambient process instead would make the same call answer differently
+   * under test than in the field (item 6fa0241e).
+   */
+  it('resolves against an injected env instead of the ambient process', () => {
+    const injected = { DEVSPEC_MCP_TOKEN: 'from-injected-env', DEVSPEC_MCP_URL: 'https://injected.invalid/api/mcp' }
+    const r = resolveDevspecMcpAuth(tmp, { env: injected })
+    assert.equal(r.ok, true)
+    assert.equal(r.token, 'from-injected-env')
+    assert.equal(r.mcp_url, 'https://injected.invalid/api/mcp')
+    assert.equal(r.source, 'env')
+  })
+
+  it('an injected env without credentials does not borrow the ambient process', () => {
+    process.env.DEVSPEC_MCP_TOKEN = 'ambient-should-not-leak'
+    try {
+      const r = resolveDevspecMcpAuth(tmp, { env: {} })
+      assert.equal(r.token, 'from-mcp-json', 'the folder config, not the ambient env')
+    } finally {
+      delete process.env.DEVSPEC_MCP_TOKEN
+    }
+  })
+
   it('explicit DEVSPEC_MCP_TOKEN still overrides even a host token', () => {
     process.env.DEVSPEC_MCP_TOKEN = 'from-env'
     try {

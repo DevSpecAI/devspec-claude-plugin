@@ -1,8 +1,8 @@
 # Commit provenance in Claude Code — capability table
 
 Implements the Claude Code share of [ADR `71c23b46`] ("Git artifacts are authoritative
-for provenance; edit-time tracking is advisory") under brief `e3d3b54f`, item
-`e21d7d4b`. Memory `26aab381` supersedes `5181f5dd`.
+for provenance; edit-time tracking is advisory") under brief `e3d3b54f`, items
+`e21d7d4b` and `6fa0241e`. Memory `26aab381` supersedes `5181f5dd`.
 
 The point of a capability table is to stop a plugin claiming enforcement it cannot
 deliver. Each row below says what Claude Code *actually* exposes, what this plugin
@@ -20,22 +20,26 @@ Antigravity each answer these rows for themselves.
 | **Commit message transformation** | **Yes** — `hookSpecificOutput.updatedInput` is honoured for `PreToolUse` (verified in 2.1.235; Claude logs "modified tool input keys") | Appends `[devspec:<uuid>]` inside the quoted message when exactly one claim is active, and reports it via `systemMessage` | — |
 | **Push observation** | `PreToolUse` on the `git push` command string | **Recognised but never blocked.** No safe non-destructive recovery for already-created commits is implemented, and the ADR forbids blocking without one | Analyzer |
 | **Project association** | No association event of its own; `/devspec.remote` resolves the project and *offers* to write `.devspec/project.json` | Jurisdiction requires a positive local marker (pin, or a project-scoped config registering DevSpec), searched cwd→repo root and at the repository's main working tree. The hook itself writes nothing | Ingestion never depends on a pin |
-| **Offline / server error** | n/a — the hook makes no network call | Reference checking is **local shape only**. There is no commit-time round trip to fail, so offline work is unaffected | Server-side linkage catches a well-formed-but-wrong uuid |
+| **Reference existence** | No Claude surface — DevSpec's own `validate_commit_reference` | A reference that is present is confirmed to resolve in the project this folder belongs to, using the jurisdiction the folder already carries (a `.devspec/project.json` pin, `git remote get-url origin`). **Only a definitive `not_found` denies** | — |
+| **Offline / server error** | n/a | The one call is bounded at 2.5s, a fifth of the hook's own 10s budget, and is made *only* when a reference is already present. Timeout, refused connection, DNS/TLS failure, HTTP or MCP error, an unresolvable project, an unparseable body and absent credentials are all "no answer", which allows. A commit with **no** reference makes no network call at all | Server-side linkage + analyzer still catch whatever was allowed |
 | **Feedback continuation** | `permissionDecision: "deny"` blocks one tool call and returns the reason to the agent; it does not end the turn | Denials carry a complete recovery route (reuse or create the smallest item, add the reference, retry). No `terminate`/`continue`/`stopReason` field is ever emitted | — |
 | **Installed testing** | Hooks are plain commands over stdin/stdout, so the manifest can be executed directly | `commit-provenance.test.mjs` runs the real manifest command with real payloads, not just imported helpers | — |
 
 ## When a commit is denied — the whole list
 
-Only two cases, and both are certain:
+Three cases, and all three are certain:
 
 1. The message has **no** `[devspec:<full-uuid>]` reference **and** no single active claim
    to stamp from.
 2. The message has no reference, exactly the ambiguity of **several** active claims
    exists, and guessing between them is forbidden.
+3. The message *has* a well-formed reference and the server answers, definitively, that
+   it resolves to no item in this project.
 
-Everything else allows, including: a reference already present (any item, claimed or
-not), a shape we cannot read, no jurisdiction, unreadable claim state, malformed hook
-input, a crashed hook, and a missing Node runtime.
+Everything else allows, including: a reference the server confirms, a reference the
+server could not answer for (for any reason at all), a shape we cannot read, no
+jurisdiction, unreadable claim state, malformed hook input, a crashed hook, and a
+missing Node runtime.
 
 ## Why `cd <path> &&` and `git -C <path>` are readable
 
@@ -51,14 +55,30 @@ value, so the verb's position remains known. A second separator, a prefix that i
 exactly `cd <one-path>`, or any other global option still refuses — and refusing still
 means allow.
 
-## Two deliberate holes
+## Why the reference is confirmed, and why that cannot stop you
 
-**A well-formed reference is not verified to exist.** `[devspec:<uuid>]` is checked for
-shape, not against the server. A correct short code with a wrong uuid suffix therefore
-passes — the exact failure that reached shared `staging` once. Validating it would put a
-network call and an auth dependency in front of every commit for a case the server
-already resolves through `record_implementation` linkage and the analyzer. The ADR makes
-online validation optional; this host declines it.
+Shape is not existence. `[devspec:439fc6c0-…]` can be perfectly well formed and point at
+nothing, and that is not a hypothetical: a correct short code with a wrong uuid tail
+reached shared `staging` during this programme, caught only afterwards by the
+authoritative link `record_implementation` wrote. Confirming it at commit time is the
+last moment the mistake is free to fix, and `validate_commit_reference` — which did not
+exist when 0.16.x declined this — answers exactly that question and no other.
+
+The dependency it adds is real, so it is fenced:
+
+- **Only a present reference triggers it.** No reference, no network — the unclaimed and
+  offline paths are untouched, and the nudge, the stamp and the two local denials all
+  work with the machine unplugged.
+- **2.5 seconds, then the commit proceeds.** A fifth of the hook's own budget. No answer
+  is not an answer.
+- **Only `not_found` denies.** The contract names four outcomes, and `unavailable` and
+  `indeterminate` "must never be collapsed into not-found". Every transport failure, HTTP
+  status, MCP error, unresolvable project and unparseable body lands there, so the
+  failure direction is unchanged: uncertainty allows.
+- **The denial names the cause, not the rule** — a wrong uuid tail, or an item from
+  another project — and is recoverable in place like the other two.
+
+## One deliberate hole
 
 **An unquoted message cannot be stamped.** `git commit -m bare` gets a denial rather
 than a stamp, because appending ` [devspec:…]` to an unquoted word would make the

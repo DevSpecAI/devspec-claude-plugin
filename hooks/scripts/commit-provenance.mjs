@@ -28,6 +28,10 @@
  *  - The test is a well-formed REFERENCE, not a live claim. A link stays a link after
  *    `record_implementation` releases the claim, across repositories, and on
  *    follow-up work.
+ *  - A reference that IS present is confirmed against the server, because shape alone
+ *    cannot tell a real id from a plausible one. That is the only network call this
+ *    hook makes, it is bounded, and only a definitive "no such item" denies — every
+ *    other answer, and every failure to get one, allows.
  *  - Where exactly one claim is unambiguously active, the reference is APPENDED for
  *    the agent (`hookSpecificOutput.updatedInput`) and reported, rather than refused.
  *  - Offline, server error, ambiguous claim set, uncertain jurisdiction: allow.
@@ -44,10 +48,20 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
-import { devspecFolderMarker } from './devspec-scope.mjs'
+import { devspecFolderMarker, gitRemoteOrigin } from './devspec-scope.mjs'
+import { mcpToolsCall } from './mcp-call.mjs'
+import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
 export const CLAIM_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Ceiling on the single network call, deliberately a small fraction of the hook's own
+ * 10s budget. A commit waiting on a slow server is a commit the agent experiences as a
+ * hang, and no answer is not an answer: past this, the reference is unconfirmed and the
+ * commit proceeds.
+ */
+export const ONLINE_TIMEOUT_MS = 2_500
 const FUTURE_SKEW_MS = 5 * 60 * 1000
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
 const UUID_RE = new RegExp(`^${UUID}$`, 'i')
@@ -397,6 +411,72 @@ export function referenceIn(message) {
   return match ? match[1].toLowerCase() : null
 }
 
+/**
+ * Does this reference resolve to a real item in the project this folder belongs to?
+ *
+ * Shape is not existence. A reference can be perfectly well formed and point at
+ * nothing — a correct short code with a wrong uuid tail is the shape of the failure,
+ * and it reached shared `staging` during this very programme, caught only afterwards by
+ * the authoritative link `record_implementation` wrote. Asking the server moves that
+ * catch to the moment the commit is made, which is the only moment it is still free to
+ * fix.
+ *
+ * Returns one of the four outcomes named by the product contract
+ * (`commit_provenance_contract.validation.online_outcomes`). Only `not_found` is
+ * definitive. `unavailable` and `indeterminate` both mean "no answer" and must never be
+ * collapsed into it — so every way this can fail (no token, no endpoint, DNS, TCP, TLS,
+ * an HTTP error, an MCP error, a project that could not be resolved, the timeout, a body
+ * we cannot parse) lands there and allows.
+ *
+ * Credentials and the endpoint are resolved from `env` and the folder's own MCP
+ * configuration, never from a value this module holds.
+ */
+export async function confirmReferenceOnline(commitMessage, options = {}) {
+  const {
+    cwd,
+    marker = null,
+    env = process.env,
+    timeoutMs = ONLINE_TIMEOUT_MS,
+    call = mcpToolsCall,
+  } = options
+
+  let auth
+  try {
+    auth = resolveDevspecMcpAuth(cwd, { env, hostToken: hostTokenFromEnv(env) })
+  } catch {
+    return 'unavailable'
+  }
+  if (!auth?.ok || !auth.token || !auth.mcp_url) return 'unavailable'
+
+  // Jurisdiction hints, so the server answers for the project this folder belongs to
+  // instead of guessing from an account-wide token. Both are best-effort: without them
+  // an unresolvable project is an error, which is an allow.
+  const args = { commit_message: commitMessage }
+  if (marker?.kind === 'pin' && typeof marker.project_id === 'string' && marker.project_id) {
+    args.pinned_project_id = marker.project_id
+  }
+  const remote = gitRemoteOrigin(cwd)
+  if (remote) args.git_remote = remote
+
+  let result
+  try {
+    result = await call({
+      mcpUrl: auth.mcp_url,
+      token: auth.token,
+      name: 'validate_commit_reference',
+      arguments: args,
+      timeoutMs,
+    })
+  } catch {
+    return 'unavailable'
+  }
+
+  const status = result?.online?.status
+  if (status === 'not_found') return 'not_found'
+  if (status === 'valid') return 'valid'
+  return 'indeterminate'
+}
+
 /* ---------- *
  * Decisions  *
  * ---------- */
@@ -444,6 +524,22 @@ function recoveryText(claims) {
     'Recover without leaving this turn: reuse or create the smallest item that covers it',
     '(search_action_items, or create_action_item with a one-line description — a thin',
     'last-mile item is fine), then add [devspec:<full-uuid>] to the commit message and retry.',
+    `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
+  ].join(' ')
+}
+
+/**
+ * A reference that resolves to nothing. The commit is refused, the turn is not, and the
+ * message names the cause that actually produces this: the reference is well formed, so
+ * the mistake is in its VALUE, not its syntax.
+ */
+function unresolvedReferenceText(reference) {
+  return [
+    `DevSpec: [devspec:${reference}] is well formed but resolves to no item in this project,`,
+    'so this commit would read as linked and link to nothing.',
+    'That is usually a correct short code with a wrong uuid tail, or an item belonging to a different project.',
+    'Recover without leaving this turn: confirm the id (get_action_item, or search_action_items),',
+    'correct the reference in the commit message and retry.',
     `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
 }
@@ -513,7 +609,7 @@ function claimedItemIdFrom(input) {
   return null
 }
 
-export function handlePre(input, options = {}) {
+export async function handlePre(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
   const tool = input?.tool_name ?? input?.toolName
   if (tool !== 'Bash' && !EDIT_TOOLS.has(tool)) return null
@@ -549,16 +645,24 @@ export function handlePre(input, options = {}) {
     return null
   }
 
-  if (referenceIn(commit.message)) {
+  const reference = referenceIn(commit.message)
+  if (reference) {
     // A well-formed reference is a link, regardless of which claim is held or whether
     // any is: that is what makes follow-up work, cross-repository work and anything
     // after `record_implementation` possible.
     //
-    // Deliberately SHAPE only, with no server round trip. A well-formed but wrong uuid
-    // (right short code, wrong suffix — the failure that reached shared `staging` once)
-    // passes here and is caught by server-side commit linkage and the analyzer instead.
-    // Validating online would put a network call in front of every commit and give this
-    // hook an auth dependency, for a case the server already resolves.
+    // It is not, however, proof that the item exists — so this is the one place the
+    // hook goes to the network, and the only answer that changes anything is a
+    // definitive "no such item". Absent a reference the path below stays entirely
+    // local, which is why offline work and the unclaimed case never touch it.
+    const outcome = await confirmReferenceOnline(commit.message, {
+      cwd: scope.cwd,
+      marker,
+      env,
+      timeoutMs: options.timeoutMs,
+      call: options.call,
+    })
+    if (outcome === 'not_found') return deny(unresolvedReferenceText(reference))
     return null
   }
 
@@ -605,7 +709,7 @@ async function main() {
     // uncertainty. Say nothing and let Claude's own permissions decide.
     return
   }
-  if (mode === 'pre') return emit(handlePre(input))
+  if (mode === 'pre') return emit(await handlePre(input))
   if (mode === 'post') return emit(handlePost(input))
   throw new Error('usage: commit-provenance.mjs session-start|pre|post')
 }

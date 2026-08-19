@@ -53,6 +53,25 @@ working tree, which is what `devspecFolderMarker` has always done for jurisdicti
 from the environment it was handed rather than the ambient process. Existing callers are
 unchanged.
 
+## 0.17.1 - 2026-08-19
+
+### The pin is found from a worktree too
+
+`findProjectPin` — the connect-time lookup that tells DevSpec which project this folder
+belongs to — walked only the cwd chain. The pin is normally untracked, so a linked
+worktree carries none, and the implementation contract *requires* work to happen in one:
+every isolated session was therefore unable to name its own project, and connect simply
+omitted `pinned_project_id`.
+
+It now consults the repository's main working tree as well, which is what
+`devspecFolderMarker` has always done for jurisdiction and what 0.17.0 taught the
+credential lookup. Same rule, third and last place in this plugin that needed it.
+
+The rule itself is no longer local knowledge: contract **4.1.0** states it in
+`commit_provenance_contract.project_association` — *jurisdiction is a property of the
+repository, not of the working directory; a linked worktree inherits it* — so a host
+that has never read this changelog can still get it right.
+
 ## 0.16.1 - 2026-08-19
 
 ### The commit check can now read the commits real work actually makes

@@ -171,16 +171,52 @@ function readMcpDeclaration(dir) {
 }
 
 /**
- * The folder's own `.devspec/project.json` pin: `{ "project_id": "<uuid>" }`.
+ * The repository's MAIN working tree for `cwd`, or null when there is no repository.
+ *
+ * `--git-common-dir` is one identity for a repository and all of its worktrees; the
+ * main working tree is that path's parent when it ends in `.git`. A bare repository
+ * has no working tree, so it answers null.
+ */
+export function mainWorkTreeFrom(cwd) {
+  try {
+    const common = execFileSync(
+      'git',
+      ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 },
+    ).trim()
+    if (!common) return null
+    const resolved = path.resolve(common)
+    return path.basename(resolved) === '.git' ? path.dirname(resolved) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The repository's `.devspec/project.json` pin: `{ "project_id": "<uuid>" }`.
  *
  * Searched from `cwd` upward, stopping at (and including) the git repository root,
  * and never at or above the home directory — a pin in `~` would silently claim every
  * folder the user owns. The nearest pin wins.
+ *
+ * Then, if the cwd chain has nothing, the repository's MAIN working tree. The pin is
+ * normally untracked, so a linked worktree carries none — and the implementation
+ * contract requires work to happen in one, which would leave every isolated session
+ * unable to name its own project. Jurisdiction is a property of the repository, not
+ * of the directory (contract 4.1.0, `commit_provenance_contract.project_association`);
+ * `devspecFolderMarker` has always answered it that way and this now matches.
  */
-export function findProjectPin(cwd, { home = os.homedir(), root = undefined } = {}) {
+export function findProjectPin(cwd, { home = os.homedir(), root = undefined, mainWorktree = undefined } = {}) {
   const stopAt = root === undefined ? gitRoot(cwd) : root
   const found = walkUp(cwd, { home, root: stopAt }, readPin)
-  return found ? { project_id: found.project_id, path: found.path } : null
+  if (found) return { project_id: found.project_id, path: found.path }
+
+  const main = mainWorktree === undefined ? mainWorkTreeFrom(cwd) : mainWorktree
+  if (!main) return null
+  const resolvedMain = path.resolve(main)
+  if (atOrAboveHome(resolvedMain, path.resolve(home))) return null
+  const fromMain = readPin(resolvedMain)
+  return fromMain ? { project_id: fromMain.project_id, path: fromMain.path } : null
 }
 
 /**

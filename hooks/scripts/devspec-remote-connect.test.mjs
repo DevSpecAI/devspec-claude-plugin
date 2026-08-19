@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { after, describe, it } from 'node:test'
 import { armCursorFlag, findProjectPin } from './devspec-remote-connect.mjs'
 
@@ -65,6 +66,52 @@ describe('armCursorFlag', () => {
   it('does not treat a truthy non-true value as created', () => {
     assert.equal(armCursorFlag({ created: 'yes' }), '--pending')
     assert.equal(armCursorFlag({ created: 1 }), '--pending')
+  })
+})
+
+/**
+ * The pin is normally untracked, so a LINKED WORKTREE carries none — and the
+ * implementation contract requires work to happen in one. Reading only the cwd chain
+ * left every isolated session unable to name its own project (contract 4.1.0:
+ * jurisdiction is a property of the repository, not of the directory).
+ */
+describe('findProjectPin reaches the repository, not just the directory', () => {
+  it('finds a pin held in the main working tree from a linked worktree', () => {
+    const { root, home } = makeTree()
+    const repo = path.join(root, 'repo')
+    fs.mkdirSync(repo, { recursive: true })
+    const git = (...args) => spawnSync('git', [
+      '-C', repo,
+      '-c', 'user.email=test@example.invalid',
+      '-c', 'user.name=test',
+      '-c', 'commit.gpgsign=false',
+      ...args,
+    ], { encoding: 'utf8' })
+    assert.equal(spawnSync('git', ['init', '-q', repo], { encoding: 'utf8' }).status, 0)
+    const seeded = git('commit', '-q', '--allow-empty', '-m', 'seed')
+    assert.equal(seeded.status, 0, seeded.stderr)
+
+    fs.mkdirSync(path.join(repo, '.devspec'), { recursive: true })
+    fs.writeFileSync(
+      path.join(repo, '.devspec', 'project.json'),
+      JSON.stringify({ project_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }),
+    )
+
+    const worktree = path.join(root, 'linked')
+    const added = git('worktree', 'add', '--detach', worktree)
+    assert.equal(added.status, 0, added.stderr)
+    assert.ok(!fs.existsSync(path.join(worktree, '.devspec')), 'the linked worktree carries no pin')
+
+    const found = findProjectPin(worktree, { home })
+    assert.equal(found?.project_id, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+  })
+
+  it('still finds nothing when the repository has no pin at all', () => {
+    const { root, home } = makeTree()
+    const repo = path.join(root, 'bare-ish')
+    fs.mkdirSync(repo, { recursive: true })
+    assert.equal(spawnSync('git', ['init', '-q', repo], { encoding: 'utf8' }).status, 0)
+    assert.equal(findProjectPin(repo, { home }), null)
   })
 })
 

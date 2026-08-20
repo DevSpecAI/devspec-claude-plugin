@@ -554,13 +554,22 @@ describe('uncertainty always allows', () => {
 })
 
 describe('the installed hook, run the way Claude runs it', () => {
-  function manifest(event, index = 0) {
+  /**
+   * The command for the hook that runs a given SCRIPT, not the one at a given array
+   * index. The manifest has more than one entry per event (commit observation joined
+   * the gate), and an index would silently run a different hook than the test names —
+   * green, and proving nothing.
+   */
+  function manifest(event, script = 'commit-provenance.mjs') {
     const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks
-    return hooks[event][index].hooks[0].command
+    const commands = (hooks[event] ?? []).flatMap((entry) => entry.hooks.map((h) => h.command))
+    const matching = commands.filter((c) => c.includes(script))
+    assert.equal(matching.length, 1, `expected exactly one ${event} hook running ${script}`)
+    return matching[0]
   }
 
-  function run(event, hookInput, index = 0) {
-    return spawnSync('/bin/sh', ['-c', manifest(event, index)], {
+  function run(event, hookInput, script = 'commit-provenance.mjs') {
+    return spawnSync('/bin/sh', ['-c', manifest(event, script)], {
       cwd: repo,
       input: hookInput === undefined ? '' : JSON.stringify(hookInput),
       encoding: 'utf8',
@@ -570,8 +579,12 @@ describe('the installed hook, run the way Claude runs it', () => {
 
   it('points every hook at commit-provenance and never denies on failure', () => {
     const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks
-    assert.match(hooks.PreToolUse[0].matcher, /Write\|Edit\|NotebookEdit\|Bash/)
-    const pre = hooks.PreToolUse[0].hooks[0].command
+    const gate = hooks.PreToolUse.find((entry) =>
+      entry.hooks.some((h) => h.command.includes('commit-provenance.mjs')),
+    )
+    assert.ok(gate, 'the provenance gate must be installed')
+    assert.match(gate.matcher, /Write\|Edit\|NotebookEdit\|Bash/)
+    const pre = gate.hooks[0].command
     assert.match(pre, /commit-provenance\.mjs" pre/)
     assert.match(pre, /\|\| true$/, 'a hook failure must allow, never deny')
     assert.doesNotMatch(pre, /permissionDecision/, 'the manifest must not be able to emit a denial')
@@ -906,7 +919,10 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
 
   it('bounds itself well inside the manifest hook timeout', () => {
     const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks
-    const budgetMs = hooks.PreToolUse[0].hooks[0].timeout * 1000
+    const budgetMs =
+      hooks.PreToolUse.find((entry) =>
+        entry.hooks.some((h) => h.command.includes('commit-provenance.mjs')),
+      ).hooks[0].timeout * 1000
     assert.ok(ONLINE_TIMEOUT_MS * 3 <= budgetMs, `${ONLINE_TIMEOUT_MS}ms is not a small share of ${budgetMs}ms`)
   })
 
@@ -929,8 +945,14 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
    */
   it('denies an unresolvable reference through the installed manifest, end to end', async () => {
     reply = (res) => sendJson(res, answer('not_found'))
-    const command = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'))
-      .hooks.PreToolUse[0].hooks[0].command
+    // Resolved by SCRIPT, not by array index: the manifest gained a second PreToolUse
+    // entry (commit observation) and an index would have silently run the wrong hook
+    // here — a green test proving nothing about the gate.
+    const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'))
+    const commands = manifest.hooks.PreToolUse.flatMap((entry) => entry.hooks.map((h) => h.command))
+    const matching = commands.filter((c) => c.includes('commit-provenance.mjs'))
+    assert.equal(matching.length, 1, 'exactly one PreToolUse hook must run the provenance gate')
+    const command = matching[0]
 
     const child = spawn('/bin/sh', ['-c', command], {
       cwd: repo,

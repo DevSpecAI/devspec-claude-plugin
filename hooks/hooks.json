@@ -1,5 +1,5 @@
 {
-  "description": "Load the canonical DevSpec implementation contract pointer, assist Git commit provenance (ADR 71c23b46) without ever blocking edits or execution, and mirror remote-control turns. Commit references are observed only on commit-message surfaces this can read with certainty; every uncertainty, missing runtime or hook failure allows the operation.",
+  "description": "Load the canonical DevSpec implementation contract pointer, assist Git commit provenance (ADR 71c23b46) without ever blocking edits or execution, report which commits this agent made so work can be attributed to it (item 27fab61a), and mirror remote-control turns. Commit references are observed only on commit-message surfaces this can read with certainty; every uncertainty, missing runtime or hook failure allows the operation.",
   "hooks": {
     "SessionStart": [
       {
@@ -19,6 +19,16 @@
           {
             "type": "command",
             "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-provenance.mjs\" pre || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-observation.mjs\" pre || true",
             "timeout": 10
           }
         ]
@@ -42,6 +52,16 @@
             "type": "command",
             "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mark-explicit-reply.mjs\" || true",
             "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-observation.mjs\" post || true",
+            "timeout": 10
           }
         ]
       }

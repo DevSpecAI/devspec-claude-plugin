@@ -2,6 +2,58 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.19.0 - 2026-08-20
+
+### The plugin now says which commits THIS agent made
+
+Nothing could tell two of the owner's own agents apart. `commits` carries only the git
+author, which is the machine's git config — every agent on one machine commits as the
+same person. So an action item auto-created from an unlinked commit could not be
+attributed to the agent that did the work, and nothing could be told that its commit
+had produced an item (item `27fab61a`).
+
+The observation was never missing. This plugin already watched every commit go past in
+`PreToolUse`; it just used that only to gate, and discarded it whenever the gate did
+not fire. `commit-observation.mjs` reports what it already sees, for EVERY commit,
+whether or not the message carried a reference and whether or not its shape was
+readable, via the new `report_commit_provenance` tool.
+
+**Why not a git hook:** a git hook would see the commit and have no idea which agent
+made it. This vantage point knows both, and needs nothing installed on the machine.
+
+It is a separate script from `commit-provenance.mjs` on purpose. That module decides
+whether a commit may proceed; nothing here may perturb that decision. This one never
+denies, never rewrites, and swallows every failure — provenance is not permission.
+
+Finding the sha, given that `git commit -q` prints nothing:
+
+1. Parse `[branch shortsha]` from the command's output and resolve it with
+   `git rev-parse`. Worktrees share the object store, so this resolves a commit made in
+   a linked worktree from anywhere in the repository.
+2. Compare HEAD before and after, in the directory the command actually commits in
+   (`cd <path> &&` or `git -C <path>` when the shape says so, else the tool's cwd).
+   This is what covers `-q`, and it is also what makes a FAILED commit safe: nothing
+   was created, HEAD did not move, nothing is reported.
+
+**A bug the tests caught, worth recording.** Path 2 originally treated a missing
+before-marker and "there was no HEAD" as the same null, so a commit-ish command with no
+marker reported the CURRENT HEAD as freshly created — attributing an older commit to
+this agent. `takeHead` now returns `{ sha }` for "marker existed, HEAD may have been
+nothing" versus `null` for "no marker at all", and the comparison runs only in the
+first case. A genuine root commit still reports correctly.
+
+The connection is chosen by the precise conversation bond only (`local_id` === this
+session). The agent-name fallback `selectBoundState` offers is deliberately NOT used:
+it exists for hosts with no conversation id, and picking the wrong connection would
+attribute someone else's commit to this agent — worse than reporting nothing.
+
+**Also fixed: three manifest lookups in the suite were index-based** (`PreToolUse[0]`),
+so adding any hook entry silently pointed them at a different hook — green, and proving
+nothing about the gate they name. They now resolve by script name and assert there is
+exactly one match.
+
+416 tests pass.
+
 ## 0.18.1 - 2026-08-20
 
 ### `git add … && git commit` is how an agent actually commits, and it was unreadable

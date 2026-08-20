@@ -513,6 +513,8 @@ Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which wa
 
 ## 0.8.0 - 2026-08-11
 
+> **Superseded — non-normative history:** This release documented the retired assignment-delivery model. Do not follow its migration, routing, unattended-mode or idle-connection directions. Since 0.13.0, nothing sends action-item work: a conversation must ask for named items, then the agent reserves them and claims them in order. Explicit owner-scoped playbook runs use their separate typed path.
+
 ### The `/autopilot.*` commands are gone — staged work now arrives at any idle connection
 
 **Migration:** if you used `/devspec:autopilot.start` (or `--drain` / `--all` / `--items` / the other queue flags), there is nothing to relearn and nothing to install: stage the items in DevSpec (**Stage for Autopilot** / approve a plan) and keep an ordinary `/devspec:devspec.remote` session idle. DevSpec hands the batch to it. `/devspec:autopilot.status` / `.stop` / `.history` have no local loop left to report on — the Agents page is the status, `/devspec:devspec.remote-stop` is the stop, and run history is the assignment and item record.
@@ -681,6 +683,8 @@ Items `8b4ceaa3`, `d655b2a4`.
 - Live bug: re-arming with `--from-end` after a wake skipped owner commands the poller had already written while the agent was mid-turn.
 
 ## 0.5.1 - 2026-07-24
+
+> **Superseded — non-normative history:** The sessionless assignment/progress-only answer rule and assignment protocol below were retired. Do not follow them as current guidance. Canonical conversation answers use their conversation; action-item work is acquired only when a conversation asks, by reserving then claiming. Explicit owner-scoped playbook runs remain separate.
 
 ### Remote control — agent-canonical, connection-scoped, session optional
 

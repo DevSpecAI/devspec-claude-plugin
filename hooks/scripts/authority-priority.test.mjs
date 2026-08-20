@@ -15,9 +15,12 @@ function source(relativePath) {
 describe('current Claude authority and work-acquisition prose', () => {
   it('teaches canonical authority and conversation-requested reserve then claim', () => {
     const command = source('commands/devspec.remote.md')
+    const allowedTools = command.match(/^allowed-tools: (.+)$/m)?.[1] ?? ''
     const workSection = command.slice(command.indexOf('## 5. Working action items when asked'))
 
     assert.match(command, /devspec:\/\/product\/remote-ingress-contract/)
+    assert.match(allowedTools, /mcp__devspec__claim_playbook_run/)
+    assert.match(allowedTools, /mcp__devspec__record_playbook_run/)
     assert.match(command, /Preserve the command's requester attribution/)
     assert.match(command, /A sessionless connection has no conversation answer path/)
     assert.match(workSection, /Nothing is ever sent work/)
@@ -29,7 +32,26 @@ describe('current Claude authority and work-acquisition prose', () => {
     assert.doesNotMatch(command, /assignment protocol/i)
     assert.doesNotMatch(command, /ready for dispatch/i)
     assert.doesNotMatch(command, /Sessionless: use `report_progress`/)
-    assert.doesNotMatch(command, /mcp__devspec__get_connection_dispatch/)
+    assert.doesNotMatch(allowedTools, /mcp__devspec__get_connection_dispatch/)
+  })
+
+  it('marks retired changelog assignment-delivery directives as non-normative', () => {
+    const changelog = source('CHANGELOG.md')
+    const retiredAutopilot = changelog.slice(
+      changelog.indexOf('## 0.8.0'),
+      changelog.indexOf('## 0.7.4'),
+    )
+    const retiredAssignment = changelog.slice(
+      changelog.indexOf('## 0.5.1'),
+      changelog.indexOf('## 0.5.0'),
+    )
+
+    for (const historicalSection of [retiredAutopilot, retiredAssignment]) {
+      assert.match(historicalSection, /Superseded — non-normative history/)
+      assert.match(historicalSection, /Do not follow/)
+      assert.match(historicalSection, /reserving then claiming|reserves them and claims them in order/)
+      assert.match(historicalSection, /owner-scoped playbook runs/)
+    }
   })
 
   it('keeps user-facing and maintainer docs free of sessionless assignment claims', () => {

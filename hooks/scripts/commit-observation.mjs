@@ -33,6 +33,13 @@
  * deliberately NOT used here: it exists for hosts with no conversation id, and picking
  * the wrong connection would attribute someone else's commit to this agent — worse
  * than reporting nothing.
+ *
+ * JURISDICTION, the same positive test the gate uses. An agent connected to one project
+ * still runs commands in other repositories — a scratch clone, an unrelated tool, a
+ * throwaway. The connection names the project, so reporting every commit it happens to
+ * see would file those against a project they have nothing to do with. Caught by the
+ * first live end-to-end run, which cheerfully attributed a commit in a temp repo to the
+ * project this agent was connected to.
  */
 
 import crypto from 'node:crypto'
@@ -42,6 +49,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { stateDir } from './commit-provenance.mjs'
+import { devspecFolderMarker } from './devspec-scope.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const REPORT_TIMEOUT_MS = 2_500
@@ -200,6 +208,24 @@ function currentBranch(repoDir) {
   return branch && branch !== 'HEAD' ? branch : null
 }
 
+/**
+ * Is this directory one this DevSpec project has jurisdiction over?
+ *
+ * The same positive marker test the gate applies: without a marker, the folder is not
+ * ours and its commits are not ours to report. Uncertainty (a throwing lookup) is
+ * treated as "not ours", because a false report is worse than a missing one.
+ */
+export function inJurisdiction(dir, env = process.env) {
+  if (!dir) return false
+  try {
+    return Boolean(
+      devspecFolderMarker(dir, { home: env.USERPROFILE || env.HOME || os.homedir() }),
+    )
+  } catch {
+    return false
+  }
+}
+
 /** PreToolUse: remember HEAD so a `-q` commit is still detectable afterwards. */
 export function handleBashPre(input, { now = Date.now() } = {}) {
   const command = input?.tool_input?.command
@@ -208,6 +234,7 @@ export function handleBashPre(input, { now = Date.now() } = {}) {
   if (!sessionId) return null
   const repoDir = commitRepoDir(command, input?.cwd)
   if (!repoDir) return null
+  if (!inJurisdiction(repoDir)) return null
   const head = headOf(repoDir)
   rememberHead(sessionId, repoDir, head, now)
   return null
@@ -227,6 +254,10 @@ export async function handleBashPost(input, options = {}) {
   if (!sessionId) return null
 
   const repoDir = commitRepoDir(command, input?.cwd)
+  // Jurisdiction again, not only in `pre`: a folder can gain or lose a marker between
+  // the two hooks, and this is the call that actually reports.
+  const isOurs = options.inJurisdiction ? options.inJurisdiction(repoDir) : inJurisdiction(repoDir)
+  if (!isOurs) return null
   const before = takeHead(sessionId, repoDir)
   const output =
     typeof input?.tool_response === 'string'

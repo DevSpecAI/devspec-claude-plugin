@@ -2,6 +2,24 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.19.1 - 2026-08-20
+
+### Commit observation now respects jurisdiction, which the first live run showed it did not
+
+0.19.0 reported every commit it saw. An agent connected to one project still runs
+commands in other repositories — a scratch clone, an unrelated tool, a throwaway — and
+the connection names the project, so those commits were filed against a project they
+had nothing to do with. The very first end-to-end run demonstrated it: a commit in a
+temp repo landed as provenance on the DevSpec project.
+
+Both hooks now apply the same positive marker test the gate already applies, and treat
+an uncertain lookup as "not ours" — a false report is worse than a missing one. Checked
+in `post` as well as `pre`, because a folder can gain or lose a marker between the two
+and `post` is the call that actually reports.
+
+Verified live against staging both ways: an unmarked repository reports nothing, a
+marked one reports with the connection, agent name and codename. 430 tests pass.
+
 ## 0.19.0 - 2026-08-20
 
 ### The plugin now says which commits THIS agent made

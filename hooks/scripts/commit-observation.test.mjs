@@ -33,6 +33,15 @@ function gitInit(dir) {
   for (const args of [['config', 'user.email', 't@t.t'], ['config', 'user.name', 'T']]) {
     assert.equal(spawnSync('git', args, { cwd: dir }).status, 0)
   }
+  markDevspecProject(dir)
+}
+
+/** A folder DevSpec has positive local jurisdiction over. Normally untracked. */
+function markDevspecProject(dir) {
+  fs.writeFileSync(
+    path.join(dir, '.mcp.json'),
+    JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }),
+  )
 }
 const git = (args, cwd = repo) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
 const sh = (script, cwd = repo) => spawnSync('bash', ['-c', script], { cwd, encoding: 'utf8' })
@@ -235,6 +244,46 @@ describe('reporting', () => {
     // Second post with no fresh pre: the marker is gone and HEAD has not moved again.
     await handleBashPost({ ...preInput(command), tool_response: '' }, { call: rec.call, boundConnection: fakeConnection })
     assert.equal(rec.calls.length, 1, 'a stale marker must not produce a second report')
+  })
+})
+
+describe('jurisdiction', () => {
+  it('reports nothing for a repository this project has no claim over', async () => {
+    // Found by the first live end-to-end run: an agent connected to one project still
+    // runs commands in other repositories — a scratch clone, an unrelated tool. The
+    // connection names the project, so reporting those would file someone else's
+    // commits against a project they have nothing to do with.
+    const foreign = path.join(sandbox, 'foreign')
+    fs.mkdirSync(foreign, { recursive: true })
+    assert.equal(spawnSync('git', ['init', '-q', foreign]).status, 0)
+    for (const args of [['config', 'user.email', 't@t.t'], ['config', 'user.name', 'T']]) {
+      assert.equal(spawnSync('git', args, { cwd: foreign }).status, 0)
+    }
+    // deliberately NOT marked as a DevSpec project
+
+    const command = 'git commit -q -m "not ours"'
+    const input = { session_id: SESSION, cwd: foreign, tool_input: { command } }
+    handleBashPre(input)
+    sh('echo x > x.txt && git add x.txt && git commit -q -m "not ours"', foreign)
+
+    const rec = recorder()
+    await handleBashPost(
+      { ...input, tool_response: '' },
+      { call: rec.call, boundConnection: fakeConnection },
+    )
+    assert.equal(rec.calls.length, 0, 'a commit outside our jurisdiction must never be reported')
+  })
+
+  it('reports a commit in a marked repository', async () => {
+    const command = 'git commit -q -m "ours"'
+    handleBashPre({ session_id: SESSION, cwd: repo, tool_input: { command } })
+    sh('echo two > b.txt && git add b.txt && git commit -q -m "ours"')
+    const rec = recorder()
+    await handleBashPost(
+      { session_id: SESSION, cwd: repo, tool_input: { command }, tool_response: '' },
+      { call: rec.call, boundConnection: fakeConnection },
+    )
+    assert.equal(rec.calls.length, 1)
   })
 })
 

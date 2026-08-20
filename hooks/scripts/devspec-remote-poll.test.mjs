@@ -17,6 +17,10 @@ import {
   resolveServerAttachment,
   verbForTurnTransition,
   trimAdvisoryCarry,
+  createCanonicalCarryState,
+  accumulateCanonicalCarry,
+  snapshotCanonicalCarry,
+  carryAfterCanonicalInbox,
   pollTerminalReason,
   emptyTurnBackoffMs,
   errorBackoffMs,
@@ -316,9 +320,26 @@ describe('trimAdvisoryCarry', () => {
     assert.equal(dropped, 1)
   })
 
-  it('keeps a single over-budget message rather than delivering nothing', () => {
-    const { kept } = trimAdvisoryCarry([msg('huge', 50_000)], { maxChars: 100 })
-    assert.deepEqual(kept.map((m) => m.id), ['huge'])
+  it('stops at the first normal row that cannot fit instead of backfilling with older rows', () => {
+    const { kept, dropped } = trimAdvisoryCarry(
+      [msg('oldest-5k', 5_000), msg('middle-8k', 8_000), msg('newest-5k', 5_000)],
+    )
+    assert.deepEqual(kept.map((entry) => entry.id), ['newest-5k'])
+    assert.equal(dropped, 2)
+  })
+
+  it('skips an individually oversized newest row and may still retain an older row', () => {
+    const { kept, dropped } = trimAdvisoryCarry(
+      [msg('older-normal', 5_000), msg('newest-oversized', 13_000)],
+    )
+    assert.deepEqual(kept.map((entry) => entry.id), ['older-normal'])
+    assert.equal(dropped, 1)
+  })
+
+  it('omits a single over-budget message so the character bound remains real', () => {
+    const { kept, dropped } = trimAdvisoryCarry([msg('huge', 50_000)], { maxChars: 100 })
+    assert.deepEqual(kept, [])
+    assert.equal(dropped, 1)
   })
 
   it('handles empty and malformed input without throwing', () => {
@@ -334,6 +355,182 @@ describe('trimAdvisoryCarry', () => {
       carry = trimAdvisoryCarry([...carry, { id: n, content: n }]).kept
     }
     assert.deepEqual(carry.map((m) => m.content), ['1', '2', '3'])
+  })
+})
+
+describe('canonical typed-context carry', () => {
+  const buckets = ['human_context', 'agent_context', 'ai_context', 'system_context']
+  const emptyContext = () => Object.fromEntries(buckets.map((bucket) => [bucket, []]))
+  const messageId = (sequence) =>
+    `30000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`
+  const page = (sequence, size = 600, { windowSequence = sequence, envelope = null } = {}) => {
+    const bucket = buckets[(sequence - 1) % buckets.length]
+    const order = {
+      sequence,
+      created_at: '2026-08-20T12:00:00.000Z',
+      message_id: messageId(sequence),
+    }
+    const windowOrder = {
+      sequence: windowSequence,
+      created_at: '2026-08-20T12:00:00.000Z',
+      message_id: messageId(windowSequence),
+    }
+    const context = emptyContext()
+    context[bucket].push({ message_id: order.message_id, order, content: 'x'.repeat(size) })
+    return {
+      envelope_id: envelope ?? `envelope-${sequence}`,
+      context,
+      window: { source_window: { start: windowOrder, end: windowOrder } },
+    }
+  }
+  const addRange = (state, start, end, size = 600) => {
+    for (let sequence = start; sequence <= end; sequence++) {
+      accumulateCanonicalCarry(state, page(sequence, size))
+    }
+  }
+  const rows = (snapshot) => buckets.flatMap((bucket) => snapshot.context[bucket])
+
+  it('uses one exact global budget and keeps newer live rows when older catch-up arrives later', () => {
+    const state = createCanonicalCarryState()
+    addRange(state, 101, 120)
+    addRange(state, 1, 21, 1)
+    const snapshot = snapshotCanonicalCarry(state)
+
+    assert.deepEqual(rows(snapshot).map((entry) => entry.order.sequence).sort((a, b) => a - b),
+      Array.from({ length: 20 }, (_, index) => index + 101))
+    assert.equal(rows(snapshot).length, 20)
+    assert.equal(rows(snapshot).reduce((sum, entry) => sum + entry.content.length, 0), 12_000)
+    assert.equal(snapshot.canonical_windows.length, 20)
+    assert.equal(snapshot.client_omission.window_metadata_dropped, 21)
+    assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
+      human_context: 6,
+      agent_context: 5,
+      ai_context: 5,
+      system_context: 5,
+    })
+  })
+
+  it('selects the same heterogeneous newest prefix across page grouping, arrival order, and retry', () => {
+    const pages = [page(1, 5_000), page(2, 8_000), page(3, 5_000)]
+    const together = {
+      envelope_id: 'envelope-combined',
+      context: Object.fromEntries(buckets.map((bucket) => [
+        bucket,
+        pages.flatMap((ingress) => ingress.context[bucket]),
+      ])),
+      window: {
+        source_window: {
+          start: pages[0].window.source_window.start,
+          end: pages[2].window.source_window.end,
+        },
+      },
+    }
+    const arrangements = {
+      'all together': [together],
+      'sequential 1→2→3': pages,
+      '2→3→1': [pages[1], pages[2], pages[0]],
+      '3→1→2': [pages[2], pages[0], pages[1]],
+      'older catch-up last': [pages[1], pages[2], pages[0]],
+    }
+    const outputs = []
+    for (const [name, ingresses] of Object.entries(arrangements)) {
+      const state = createCanonicalCarryState()
+      for (const ingress of ingresses) accumulateCanonicalCarry(state, ingress)
+      const beforeRetry = structuredClone(snapshotCanonicalCarry(state))
+      for (const ingress of ingresses) accumulateCanonicalCarry(state, ingress)
+      const afterRetry = snapshotCanonicalCarry(state)
+      assert.deepEqual(afterRetry, beforeRetry, `${name}: retries must not change output`)
+      outputs.push([name, afterRetry])
+    }
+
+    for (const [name, snapshot] of outputs) {
+      assert.deepEqual(rows(snapshot).map((entry) => entry.message_id), [messageId(3)], name)
+      assert.equal(rows(snapshot)[0].content.length, 5_000, name)
+      assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
+        human_context: 1,
+        agent_context: 1,
+        ai_context: 0,
+        system_context: 0,
+      }, name)
+      const retained = rows(snapshot)[0]
+      assert.ok(snapshot.canonical_windows.some(({ window: { source_window: { start, end } } }) =>
+        retained.order.sequence >= start.sequence && retained.order.sequence <= end.sequence), name)
+    }
+
+    const combined = outputs.find(([name]) => name === 'all together')[1]
+    assert.deepEqual(combined.canonical_windows.map((entry) => entry.envelope_id), ['envelope-combined'])
+    assert.equal(combined.client_omission.window_metadata_dropped, 0)
+    for (const [name, snapshot] of outputs.filter(([name]) => name !== 'all together')) {
+      assert.deepEqual(snapshot.canonical_windows.map((entry) => entry.envelope_id), ['envelope-3'], name)
+      assert.equal(snapshot.client_omission.window_metadata_dropped, 2, name)
+    }
+  })
+
+  it('omits oversized and uncovered rows with their unnecessary source windows', () => {
+    const state = createCanonicalCarryState()
+    accumulateCanonicalCarry(state, page(1, 12_001))
+    accumulateCanonicalCarry(state, page(2, 10, { windowSequence: 200 }))
+    const snapshot = snapshotCanonicalCarry(state)
+
+    assert.equal(rows(snapshot).length, 0)
+    assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
+      human_context: 1,
+      agent_context: 1,
+      ai_context: 0,
+      system_context: 0,
+    })
+    assert.equal(snapshot.client_omission.window_metadata_dropped, 2)
+    assert.deepEqual(snapshot.canonical_windows, [])
+  })
+
+  it('does not recount page identities when a command append fails and the page retries', () => {
+    const state = createCanonicalCarryState()
+    addRange(state, 101, 120)
+    const older = page(1, 1)
+    accumulateCanonicalCarry(state, older)
+    const beforeRetry = structuredClone(snapshotCanonicalCarry(state))
+    const failed = appendCanonicalInbox(
+      'connection',
+      { envelope_id: 'command-failed', commands: [{ message_id: 'command-1' }] },
+      scanPersistedInboxRecords(''),
+      { channel: 'command', carriedContext: beforeRetry, writeRecord: () => false },
+    )
+    assert.equal(failed.ok, false)
+    assert.equal(carryAfterCanonicalInbox(state, 'command', failed), state)
+
+    accumulateCanonicalCarry(state, older)
+    assert.deepEqual(snapshotCanonicalCarry(state), beforeRetry)
+    assert.equal(beforeRetry.client_omission.dropped_by_bucket.human_context, 1)
+    assert.equal(beforeRetry.client_omission.window_metadata_dropped, 1)
+  })
+
+  it('consumes carry for the same durable command under both the same and a new envelope', () => {
+    const index = scanPersistedInboxRecords('')
+    const command = { commands: [{ message_id: 'command-1' }] }
+    let state = createCanonicalCarryState()
+    accumulateCanonicalCarry(state, page(1, 10))
+    const first = appendCanonicalInbox('connection', { envelope_id: 'env-1', ...command }, index, {
+      channel: 'command',
+      carriedContext: snapshotCanonicalCarry(state),
+      writeRecord: () => true,
+    })
+    state = carryAfterCanonicalInbox(state, 'command', first)
+    assert.equal(snapshotCanonicalCarry(state), null)
+
+    accumulateCanonicalCarry(state, page(2, 10))
+    const sameEnvelope = appendCanonicalInbox('connection', { envelope_id: 'env-1', ...command }, index, {
+      channel: 'command', carriedContext: snapshotCanonicalCarry(state), writeRecord: () => true,
+    })
+    state = carryAfterCanonicalInbox(state, 'command', sameEnvelope)
+    assert.equal(snapshotCanonicalCarry(state), null)
+
+    accumulateCanonicalCarry(state, page(3, 10))
+    const newEnvelope = appendCanonicalInbox('connection', { envelope_id: 'env-2', ...command }, index, {
+      channel: 'command', carriedContext: snapshotCanonicalCarry(state), writeRecord: () => true,
+    })
+    assert.deepEqual(newEnvelope, { ok: true, appended: false })
+    state = carryAfterCanonicalInbox(state, 'command', newEnvelope)
+    assert.equal(snapshotCanonicalCarry(state), null)
   })
 })
 

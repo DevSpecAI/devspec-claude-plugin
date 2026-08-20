@@ -383,15 +383,21 @@ function readNewLines(file, offset) {
 function validCarriedContext(carried) {
   if (!carried || !isRemoteIngressTypedContext(carried.context)) return null
   const buckets = ['human_context', 'agent_context', 'ai_context', 'system_context']
-  if (buckets.some((bucket) => {
-    const entries = carried.context[bucket]
-    const chars = entries.reduce((sum, entry) => sum + entry.content.length, 0)
-    return entries.length > 20 || (entries.length > 1 && chars > 12_000)
-  })) return null
+  const entries = buckets.flatMap((bucket) => carried.context[bucket])
+  if (new Set(entries.map((entry) => entry.message_id)).size !== entries.length ||
+      entries.length > 20 ||
+      entries.reduce((sum, entry) => sum + entry.content.length, 0) > 12_000) return null
   if (!Array.isArray(carried.canonical_windows) || carried.canonical_windows.length > 20 ||
+      new Set(carried.canonical_windows.map((entry) => entry?.envelope_id)).size !==
+        carried.canonical_windows.length ||
       carried.canonical_windows.some((entry) =>
         !entry || typeof entry.envelope_id !== 'string' || !isRemoteIngressBoundedMetadata(entry.window)
       )) return null
+  if (entries.some((contextEntry) => !carried.canonical_windows.some(({ window }) => {
+    const { start, end } = window.source_window
+    return start && end && contextEntry.order.sequence >= start.sequence &&
+      contextEntry.order.sequence <= end.sequence
+  }))) return null
   const dropped = carried.client_omission?.dropped_by_bucket
   if (!dropped || buckets.some(
     (bucket) => !Number.isSafeInteger(dropped[bucket]) || dropped[bucket] < 0

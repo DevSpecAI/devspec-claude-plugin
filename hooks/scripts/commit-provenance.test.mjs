@@ -25,6 +25,7 @@ import {
   handleSessionStart,
   isSimpleGitPush,
   readClaims,
+  heredocGitCommit,
   referenceIn,
   simpleGitCommit,
 } from './commit-provenance.mjs'
@@ -401,6 +402,29 @@ describe('one nudge per session and repository, never more', () => {
     assert.equal(decision(first), null, 'a nudge is never a denial')
     assert.equal(await handlePre(editInput(), { env }), null)
     assert.equal(await handlePre(editInput(), { env }), null)
+  })
+
+  it('reaches the agent, not only the terminal', async () => {
+    // systemMessage renders in the terminal. Work here is routinely driven from a
+    // phone, where there is no terminal to render into, and the party that can act on
+    // the reminder is the agent — which reads additionalContext.
+    const first = await handlePre(editInput(), { env })
+    assert.match(first.hookSpecificOutput.additionalContext, /no work item is claimed/i)
+    assert.equal(first.hookSpecificOutput.hookEventName, 'PreToolUse')
+    assert.equal(first.hookSpecificOutput.permissionDecision, undefined, 'still never a denial')
+    assert.equal(first.hookSpecificOutput.additionalContext, first.systemMessage)
+  })
+
+  it('asks for the right thing instead of describing a safety net', async () => {
+    // An agent that believes something downstream will tidy up after it has less
+    // reason to do the cheap correct thing now. The text must not offer that comfort,
+    // and must not promise a refusal that only holds for the shapes this can read.
+    const { additionalContext: text } = (await handlePre(editInput(), { env })).hookSpecificOutput
+    assert.match(text, /Claim one before you commit/i)
+    assert.match(text, /create_action_item/)
+    assert.match(text, /\[devspec:<full-uuid>\]/)
+    assert.equal(/refus/i.test(text), false, 'must not promise a refusal')
+    assert.equal(/analy[sz]er|reconcil/i.test(text), false, 'must not name a backstop')
   })
 
   it('says nothing at all when a claim is held', async () => {
@@ -912,5 +936,102 @@ describe('the capability table is published', () => {
     ]) {
       assert.match(doc, row)
     }
+  })
+})
+
+describe('the multi-line message forms, which is where almost every commit lives', () => {
+  // Why this block exists: on one repository's staging branch over 14 days, 59 commits
+  // carried no reference and every single one of them was multi-line — a commit with a
+  // body cannot be written as one quoted `-m` argument, so the check was never reached
+  // by real work (item 022e487b).
+  const A = (body) => `git commit -q -F - <<'MSG'\n${body}\nMSG`
+  const B = (body) => `git commit -q -m "$(cat <<'MSG'\n${body}\nMSG\n)"`
+
+  it('reads a single-quoted heredoc on stdin, body and all', () => {
+    assert.equal(heredocGitCommit(A('subject')).message, 'subject')
+    assert.equal(heredocGitCommit(A('subject\n\nbody line')).message, 'subject\n\nbody line')
+    assert.equal(heredocGitCommit(A('subject\nMSGX\nstill body')).message, 'subject\nMSGX\nstill body')
+    assert.equal(heredocGitCommit(`${A('subject')}\n`).message, 'subject')
+  })
+
+  it('reads `-m "$(cat <<\'X\')"`, the other way a body gets written', () => {
+    assert.equal(heredocGitCommit(B('subject')).message, 'subject')
+    assert.equal(heredocGitCommit(B('subject\n\nbody line')).message, 'subject\n\nbody line')
+  })
+
+  it('honours the prefix and global-option rules by reusing the simple reader', () => {
+    assert.equal(heredocGitCommit(`cd /tmp/wt && git commit -F - <<'MSG'\nsubject\nMSG`).message, 'subject')
+    assert.equal(heredocGitCommit(`git -C /tmp/wt commit -F - <<'MSG'\nsubject\nMSG`).message, 'subject')
+    assert.equal(heredocGitCommit(`git --no-pager commit -m "$(cat <<'MSG'\nsubject\nMSG\n)"`).message, 'subject')
+  })
+
+  it('refuses — and therefore allows — every form whose message it cannot be sure of', () => {
+    for (const command of [
+      `git commit -F - <<MSG\nsubject\nMSG`,              // unquoted: expansion applies
+      `git commit -F - <<-'MSG'\nsubject\nMSG`,           // <<- strips tabs, different text
+      `git commit -F - <<'A'\nx\nA\ncat <<'B'\ny\nB`,     // two heredocs
+      `git commit -F - <<'MSG'\nsubject`,                 // no terminator
+      `git commit -F - <<'MSG'\nsubject\nMSGX\n`,         // terminator not alone on its line
+      `git commit -F - <<'MSG'\nx\nMSG\n; rm -rf /`,      // trailing structure
+      "git commit -F - <<'MSG'\n`whoami`\nMSG",           // backtick anywhere
+      `git commit -F - $EXTRA <<'MSG'\nx\nMSG`,           // expansion in the head
+      `git commit -m "$(printf <<'MSG'\nx\nMSG\n)"`,      // substitution is not cat
+      `git commit -m "$(cat <<'MSG'\nx\nMSG\n)$(date)"`,  // a second substitution
+      `git commit -m "a" -m "$(cat <<'MSG'\nx\nMSG\n)"`,  // two message parts
+      `g commit -F - <<'MSG'\nx\nMSG`,                    // aliased git
+      `git add -A && git commit -F - <<'MSG'\nx\nMSG`,    // prefix is not cd
+      `git commit -F msg.txt`,                            // a file, deliberately not read
+      `git commit --file=msg.txt`,
+    ]) {
+      assert.equal(heredocGitCommit(command), null, command)
+    }
+  })
+
+  it('denies an unreferenced multi-line commit, with the same recovery text', async () => {
+    for (const command of [A('fix: subject'), B('fix: subject')]) {
+      const result = await bash(command)
+      assert.equal(decision(result), 'deny', command)
+      assert.match(result.hookSpecificOutput.permissionDecisionReason, /\[devspec:<full-uuid>\]/)
+    }
+  })
+
+  it('allows a multi-line commit that already carries a reference', async () => {
+    assert.equal(await bash(A(`fix: subject [devspec:${ITEM}]`)), null)
+    assert.equal(await bash(B(`fix: subject\n\nbody [devspec:${ITEM}]`)), null)
+  })
+
+  it('stamps the subject line inside the heredoc, never the trailer or past the delimiter', async () => {
+    claim()
+    const body = 'fix: subject\n\nbody paragraph\nCo-Authored-By: Someone <x@y.z>'
+    for (const command of [A(body), B(body)]) {
+      const result = await bash(command)
+      const rewritten = updated(result)
+      assert.ok(rewritten, `expected a rewrite for ${command}`)
+      assert.match(rewritten, new RegExp(`fix: subject \\[devspec:${ITEM}\\]`))
+      // The trailer must survive untouched, and nothing may land after the delimiter.
+      assert.match(rewritten, /Co-Authored-By: Someone <x@y\.z>\n/)
+      assert.equal(/MSG[^\n]*devspec/.test(rewritten), false, 'reference must not follow the delimiter')
+      assert.equal(referenceIn(heredocGitCommit(rewritten).message), ITEM)
+    }
+  })
+
+  it('produces a command git actually accepts (run, not reasoned about)', () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-exec-'))
+    gitInit(scratch)
+    for (const [name, make] of [['A', A], ['B', B]]) {
+      const command = make(`fix: form ${name}\n\nbody\nCo-Authored-By: X <x@y.z>`)
+      const commit = heredocGitCommit(command)
+      const stamped = `${command.slice(0, commit.insertOffset)} [devspec:${ITEM}]${command.slice(commit.insertOffset)}`
+      fs.writeFileSync(path.join(scratch, `${name}.txt`), name)
+      for (const args of [['config', 'user.email', 't@t.t'], ['config', 'user.name', 'T'], ['add', '-A']]) {
+        assert.equal(spawnSync('git', args, { cwd: scratch }).status, 0)
+      }
+      const run = spawnSync('bash', ['-c', stamped], { cwd: scratch, encoding: 'utf8' })
+      assert.equal(run.status, 0, `${name}: ${run.stderr}`)
+      const message = spawnSync('git', ['log', '-1', '--format=%B'], { cwd: scratch, encoding: 'utf8' }).stdout
+      assert.match(message, new RegExp(`fix: form ${name} \\[devspec:${ITEM}\\]`))
+      assert.match(message, /Co-Authored-By: X <x@y\.z>/)
+    }
+    fs.rmSync(scratch, { recursive: true, force: true })
   })
 })

@@ -399,6 +399,117 @@ export function simpleGitCommit(command) {
   }
 }
 
+/** A heredoc delimiter this will read: a plain word, so it cannot hide structure. */
+const HEREDOC_DELIMITER = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
+ * The two multi-line message forms this can read with the same certainty as a quoted
+ * `-m` — and the reason the certainty holds.
+ *
+ * `simpleGitCommit` refuses every `<<`, `$` and newline, because in general they mean
+ * structure or expansion it cannot evaluate. That is right in general and wrong for
+ * the two shapes below, which is why almost nothing reached the check: a commit
+ * message with a BODY cannot be written as one quoted `-m` argument, so every commit
+ * that carried real prose took the refusal path. Measured on one repository's staging
+ * branch over 14 days: 343 non-merge commits, 59 with no reference, and all 59 of them
+ * multi-line (item 022e487b).
+ *
+ * What makes these two decidable is the SINGLE-QUOTED heredoc. Inside `<<'D' … D` the
+ * shell performs no expansion at all — no parameters, no substitution, no escapes — so
+ * the message is exactly the bytes between the delimiter lines. Nothing is guessed:
+ *
+ *   git commit -F - <<'MSG'          git commit -m "$(cat <<'MSG'
+ *   subject                          subject
+ *                                    MSG
+ *   body                             )"
+ *   MSG
+ *
+ * Everything else still refuses, and refusing still means allow: an UNQUOTED
+ * delimiter (expansion applies), `<<-`, a second heredoc, a substitution that is not
+ * exactly `cat` of one heredoc, a backtick, or any trailing text this did not expect.
+ *
+ * `-F <path>` is deliberately NOT read, even though a file is also legible. Two
+ * reasons: the only outcome available would be a denial, since a reference cannot be
+ * stamped into someone else's file by rewriting a command; and the file may well be
+ * written by the very compound command being inspected, so reading it at PreToolUse
+ * time can be wrong in a way the inline forms above never are.
+ *
+ * Validation reuses `simpleGitCommit` rather than reimplementing it: the head is
+ * normalised into the equivalent simple form (`-F -` or `-m "$(cat` becomes a literal
+ * `-m "x"`) and handed to the existing reader, so every rule about prefixes, global
+ * options, refused flags and duplicate messages applies here unchanged and cannot
+ * drift away from it.
+ */
+export function heredocGitCommit(command) {
+  if (typeof command !== 'string' || command.length === 0 || command.length > 8192) return null
+  if (command.includes('`')) return null
+
+  // Exactly one single-quoted heredoc, and no other heredoc of any kind.
+  const open = command.indexOf("<<'")
+  if (open === -1) return null
+  if (command.indexOf('<<', open + 3) !== -1) return null
+  if (command.indexOf('<<', 0) !== open) return null
+
+  const delimEnd = command.indexOf("'", open + 3)
+  if (delimEnd === -1) return null
+  const delimiter = command.slice(open + 3, delimEnd)
+  if (!HEREDOC_DELIMITER.test(delimiter)) return null
+
+  // The body starts on the next line, so the delimiter must end its own line.
+  let cursor = delimEnd + 1
+  if (command[cursor] === '\r') cursor += 1
+  if (command[cursor] !== '\n') return null
+  const bodyStart = cursor + 1
+
+  // The terminator is a line containing exactly the delimiter.
+  const terminator = `\n${delimiter}`
+  let close = command.indexOf(terminator, bodyStart - 1)
+  while (close !== -1) {
+    const after = command[close + terminator.length]
+    if (after === undefined || after === '\n' || after === '\r') break
+    close = command.indexOf(terminator, close + 1)
+  }
+  if (close === -1 || close < bodyStart - 1) return null
+
+  const body = command.slice(bodyStart, close)
+  const head = command.slice(0, open)
+  const tail = command.slice(close + terminator.length)
+  if (head.includes('\n') || head.includes('\r')) return null
+
+  // Which form is this, and what does the head look like without the heredoc?
+  let normalised = null
+  const viaStdin = /^(?<pre>.*?)\s(?:-F|--file)\s+-\s*$/.exec(head)
+  const viaSubstitution = /^(?<pre>.*?)\s-m\s+"\$\(cat\s*$/.exec(head)
+
+  if (viaStdin) {
+    // `-F -` reads the message from stdin, which is the heredoc: nothing else may follow.
+    if (tail.trim() !== '') return null
+    if (head.includes('$')) return null
+    normalised = `${viaStdin.groups.pre} -m "x"`
+  } else if (viaSubstitution) {
+    // The substitution must close immediately after the delimiter line, and be the only one.
+    if (tail.trim() !== ')"') return null
+    if (command.indexOf('$(') !== command.lastIndexOf('$(')) return null
+    if (viaSubstitution.groups.pre.includes('$')) return null
+    normalised = `${viaSubstitution.groups.pre} -m "x"`
+  } else {
+    return null
+  }
+
+  // Every prefix, global-option, refused-flag and duplicate-message rule comes from
+  // the existing reader, applied to the equivalent simple command.
+  const simple = simpleGitCommit(normalised)
+  if (!simple || simple.message !== 'x') return null
+
+  // Append to the SUBJECT line, inside the heredoc. Appending after the terminator
+  // would land outside the message; appending to the last body line would corrupt a
+  // trailer (`Co-Authored-By:` is routinely last).
+  const firstBreak = body.indexOf('\n')
+  const subjectEnd = firstBreak === -1 ? bodyStart + body.length : bodyStart + firstBreak
+
+  return { message: body, insertOffset: subjectEnd, appendable: true }
+}
+
 /** A push this can reason about at all. Everything else is allowed untouched. */
 export function isSimpleGitPush(command) {
   if (typeof command !== 'string' || /[|&;<>(){}`$\n\r]/.test(command)) return false
@@ -497,8 +608,20 @@ function stamp(updatedCommand, toolInput, itemId) {
   }
 }
 
+/**
+ * A reminder has to reach the party that can act on it. `systemMessage` renders in the
+ * terminal, which is the human's channel — and on this project a great deal of work is
+ * driven from a phone, where no terminal is ever seen. The agent reads
+ * `additionalContext`. Emitting both means the reminder lands with whoever is there.
+ */
 function nudge(message) {
-  return { systemMessage: message }
+  return {
+    systemMessage: message,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: message,
+    },
+  }
 }
 
 /**
@@ -660,7 +783,7 @@ export async function handlePre(input, options = {}) {
   const command = typeof input?.tool_input?.command === 'string' ? input.tool_input.command : ''
   if (!command) return null
 
-  const commit = simpleGitCommit(command)
+  const commit = simpleGitCommit(command) ?? heredocGitCommit(command)
   if (!commit) {
     // Not a shape we can read: allowed untouched, by design.
     return null
@@ -706,10 +829,16 @@ function maybeNudge(scope, { env, now, platform }) {
     // Cannot remember having nudged → stay silent rather than repeat every edit.
     return null
   }
+  // What this says matters as much as where it lands. It used to promise that an
+  // unreferenced commit "will be refused", which is true only of the shapes this can
+  // read, and it named the reconciliation that happens afterwards — so it read as a
+  // safety net. An agent that believes something will tidy up behind it has less
+  // reason to do the right thing now, and the right thing now is cheap: claim, or
+  // write one thin item. State that, and nothing else.
   return nudge(
-    'DevSpec: no work item is claimed in this repository. Editing is not blocked, and nothing will be. ' +
-    'But a commit here will be refused unless its message carries [devspec:<full-uuid>], so claiming now ' +
-    '(or creating a small item) keeps the audit trail intact and lets DevSpec stamp the reference for you. ' +
+    'DevSpec: no work item is claimed in this repository, so work done here has nothing to trace it to. ' +
+    'Claim one before you commit — search_action_items for an existing item, or create_action_item for a ' +
+    'thin last-mile one — and put [devspec:<full-uuid>] in the commit message. Editing is never blocked. ' +
     `Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }

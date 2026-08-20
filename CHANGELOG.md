@@ -2,6 +2,67 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.18.0 - 2026-08-20
+
+### The reference gate almost never fired, because every real commit message escaped it
+
+`simpleGitCommit` refuses any command containing `<<`, `$` or a newline — correct in
+general, because those usually mean structure this cannot evaluate. The consequence was
+not general at all: **a commit message with a body cannot be written as one quoted `-m`
+argument**, so every commit carrying real prose took the refusal path and was never
+inspected.
+
+Measured on one repository's `staging` branch over 14 days: 343 non-merge commits, 284
+carrying `[devspec:…]`, **59 without — and all 59 of them multi-line. Zero single-line
+commits escaped.** The deny path had had no opportunity to fire at all. The hole was
+documented as deliberate ("the analyzer reconciles it server-side"); what was not
+anticipated is that it is the *common* path rather than the edge case (item `022e487b`).
+
+`heredocGitCommit` adds the two multi-line forms whose message is a **single-quoted**
+heredoc, where the shell expands nothing and the text is exactly the bytes between the
+delimiter lines:
+
+```
+git commit -F - <<'MSG'        git commit -m "$(cat <<'MSG'
+subject                        subject
+                               MSG
+body                           )"
+MSG
+```
+
+Validation reuses `simpleGitCommit` on the equivalent normalised command rather than
+reimplementing it, so every rule about prefixes, global options, refused flags and
+duplicate messages applies here unchanged and cannot drift from it.
+
+Still refused, and refusing still means allow: an **unquoted** delimiter (expansion
+applies), `<<-`, a second heredoc, a substitution that is not exactly `cat` of one
+heredoc, a backtick anywhere, unexpected trailing text, and a head containing an
+expansion.
+
+`-F <path>` stays refused deliberately. The only outcome available would be a denial —
+a reference cannot be stamped into someone else's file by rewriting a command — and the
+file may be written by the very compound command being inspected, so reading it at
+PreToolUse time can be wrong in a way the inline forms never are.
+
+**Stamping targets the subject line, inside the heredoc.** Not after the delimiter,
+which is outside the message; and not the last body line, which is routinely a
+`Co-Authored-By:` trailer. The rewritten command is round-tripped through a real
+`git commit` in the suite rather than trusted from offset arithmetic.
+
+### The reminder went to the terminal, where nobody driving from a phone can see it
+
+`maybeNudge` emitted `systemMessage` only — the human's channel, and on this project a
+great deal of work is driven from a phone where no terminal is ever rendered. The party
+that can act on the reminder is the agent, which reads `additionalContext`. It now
+emits both.
+
+Its wording changed too, and for a sharper reason. It used to promise that a commit
+"will be refused unless its message carries `[devspec:<full-uuid>]`" — true only of the
+shapes this can read, so untrue of most commits — and it named the reconciliation that
+happens afterwards. Both together read as a safety net, and an agent that believes
+something will tidy up behind it has less reason to do the cheap correct thing now. It
+now asks for a claim or a thin last-mile item directly, and mentions no backstop.
+
 ## 0.17.0 - 2026-08-19
 
 ### A reference is now confirmed to exist, not just to look right

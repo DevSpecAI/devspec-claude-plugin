@@ -25,8 +25,8 @@ Everything shared lives **on the DevSpec side**, as a contract:
 
 - the **MCP tool contract** — `register_connection`, `poll_connection`,
   `post_session_message`, `claim_playbook_run`, the assignment protocol
-- the **inbox format** a poller writes and a waker reads — `owner_messages` vs
-  `advisory_context`, and the byte-offset cursor
+- the **remote-ingress contract** — `devspec://product/remote-ingress-contract` —
+  plus each host's durable inbox and byte-offset cursor implementation
 - the **delivery contract** — the agent posts answers; Stop does **not** full-mirror
   assistant text (monorepo `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md`, ADR `b98a39a9`).
   Nothing here may re-introduce dual-writer full-turn Stop mirroring.

@@ -29,6 +29,10 @@ import {
 /** A pid above any plausible pid_max — guaranteed ESRCH, i.e. provably dead. */
 const DEAD_PID = 2147483646
 
+function canonicalCommands(messages) {
+  return { type: 'canonical_commands', ingress: { commands: messages } }
+}
+
 function withConnDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-listener-'))
   const conn = 'c0ffee00-0000-4000-8000-000000000001'
@@ -321,7 +325,7 @@ describe('countUnreadOwnerCommands', () => {
   it('counts owner commands past the wait cursor', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
       writeInbox([
-        { type: 'owner_messages', messages: [{ id: 'm1' }, { id: 'm2' }] },
+        canonicalCommands([{ id: 'm1' }, { id: 'm2' }]),
       ])
       assert.equal(countUnreadOwnerCommands(conn, 0, dir), 2)
     })
@@ -330,8 +334,8 @@ describe('countUnreadOwnerCommands', () => {
   it('ignores advisory context — it never warranted a wake, so it must not hold a turn open', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
       writeInbox([
-        { type: 'advisory_context', messages: [{ id: 'a1' }, { id: 'a2' }] },
-        { type: 'owner_messages', messages: [{ id: 'm1' }] },
+        { type: 'canonical_context', ingress: { commands: [], context: [{ id: 'a1' }, { id: 'a2' }] } },
+        canonicalCommands([{ id: 'm1' }]),
       ])
       assert.equal(countUnreadOwnerCommands(conn, 0, dir), 1)
     })
@@ -339,10 +343,10 @@ describe('countUnreadOwnerCommands', () => {
 
   it('counts only what is PAST the offset — already-consumed mail is not unread', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      const consumed = JSON.stringify({ type: 'owner_messages', messages: [{ id: 'old' }] }) + '\n'
+      const consumed = JSON.stringify(canonicalCommands([{ id: 'old' }])) + '\n'
       writeInbox([
-        { type: 'owner_messages', messages: [{ id: 'old' }] },
-        { type: 'owner_messages', messages: [{ id: 'new' }] },
+        canonicalCommands([{ id: 'old' }]),
+        canonicalCommands([{ id: 'new' }]),
       ])
       assert.equal(countUnreadOwnerCommands(conn, Buffer.byteLength(consumed, 'utf8'), dir), 1)
     })
@@ -350,7 +354,7 @@ describe('countUnreadOwnerCommands', () => {
 
   it('is 0 when the cursor is at the end — the healthy steady state', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      writeInbox([canonicalCommands([{ id: 'm1' }])])
       const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
       assert.equal(countUnreadOwnerCommands(conn, size, dir), 0)
     })
@@ -358,15 +362,15 @@ describe('countUnreadOwnerCommands', () => {
 
   it('ignores an incomplete trailing line the poller is still writing', () => {
     withConnDir(({ dir, conn, writeInbox, appendRaw }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
-      appendRaw('{"type":"owner_messages","messages":[{"id":"hal')
+      writeInbox([canonicalCommands([{ id: 'm1' }])])
+      appendRaw('{"type":"canonical_commands","ingress":{"commands":[{"id":"hal')
       assert.equal(countUnreadOwnerCommands(conn, 0, dir), 1)
     })
   })
 
   it('treats an unknown offset as "all read" rather than inventing a backlog', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      writeInbox([canonicalCommands([{ id: 'm1' }])])
       assert.equal(countUnreadOwnerCommands(conn, undefined, dir), 0)
     })
   })
@@ -394,7 +398,7 @@ describe('parseStopHookActive', () => {
 describe('decideStopBlock', () => {
   it('BLOCKS a turn ending with no listener and stranded owner mail', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }, { id: 'm2' }] }])
+      writeInbox([canonicalCommands([{ id: 'm1' }, { id: 'm2' }])])
       const reason = decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, dir })
       assert.ok(reason, 'must refuse the stop')
       assert.match(reason, /2 owner command/)
@@ -416,14 +420,14 @@ describe('decideStopBlock', () => {
 
   it('does NOT block when a listener is armed — unread mail is that listener\'s job', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      writeInbox([canonicalCommands([{ id: 'm1' }])])
       assert.equal(decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: true, dir }), null)
     })
   })
 
   it('does NOT block twice — stop_hook_active wins over everything', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      writeInbox([canonicalCommands([{ id: 'm1' }])])
       assert.equal(
         decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, stopHookActive: true, dir }),
         null,
@@ -450,7 +454,7 @@ describe('decideStopBlock', () => {
 
   it('never blocks the healthy steady state (armed, cursor at end)', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
-      writeInbox([{ type: 'owner_messages', messages: [{ id: 'm1' }] }])
+      writeInbox([canonicalCommands([{ id: 'm1' }])])
       const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
       assert.equal(decideStopBlock({ connectionId: conn, inboxOffset: size, armed: true, dir }), null)
     })

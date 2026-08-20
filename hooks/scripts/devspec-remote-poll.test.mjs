@@ -602,17 +602,20 @@ describe('countUnconsumedCommands', () => {
     }
   }
 
-  it('counts owner commands past the wait cursor', () => {
-    withInbox([{ type: 'owner_messages', messages: [{ id: 'a' }, { id: 'b' }] }], ({ dir, conn }) => {
-      assert.equal(countUnconsumedCommands(conn, 0, dir), 2)
-    })
+  it('counts canonical commands past the wait cursor', () => {
+    withInbox(
+      [{ type: 'canonical_commands', ingress: { commands: [{ id: 'a' }, { id: 'b' }] } }],
+      ({ dir, conn }) => {
+        assert.equal(countUnconsumedCommands(conn, 0, dir), 2)
+      },
+    )
   })
 
-  it('excludes advisory — it never warranted a wake, so it is not a backlog', () => {
+  it('excludes canonical advisory context — it never warranted a wake', () => {
     withInbox(
       [
-        { type: 'advisory_context', messages: [{ id: 'x' }, { id: 'y' }] },
-        { type: 'owner_messages', messages: [{ id: 'a' }] },
+        { type: 'canonical_context', ingress: { commands: [], context: { human_context: [{ id: 'x' }] } } },
+        { type: 'canonical_commands', ingress: { commands: [{ id: 'a' }] } },
       ],
       ({ dir, conn }) => {
         assert.equal(countUnconsumedCommands(conn, 0, dir), 1)
@@ -621,14 +624,14 @@ describe('countUnconsumedCommands', () => {
   })
 
   it('is 0 when the cursor is at the end (healthy steady state)', () => {
-    withInbox([{ type: 'owner_messages', messages: [{ id: 'a' }] }], ({ dir, conn }) => {
+    withInbox([{ type: 'canonical_commands', ingress: { commands: [{ id: 'a' }] } }], ({ dir, conn }) => {
       const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
       assert.equal(countUnconsumedCommands(conn, size, dir), 0)
     })
   })
 
   it('treats an unknown cursor as all-read rather than inventing a backlog', () => {
-    withInbox([{ type: 'owner_messages', messages: [{ id: 'a' }] }], ({ dir, conn }) => {
+    withInbox([{ type: 'canonical_commands', ingress: { commands: [{ id: 'a' }] } }], ({ dir, conn }) => {
       assert.equal(countUnconsumedCommands(conn, undefined, dir), 0)
     })
   })

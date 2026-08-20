@@ -15,17 +15,14 @@ A **session is optional**. Never invent a session because a cwd or another agent
 
 ## Shared DevSpec contract (all hosts)
 
-| Concern | Rule |
-|---|---|
-| Identity | `register_connection` → `connection_id` + server-minted `codename`. Fixed `AGENT_NAME` per plugin. |
-| Tick | Prefer one held `poll_connection` (heartbeat + commands + advisory + dispatches). |
-| Authority | Act **only** on `commands[]` with `addressed_to.connection_id` = you and `authority.kind` = owner. |
-| Advisory | `owner_ambient` / `room_context` are context only — never wake or execute from them. |
-| Answers (attached) | Agent (or host bridge) posts **one direct answer** via `post_session_message({ connection_id })`. |
-| Answers (sessionless) | Assignment / `report_progress` only — never invent chat. |
-| Activity | `report_pickup` → `report_keepalive` → `report_complete`. Server never infers Working. |
-| Chrome | Connect/status banners are **terminal-only**. Never post them into the session. |
-| Slash commands | Host UI commands (e.g. `/clear`) are **not** remote-control. Injecting `"/clear"` as prompt text does not run them. |
+Remote-ingress wire shape, authority, wake, context, ordering, delivery, attachment
+and bounded-window policy is authoritative at
+**`devspec://product/remote-ingress-contract`**. Operational docs point there rather
+than copying version-sensitive rules.
+
+The host-specific invariant is architectural: negotiate canonical ingress at
+`poll_connection`, validate it at the network boundary, preserve its complete durable
+record, and keep notification/preview output non-authoritative.
 
 ## Three implementation families
 
@@ -56,6 +53,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 
 ## Canonical pointers
 
+- Canonical remote ingress: `devspec://product/remote-ingress-contract`
 - Delivery contract: `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md`
 - Activity / pickup lease: `docs/REMOTE-CONTROL-ACTIVITY-CONFORMANCE.md`
 - Plugin independence: each host owns its scripts; share the MCP contract and these primers, not a cross-repo sync pipeline

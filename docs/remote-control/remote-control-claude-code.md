@@ -6,10 +6,10 @@
 
 ## How a message reaches Claude
 
-1. Owner dispatches to this connection in DevSpec.
-2. `devspec-remote-poll.mjs` holds `poll_connection`, writes owner commands to the connection inbox.
-3. `devspec-remote-wait.mjs --stream` watches the inbox and prints wake lines.
-4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting.
+1. DevSpec emits negotiated canonical ingress for this connection.
+2. `devspec-remote-poll.mjs` holds `poll_connection`, validates v1 at the network boundary, and writes the complete envelope to the connection inbox.
+3. `devspec-remote-wait.mjs --stream` watches the inbox and prints typed advisory context plus complete canonical command events.
+4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
 5. Model acts; when attached, model `post_session_message({ connection_id })` with the direct answer.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
 
@@ -37,7 +37,8 @@ Design rules for anyone editing it:
 - **No `list_projects` round-trip.** The router resolves the project from `git_remote` directly, so the extra call and its response were pure cost.
 - **Raw JSON-RPC, not host MCP tools.** Claude Code negotiates MCP capabilities **once per session**, so a server that starts advertising resources is invisible to every already-running session. The script layer never negotiates, so it can always reach the server even when the host cannot. Keep connect on `mcp-call.mjs` for that reason, not merely for tidiness.
 - **One writer.** `writeConnectionState` is shared with `remote-control-state.mjs write`. Do not grow a second state-writing path.
-- **Do not fold the pump in.** `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are proven and stay untouched.
+- **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
+- Remote-ingress policy is authoritative at `devspec://product/remote-ingress-contract`; do not restate mutable versions here.
 
 ### Conditional tiers and bounded reads
 
@@ -52,7 +53,7 @@ Only if `devspec-remote-connect.mjs` is absent. Do not invent a third path — f
 
 1. `register_connection({ local_id, agent_name, git_remote })`, then `attach_connection` if a session was named.
 2. `remote-control-state.mjs write --connection-id … --owner-pid "$PPID"` to write state and start the poller.
-3. If even the poller script is gone: call `poll_connection({ connection_id, cursor, dispatch_cursor, wait_ms: 25000 })` in a loop — one call heartbeats, returns live dispatches, and returns the room split into `commands` / `owner_ambient` / `room_context`. It holds open, so no `sleep` is needed; pass both cursors back each time. Act only on `commands[]` addressed to your connection.
+3. If even the poller script is gone, restore/fix the plugin rather than inventing a second ingress path. The negotiated wire and execution rules live at `devspec://product/remote-ingress-contract`.
 4. `status: "not_found"` / `"ended"` → check `end_reason` before standing down. Only `ui` or `local_stop` means a person ended you.
 
 ## Host specifics

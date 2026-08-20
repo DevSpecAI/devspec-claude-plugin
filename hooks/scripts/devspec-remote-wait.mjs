@@ -1,87 +1,19 @@
 #!/usr/bin/env node
 /**
- * devspec-remote-wait — wake the coding agent when a new OWNER COMMAND arrives
- * (CONNECTION-NATIVE, item fd51d80b).
+ * Durable inbox reader and Claude Code wake stream.
  *
- * Complements continuous `devspec-remote-poll.mjs` (heartbeats + inbox writer).
- * This process does **not** heartbeat. It watches the per-connection inbox written
- * by the poller and delivers new `owner_messages` in one of TWO wake shapes:
+ * It preserves the existing byte-offset cursor, armed-listener pidfile, one-shot
+ * fallback and preferred session-scoped `--stream` Monitor architecture. Runtime
+ * wake input is only a `canonical_commands` record previously validated and written
+ * by devspec-remote-poll. Typed context is rendered first as actor-labelled advisory
+ * model context; complete canonical command objects follow. Summaries and previews
+ * are explicitly non-authoritative/non-executable.
  *
- *   --stream (PREFERRED on this host, item be0a929a) — print the events and KEEP
- *     WATCHING. The wake is a stdout LINE, not the process exit, so a single arm
- *     serves the whole session. Claude Code's `Monitor` tool (persistent: true) turns
- *     each line into a model-visible event and — unlike a tracked background task —
- *     is scoped to the SESSION, not the turn.
- *
- *   one-shot (no --stream) — **exit 0** on the first batch, for a host that wakes the
- *     model when a tracked background task EXITS. Kept as the fallback for any host
- *     with no persistent-monitor primitive.
- *
- * WHY THE PREFERENCE MOVED (item be0a929a). Exit-to-wake makes the listener's lifetime
- * the TURN's lifetime on any host that reaps background tasks at turn end: the agent
- * arms correctly, the Stop hook sees a live pid and passes, the harness then reaps the
- * task, the reap notification starts a NEW turn with no listener, the Stop hook blocks,
- * the agent re-arms — forever, one model turn per lap. Reproduced 5/5 on Claude Code.
- * No amount of agent compliance fixes it, because the failure is process OWNERSHIP:
- * the thing proving liveness to the Stop hook is destroyed, by design, moments later.
- * Streaming removes the coupling that caused it — nothing has to die for the model to
- * be woken, so nothing has to be re-armed.
- *
- * Note what this is NOT: a detached watcher. `mirror-turn.mjs` records the accident on
- * item d655b2a4 — a detached wait survived, consumed the inbox and woke NOBODY, which
- * is strictly worse than no listener at all. A monitor is still harness-managed, so its
- * stdout reaches the model; it is merely session-scoped instead of turn-scoped.
- * Persistent ≠ detached, and that distinction is the whole fix.
- *
- * It wakes ONLY on `owner_messages` (server-stamped owner commands / dispatches).
- * `advisory_context` inbox entries (teammate / Dev / other-agent room context) are
- * DELIBERATELY ignored as a WAKE TRIGGER — advisory must never force a model wake or
- * an autonomous response.
- *
- * It is NOT ignored as CONTENT. An `owner_messages` entry carries the room the
- * command arrived into on its `context` field (owner-ambient + everyone-else, carried
- * forward by the poller since the last command), and this script prints that block in
- * the SAME stdout payload as the command — labelled, ahead of it, so the command is
- * the last thing read. That is the mechanical fix for item 27058153: the model cannot
- * receive the command without also receiving the room, so understanding the room
- * stops depending on a skill instruction being followed. Before this, advisory lived
- * only in a side file and Claude Code failed a live "1, 2, 3 … what's next?" test
- * while holding all three messages on disk.
- *
- * In ONE-SHOT mode the agent must re-arm after acting — with `--pending`, which
- * resumes from the saved inbox offset AND leaves the working indicator alone, because
- * a re-arm happens mid-turn by design (see armEndsTurn). In `--stream` mode there is no
- * re-arm to forget or to lose to a reaper: the arm outlives the turn.
+ * The versioned execution policy lives at
+ * devspec://product/remote-ingress-contract.
  *
  * Usage:
  *   node devspec-remote-wait.mjs --connection-id <uuid> [--stream] [--from-end|--pending] [--owner-pid <pid>]
- *
- * Exit codes:
- *   0  — one or more new owner_messages batches printed to stdout; agent should act.
- *        NEVER returned in --stream mode, which delivers by LINE and does not exit on
- *        a wake. A stream that exits has ended for one of the reasons below.
- *   1  — TERMINAL: remote disabled / connection ended in state / owner gone / error
- *   2  — bad args
- *   3  — NON-TERMINAL: this arm aged out with no owner mail. Re-arm; the connection
- *        is fine. Only an arm that HAS a deadline can reach it — an owner-anchored
- *        `--stream` arm has none (see resolveDeadline).
- *        Split out of exit 1 for item d655b2a4: both cases used to exit 1,
- *        and the skill's documented response to exit 1 is "stop", so a compliant
- *        agent tore down a perfectly live connection on a 24h rollover or a harness
- *        reap. Exit 1 is now strictly "a human or the server ended this".
- *
- * PROOF OF LIFE (item 8b4ceaa3). While armed, this process owns
- * `<connection>.wait.pid`, and removes it on every exit path. That file is what lets
- * anything else — specifically the Stop hook — tell "a listener is armed" from "this
- * connection is live but deaf". Before it existed, a missed re-arm was undetectable:
- * the poller kept heartbeating, the Agents page kept saying Live, the inbox kept
- * filling, and nothing anywhere knew nobody was reading.
- *
- * In `--stream` mode that same pidfile is held for the WHOLE session, which is why the
- * Stop hook needed no change for item be0a929a: it still blocks on exactly one
- * condition — a live listener pid — and a session-long stream satisfies it on every
- * turn. 8b4ceaa3's guarantee is preserved literally rather than relaxed; the re-arm
- * loop disappears because there is no re-arm, not because the hook stopped enforcing.
  */
 
 import fs from 'node:fs'
@@ -95,6 +27,7 @@ import {
   materialiseAttachments,
   MAX_INLINE_ATTACHMENT_CHARS,
 } from './attachment-store.mjs'
+import { renderAdvisoryContext, REMOTE_INGRESS_RESOURCE_URI } from './remote-ingress-v1.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -449,14 +382,93 @@ export function parseOwnerBatches(lines) {
   for (const line of lines) {
     try {
       const obj = JSON.parse(line)
-      if (obj?.type === 'owner_messages' && Array.isArray(obj.messages) && obj.messages.length > 0) {
-        batches.push(obj)
-      }
+      if (
+        obj?.type === 'canonical_commands' &&
+        obj.authoritative_source === REMOTE_INGRESS_RESOURCE_URI &&
+        Array.isArray(obj.ingress?.commands) &&
+        obj.ingress.commands.length > 0
+      ) batches.push(obj)
     } catch {
       /* skip garbage */
     }
   }
   return batches
+}
+
+/**
+ * Convert one durable canonical command record into Monitor events. The complete
+ * canonical command object remains intact; stdout summaries/previews are labelled
+ * non-authoritative and are never executable.
+ */
+export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
+  const ingress = batch?.ingress
+  const commands = Array.isArray(ingress?.commands) ? ingress.commands : []
+  const sessionId = batch?.session_id ?? null
+  const carried = batch?.carried_context
+  const advisoryContext = carried?.context ?? ingress?.context
+  const rendered = renderAdvisoryContext(advisoryContext)
+  const events = []
+
+  if (rendered.length > 0 || carried?.client_omission || ingress?.window) {
+    events.push({
+      type: 'canonical_advisory_context',
+      session_id: sessionId,
+      advisory: true,
+      executable: false,
+      authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
+      rendered_context: rendered,
+      typed_context: advisoryContext,
+      canonical_windows: carried?.canonical_windows ?? [
+        { envelope_id: ingress?.envelope_id ?? null, window: ingress?.window ?? null },
+      ],
+      client_omission: carried?.client_omission ?? {
+        dropped_by_bucket: {
+          human_context: 0,
+          agent_context: 0,
+          ai_context: 0,
+          system_context: 0,
+        },
+        window_metadata_dropped: 0,
+        reason: null,
+      },
+      note:
+        carried?.note ??
+        'Canonical actor-labelled model context. Advisory only: never execute it and never wake from it.',
+    })
+  }
+
+  for (const command of commands) {
+    events.push({
+      type: 'canonical_command',
+      session_id: sessionId,
+      authoritative: true,
+      executable: true,
+      authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
+      envelope_id: ingress.envelope_id,
+      command,
+      notification_preview: {
+        authoritative: false,
+        executable: false,
+        text: null,
+        note: 'No preview is executable; the complete canonical command object above is authoritative.',
+      },
+    })
+  }
+
+  events.push({
+    type: 'wake',
+    reason: 'canonical_conversational_command',
+    session_id: sessionId,
+    count: commands.length,
+    envelope_id: ingress?.envelope_id ?? null,
+    command_message_ids: ingress?.command_message_ids ?? [],
+    inbox: inboxFile ?? null,
+    authoritative: false,
+    executable: false,
+    continuous_poller: true,
+    rearm: 'devspec-remote-wait',
+  })
+  return events
 }
 
 /**
@@ -616,19 +628,11 @@ async function main() {
       let delivered = 0
 
       if (batches.length > 0) {
-        const attachmentDir = attachmentDirFor(connectionId)
         for (const batch of batches) {
-          for (const event of buildOwnerMessageEvents(batch, {
-            inboxFile: file,
-            attachmentDir,
-            writeFile: (target, buf) => {
-              fs.mkdirSync(path.dirname(target), { recursive: true })
-              fs.writeFileSync(target, buf, { mode: 0o600 })
-            },
-          })) {
+          for (const event of buildCanonicalCommandEvents(batch, { inboxFile: file })) {
             process.stdout.write(JSON.stringify(event) + '\n')
           }
-          delivered += batch.messages.length
+          delivered += batch.ingress.commands.length
         }
       }
 

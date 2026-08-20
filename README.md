@@ -89,13 +89,10 @@ Either way, your prompts and Claude's replies are mirrored into the DevSpec thre
 
 ### Who can talk to it
 
-The collaboration is safe by design:
-
-- **Only you can command it.** DevSpec verifies on its server that each instruction came from you — the person whose token the session uses. That can't be spoofed by anyone simply typing "I'm the owner."
-- **Teammates can join the thread.** They (and DevSpec's own in-app AI) can add context and discuss right alongside you. Claude reads their messages as background, but will never take orders from them — instructions from anyone but you are treated as advisory context only.
-- **Nobody can drive someone else's agent.** Steering a session requires that person's own token.
-
-The result is a shared, watchable session the whole team can weigh in on — while only you hold the wheel.
+The collaboration is safe by design. DevSpec decides command authority and exact
+addressing on the server; room, system, AI and agent messages remain advisory model
+context. The versioned execution policy is published at
+`devspec://product/remote-ingress-contract` rather than duplicated in this plugin.
 
 > This is **not** Claude Code's built-in `/remote-control` for mobile/desktop. DevSpec's remote control is a separate feature and lives under `/devspec:devspec.remote`.
 

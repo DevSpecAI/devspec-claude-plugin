@@ -21,6 +21,7 @@ import {
   resolveDeadline,
   parseOwnerBatches,
   buildOwnerMessageEvents,
+  buildCanonicalCommandEvents,
   describeAttachment,
   materialiseAttachments,
   MAX_INLINE_ATTACHMENT_CHARS,
@@ -36,18 +37,85 @@ import {
 } from './devspec-remote-wait.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
+const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
+
+function canonicalInboxBatch(id = 'm1', body = `command ${id}`) {
+  return {
+    type: 'canonical_commands',
+    authoritative_source: INGRESS_RESOURCE,
+    session_id: 's1',
+    ingress: {
+      envelope_id: `envelope-${id}`,
+      command_message_ids: [id],
+      commands: [{
+        message_id: id,
+        content: { mode: 'full', body, complete: true },
+        attachments: [],
+        requester: { user_id: 'owner' },
+        authority: { kind: 'owner', decision_source: 'server' },
+        addressee: { connection_id: 'connection' },
+        delivery: { turn_id: `turn-${id}`, is_primary: true },
+      }],
+      context: { human_context: [], agent_context: [], ai_context: [], system_context: [] },
+      window: { returned: 1, has_more: false, next_cursor: null },
+    },
+  }
+}
 
 describe('parseOwnerBatches', () => {
-  it('keeps only owner_messages lines with a non-empty messages array', () => {
+  it('keeps only canonical command records from the authoritative ingress resource', () => {
     const lines = [
-      JSON.stringify({ type: 'owner_messages', session_id: 's1', messages: [{ id: 'm1' }] }),
-      JSON.stringify({ type: 'advisory_context', session_id: 's1', messages: [{ id: 'a1' }] }),
-      JSON.stringify({ type: 'owner_messages', session_id: 's2', messages: [] }),
+      JSON.stringify(canonicalInboxBatch()),
+      JSON.stringify({ type: 'owner_messages', session_id: 's1', messages: [{ id: 'legacy' }] }),
+      JSON.stringify({ ...canonicalInboxBatch('bad'), authoritative_source: 'other' }),
+      JSON.stringify({ type: 'canonical_context', ingress: { commands: [{ id: 'advisory' }] } }),
       'not json',
     ]
     const batches = parseOwnerBatches(lines)
     assert.equal(batches.length, 1)
-    assert.equal(batches[0].session_id, 's1')
+    assert.equal(batches[0].ingress.commands[0].message_id, 'm1')
+  })
+})
+
+describe('buildCanonicalCommandEvents', () => {
+  it('preserves an exact large body and makes only the canonical command executable', () => {
+    const body = `begin\n${'x'.repeat(250_000)}\nend`
+    const events = buildCanonicalCommandEvents(canonicalInboxBatch('large', body), {
+      inboxFile: '/tmp/inbox.jsonl',
+    })
+    const command = events.find((event) => event.type === 'canonical_command')
+    assert.equal(command.command.content.body, body)
+    assert.equal(command.authoritative, true)
+    assert.equal(command.executable, true)
+    assert.equal(command.notification_preview.authoritative, false)
+    assert.equal(command.notification_preview.executable, false)
+    assert.equal(events.find((event) => event.type === 'wake').executable, false)
+  })
+
+  it('renders all carried typed context as advisory actor-labelled context', () => {
+    const batch = canonicalInboxBatch()
+    batch.carried_context = {
+      advisory: true,
+      context: {
+        human_context: [{
+          message_id: 'h', order: { sequence: 1 },
+          actor: { kind: 'human', display_name: 'Rae' }, source_type: 'message',
+          relationship: 'within_window', content: 'background only', advisory: true,
+        }],
+        agent_context: [], ai_context: [], system_context: [],
+      },
+      canonical_windows: [{ envelope_id: 'prior', window: { truncated: true, has_more: true } }],
+      client_omission: { dropped_by_bucket: { human_context: 2 }, reason: 'bounded_client_carry' },
+    }
+    const context = buildCanonicalCommandEvents(batch).find(
+      (event) => event.type === 'canonical_advisory_context',
+    )
+    // The pure renderer rejects this deliberately abbreviated test context, so use
+    // the exact typed object to prove event classification and omission disclosure.
+    assert.equal(context.advisory, true)
+    assert.equal(context.executable, false)
+    assert.equal(context.client_omission.dropped_by_bucket.human_context, 2)
+    assert.deepEqual(context.canonical_windows[0], batch.carried_context.canonical_windows[0])
   })
 })
 
@@ -558,14 +626,7 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
   }
 
   function ownerBatch(id) {
-    return (
-      JSON.stringify({
-        type: 'owner_messages',
-        session_id: 's1',
-        messages: [{ id, content: `command ${id}` }],
-        context: { owner_ambient: [], room_context: [] },
-      }) + '\n'
-    )
+    return JSON.stringify(canonicalInboxBatch(id)) + '\n'
   }
 
   it('delivers a second owner command through the SAME arm, without exiting', async () => {
@@ -632,8 +693,8 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
 
       assert.equal(exited, null, 'the arm must still be alive after two deliveries')
       assert.match(err, /deadline=none/, 'an owner-anchored stream must not set itself a deadline')
-      assert.ok(out.includes('"id":"m1"'), 'first command delivered')
-      assert.ok(out.includes('"id":"m2"'), 'second command delivered')
+      assert.ok(out.includes('"message_id":"m1"'), 'first command delivered')
+      assert.ok(out.includes('"message_id":"m2"'), 'second command delivered')
       assert.ok(!out.includes('"id":"a1"'), 'advisory context must not be delivered as a wake')
 
       // The cursor is durable, so a stream that dies re-arms without replaying or skipping.

@@ -385,7 +385,9 @@ export function countUnreadOwnerCommands(connectionId, offset, dir = CONNECTIONS
     if (!line.trim()) continue
     try {
       const obj = JSON.parse(line)
-      if (obj?.type === 'owner_messages' && Array.isArray(obj.messages)) count += obj.messages.length
+      if (obj?.type === 'canonical_commands' && Array.isArray(obj.ingress?.commands)) {
+        count += obj.ingress.commands.length
+      }
     } catch {
       /* skip garbage */
     }

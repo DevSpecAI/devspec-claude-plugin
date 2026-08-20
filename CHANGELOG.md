@@ -2,6 +2,44 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.18.1 - 2026-08-20
+
+### `git add … && git commit` is how an agent actually commits, and it was unreadable
+
+0.18.0 taught the reader the multi-line message shapes, and it still would not have
+caught the three commits that exposed the problem — because every one of them was
+`git add <paths> && git commit -q -F - <<'MSG'`, and the reader gave up at the prefix
+before it ever reached the message. The shell cwd resets between tool calls, so staging
+and committing arrive as ONE command. That is not an edge case; it is the normal shape.
+
+`readablePrefix` now accepts `git add <pathspec…>` alongside `cd <path>`. The bar is a
+property, not a preference: a prefix may be read past only if it is incapable of
+authoring a commit AND incapable of changing which verb runs in the following segment.
+That segment is tokenized independently and must itself begin `git … commit`, so the
+question is only whether the prefix can alter that text. `git add` stages existing
+files and exits, so it cannot — arguably more cleanly than `cd`, which at least changes
+which repository the commit lands in.
+
+This **deliberately reverses two assertions** that previously required `git add -A &&
+git commit -m "x"` to be unreadable ("prefix is not cd", "compound"). The reversal is
+recorded in the test with the reasoning, so it reads as a decision rather than an
+erosion of the fail-open doctrine (item `e6873db2`).
+
+Still refused, and refusing still means allow: `npm test && git commit` (a test command
+can write the very file the commit will include), `make build`, any script, a bare
+`git add` with no pathspec, `git -C <path> add …` (the option could take a value, so
+the verb's position would have to be re-derived), a reversed prefix/verb order, and
+more than one `&&` separator.
+
+Verified by executing rather than by reading the tokenizer: a new test builds the
+stamped `git add src/wanted.ts && git commit -F - <<'MSG'` command, runs it in a
+scratch repo, and asserts three things — the reference lands on the subject line, the
+`Co-Authored-By:` trailer survives, and **only the named pathspec is committed** while
+the unnamed file stays untracked. A stamp that shifted the prefix would quietly commit
+the wrong files, which is worse than not stamping at all.
+
+397 tests pass.
+
 ## 0.18.0 - 2026-08-20
 
 ### The reference gate almost never fired, because every real commit message escaped it

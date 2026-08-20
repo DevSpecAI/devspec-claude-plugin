@@ -227,8 +227,7 @@ describe('reading a commit message only where it is unambiguous', () => {
     for (const command of [
       'cd /tmp/wt; git commit -m "x"',            // ; is not the separator it reads
       'cd /tmp/a && cd /tmp/b && git commit -m "x"', // more than one separator
-      'npm test && git commit -m "x"',            // prefix is not cd
-      'git add -A && git commit -m "x"',          // prefix is not cd
+      'npm test && git commit -m "x"',            // a test command can write anything
       'cd -P /tmp/wt && git commit -m "x"',       // cd with an option
       'cd && git commit -m "x"',                  // cd with no path
       'cd /a /b && git commit -m "x"',            // cd with two words
@@ -237,6 +236,41 @@ describe('reading a commit message only where it is unambiguous', () => {
     ]) {
       assert.equal(simpleGitCommit(command), null, command)
       assert.equal(decision(await bash(command)), null, `${command} must be allowed`)
+    }
+  })
+
+  it('reads past a `git add …` prefix, which is how an agent actually commits', () => {
+    // REVERSED DELIBERATELY (item e6873db2). This used to assert null with the comment
+    // "prefix is not cd". The bar for reading past a prefix is a property, not a
+    // preference: it must be incapable of authoring a commit AND incapable of changing
+    // which verb runs in the following segment. `git add` stages existing files and
+    // exits, so it clears that bar — arguably more cleanly than `cd`, which at least
+    // changes which repository the commit lands in. It matters because the shell cwd
+    // resets between tool calls, so staging and committing arrive as ONE command: all
+    // three commits that exposed this class of hole were `git add … && git commit`.
+    assert.equal(simpleGitCommit('git add -A && git commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('git add . && git commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('git add -u src && git commit -m "hello"').message, 'hello')
+    assert.equal(simpleGitCommit('git add -- "a b.ts" && git commit -m "hello"').message, 'hello')
+    // Composes with the multi-line shapes, which is the combination that matters.
+    assert.equal(
+      heredocGitCommit(`git add -A && git commit -q -F - <<'MSG'\nsubject\n\nbody\nMSG`).message,
+      'subject\n\nbody',
+    )
+  })
+
+  it('still refuses every prefix that could author or redirect the commit', () => {
+    for (const command of [
+      'npm test && git commit -m "x"',              // can write the file being committed
+      'make build && git commit -m "x"',
+      './script.sh && git commit -m "x"',
+      'git add -A; git commit -m "x"',              // ; is not the separator it reads
+      'git add && git commit -m "x"',               // bare add stages nothing
+      'git -C /tmp/wt add . && git commit -m "x"',  // -C could take a value
+      'git commit -m "x" && git add -A',            // prefix/verb order reversed
+      'git add -A && npm test && git commit -m "x"', // more than one separator
+    ]) {
+      assert.equal(simpleGitCommit(command), null, command)
     }
   })
 
@@ -258,7 +292,6 @@ describe('reading a commit message only where it is unambiguous', () => {
       'git commit --squash HEAD -m "x"',
       '/usr/bin/git commit -m "x"',                   // path-qualified
       'g commit -m "x"',                              // alias
-      'git add -A && git commit -m "x"',              // compound
       'git commit -m "x" | tee log',
       'git commit -m "unterminated',
       'git commit -m "back\\slash"',
@@ -979,7 +1012,6 @@ describe('the multi-line message forms, which is where almost every commit lives
       `git commit -m "$(cat <<'MSG'\nx\nMSG\n)$(date)"`,  // a second substitution
       `git commit -m "a" -m "$(cat <<'MSG'\nx\nMSG\n)"`,  // two message parts
       `g commit -F - <<'MSG'\nx\nMSG`,                    // aliased git
-      `git add -A && git commit -F - <<'MSG'\nx\nMSG`,    // prefix is not cd
       `git commit -F msg.txt`,                            // a file, deliberately not read
       `git commit --file=msg.txt`,
     ]) {
@@ -1032,6 +1064,42 @@ describe('the multi-line message forms, which is where almost every commit lives
       assert.match(message, new RegExp(`fix: form ${name} \\[devspec:${ITEM}\\]`))
       assert.match(message, /Co-Authored-By: X <x@y\.z>/)
     }
+    fs.rmSync(scratch, { recursive: true, force: true })
+  })
+
+  it('stamps a `git add <paths> && git commit` without disturbing what gets staged', () => {
+    // The combination that all three of the commits which exposed this actually used.
+    // Two things must hold at once: the reference lands in the message, and the `git
+    // add` pathspec is untouched — a stamp that shifted the prefix would silently
+    // commit the wrong files, which is worse than not stamping at all.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-prefix-'))
+    gitInit(scratch)
+    fs.mkdirSync(path.join(scratch, 'src'))
+    fs.writeFileSync(path.join(scratch, 'src', 'wanted.ts'), 'keep')
+    fs.writeFileSync(path.join(scratch, 'noise.ts'), 'skip')
+    for (const args of [['config', 'user.email', 't@t.t'], ['config', 'user.name', 'T']]) {
+      assert.equal(spawnSync('git', args, { cwd: scratch }).status, 0)
+    }
+
+    const command = `git add src/wanted.ts && git commit -q -F - <<'MSG'\nfix: only the wanted file\n\nbody\nCo-Authored-By: X <x@y.z>\nMSG`
+    const commit = heredocGitCommit(command)
+    assert.ok(commit, 'prefix + heredoc must be readable')
+    const stamped = `${command.slice(0, commit.insertOffset)} [devspec:${ITEM}]${command.slice(commit.insertOffset)}`
+
+    const run = spawnSync('bash', ['-c', stamped], { cwd: scratch, encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr)
+
+    const message = spawnSync('git', ['log', '-1', '--format=%B'], { cwd: scratch, encoding: 'utf8' }).stdout
+    assert.match(message, new RegExp(`fix: only the wanted file \\[devspec:${ITEM}\\]`))
+    assert.match(message, /Co-Authored-By: X <x@y\.z>/)
+
+    const files = spawnSync('git', ['show', '--stat', '--format=', 'HEAD'], { cwd: scratch, encoding: 'utf8' }).stdout
+    assert.match(files, /src\/wanted\.ts/)
+    assert.equal(/noise\.ts/.test(files), false, 'only the named pathspec may be committed')
+
+    const status = spawnSync('git', ['status', '--porcelain'], { cwd: scratch, encoding: 'utf8' }).stdout
+    assert.match(status, /\?\? noise\.ts/, 'the unnamed file stays untracked')
+
     fs.rmSync(scratch, { recursive: true, force: true })
   })
 })

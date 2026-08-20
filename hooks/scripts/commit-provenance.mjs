@@ -322,14 +322,10 @@ export function simpleGitCommit(command) {
    * Both are safe to read past, and for the same reason: neither can author a commit
    * nor change which verb runs. `cd` only moves; `-C` only names a directory and takes
    * exactly one value, so the verb's position stays known. Anything else before the
-   * verb, a second separator, or a first segment that is not exactly `cd <one-path>`
+   * verb, a second separator, or a first segment `readablePrefix` does not recognise
    * still refuses — and refusing still means allow.
    */
-  if (segments.length === 2) {
-    const prefix = segments[0]
-    if (prefix.length !== 2 || prefix[0].value !== 'cd') return null
-    if (prefix[1].value.startsWith('-')) return null
-  }
+  if (segments.length === 2 && !readablePrefix(segments[0])) return null
   const words = segments[segments.length - 1]
 
   if (words.length === 0) return null
@@ -397,6 +393,42 @@ export function simpleGitCommit(command) {
     insertOffset: message.end - 1,
     appendable: quoted,
   }
+}
+
+/**
+ * Which first segments of a `<prefix> && git commit …` may be read past.
+ *
+ * The test is a property, not a vibe: the prefix must be incapable of authoring a
+ * commit AND incapable of changing which verb runs in the following segment. That
+ * segment is tokenized independently and must itself begin `git … commit`, so a
+ * prefix passes only if it cannot alter that text.
+ *
+ * `cd <path>` passes: it only moves. `git add <pathspec…>` passes for the same
+ * reason — it stages already-existing files and exits. It is arguably safer to read
+ * past than `cd`, which at least changes which repository the commit lands in.
+ *
+ * `git add` matters because it is how an agent actually commits. The shell cwd resets
+ * between tool calls, so staging and committing arrive as ONE command; refusing the
+ * prefix meant the message was never even reached. All three commits that exposed
+ * this whole class of hole were `git add … && git commit -F - <<'MSG'` (item
+ * e6873db2, and the 022e487b measurement that found it).
+ *
+ * `npm test && git commit` still refuses, and always should: a test command can do
+ * anything at all, including writing the very file the commit will include. The
+ * property that matters is not "looks harmless".
+ */
+function readablePrefix(prefix) {
+  const head = prefix[0]?.value
+  // `cd <one path>` — exactly two words, and the path is not an option.
+  if (prefix.length === 2 && head === 'cd' && !prefix[1].value.startsWith('-')) return true
+  // `git add <pathspec…>` — at least one pathspec or option, since bare `git add`
+  // stages nothing and errors. Options (`-A`, `-u`, `--`) are included: they change
+  // WHAT is staged, never which verb runs next, which is the property under test.
+  // `git -C <path> add …` is NOT recognised — the option could take a value and the
+  // verb's position would have to be re-derived, so it stays refused (and refusing
+  // means allow).
+  if (prefix.length >= 3 && head === 'git' && prefix[1].value === 'add') return true
+  return false
 }
 
 /** A heredoc delimiter this will read: a plain word, so it cannot hide structure. */

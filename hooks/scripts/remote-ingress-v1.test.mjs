@@ -164,12 +164,31 @@ describe('normalizeRemoteIngressV1', () => {
     assert.deepEqual([result.ok, result.wake, result.reason], [true, false, 'unavailable_attachment'])
   })
 
-  it('matches authoritative UUID/datetime/safe-integer boundaries', () => {
-    assert.equal(
-      normalizeRemoteIngressV1(envelope({ envelope_id: '00000000-0000-0000-0000-000000000000' }), CONNECTION).ok,
-      true,
-      'zod uuid accepts the nil UUID',
-    )
+  it('matches the authoritative canonical UUID boundary', () => {
+    const cases = [
+      ['lowercase nil sentinel', '00000000-0000-0000-0000-000000000000', true],
+      ['lowercase max sentinel', 'ffffffff-ffff-ffff-ffff-ffffffffffff', true],
+      ['lowercase RFC v4 UUID', '123e4567-e89b-42d3-a456-426614174000', true],
+      ['uppercase RFC v4 UUID', '123E4567-E89B-42D3-A456-426614174000', true],
+      ['nil near miss', '00000000-0000-0000-0000-000000000001', false],
+      ['max near miss', 'ffffffff-ffff-ffff-ffff-fffffffffffe', false],
+      ['uppercase max sentinel', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF', false],
+      ['mixed-case max sentinel', 'ffffffff-ffff-ffff-ffff-ffffffffffFf', false],
+      ['invalid RFC version', '123e4567-e89b-92d3-a456-426614174000', false],
+      ['invalid RFC variant', '123e4567-e89b-42d3-7456-426614174000', false],
+      ['missing canonical hyphen', '123e4567e89b-42d3-a456-426614174000', false],
+    ]
+
+    for (const [name, value, expected] of cases) {
+      assert.equal(
+        normalizeRemoteIngressV1(envelope({ envelope_id: value }), CONNECTION).ok,
+        expected,
+        name,
+      )
+    }
+  })
+
+  it('matches authoritative datetime/safe-integer boundaries', () => {
     const invalidDate = command({
       order: { sequence: 1, created_at: '2026-02-29T12:00:00.000Z', message_id: MESSAGE },
     })

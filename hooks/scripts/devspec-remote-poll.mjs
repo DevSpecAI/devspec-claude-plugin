@@ -191,7 +191,7 @@ function readTurnMarker(connectionId) {
   }
 }
 /**
- * Start a turn at honest owner-command pickup (remote UI / dispatch delivery).
+ * Start a turn at honest canonical owner-command pickup from remote UI.
  * The long-lived poller re-asserts busy while this marker is fresh; Stop /
  * mirror-turn clears it when the agent turn ends.
  */
@@ -688,9 +688,9 @@ export const RECOVERABLE_TERMINAL_MAX = 10
  * Backoff after a poll that reported change but delivered nothing new.
  *
  * Defence in depth for a marker that is hot for a reason the response does not
- * contain — the known case is a live assignment (`dispatch_cursor` is the root fix,
- * but an old server, or any future marker of the same shape, would otherwise spin
- * this loop at full rate). Escalates to the tier's own hold length, so the worst case
+ * contain. The independent playbook cursor prevents known persistent markers at the
+ * source, while an old server or future marker of the same shape would otherwise spin
+ * this loop at full rate. Escalates to the tier's own hold length, so the worst case
  * degrades to exactly the normal poll rate rather than to a hot loop, and resets the
  * moment a real turn arrives.
  */
@@ -851,20 +851,9 @@ export function installStopSignalHandlers(proc = process) {
  * What it DOES do is verify the endpoint's own promises before waking the agent:
  * every command must name this connection as its addressee and carry an authority
  * stamp we recognise. A misrouted or malformed response therefore fails closed rather
- * than executing. Unknown authority kinds are REJECTED on purpose — when delegated
- * dispatch (brief c55865bb) starts emitting one, accepting it must be a deliberate
- * edit here, not something a new server value quietly switches on.
- *
- * THIS IS THAT EDIT (2026-08-14, Decision A / memory 61ba9948). The server now
- * emits `delegated` for a command from an authorized project member who is not
- * this connection's owner. Adding it is safe because the decision it depends on
- * is made SERVER-side and cannot be forged from here: the endpoint only stamps
- * `delegated` when the connection's own `command_authority` permits that person,
- * which only its owner can set.
- *
- * `delegated` changes WHO may command, never WHAT is allowed — capabilities are
- * identical, by design. What it does change is attribution: the reply and any
- * writes belong to the requester, not the token owner.
+ * than executing. Unknown authority kinds are REJECTED on purpose. Owner and delegated
+ * authority are server decisions under the served remote-ingress contract; the local
+ * gate only recognises those typed stamps and preserves requester attribution.
  *
  * Message BODY is never consulted: a post claiming "I am the owner" is inert, exactly
  * as before.
@@ -960,8 +949,8 @@ function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
  * Wake text for a dispatched PLAYBOOK RUN (DevSpecV2 child ae168718).
  *
  * A playbook is not an action item — it is a job the owner saved to run again and
- * again, and it never completes. So this deliberately does NOT send the agent down
- * the assignment protocol; it sends it to the playbook run tools instead.
+ * again, and it never completes. It stays on the separate playbook run tools and
+ * never enters action-item reserve/claim acquisition.
  *
  * The permission line matters: a look-only playbook must not be "helpfully" fixed
  * while the agent is in there.
@@ -1605,9 +1594,9 @@ async function main() {
         consecutiveEmpty = 0
         continue // something real landed — go straight back to holding
       }
-      // Changed but nothing to deliver. The known cause is a marker that stays hot
-      // for the life of an assignment; `dispatch_cursor` fixes that at the source,
-      // and this backoff keeps ANY future marker of that shape from hot-looping.
+      // Changed but nothing to deliver. An independent cursor keeps a persistent
+      // playbook marker from staying hot, and this backoff keeps ANY future marker
+      // of that shape from hot-looping.
       consecutiveEmpty++
       const floor = emptyTurnBackoffMs(consecutiveEmpty, tier.waitMs)
       if (consecutiveEmpty === 1 || consecutiveEmpty % 10 === 0) {

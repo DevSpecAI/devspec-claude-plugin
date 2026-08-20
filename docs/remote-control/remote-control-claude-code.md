@@ -10,8 +10,10 @@
 2. `devspec-remote-poll.mjs` holds `poll_connection`, validates v1 at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
 3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints typed advisory context, complete canonical commands, explicit playbooks, or separate non-chat host controls.
 4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
-5. Model acts; when attached, model `post_session_message({ connection_id })` with the direct answer.
+5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
+
+Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named action-item work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `playbook_run` records remain separate and use only their playbook claim/report path.
 
 ## Why wake is streaming here
 
@@ -40,6 +42,7 @@ Design rules for anyone editing it:
 - **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
 - Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered playbook is durable.
 - Remote-ingress policy is authoritative at `devspec://product/remote-ingress-contract`; do not restate mutable versions here.
+- Action-item work acquisition and execution are authoritative at `devspec://product/implementation-contract`; teach only the conversation-requested reserve-then-claim order here.
 
 ### Conditional tiers and bounded reads
 

@@ -2,15 +2,15 @@
 
 Bring your team's DevSpec work into Claude Code — and drive Claude from your browser or phone.
 
-[DevSpec](https://devspec.ai) tracks your team's tasks, bugs, and features — called **action items** — against your git repositories, along with the context, decisions, and history around them. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can pick up that work, do it, and report back — and so you can steer a Claude Code session running on your machine from anywhere.
+[DevSpec](https://devspec.ai) tracks your team's tasks, bugs, and features — called **action items** — against your git repositories, along with the context, decisions, and history around them. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can implement the action-item work you request and report back — and so you can steer a Claude Code session running on your machine from anywhere.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## What you can do with it
 
-- **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread, while only you can actually steer it. → [Remote control](#-drive-a-session-from-devspec-remote-control)
+- **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread; only the owner or a server-authorized delegate can send an exactly addressed command. → [Remote control](#-drive-a-session-from-devspec-remote-control)
 - **Work a task end to end.** Point Claude at an action item and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
-- **Let Claude clear a queue.** Stage a batch of tasks in DevSpec, and any idle connected session of yours picks them up — Claude works through them one by one on its own.
+- **Work an explicit batch in order.** Ask Claude in a conversation to work named action items; it reserves the requested order, then claims and implements them one by one.
 - **Small conveniences.** Create tasks, make tracked commits, and ask DevSpec's docs questions without leaving the terminal.
 
 Everything runs against your own DevSpec account and repositories, using an API token you control.
@@ -75,23 +75,24 @@ This is the feature most people come for. You run a real Claude Code session on 
 
 ### Two ways to connect
 
-**Start a new session** — in Claude Code, from the repo you want Claude to work in:
+**Register available capacity** — in Claude Code, from the repo you want Claude to work in:
 
 ```
 /devspec:devspec.remote
 ```
 
-This creates a new remote session and lists it on DevSpec's Agents page. Open it there and start sending instructions.
+This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped playbook runs may still target the connection through their own validated claim/report path.
 
-**Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent.
+**Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
-Either way, your prompts and Claude's replies are mirrored into the DevSpec thread, so the transcript stays two-sided and you can read it back from anywhere. Waiting for your next instruction is a lightweight background check — it does **not** spend Claude usage while idle. Disconnect this session (others stay connected) with `/devspec:devspec.remote-stop`.
+When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Waiting for your next instruction is a lightweight background check — it does **not** spend Claude usage while idle. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
 
 ### Who can talk to it
 
-The collaboration is safe by design. DevSpec decides command authority and exact
-addressing on the server; room, system, AI and agent messages remain advisory model
-context. The versioned execution policy is published at
+The collaboration is safe by design. DevSpec decides owner/delegated command authority
+and exact addressing on the server; requester provenance is preserved end to end, and
+room, system, AI and agent messages remain advisory model context. Typed host controls
+are not conversation messages. The versioned execution policy is published at
 `devspec://product/remote-ingress-contract` rather than duplicated in this plugin.
 
 > This is **not** Claude Code's built-in `/remote-control` for mobile/desktop. DevSpec's remote control is a separate feature and lives under `/devspec:devspec.remote`.
@@ -109,10 +110,11 @@ what you want in plain language.
 Work on DevSpec action item 4f2a
 ```
 
-Claude reserves it so no other agent takes it mid-run, claims it, creates an
-isolated git worktree, implements the change, runs your project's configured
-tests, and commits. Then it records what it did — files touched, tests run, a
-summary — back on the item, ready for a human to review.
+Because the conversation explicitly asked for action-item work, Claude reserves it
+so no other agent takes it mid-run, then claims it. The served
+`devspec://product/implementation-contract` supplies the current lifecycle rules for
+isolation, implementation, verification, commits and reporting; the plugin does not
+keep a second copy of those rules.
 
 Ask it to "also connect to the Agents page" and it will open a remote-control
 channel while it works, so you can watch and steer from your browser.
@@ -123,10 +125,10 @@ channel while it works, so you can watch and steer from your browser.
 Work these DevSpec items in order: 4f2a, 9c1b, 2e7d
 ```
 
-One agent holds all three up front — that is what stops a second agent picking
-up the third while the first is still in progress — and works them one at a
-time. DevSpec's web app has a copy button that writes this line for you from a
-multi-select.
+Claude reserves all three in the requested order — that is what stops a second
+agent picking up the third while the first is still in progress — then claims and
+works each reserved item as it reaches it. DevSpec's web app has a copy button that
+writes this line for you from a multi-select.
 
 ### Everything else
 

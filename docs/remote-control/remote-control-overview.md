@@ -8,17 +8,23 @@
 
 A **connection** is a first-class DevSpec agent identity for one local coding-agent conversation. It can be:
 
-- **Sessionless** — available on the Agents page; receives dispatches / assignments without a chat room.
-- **Attached** to a DevSpec session — optional shared transcript + room context.
+- **Sessionless** — available on the Agents page without a chat transcript. This does not assign it action-item work.
+- **Attached** to a DevSpec session — optional canonical conversation + shared transcript and room context.
 
-A **session is optional**. Never invent a session because a cwd or another agent recently stopped. Bond on the local conversation / thread id only.
+A **session is optional**. Never invent a session because a cwd or another agent recently stopped. Bond on the local conversation / thread id only. Explicit owner-scoped playbook runs remain a separately typed, exactly addressed channel; they are not action-item assignments.
 
 ## Shared DevSpec contract (all hosts)
 
-Remote-ingress wire shape, authority, wake, context, ordering, delivery, attachment
-and bounded-window policy is authoritative at
+Remote-ingress wire shape, server-decided owner/delegated exact-target authority,
+immutable requester provenance, typed controls, wake, context, ordering, delivery,
+attachment and bounded-window policy is authoritative at
 **`devspec://product/remote-ingress-contract`**. Operational docs point there rather
 than copying version-sensitive rules.
+
+Action-item acquisition and execution are governed by the served
+**`devspec://product/implementation-contract`**. Nothing routes action-item work to an
+available connection: only when a canonical conversation asks for named item work does
+the agent reserve the requested order, then claim each reserved item as it reaches it.
 
 The host-specific invariant is architectural: negotiate canonical ingress at
 `poll_connection`, validate it at the network boundary, preserve its complete durable
@@ -36,24 +42,26 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 
 ## Message journey (mental model)
 
-1. Owner sends to a specific connection from DevSpec (web/phone).
-2. Server stamps an owner command for that `connection_id`.
+1. The owner or a server-authorized delegate sends to a specific connection from DevSpec (web/phone).
+2. Server stamps the exact-target canonical command and preserves its requester provenance.
 3. Host plugin receives it via `poll_connection`.
 4. Host delivers it to the model (wake **or** inject — family-specific).
-5. Model works on the machine.
-6. Reply returns to the DevSpec session (model post **or** bridge/plugin mirror — family-specific).
+5. Model works on the machine. If the command asks for action-item work, it reserves the named items and then claims them in order under the served implementation contract.
+6. Reply returns to the DevSpec session (model post **or** bridge/plugin mirror — family-specific). Action-item progress is never a substitute for this conversational answer.
 
 ## What not to break
 
 - Do not reintroduce Stop-hook **full-turn** mirroring as the primary answer path.
 - Do not copy wake/auth/state files across plugin repos — plugins are independent; **no file crosses a repo boundary**. There is no sync list, no `owns` tier, no canonical plugin, and no sync tooling: it was deleted on 2026-08-03 because porting one host's fix outward kept breaking hosts that already worked. Duplicate by hand, in the affected repo. Reading another plugin as a reference is fine.
 - Do not treat advisory room traffic as instructions.
+- Do not turn connection availability or a playbook run into action-item work.
 - Do not bond on `SHELL_SESSION_ID` / cwd — conversation/thread id only.
 - Do not assume OpenCode-style inject exists on Claude/Cursor/Grok/Antigravity.
 
 ## Canonical pointers
 
 - Canonical remote ingress: `devspec://product/remote-ingress-contract`
+- Action-item implementation: `devspec://product/implementation-contract`
 - Delivery contract: `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md`
 - Activity / pickup lease: `docs/REMOTE-CONTROL-ACTIVITY-CONFORMANCE.md`
 - Plugin independence: each host owns its scripts; share the MCP contract and these primers, not a cross-repo sync pipeline

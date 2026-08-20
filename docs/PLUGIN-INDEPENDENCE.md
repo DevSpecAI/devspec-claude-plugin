@@ -24,15 +24,21 @@ the same tug-of-war wearing a different hat.
 Everything shared lives **on the DevSpec side**, as a contract:
 
 - the **MCP tool contract** — `register_connection`, `poll_connection`,
-  `post_session_message`, `claim_playbook_run`, the assignment protocol
+  `post_session_message`, the separate `claim_playbook_run` path, and
+  conversation-requested `reserve_work_items` then `claim_work_item`
 - the **remote-ingress contract** — `devspec://product/remote-ingress-contract` —
-  plus each host's durable inbox and byte-offset cursor implementation
+  including server-only owner/delegated exact-target authority, immutable requester
+  provenance and typed controls, plus each host's durable inbox and byte-offset cursor
+  implementation
+- the **implementation contract** — `devspec://product/implementation-contract` —
+  which governs action-item acquisition and execution; connection availability never
+  assigns action-item work
 - the **delivery contract** — the agent posts answers; Stop does **not** full-mirror
   assistant text (monorepo `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md`, ADR `b98a39a9`).
   Nothing here may re-introduce dual-writer full-turn Stop mirroring.
 - the **behaviour a connection must exhibit** — appear on the Agents page, accept
-  dispatch, wake on an owner command, never act on advisory context, and report
-  honestly when it cannot hear
+  exactly addressed canonical commands and separately typed owner-scoped playbook runs,
+  never act on advisory context, and report honestly when it cannot hear
 
 A plugin satisfies that contract however its host makes sense. The wake mechanism, the
 turn-lifecycle hooks, the token location and conversation-id resolution are properties of

@@ -5,7 +5,8 @@
  * Architecture is intentionally unchanged: held poll → durable per-connection JSONL
  * inbox → wait stream → Claude Code Monitor. Polling negotiates ingress_version:1
  * and validates the canonical envelope before it can create a wake record. Legacy
- * top-level arrays are never command/context inputs after that negotiation.
+ * conversational/context arrays are inert; top-level playbook_run dispatches retain
+ * their explicit independent channel and cursor.
  *
  * Typed advisory context is carried forward with the existing bounded newest-first
  * behavior, while every raw canonical envelope and its window metadata remains in
@@ -132,8 +133,15 @@ export function countUnconsumedCommands(connectionId, inboxOffset, dir = CONNECT
     if (!line.trim()) continue
     try {
       const obj = JSON.parse(line)
-      if (obj?.type === 'canonical_commands' && Array.isArray(obj.ingress?.commands)) {
-        count += obj.ingress.commands.length
+      if (obj?.type === 'canonical_commands') {
+        const ids = Array.isArray(obj.execute_message_ids)
+          ? obj.execute_message_ids
+          : Array.isArray(obj.ingress?.command_message_ids)
+            ? obj.ingress.command_message_ids
+            : []
+        count += ids.length
+      } else if (obj?.type === 'canonical_control' || obj?.type === 'playbook_run') {
+        count++
       }
     } catch {
       /* skip garbage */
@@ -345,29 +353,181 @@ function appendInbox(
  * itself is kept intact so the inbox, rather than a notification preview, remains the
  * authority for full command bytes and order/delivery/requester/window metadata.
  */
-function appendCanonicalInbox(
-  connectionId,
-  ingress,
-  { sessionId = null, carriedContext = null, executable = false } = {},
-) {
-  if (!connectionId || !ingress) return false
+const UUID_PATTERN = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
+
+/** Only the server's explicit playbook_run dispatch shape is executable here. */
+export function validatePlaybookRunDispatch(dispatch, connectionId) {
+  if (!dispatch || typeof dispatch !== 'object' || Array.isArray(dispatch)) {
+    return { ok: false, error: 'dispatch is not an object' }
+  }
+  const required = [
+    'id', 'kind', 'run_id', 'playbook_id', 'playbook_name', 'instruction', 'permission',
+    'requester', 'original_target_connection_id', 'delivery_connection_id', 'queued_at', 'state',
+  ]
+  if (Object.keys(dispatch).length !== required.length || required.some((key) => !Object.hasOwn(dispatch, key))) {
+    return { ok: false, error: 'dispatch does not exactly match playbook_run' }
+  }
+  const valid =
+    dispatch.kind === 'playbook_run' &&
+    typeof dispatch.id === 'string' && UUID_PATTERN.test(dispatch.id) &&
+    dispatch.run_id === dispatch.id &&
+    typeof dispatch.playbook_id === 'string' && UUID_PATTERN.test(dispatch.playbook_id) &&
+    typeof dispatch.playbook_name === 'string' && dispatch.playbook_name.length > 0 &&
+    typeof dispatch.instruction === 'string' &&
+    ['look_only', 'can_commit', 'can_push'].includes(dispatch.permission) &&
+    dispatch.requester && typeof dispatch.requester === 'object' && !Array.isArray(dispatch.requester) &&
+    Object.keys(dispatch.requester).length === 1 &&
+    typeof dispatch.requester.user_id === 'string' && UUID_PATTERN.test(dispatch.requester.user_id) &&
+    (dispatch.original_target_connection_id === null ||
+      (typeof dispatch.original_target_connection_id === 'string' &&
+        UUID_PATTERN.test(dispatch.original_target_connection_id))) &&
+    dispatch.delivery_connection_id === connectionId &&
+    typeof dispatch.queued_at === 'string' && !Number.isNaN(Date.parse(dispatch.queued_at)) &&
+    ['queued', 'waiting_for_agent'].includes(dispatch.state)
+  return valid
+    ? { ok: true, dispatch }
+    : { ok: false, error: 'invalid or misaddressed playbook_run dispatch' }
+}
+
+/** Rebuild crash-safe delivery identity from the durable inbox, never state alone. */
+export function scanPersistedInboxRecords(text) {
+  const index = {
+    envelopeIds: new Set(),
+    commandMessageIds: new Set(),
+    controlIds: new Set(),
+    dispatchIds: new Set(),
+  }
+  for (const line of String(text || '').split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const record = JSON.parse(line)
+      if (typeof record?.ingress?.envelope_id === 'string') {
+        index.envelopeIds.add(record.ingress.envelope_id)
+      }
+      if (record?.type === 'canonical_commands') {
+        const ids = Array.isArray(record.execute_message_ids)
+          ? record.execute_message_ids
+          : Array.isArray(record.ingress?.commands)
+            ? record.ingress.commands.map((command) => command?.message_id)
+            : []
+        for (const id of ids) if (typeof id === 'string') index.commandMessageIds.add(id)
+      }
+      if (record?.type === 'canonical_control' && typeof record.ingress?.control?.id === 'string') {
+        index.controlIds.add(record.ingress.control.id)
+      }
+      if (record?.type === 'playbook_run' && typeof record.dispatch?.id === 'string') {
+        index.dispatchIds.add(record.dispatch.id)
+      }
+    } catch {
+      /* incomplete/garbage lines carry no durable identity */
+    }
+  }
+  return index
+}
+
+function readInboxDeliveryIndex(connectionId) {
+  try {
+    return scanPersistedInboxRecords(fs.readFileSync(inboxPathForConnection(connectionId), 'utf8'))
+  } catch {
+    return scanPersistedInboxRecords('')
+  }
+}
+
+function appendDurableRecord(connectionId, record) {
   try {
     fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    const line = JSON.stringify({
-      type: executable ? 'canonical_commands' : 'canonical_context',
+    fs.appendFileSync(inboxPathForConnection(connectionId), JSON.stringify(record) + '\n', { mode: 0o600 })
+    return true
+  } catch (e) {
+    process.stderr.write(`devspec-remote-poll: inbox write failed: ${e.message}\n`)
+    return false
+  }
+}
+
+export function appendCanonicalInbox(
+  connectionId,
+  ingress,
+  index,
+  {
+    sessionId = null,
+    carriedContext = null,
+    channel = 'context',
+    writeRecord = appendDurableRecord,
+  } = {},
+) {
+  if (!connectionId || !ingress || !index) return { ok: false, appended: false }
+  if (index.envelopeIds.has(ingress.envelope_id)) {
+    return { ok: true, appended: false, duplicateEnvelope: true }
+  }
+
+  const executeMessageIds = channel === 'command'
+    ? ingress.commands
+        .map((command) => command.message_id)
+        .filter((id) => !index.commandMessageIds.has(id))
+    : []
+  if (channel === 'command' && executeMessageIds.length === 0) {
+    index.envelopeIds.add(ingress.envelope_id)
+    return { ok: true, appended: false }
+  }
+  if (channel === 'control' && index.controlIds.has(ingress.control.id)) {
+    index.envelopeIds.add(ingress.envelope_id)
+    return { ok: true, appended: false }
+  }
+
+  const type = channel === 'command'
+    ? 'canonical_commands'
+    : channel === 'control'
+      ? 'canonical_control'
+      : 'canonical_context'
+  const record = {
+    type,
+    connection_id: connectionId,
+    session_id: sessionId,
+    received_at: new Date().toISOString(),
+    authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
+    ingress,
+    ...(channel === 'command' ? { execute_message_ids: executeMessageIds } : {}),
+    ...(carriedContext ? { carried_context: carriedContext } : {}),
+  }
+  if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
+  index.envelopeIds.add(ingress.envelope_id)
+  for (const id of executeMessageIds) index.commandMessageIds.add(id)
+  if (channel === 'control') index.controlIds.add(ingress.control.id)
+  return { ok: true, appended: true, executeMessageIds }
+}
+
+export function appendPlaybookDispatches(
+  connectionId,
+  dispatches,
+  dispatchCursor,
+  index,
+  sessionId,
+  writeRecord = appendDurableRecord,
+) {
+  const validated = []
+  for (const offered of Array.isArray(dispatches) ? dispatches : []) {
+    const parsed = validatePlaybookRunDispatch(offered, connectionId)
+    if (!parsed.ok) return { ok: false, appended: 0, error: parsed.error }
+    validated.push(parsed.dispatch)
+  }
+  let appended = 0
+  for (const dispatch of validated) {
+    if (index.dispatchIds.has(dispatch.id)) continue
+    const record = {
+      type: 'playbook_run',
       connection_id: connectionId,
       session_id: sessionId,
       received_at: new Date().toISOString(),
-      authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
-      ingress,
-      ...(carriedContext ? { carried_context: carriedContext } : {}),
-    })
-    fs.appendFileSync(inboxPathForConnection(connectionId), line + '\n', { mode: 0o600 })
-    return true
-  } catch (e) {
-    process.stderr.write(`devspec-remote-poll: canonical inbox write failed: ${e.message}\n`)
-    return false
+      dispatch_cursor: dispatchCursor,
+      dispatch,
+    }
+    if (!writeRecord(connectionId, record)) {
+      return { ok: false, appended, error: 'playbook inbox persistence failed' }
+    }
+    index.dispatchIds.add(dispatch.id)
+    appended++
   }
+  return { ok: true, appended }
 }
 
 /** Disable THIS connection only — never other remotes on the machine. */
@@ -406,6 +566,34 @@ function sleep(ms) {
  */
 export function cadenceFor({ attached = false, turnActive = false } = {}) {
   return attached || turnActive ? ATTENDED_CADENCE : IDLE_CADENCE
+}
+
+/** Keep the live after-cursor and older catch-up continuation as separate clocks. */
+export function pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed } = {}) {
+  return {
+    ...(liveCursorV2 ? { cursor_v2: liveCursorV2 } : legacyCursor ? { cursor: legacyCursor } : {}),
+    ...(catchUpCursor ? { catch_up_cursor: catchUpCursor } : {}),
+    ...(needsSeed || catchUpCursor ? { catch_up: true } : {}),
+  }
+}
+
+/** Advance cursors only after the corresponding canonical envelope is durable. */
+export function advancePollCursors(
+  current,
+  response,
+  ingress,
+  { drainingContinuation = false } = {},
+) {
+  const liveCursorV2 =
+    !drainingContinuation && typeof response?.cursor_v2 === 'string' && response.cursor_v2
+      ? response.cursor_v2
+      : current.liveCursorV2
+  const legacyCursor =
+    typeof response?.cursor === 'string' && response.cursor ? response.cursor : current.legacyCursor
+  const catchUpCursor = ingress?.window?.has_more === true && ingress.window.next_cursor
+    ? ingress.window.next_cursor
+    : null
+  return { liveCursorV2, legacyCursor, catchUpCursor }
 }
 
 /**
@@ -938,16 +1126,13 @@ async function main() {
   }
   installStopSignalHandlers()
 
-  let cursor = args.cursor || state?.cursor_after_message_id || null
-  // Second, independent cursor for the DISPATCH clock. Live assignments stay live
-  // while the agent works them, so the server's dispatch marker cannot be compared
-  // against the message cursor without pinning the hold permanently open — echoing
-  // this watermark back is what lets a held request actually hold (item 27058153).
+  let legacyCursor = args.cursor || state?.cursor_after_message_id || null
+  let liveCursorV2 = state?.cursor_v2 || null
+  let catchUpCursor = state?.catch_up_cursor || null
+  // Independent playbook clock. It advances only after every offered playbook is
+  // already durable (new append or crash-recovered dedupe).
   let dispatchCursor = state?.dispatch_cursor || null
-  let ownerUserId = args.ownerUserId || state?.owner_user_id || null
-  const deliveredDispatchIds = new Set(
-    Array.isArray(state?.delivered_dispatch_ids) ? state.delivered_dispatch_ids : [],
-  )
+  const persistedInbox = readInboxDeliveryIndex(connectionId)
   let lastTier = null
   let lastBusySent = null
   // Canonical typed advisory context carried forward since the last command. Each
@@ -967,6 +1152,7 @@ async function main() {
   }
   let carryWindows = []
   let carryWindowsDropped = 0
+  let carryContextMessageIds = new Set()
 
   /** Persist a state patch without clobbering concurrent fields. Best-effort. */
   function patchState(patch) {
@@ -1003,7 +1189,7 @@ async function main() {
         agent_name: agentName,
         ingress_version: 1,
         wait_ms: waitMs,
-        ...(cursor ? { cursor } : {}),
+        ...pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed: catchUp }),
         ...(dispatchCursor ? { dispatch_cursor: dispatchCursor } : {}),
         ...(busy !== null && busy !== undefined ? { busy } : {}),
         ...(checkTier ? { check_tier: checkTier } : {}),
@@ -1024,11 +1210,18 @@ async function main() {
   /** Merge every typed advisory bucket into the bounded carry buffer. */
   function carryCanonicalContext(ingress) {
     for (const bucket of ['human_context', 'agent_context', 'ai_context', 'system_context']) {
-      const trimmed = trimAdvisoryCarry([...carryContext[bucket], ...ingress.context[bucket]])
+      const fresh = ingress.context[bucket].filter((entry) => {
+        if (carryContextMessageIds.has(entry.message_id)) return false
+        carryContextMessageIds.add(entry.message_id)
+        return true
+      })
+      const trimmed = trimAdvisoryCarry([...carryContext[bucket], ...fresh])
       carryContext[bucket] = trimmed.kept
       carryDropped[bucket] += trimmed.dropped
     }
-    carryWindows.push({ envelope_id: ingress.envelope_id, window: ingress.window })
+    if (!carryWindows.some((entry) => entry.envelope_id === ingress.envelope_id)) {
+      carryWindows.push({ envelope_id: ingress.envelope_id, window: ingress.window })
+    }
     // Window metadata is diagnostic context. Raw envelopes remain in the durable
     // inbox, so bounding this carry list cannot erase the canonical record.
     if (carryWindows.length > ADVISORY_CARRY_MAX_COUNT) {
@@ -1037,8 +1230,26 @@ async function main() {
     }
   }
 
-  /** Take and clear typed advisory carry for the next one-command turn. */
-  function takeCanonicalContext() {
+  function resetCanonicalCarry() {
+    carryContext = {
+      human_context: [],
+      agent_context: [],
+      ai_context: [],
+      system_context: [],
+    }
+    carryDropped = {
+      human_context: 0,
+      agent_context: 0,
+      ai_context: 0,
+      system_context: 0,
+    }
+    carryWindows = []
+    carryWindowsDropped = 0
+    carryContextMessageIds = new Set()
+  }
+
+  /** Snapshot typed advisory carry; clear only after the command append succeeds. */
+  function takeCanonicalContext({ clear = true } = {}) {
     const hasEntries = Object.values(carryContext).some((entries) => entries.length > 0)
     const hasOmission =
       Object.values(carryDropped).some((count) => count > 0) || carryWindowsDropped > 0
@@ -1056,105 +1267,145 @@ async function main() {
         'Actor-labelled canonical context for the command below. Every entry is advisory; ' +
         'none is a command and none may independently authorize work or a reply.',
     }
-    carryContext = {
-      human_context: [],
-      agent_context: [],
-      ai_context: [],
-      system_context: [],
-    }
-    carryDropped = {
-      human_context: 0,
-      agent_context: 0,
-      ai_context: 0,
-      system_context: 0,
-    }
-    carryWindows = []
-    carryWindowsDropped = 0
+    if (clear) resetCanonicalCarry()
     return context
   }
 
-  /**
-   * Consume only the negotiated canonical ingress. Legacy top-level command,
-   * context, dispatch and preview fields are deliberately never consulted.
-   */
-  function consumePollResult(res) {
+  function persistCanonicalCursorState(res, ingress, drainingContinuation) {
+    const next = advancePollCursors(
+      { liveCursorV2, legacyCursor, catchUpCursor },
+      res,
+      ingress,
+      { drainingContinuation },
+    )
+    liveCursorV2 = next.liveCursorV2
+    legacyCursor = next.legacyCursor
+    catchUpCursor = next.catchUpCursor
+    patchState({
+      cursor_v2: liveCursorV2,
+      cursor_after_message_id: legacyCursor,
+      catch_up_cursor: catchUpCursor,
+      canonical_window: ingress.window,
+      canonical_envelope_id: ingress.envelope_id,
+    })
+  }
+
+  /** Canonical transcript/control channel. Legacy conversational arrays stay inert. */
+  function consumeCanonicalIngress(res) {
     const normalized = normalizeRemoteIngressV1(res?.ingress, connectionId)
     if (!normalized.ok) {
       process.stderr.write(
         `devspec-remote-poll: rejected canonical ingress (${normalized.error}); ` +
           `see ${REMOTE_INGRESS_RESOURCE_URI}\n`,
       )
-      return false
+      return { ok: false, delivered: false }
     }
 
     const ingress = normalized.envelope
-    const nextCursor = typeof res.cursor === 'string' && res.cursor ? res.cursor : cursor
-    const nextDispatchCursor =
-      typeof res.dispatch_cursor === 'string' ? res.dispatch_cursor : dispatchCursor
+    const drainingContinuation = Boolean(catchUpCursor || (needsSeed && liveCursorV2))
     carryCanonicalContext(ingress)
 
-    if (!normalized.wake) {
-      // Advisory, control, replay/reseed, idle, and attachment-unavailable turns are
-      // durable context only. They cannot create a canonical_commands inbox line.
-      if (!appendCanonicalInbox(connectionId, ingress, { sessionId, executable: false })) return false
-      cursor = nextCursor
-      dispatchCursor = nextDispatchCursor
-      if (normalized.reason === 'unavailable_attachment') {
-        process.stderr.write(
-          'devspec-remote-poll: canonical command rejected before wake: unavailable attachment\n',
-        )
-      }
-      patchState({
-        cursor_after_message_id: cursor,
-        dispatch_cursor: dispatchCursor,
-        canonical_window: ingress.window,
-        canonical_envelope_id: ingress.envelope_id,
-      })
-      return true
+    let channel = 'context'
+    let carriedContext = null
+    if (normalized.wake) {
+      channel = 'command'
+      carriedContext = takeCanonicalContext({ clear: false })
+    } else if (ingress.wake.kind === 'control' && ingress.wake.active && ingress.delivery_state === 'live') {
+      channel = 'control'
     }
 
-    const carriedContext = takeCanonicalContext()
-    // The durable write is the handoff boundary. If it fails, there is no wake and
-    // therefore no chance of executing a notification preview without the full body.
-    if (!appendCanonicalInbox(connectionId, ingress, {
+    const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,
       carriedContext,
-      executable: true,
-    })) return false
-    cursor = nextCursor
-    dispatchCursor = nextDispatchCursor
+      channel,
+    })
+    if (!persisted.ok) return { ok: false, delivered: false }
+    if (channel === 'command' && (persisted.appended || persisted.duplicateEnvelope)) {
+      resetCanonicalCarry()
+    }
+    persistCanonicalCursorState(res, ingress, drainingContinuation)
 
-    process.stdout.write(
-      JSON.stringify({
+    if (normalized.reason === 'unavailable_attachment') {
+      process.stderr.write(
+        'devspec-remote-poll: canonical command rejected before wake: unavailable attachment\n',
+      )
+    }
+    if (!persisted.appended) return { ok: true, delivered: false }
+
+    if (channel === 'command') {
+      process.stdout.write(JSON.stringify({
         type: 'canonical_ingress_persisted',
         authoritative: false,
         executable: false,
         preview: null,
         envelope_id: ingress.envelope_id,
-        command_message_ids: ingress.command_message_ids,
+        command_message_ids: persisted.executeMessageIds,
         note: 'Poller stdout is notification only; execute only the canonical inbox record.',
-      }) + '\n',
-    )
-    process.stdout.write(
-      JSON.stringify({
+      }) + '\n')
+      process.stdout.write(JSON.stringify({
         type: 'wake',
         reason: 'canonical_conversational_command',
-        count: ingress.commands.length,
+        count: persisted.executeMessageIds.length,
         inbox: inboxPathForConnection(connectionId),
         continuous: true,
         authoritative: false,
         executable: false,
-      }) + '\n',
+      }) + '\n')
+      writeTurnMarker(connectionId)
+      patchState({ last_owner_wake_at: new Date().toISOString() })
+    } else if (channel === 'control') {
+      // Claude has no safe script-level implementation for these lifecycle verbs.
+      // Surface a typed host-control event through Monitor, but never turn it into
+      // chat and never send control_ack merely because it was observed/persisted.
+      process.stdout.write(JSON.stringify({
+        type: 'wake',
+        reason: 'canonical_host_control',
+        control_id: ingress.control.id,
+        inbox: inboxPathForConnection(connectionId),
+        authoritative: false,
+        executable: false,
+      }) + '\n')
+    }
+    return { ok: true, delivered: true }
+  }
+
+  /** Independent explicit playbook channel; action-item assignments are rejected. */
+  function consumePlaybookDispatches(res) {
+    if (!Array.isArray(res?.dispatches)) {
+      process.stderr.write('devspec-remote-poll: rejected malformed dispatches channel\n')
+      return { ok: false, delivered: false }
+    }
+    const nextDispatchCursor =
+      typeof res.dispatch_cursor === 'string' ? res.dispatch_cursor : dispatchCursor
+    const persisted = appendPlaybookDispatches(
+      connectionId,
+      res.dispatches,
+      nextDispatchCursor,
+      persistedInbox,
+      sessionId,
     )
-    writeTurnMarker(connectionId)
+    if (!persisted.ok) {
+      process.stderr.write(`devspec-remote-poll: rejected playbook dispatch (${persisted.error})\n`)
+      return { ok: false, delivered: false }
+    }
+    // Only now is the complete response dispatch set durable/deduped.
+    dispatchCursor = nextDispatchCursor
     patchState({
-      cursor_after_message_id: cursor,
       dispatch_cursor: dispatchCursor,
-      canonical_window: ingress.window,
-      canonical_envelope_id: ingress.envelope_id,
-      last_owner_wake_at: new Date().toISOString(),
+      delivered_dispatch_ids: [...persistedInbox.dispatchIds].slice(-200),
     })
-    return true
+    if (persisted.appended > 0) {
+      process.stdout.write(JSON.stringify({
+        type: 'wake',
+        reason: 'playbook_run',
+        count: persisted.appended,
+        inbox: inboxPathForConnection(connectionId),
+        authoritative: false,
+        executable: false,
+      }) + '\n')
+      writeTurnMarker(connectionId)
+    }
+    return { ok: true, delivered: persisted.appended > 0 }
   }
 
   process.stderr.write(
@@ -1330,33 +1581,27 @@ async function main() {
         `devspec-remote-poll: server attachment ${sessionId || '(none)'} → ${adopt.sessionId || '(none)'}\n`,
       )
       sessionId = adopt.sessionId
-      cursor = null // fresh room → ask the server for a canonical reseed window
+      legacyCursor = null
+      liveCursorV2 = null
+      catchUpCursor = null
       needsSeed = true
-      carryContext = {
-        human_context: [],
-        agent_context: [],
-        ai_context: [],
-        system_context: [],
-      }
-      carryDropped = {
-        human_context: 0,
-        agent_context: 0,
-        ai_context: 0,
-        system_context: 0,
-      }
-      carryWindows = []
-      carryWindowsDropped = 0
-      patchState({ session_id: sessionId, cursor_after_message_id: null })
+      resetCanonicalCarry()
+      patchState({
+        session_id: sessionId,
+        cursor_after_message_id: null,
+        cursor_v2: null,
+        catch_up_cursor: null,
+      })
       continue
     }
 
     if (res.changed === true) {
-      // After ingress_version:1 negotiation, the canonical envelope is the sole
-      // command/context authority. Its delivery_state and wake fields decide whether
-      // a reseed/replay is inert; legacy top-level arrays and flags are ignored.
-      const delivered = consumePollResult(res)
-      needsSeed = false
-      if (delivered) {
+      // Conversational commands/context come only from canonical ingress. Explicit
+      // playbook runs remain an independent top-level channel with their own clock.
+      const playbooks = consumePlaybookDispatches(res)
+      const canonical = consumeCanonicalIngress(res)
+      if (canonical.ok) needsSeed = false
+      if (playbooks.delivered || canonical.delivered) {
         consecutiveEmpty = 0
         continue // something real landed — go straight back to holding
       }
@@ -1374,7 +1619,14 @@ async function main() {
       continue
     }
 
-    // changed:false — the hold ran its course. No sleep: holding IS the wait.
+    // changed:false — upgrade a legacy cursor from the server echo, but never let an
+    // older-page drain replace the live after-cursor. No inbox persistence is needed
+    // because no records were delivered.
+    if (!catchUpCursor && typeof res.cursor_v2 === 'string' && res.cursor_v2) {
+      liveCursorV2 = res.cursor_v2
+    }
+    if (typeof res.cursor === 'string' && res.cursor) legacyCursor = res.cursor
+    patchState({ cursor_v2: liveCursorV2, cursor_after_message_id: legacyCursor })
     needsSeed = false
     consecutiveEmpty = 0
   }

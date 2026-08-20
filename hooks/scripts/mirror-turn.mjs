@@ -385,8 +385,15 @@ export function countUnreadOwnerCommands(connectionId, offset, dir = CONNECTIONS
     if (!line.trim()) continue
     try {
       const obj = JSON.parse(line)
-      if (obj?.type === 'canonical_commands' && Array.isArray(obj.ingress?.commands)) {
-        count += obj.ingress.commands.length
+      if (obj?.type === 'canonical_commands') {
+        const ids = Array.isArray(obj.execute_message_ids)
+          ? obj.execute_message_ids
+          : Array.isArray(obj.ingress?.command_message_ids)
+            ? obj.ingress.command_message_ids
+            : []
+        count += ids.length
+      } else if (obj?.type === 'canonical_control' || obj?.type === 'playbook_run') {
+        count++
       }
     } catch {
       /* skip garbage */

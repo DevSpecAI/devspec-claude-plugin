@@ -14,7 +14,7 @@ export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-19.2'
 export const REMOTE_INGRESS_RESOURCE_URI = 'devspec://product/remote-ingress-contract'
 
 const UUID = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
-const OFFSET_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+const OFFSET_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/
 const WAKE_KINDS = new Set([
   'conversational_command',
   'control',
@@ -69,7 +69,25 @@ function uuid(value) {
 }
 
 function datetime(value) {
-  return typeof value === 'string' && OFFSET_DATETIME.test(value) && !Number.isNaN(Date.parse(value))
+  if (typeof value !== 'string') return false
+  const match = OFFSET_DATETIME.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = Number(match[6])
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8])
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9])
+  if (
+    month < 1 || month > 12 ||
+    hour > 23 || minute > 59 || second > 59 ||
+    offsetHour > 23 || offsetMinute > 59
+  ) return false
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return day >= 1 && day <= days[month - 1]
 }
 
 function nullable(value, predicate) {
@@ -244,7 +262,7 @@ function contextEntry(value) {
   )
 }
 
-function typedContext(value) {
+export function isRemoteIngressTypedContext(value) {
   if (!exactKeys(value, CONTEXT_BUCKETS.map(([name]) => name))) return false
   return CONTEXT_BUCKETS.every(([name, kind]) =>
     Array.isArray(value[name]) &&
@@ -253,7 +271,7 @@ function typedContext(value) {
   )
 }
 
-function boundedMetadata(value) {
+export function isRemoteIngressBoundedMetadata(value) {
   if (
     !exactKeys(value, [
       'policy_version',
@@ -358,7 +376,7 @@ function envelopeV1(value) {
   if (!Array.isArray(value.commands) || !value.commands.every(command)) return 'invalid canonical command'
   if ((value.wake.kind === 'control') !== (value.control !== null)) return 'control payload/wake mismatch'
   if (value.control !== null && !control(value.control)) return 'invalid control payload'
-  if (!typedContext(value.context) || !boundedMetadata(value.window)) return 'invalid typed context or window'
+  if (!isRemoteIngressTypedContext(value.context) || !isRemoteIngressBoundedMetadata(value.window)) return 'invalid typed context or window'
 
   const listedIds = new Set(value.command_message_ids)
   const commandIds = new Set(value.commands.map((entry) => entry.message_id))
@@ -429,7 +447,7 @@ export function normalizeRemoteIngressV1(input, connectionId) {
 
 /** Actor-labelled, explicitly advisory context for a model-facing event. */
 export function renderAdvisoryContext(context) {
-  if (!typedContext(context)) return []
+  if (!isRemoteIngressTypedContext(context)) return []
   return CONTEXT_BUCKETS.flatMap(([bucket]) =>
     context[bucket].map((entry) => ({
       bucket,

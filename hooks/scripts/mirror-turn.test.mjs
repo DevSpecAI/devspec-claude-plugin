@@ -30,7 +30,12 @@ import {
 const DEAD_PID = 2147483646
 
 function canonicalCommands(messages) {
-  return { type: 'canonical_commands', ingress: { commands: messages } }
+  const ids = messages.map((message) => message.id)
+  return {
+    type: 'canonical_commands',
+    execute_message_ids: ids,
+    ingress: { command_message_ids: ids, commands: messages },
+  }
 }
 
 function withConnDir(fn) {

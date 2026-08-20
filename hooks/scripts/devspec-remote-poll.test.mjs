@@ -27,6 +27,12 @@ import {
   countUnconsumedCommands,
   materialiseMessageAttachments,
   materialiseContextAttachments,
+  pollCursorArguments,
+  advancePollCursors,
+  validatePlaybookRunDispatch,
+  scanPersistedInboxRecords,
+  appendCanonicalInbox,
+  appendPlaybookDispatches,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
@@ -168,6 +174,125 @@ describe('cadenceFor (hold length, not interval)', () => {
  * room and the command that needs it arrive in SEPARATE responses — this buffer is
  * what makes "the room arrives with the command" true rather than nominally true.
  */
+describe('independent poll cursors', () => {
+  it('prefers cursor_v2 and drains catch-up continuation on its own clock', () => {
+    assert.deepEqual(
+      pollCursorArguments({
+        liveCursorV2: 'live-after',
+        legacyCursor: 'legacy-id',
+        catchUpCursor: 'older-before',
+        needsSeed: false,
+      }),
+      { cursor_v2: 'live-after', catch_up_cursor: 'older-before', catch_up: true },
+    )
+  })
+
+  it('never moves the live cursor backward while draining an older page', () => {
+    const next = advancePollCursors(
+      { liveCursorV2: 'live-after', legacyCursor: 'legacy-old', catchUpCursor: 'older-before' },
+      { cursor_v2: 'older-response', cursor: 'legacy-new' },
+      { window: { has_more: true, next_cursor: 'even-older' } },
+      { drainingContinuation: true },
+    )
+    assert.deepEqual(next, {
+      liveCursorV2: 'live-after',
+      legacyCursor: 'legacy-new',
+      catchUpCursor: 'even-older',
+    })
+  })
+
+  it('advances live v2 after durable live delivery and clears a finished continuation', () => {
+    assert.deepEqual(
+      advancePollCursors(
+        { liveCursorV2: 'old', legacyCursor: null, catchUpCursor: 'last-page' },
+        { cursor_v2: 'new', cursor: 'legacy-new' },
+        { window: { has_more: false, next_cursor: null } },
+      ),
+      { liveCursorV2: 'new', legacyCursor: 'legacy-new', catchUpCursor: null },
+    )
+  })
+})
+
+describe('explicit playbook dispatch channel', () => {
+  const connectionId = '10000000-0000-4000-8000-000000000001'
+  const playbook = {
+    id: '20000000-0000-4000-8000-000000000002',
+    kind: 'playbook_run',
+    run_id: '20000000-0000-4000-8000-000000000002',
+    playbook_id: '30000000-0000-4000-8000-000000000003',
+    playbook_name: 'Review',
+    instruction: 'Review the change',
+    permission: 'look_only',
+    requester: { user_id: '40000000-0000-4000-8000-000000000004' },
+    original_target_connection_id: null,
+    delivery_connection_id: connectionId,
+    queued_at: '2026-08-20T12:00:00.000Z',
+    state: 'queued',
+  }
+
+  it('accepts only an exactly addressed playbook_run', () => {
+    assert.equal(validatePlaybookRunDispatch(playbook, connectionId).ok, true)
+    assert.equal(validatePlaybookRunDispatch({ ...playbook, kind: 'assignment' }, connectionId).ok, false)
+    assert.equal(
+      validatePlaybookRunDispatch({ ...playbook, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }, connectionId).ok,
+      false,
+    )
+  })
+
+  it('dedupes a command message after append-before-state-update with a new envelope id', () => {
+    const lines = []
+    let index = scanPersistedInboxRecords('')
+    const first = appendCanonicalInbox(
+      connectionId,
+      { envelope_id: 'env-1', commands: [{ message_id: 'msg-1' }] },
+      index,
+      {
+        channel: 'command',
+        writeRecord: (_connection, record) => { lines.push(JSON.stringify(record)); return true },
+      },
+    )
+    assert.equal(first.appended, true)
+    // Simulate process death before state patch: reconstruct only from JSONL.
+    index = scanPersistedInboxRecords(lines.join('\n') + '\n')
+    const second = appendCanonicalInbox(
+      connectionId,
+      { envelope_id: 'env-2', commands: [{ message_id: 'msg-1' }] },
+      index,
+      {
+        channel: 'command',
+        writeRecord: () => { throw new Error('duplicate must not append') },
+      },
+    )
+    assert.deepEqual(second, { ok: true, appended: false })
+  })
+
+  it('does not make a failed playbook append eligible for dispatch_cursor advancement', () => {
+    const result = appendPlaybookDispatches(
+      connectionId,
+      [playbook],
+      'dispatch-next',
+      scanPersistedInboxRecords(''),
+      null,
+      () => false,
+    )
+    assert.equal(result.ok, false)
+    assert.equal(result.appended, 0)
+  })
+
+  it('rebuilds envelope/message/control/playbook dedupe after an append-before-state crash', () => {
+    const text = [
+      { type: 'canonical_commands', ingress: { envelope_id: 'env-1' }, execute_message_ids: ['msg-1'] },
+      { type: 'canonical_control', ingress: { envelope_id: 'env-2', control: { id: 'control-1' } } },
+      { type: 'playbook_run', dispatch: playbook },
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n'
+    const index = scanPersistedInboxRecords(text)
+    assert.deepEqual([...index.envelopeIds], ['env-1', 'env-2'])
+    assert.deepEqual([...index.commandMessageIds], ['msg-1'])
+    assert.deepEqual([...index.controlIds], ['control-1'])
+    assert.deepEqual([...index.dispatchIds], [playbook.id])
+  })
+})
+
 describe('trimAdvisoryCarry', () => {
   const msg = (id, len = 10) => ({ id, content: 'x'.repeat(len) })
 
@@ -604,7 +729,7 @@ describe('countUnconsumedCommands', () => {
 
   it('counts canonical commands past the wait cursor', () => {
     withInbox(
-      [{ type: 'canonical_commands', ingress: { commands: [{ id: 'a' }, { id: 'b' }] } }],
+      [{ type: 'canonical_commands', execute_message_ids: ['a', 'b'], ingress: { commands: [{ id: 'a' }, { id: 'b' }] } }],
       ({ dir, conn }) => {
         assert.equal(countUnconsumedCommands(conn, 0, dir), 2)
       },
@@ -615,7 +740,7 @@ describe('countUnconsumedCommands', () => {
     withInbox(
       [
         { type: 'canonical_context', ingress: { commands: [], context: { human_context: [{ id: 'x' }] } } },
-        { type: 'canonical_commands', ingress: { commands: [{ id: 'a' }] } },
+        { type: 'canonical_commands', execute_message_ids: ['a'], ingress: { commands: [{ id: 'a' }] } },
       ],
       ({ dir, conn }) => {
         assert.equal(countUnconsumedCommands(conn, 0, dir), 1)
@@ -623,15 +748,25 @@ describe('countUnconsumedCommands', () => {
     )
   })
 
+  it('counts typed controls and explicit playbook runs as wake backlog', () => {
+    withInbox(
+      [
+        { type: 'canonical_control', ingress: { control: { id: 'c' } } },
+        { type: 'playbook_run', dispatch: { id: 'p' } },
+      ],
+      ({ dir, conn }) => assert.equal(countUnconsumedCommands(conn, 0, dir), 2),
+    )
+  })
+
   it('is 0 when the cursor is at the end (healthy steady state)', () => {
-    withInbox([{ type: 'canonical_commands', ingress: { commands: [{ id: 'a' }] } }], ({ dir, conn }) => {
+    withInbox([{ type: 'canonical_commands', execute_message_ids: ['a'], ingress: { commands: [{ id: 'a' }] } }], ({ dir, conn }) => {
       const size = fs.statSync(path.join(dir, `${conn}.inbox.jsonl`)).size
       assert.equal(countUnconsumedCommands(conn, size, dir), 0)
     })
   })
 
   it('treats an unknown cursor as all-read rather than inventing a backlog', () => {
-    withInbox([{ type: 'canonical_commands', ingress: { commands: [{ id: 'a' }] } }], ({ dir, conn }) => {
+    withInbox([{ type: 'canonical_commands', execute_message_ids: ['a'], ingress: { commands: [{ id: 'a' }] } }], ({ dir, conn }) => {
       assert.equal(countUnconsumedCommands(conn, undefined, dir), 0)
     })
   })

@@ -60,7 +60,7 @@ node ".../devspec-remote-wait.mjs" --connection-id <uuid> --owner-pid <pid> --st
 
 **Not** `Bash` with `run_in_background`, and never a timeout. A background task wakes you by *exiting*, which ties the listener to the turn; this host reaps background tasks at turn end, so the agent re-armed once per turn for ever (item `be0a929a`). `Monitor` wakes you by printing a line and `persistent: true` scopes it to the session — one arm serves the whole session.
 
-Canonical ingress then arrives as events: typed `canonical_advisory_context`, complete `canonical_command` objects, then a non-executable `wake` summary. Act only on the complete canonical command and carry on — the stream is still watching. There is nothing to re-arm between commands.
+The stream emits actor-labelled `canonical_advisory_context`, complete `canonical_command` objects, explicit `playbook_run` dispatches, typed `canonical_control` host events, and non-executable `wake` summaries. Conversational work comes only from complete canonical commands; a playbook event follows its explicit claim/run protocol. Claude Code cannot safely execute lifecycle controls from this script layer, so its control event is `supported:false`, never chat, and never acknowledged as executed. The stream keeps watching; there is nothing to re-arm between events.
 
 **When the stream ends,** the Monitor surfaces an exit code:
 
@@ -93,10 +93,12 @@ The live authority, wake, context, ordering, delivery and attachment policy is t
 versioned product resource **`devspec://product/remote-ingress-contract`**. Do not
 reconstruct that mutable policy from this command file.
 
-The Monitor emits complete `canonical_command` objects from the durable inbox. Act
-only on those objects. `canonical_advisory_context`, `wake`, poller notifications and
-all `notification_preview` fields are explicitly non-executable. Canonical attachment
-metadata includes a stable `resource_id`; keep that reference with the command.
+The Monitor emits revalidated complete `canonical_command` objects from the durable
+inbox. Act conversationally only on those objects. The top-level dispatch channel is
+reserved exclusively for explicit `playbook_run` events; it never carries action-item
+assignments. `canonical_advisory_context`, `wake`, poller notifications and all
+`notification_preview` fields are non-executable. Canonical attachment metadata
+includes a stable `resource_id`; keep that reference with the command.
 
 ---
 

@@ -20,8 +20,12 @@ import {
   parseArgs,
   resolveDeadline,
   parseOwnerBatches,
+  parseInboxBatches,
   buildOwnerMessageEvents,
   buildCanonicalCommandEvents,
+  buildCanonicalControlEvents,
+  buildPlaybookRunEvents,
+  writeEventSequence,
   describeAttachment,
   materialiseAttachments,
   MAX_INLINE_ATTACHMENT_CHARS,
@@ -38,26 +42,66 @@ import {
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
+const CONNECTION = '10000000-0000-4000-8000-000000000001'
+const OWNER = '20000000-0000-4000-8000-000000000002'
+const PROVENANCE = '40000000-0000-4000-8000-000000000004'
+const TURN = '50000000-0000-4000-8000-000000000005'
 
-function canonicalInboxBatch(id = 'm1', body = `command ${id}`) {
+function uuidFor(label, prefix) {
+  let hash = 0
+  for (const char of String(label)) hash = (hash * 31 + char.codePointAt(0)) >>> 0
+  return `${prefix}0000000-0000-4000-8000-${hash.toString(16).padStart(12, '0')}`
+}
+
+function canonicalInboxBatch(label = 'm1', body = `command ${label}`, connectionId = CONNECTION) {
+  const id = uuidFor(label, '3')
+  const envelopeId = uuidFor(label, '6')
+  const order = { sequence: 1, created_at: '2026-08-20T12:00:00.000Z', message_id: id }
+  const addressee = {
+    connection_id: connectionId,
+    agent_name: 'Claude Code',
+    codename: 'Careful Moth',
+    label: 'Claude Code / Careful Moth',
+  }
   return {
     type: 'canonical_commands',
+    connection_id: connectionId,
     authoritative_source: INGRESS_RESOURCE,
     session_id: 's1',
+    execute_message_ids: [id],
     ingress: {
-      envelope_id: `envelope-${id}`,
+      kind: 'devspec.remote_ingress',
+      schema_version: 1,
+      contract_version: '1.1.0',
+      policy_version: '2026-08-19.2',
+      envelope_id: envelopeId,
+      connection: addressee,
+      wake: { kind: 'conversational_command', active: true, reason_id: 'command' },
+      delivery_state: 'live',
       command_message_ids: [id],
       commands: [{
         message_id: id,
+        order,
         content: { mode: 'full', body, complete: true },
         attachments: [],
-        requester: { user_id: 'owner' },
-        authority: { kind: 'owner', decision_source: 'server' },
-        addressee: { connection_id: 'connection' },
-        delivery: { turn_id: `turn-${id}`, is_primary: true },
+        requester: { user_id: OWNER, display_name: 'Owner' },
+        authority: {
+          kind: 'owner', mode: 'owner', requested_by_user_id: OWNER,
+          connection_owner_user_id: OWNER, decision_source: 'server',
+        },
+        addressee,
+        delivery: {
+          provenance_ref: PROVENANCE, turn_id: TURN,
+          primary_provenance_ref: PROVENANCE, is_primary: true,
+        },
       }],
+      control: null,
       context: { human_context: [], agent_context: [], ai_context: [], system_context: [] },
-      window: { returned: 1, has_more: false, next_cursor: null },
+      window: {
+        policy_version: '2026-08-19.2', returned: 1, total_known: 1,
+        source_window: { start: order, end: order }, truncated: false, has_more: false,
+        next_cursor: null, fetch_id: null, omission_reason: null,
+      },
     },
   }
 }
@@ -71,9 +115,110 @@ describe('parseOwnerBatches', () => {
       JSON.stringify({ type: 'canonical_context', ingress: { commands: [{ id: 'advisory' }] } }),
       'not json',
     ]
-    const batches = parseOwnerBatches(lines)
+    const batches = parseOwnerBatches(lines, CONNECTION)
     assert.equal(batches.length, 1)
-    assert.equal(batches[0].ingress.commands[0].message_id, 'm1')
+    assert.equal(batches[0].ingress.commands[0].content.body, 'command m1')
+  })
+})
+
+function canonicalControlBatch(connectionId = CONNECTION) {
+  const batch = canonicalInboxBatch('control', 'unused', connectionId)
+  batch.type = 'canonical_control'
+  delete batch.execute_message_ids
+  batch.ingress.wake = { kind: 'control', active: true, reason_id: 'owner-control' }
+  batch.ingress.command_message_ids = []
+  batch.ingress.commands = []
+  batch.ingress.control = {
+    id: '80000000-0000-4000-8000-000000000008',
+    verb: 'compact',
+    issued_at: '2026-08-20T12:00:00.000Z',
+    issued_by_user_id: OWNER,
+  }
+  batch.ingress.window = {
+    policy_version: '2026-08-19.2', returned: 0, total_known: 0,
+    source_window: { start: null, end: null }, truncated: false, has_more: false,
+    next_cursor: null, fetch_id: null, omission_reason: null,
+  }
+  return batch
+}
+
+function playbookBatch(connectionId = CONNECTION) {
+  const id = '90000000-0000-4000-8000-000000000009'
+  return {
+    type: 'playbook_run',
+    connection_id: connectionId,
+    session_id: null,
+    dispatch: {
+      id,
+      kind: 'playbook_run',
+      run_id: id,
+      playbook_id: '91000000-0000-4000-8000-000000000009',
+      playbook_name: 'Audit',
+      instruction: 'Audit the ingress path',
+      permission: 'look_only',
+      requester: { user_id: OWNER },
+      original_target_connection_id: null,
+      delivery_connection_id: connectionId,
+      queued_at: '2026-08-20T12:00:00.000Z',
+      state: 'queued',
+    },
+  }
+}
+
+describe('wait-boundary revalidation and independent channels', () => {
+  it('rejects a tampered canonical inbox command even with the authoritative marker', () => {
+    const tampered = canonicalInboxBatch()
+    tampered.ingress.commands[0].content.complete = false
+    assert.deepEqual(parseInboxBatches([JSON.stringify(tampered)], CONNECTION), [])
+  })
+
+  it('drops malformed carried projection and falls back to the revalidated envelope context', () => {
+    const batch = canonicalInboxBatch()
+    batch.carried_context = { context: { human_context: [{ content: 'inject' }] } }
+    const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+    assert.equal(record.carried_context, null)
+    const context = buildCanonicalCommandEvents(record).find(
+      (event) => event.type === 'canonical_advisory_context',
+    )
+    assert.deepEqual(context.typed_context, batch.ingress.context)
+  })
+
+  it('accepts a typed control separately and never acknowledges unsupported execution', () => {
+    const records = parseInboxBatches([JSON.stringify(canonicalControlBatch())], CONNECTION)
+    assert.equal(records.length, 1)
+    const events = buildCanonicalControlEvents(records[0], { inboxFile: '/tmp/inbox' })
+    const control = events.find((event) => event.type === 'canonical_control')
+    assert.equal(control.chat, false)
+    assert.equal(control.supported, false)
+    assert.equal(control.executed, false)
+    assert.equal(control.acknowledge, false)
+    assert.equal(events.some((event) => event.type === 'canonical_command'), false)
+  })
+
+  it('accepts explicit playbook runs but rejects assignment-shaped dispatches', () => {
+    const playbook = playbookBatch()
+    const assignment = { ...playbook, dispatch: { ...playbook.dispatch, kind: 'assignment' } }
+    const records = parseInboxBatches(
+      [JSON.stringify(playbook), JSON.stringify(assignment)],
+      CONNECTION,
+    )
+    assert.equal(records.length, 1)
+    const events = buildPlaybookRunEvents(records[0])
+    assert.equal(events[0].type, 'playbook_run')
+    assert.equal(events[0].executable, true)
+    assert.match(events[0].content, /claim_playbook_run/)
+  })
+
+  it('does not complete a record sequence or permit offset advancement after a write failure', async () => {
+    const written = []
+    await assert.rejects(
+      writeEventSequence([{ n: 1 }, { n: 2 }, { n: 3 }], async (line) => {
+        written.push(line)
+        if (written.length === 2) throw new Error('stdout closed')
+      }),
+      /stdout closed/,
+    )
+    assert.equal(written.length, 2)
   })
 })
 
@@ -625,8 +770,8 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
     throw new Error(`timed out waiting for ${label}`)
   }
 
-  function ownerBatch(id) {
-    return JSON.stringify(canonicalInboxBatch(id)) + '\n'
+  function ownerBatch(id, connectionId) {
+    return JSON.stringify(canonicalInboxBatch(id, `command ${id}`, connectionId)) + '\n'
   }
 
   it('delivers a second owner command through the SAME arm, without exiting', async () => {
@@ -677,7 +822,7 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
         label: 'the pidfile that proves a listener is armed',
       })
 
-      fs.appendFileSync(inbox, ownerBatch('m1'))
+      fs.appendFileSync(inbox, ownerBatch('m1', conn))
       await until(() => wakes() === 1, { label: 'the first wake' })
       assert.equal(exited, null, 'a stream must NOT exit when it delivers a wake')
 
@@ -688,13 +833,13 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
       )
 
       // The assertion the whole item turns on: a SECOND command, same process.
-      fs.appendFileSync(inbox, ownerBatch('m2'))
+      fs.appendFileSync(inbox, ownerBatch('m2', conn))
       await until(() => wakes() === 2, { label: 'the second wake through the same arm' })
 
       assert.equal(exited, null, 'the arm must still be alive after two deliveries')
       assert.match(err, /deadline=none/, 'an owner-anchored stream must not set itself a deadline')
-      assert.ok(out.includes('"message_id":"m1"'), 'first command delivered')
-      assert.ok(out.includes('"message_id":"m2"'), 'second command delivered')
+      assert.ok(out.includes('"body":"command m1"'), 'first command delivered')
+      assert.ok(out.includes('"body":"command m2"'), 'second command delivered')
       assert.ok(!out.includes('"id":"a1"'), 'advisory context must not be delivered as a wake')
 
       // The cursor is durable, so a stream that dies re-arms without replaying or skipping.

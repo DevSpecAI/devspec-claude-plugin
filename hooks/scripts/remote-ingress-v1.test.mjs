@@ -164,6 +164,22 @@ describe('normalizeRemoteIngressV1', () => {
     assert.deepEqual([result.ok, result.wake, result.reason], [true, false, 'unavailable_attachment'])
   })
 
+  it('matches authoritative UUID/datetime/safe-integer boundaries', () => {
+    assert.equal(
+      normalizeRemoteIngressV1(envelope({ envelope_id: '00000000-0000-0000-0000-000000000000' }), CONNECTION).ok,
+      true,
+      'zod uuid accepts the nil UUID',
+    )
+    const invalidDate = command({
+      order: { sequence: 1, created_at: '2026-02-29T12:00:00.000Z', message_id: MESSAGE },
+    })
+    assert.equal(normalizeRemoteIngressV1(envelope({ commands: [invalidDate] }), CONNECTION).ok, false)
+    const unsafeOrder = command({
+      order: { sequence: Number.MAX_SAFE_INTEGER + 1, created_at: '2026-08-19T12:00:00.000Z', message_id: MESSAGE },
+    })
+    assert.equal(normalizeRemoteIngressV1(envelope({ commands: [unsafeOrder] }), CONNECTION).ok, false)
+  })
+
   it('fails closed on missing, malformed, extra-field, unknown-version, and wrong-target ingress', () => {
     assert.equal(normalizeRemoteIngressV1(undefined, CONNECTION).ok, false)
     assert.equal(normalizeRemoteIngressV1({ kind: 'devspec.remote_ingress' }, CONNECTION).ok, false)

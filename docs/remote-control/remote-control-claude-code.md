@@ -7,8 +7,8 @@
 ## How a message reaches Claude
 
 1. DevSpec emits negotiated canonical ingress for this connection.
-2. `devspec-remote-poll.mjs` holds `poll_connection`, validates v1 at the network boundary, and writes the complete envelope to the connection inbox.
-3. `devspec-remote-wait.mjs --stream` watches the inbox and prints typed advisory context plus complete canonical command events.
+2. `devspec-remote-poll.mjs` holds `poll_connection`, validates v1 at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
+3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints typed advisory context, complete canonical commands, explicit playbooks, or separate non-chat host controls.
 4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
 5. Model acts; when attached, model `post_session_message({ connection_id })` with the direct answer.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
@@ -38,6 +38,7 @@ Design rules for anyone editing it:
 - **Raw JSON-RPC, not host MCP tools.** Claude Code negotiates MCP capabilities **once per session**, so a server that starts advertising resources is invisible to every already-running session. The script layer never negotiates, so it can always reach the server even when the host cannot. Keep connect on `mcp-call.mjs` for that reason, not merely for tidiness.
 - **One writer.** `writeConnectionState` is shared with `remote-control-state.mjs write`. Do not grow a second state-writing path.
 - **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
+- Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered playbook is durable.
 - Remote-ingress policy is authoritative at `devspec://product/remote-ingress-contract`; do not restate mutable versions here.
 
 ### Conditional tiers and bounded reads

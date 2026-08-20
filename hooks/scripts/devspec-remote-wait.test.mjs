@@ -121,6 +121,63 @@ describe('parseOwnerBatches', () => {
   })
 })
 
+function carriedContext(count, size, { uncovered = false } = {}) {
+  const bucketNames = ['human_context', 'agent_context', 'ai_context', 'system_context']
+  const kinds = ['human', 'agent', 'ai', 'system']
+  const context = Object.fromEntries(bucketNames.map((bucket) => [bucket, []]))
+  const entries = []
+  for (let index = 0; index < count; index++) {
+    const sequence = index + 1
+    const kindIndex = index % bucketNames.length
+    const messageId = uuidFor(`carry-${sequence}`, '7')
+    const entry = {
+      message_id: messageId,
+      order: {
+        sequence,
+        created_at: '2026-08-20T11:00:00.000Z',
+        message_id: messageId,
+      },
+      actor: {
+        kind: kinds[kindIndex],
+        user_id: kinds[kindIndex] === 'human' ? OWNER : null,
+        display_name: `${kinds[kindIndex]} ${sequence}`,
+        agent_tool: kinds[kindIndex] === 'agent' ? 'Claude Code' : null,
+        model: kinds[kindIndex] === 'ai' ? 'claude' : null,
+      },
+      source_type: 'session_message',
+      relationship: 'before_window',
+      content: 'x'.repeat(size),
+      advisory: true,
+    }
+    context[bucketNames[kindIndex]].push(entry)
+    entries.push(entry)
+  }
+  const windowPoint = uncovered && entries.length > 0
+    ? { ...entries[0].order, sequence: entries.at(-1).order.sequence + 100 }
+    : null
+  const start = entries.length > 0 ? (windowPoint ?? entries[0].order) : null
+  const end = entries.length > 0 ? (windowPoint ?? entries.at(-1).order) : null
+  return {
+    advisory: true,
+    context,
+    canonical_windows: entries.length > 0 ? [{
+      envelope_id: '70000000-0000-4000-8000-000000000099',
+      window: {
+        policy_version: '2026-08-19.2', returned: entries.length, total_known: entries.length,
+        source_window: { start, end }, truncated: false, has_more: false,
+        next_cursor: null, fetch_id: null, omission_reason: null,
+      },
+    }] : [],
+    client_omission: {
+      dropped_by_bucket: {
+        human_context: 0, agent_context: 0, ai_context: 0, system_context: 0,
+      },
+      window_metadata_dropped: 0,
+      reason: null,
+    },
+  }
+}
+
 function canonicalControlBatch(connectionId = CONNECTION) {
   const batch = canonicalInboxBatch('control', 'unused', connectionId)
   batch.type = 'canonical_control'
@@ -181,6 +238,87 @@ describe('wait-boundary revalidation and independent channels', () => {
       (event) => event.type === 'canonical_advisory_context',
     )
     assert.deepEqual(context.typed_context, batch.ingress.context)
+  })
+
+  it('accepts the exact combined mixed-bucket carry boundary', () => {
+    const batch = canonicalInboxBatch('combined-boundary')
+    batch.carried_context = carriedContext(20, 600)
+    const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+    assert.ok(record.carried_context)
+    const entries = Object.values(record.carried_context.context).flat()
+    assert.equal(entries.length, 20)
+    assert.equal(entries.reduce((sum, entry) => sum + entry.content.length, 0), 12_000)
+    assert.equal(record.carried_context.canonical_windows.length, 1)
+  })
+
+  it('dequeues exact final bounds and omission counts without rewriting them', () => {
+    const batch = canonicalInboxBatch('final-carry')
+    batch.carried_context = carriedContext(20, 600)
+    batch.carried_context.client_omission = {
+      dropped_by_bucket: {
+        human_context: 6, agent_context: 5, ai_context: 5, system_context: 5,
+      },
+      window_metadata_dropped: 21,
+      reason: 'bounded_client_carry',
+    }
+    const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+    const event = buildCanonicalCommandEvents(record).find(
+      (entry) => entry.type === 'canonical_advisory_context',
+    )
+    const entries = Object.values(event.typed_context).flat()
+    assert.equal(entries.length, 20)
+    assert.equal(entries.reduce((sum, entry) => sum + entry.content.length, 0), 12_000)
+    assert.deepEqual(event.client_omission, batch.carried_context.client_omission)
+    assert.equal(event.canonical_windows.length, 1)
+  })
+
+  it('accepts the heterogeneous 5k/8k/5k newest-prefix projection', () => {
+    const batch = canonicalInboxBatch('heterogeneous-prefix')
+    const carried = carriedContext(3, 1)
+    const newest = carried.context.ai_context[0]
+    newest.content = 'x'.repeat(5_000)
+    carried.context.human_context = []
+    carried.context.agent_context = []
+    carried.canonical_windows[0].window.returned = 1
+    carried.canonical_windows[0].window.total_known = 1
+    carried.canonical_windows[0].window.source_window = {
+      start: newest.order,
+      end: newest.order,
+    }
+    carried.client_omission = {
+      dropped_by_bucket: {
+        human_context: 1, agent_context: 1, ai_context: 0, system_context: 0,
+      },
+      window_metadata_dropped: 2,
+      reason: 'bounded_client_carry',
+    }
+    batch.carried_context = carried
+
+    const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+    assert.ok(record.carried_context)
+    const event = buildCanonicalCommandEvents(record).find(
+      (entry) => entry.type === 'canonical_advisory_context',
+    )
+    assert.deepEqual(Object.values(event.typed_context).flat().map((entry) => entry.message_id),
+      [newest.message_id])
+    assert.equal(event.typed_context.ai_context[0].content.length, 5_000)
+    assert.deepEqual(event.client_omission, carried.client_omission)
+  })
+
+  it('drops carry above global row/character bounds, including one oversized first row', () => {
+    for (const carried of [carriedContext(21, 1), carriedContext(5, 3_000), carriedContext(1, 12_001)]) {
+      const batch = canonicalInboxBatch(`invalid-carry-${carried.context.human_context.length}`)
+      batch.carried_context = carried
+      const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+      assert.equal(record.carried_context, null)
+    }
+  })
+
+  it('drops a bounded carry projection when any retained row lacks a disclosed source window', () => {
+    const batch = canonicalInboxBatch('uncovered-carry')
+    batch.carried_context = carriedContext(4, 10, { uncovered: true })
+    const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+    assert.equal(record.carried_context, null)
   })
 
   it('accepts a typed control separately and never acknowledges unsupported execution', () => {

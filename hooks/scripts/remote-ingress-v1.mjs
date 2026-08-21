@@ -9,7 +9,8 @@
  */
 
 export const REMOTE_INGRESS_SCHEMA_VERSION = 1
-export const REMOTE_INGRESS_CONTRACT_VERSION = '1.1.0'
+export const REMOTE_INGRESS_CONTRACT_VERSION = '1.1.1'
+const SUPPORTED_REMOTE_INGRESS_CONTRACT_VERSIONS = new Set(['1.1.0', REMOTE_INGRESS_CONTRACT_VERSION])
 export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-19.2'
 export const REMOTE_INGRESS_RESOURCE_URI = 'devspec://product/remote-ingress-contract'
 
@@ -352,7 +353,7 @@ function envelopeV1(value) {
   ])) return 'ingress must contain exactly the canonical v1 fields'
   if (value.kind !== 'devspec.remote_ingress') return 'unknown ingress kind'
   if (value.schema_version !== REMOTE_INGRESS_SCHEMA_VERSION) return 'unsupported ingress schema_version'
-  if (value.contract_version !== REMOTE_INGRESS_CONTRACT_VERSION) return 'unsupported ingress contract_version'
+  if (!SUPPORTED_REMOTE_INGRESS_CONTRACT_VERSIONS.has(value.contract_version)) return 'unsupported ingress contract_version'
   if (value.policy_version !== REMOTE_INGRESS_POLICY_VERSION) return 'unsupported ingress policy_version'
   if (!uuid(value.envelope_id) || !addressee(value.connection)) return 'invalid envelope identity or connection'
   if (
@@ -403,15 +404,19 @@ function envelopeV1(value) {
     return 'canonical window count/range mismatch'
   }
   if (value.commands.length > 0) {
-    const primary = value.commands.filter((entry) => entry.delivery.is_primary)
     const turnIds = new Set(value.commands.map((entry) => entry.delivery.turn_id))
     const primaryRefs = new Set(value.commands.map((entry) => entry.delivery.primary_provenance_ref))
+    const provenanceRefs = value.commands.map((entry) => entry.delivery.provenance_ref)
+    const sharedPrimaryRef = value.commands[0].delivery.primary_provenance_ref
+    const primaryFlagsMatch = value.commands.every((entry) =>
+      entry.delivery.is_primary === (entry.delivery.provenance_ref === sharedPrimaryRef)
+    )
     if (
-      primary.length !== 1 ||
       turnIds.size !== 1 ||
       primaryRefs.size !== 1 ||
-      primary[0].delivery.provenance_ref !== primary[0].delivery.primary_provenance_ref
-    ) return 'command turn does not have one immutable primary'
+      new Set(provenanceRefs).size !== provenanceRefs.length ||
+      !primaryFlagsMatch
+    ) return 'command delta does not preserve one immutable turn primary'
   }
   return null
 }

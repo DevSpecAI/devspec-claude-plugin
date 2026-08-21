@@ -204,6 +204,8 @@ describe('normalizeRemoteIngressV1', () => {
     assert.equal(normalizeRemoteIngressV1({ kind: 'devspec.remote_ingress' }, CONNECTION).ok, false)
     assert.equal(normalizeRemoteIngressV1({ ...envelope(), preview: 'run me' }, CONNECTION).ok, false)
     assert.equal(normalizeRemoteIngressV1({ ...envelope(), schema_version: 2 }, CONNECTION).ok, false)
+    assert.equal(normalizeRemoteIngressV1({ ...envelope(), contract_version: '1.1.0' }, CONNECTION).ok, true)
+    assert.equal(normalizeRemoteIngressV1({ ...envelope(), contract_version: '1.1.2' }, CONNECTION).ok, false)
     assert.equal(
       normalizeRemoteIngressV1(envelope(), '90000000-0000-4000-8000-000000000009').ok,
       false,
@@ -271,6 +273,61 @@ describe('normalizeRemoteIngressV1', () => {
     assert.equal(result.wake, true)
     assert.deepEqual(result.commands.map((entry) => entry.message_id), [MESSAGE, secondId])
     assert.equal(result.commands[1].delivery.primary_provenance_ref, PROVENANCE)
+  })
+
+  it('accepts a later cursor delta after the turn primary was already consumed', () => {
+    const secondId = '31000000-0000-4000-8000-000000000003'
+    const secondary = command({
+      message_id: secondId,
+      order: order(secondId, 2),
+      delivery: {
+        provenance_ref: '41000000-0000-4000-8000-000000000004',
+        turn_id: TURN,
+        primary_provenance_ref: PROVENANCE,
+        is_primary: false,
+      },
+    })
+    const result = normalizeRemoteIngressV1(envelope({ commands: [secondary] }), CONNECTION)
+    assert.equal(result.ok, true)
+    assert.equal(result.wake, true)
+    assert.deepEqual(result.commands.map((entry) => entry.message_id), [secondId])
+  })
+
+  it('rejects false primary flags and duplicate visible provenance refs', () => {
+    const secondaryId = '31000000-0000-4000-8000-000000000003'
+    const secondary = command({
+      message_id: secondaryId,
+      order: order(secondaryId, 2),
+      delivery: {
+        provenance_ref: '41000000-0000-4000-8000-000000000004',
+        turn_id: TURN,
+        primary_provenance_ref: PROVENANCE,
+        is_primary: false,
+      },
+    })
+    const falseFlag = command({
+      delivery: {
+        provenance_ref: PROVENANCE,
+        turn_id: TURN,
+        primary_provenance_ref: PROVENANCE,
+        is_primary: false,
+      },
+    })
+    assert.equal(normalizeRemoteIngressV1(envelope({ commands: [falseFlag] }), CONNECTION).ok, false)
+    const duplicate = command({
+      message_id: secondaryId,
+      order: order(secondaryId, 2),
+      delivery: { ...secondary.delivery, provenance_ref: secondary.delivery.provenance_ref },
+    })
+    const first = command({
+      delivery: {
+        provenance_ref: secondary.delivery.provenance_ref,
+        turn_id: TURN,
+        primary_provenance_ref: PROVENANCE,
+        is_primary: false,
+      },
+    })
+    assert.equal(normalizeRemoteIngressV1(envelope({ commands: [first, duplicate] }), CONNECTION).ok, false)
   })
 
   it('treats reconnect replay as inert even when legacy top-level arrays would look live', () => {

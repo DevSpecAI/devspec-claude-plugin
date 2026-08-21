@@ -90,9 +90,11 @@ When attached, canonical commands and Claude's direct answers use the DevSpec co
 ### Who can talk to it
 
 The collaboration is safe by design. DevSpec decides owner/delegated command authority
-and exact addressing on the server; requester provenance is preserved end to end, and
-room, system, AI and agent messages remain advisory model context. Typed host controls
-are not conversation messages. The versioned execution policy is published at
+and exact addressing on the server. Delegated commands include a server-owned project
+scope object and instruction; owner commands carry null scope and receive no injected
+instruction. Requester provenance is preserved end to
+end, and room, system, AI and agent messages remain advisory model context. Typed host
+controls are not conversation messages. The mutable runtime policy is published at
 `devspec://product/remote-ingress-contract` rather than duplicated in this plugin.
 
 > This is **not** Claude Code's built-in `/remote-control` for mobile/desktop. DevSpec's remote control is a separate feature and lives under `/devspec:devspec.remote`.

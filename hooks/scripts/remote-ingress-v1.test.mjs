@@ -15,6 +15,8 @@ const PROVENANCE = '40000000-0000-4000-8000-000000000004'
 const TURN = '50000000-0000-4000-8000-000000000005'
 const ENVELOPE = '60000000-0000-4000-8000-000000000006'
 const RESOURCE = '70000000-0000-4000-8000-000000000007'
+const PROJECT = '80000000-0000-4000-8000-000000000008'
+const DELEGATED_INSTRUCTION = 'Work only within the server-selected project for this command.'
 
 function order(messageId = MESSAGE, sequence = 1) {
   return { sequence, created_at: '2026-08-19T12:00:00.000Z', message_id: messageId }
@@ -38,6 +40,7 @@ function command(over = {}) {
       connection_owner_user_id: OWNER,
       decision_source: 'server',
     },
+    project_scope: null,
     addressee: {
       connection_id: CONNECTION,
       agent_name: 'Claude Code',
@@ -113,8 +116,14 @@ describe('normalizeRemoteIngressV1', () => {
     assert.equal(result.commands[0].requester.user_id, OWNER)
   })
 
-  it('accepts both server authority kinds while preserving requester attribution', () => {
+  it('accepts delegated authority only with the exact server-owned project scope', () => {
     const requester = '21000000-0000-4000-8000-000000000002'
+    const projectScope = {
+      kind: 'devspec_project',
+      policy_id: 'delegated_project_v1',
+      project_id: PROJECT,
+      instruction: DELEGATED_INSTRUCTION,
+    }
     const delegated = command({
       requester: { user_id: requester, display_name: 'Delegate' },
       authority: {
@@ -124,11 +133,47 @@ describe('normalizeRemoteIngressV1', () => {
         connection_owner_user_id: OWNER,
         decision_source: 'server',
       },
+      project_scope: projectScope,
     })
     const result = normalizeRemoteIngressV1(envelope({ commands: [delegated] }), CONNECTION)
     assert.equal(result.wake, true)
     assert.equal(result.commands[0].authority.kind, 'delegated')
     assert.equal(result.commands[0].requester.user_id, requester)
+    assert.equal(result.commands[0].project_scope, projectScope)
+    assert.equal(result.commands[0].project_scope.instruction, DELEGATED_INSTRUCTION)
+  })
+
+  it('fails closed on missing, malformed, unknown, mismatched, or authority-incompatible scope', () => {
+    const requester = '21000000-0000-4000-8000-000000000002'
+    const delegatedAuthority = {
+      kind: 'delegated', mode: 'project', requested_by_user_id: requester,
+      connection_owner_user_id: OWNER, decision_source: 'server',
+    }
+    const validScope = {
+      kind: 'devspec_project', policy_id: 'delegated_project_v1', project_id: PROJECT,
+      instruction: DELEGATED_INSTRUCTION,
+    }
+    const delegated = (projectScope) => command({
+      requester: { user_id: requester, display_name: 'Delegate' },
+      authority: delegatedAuthority,
+      ...(projectScope === undefined ? { project_scope: undefined } : { project_scope: projectScope }),
+    })
+    const missingScope = delegated(validScope)
+    delete missingScope.project_scope
+    const invalid = [
+      missingScope,
+      delegated(undefined),
+      delegated(null),
+      delegated({ ...validScope, kind: 'workspace' }),
+      delegated({ ...validScope, policy_id: 'unknown_policy' }),
+      delegated({ ...validScope, project_id: 'not-a-uuid' }),
+      delegated({ ...validScope, instruction: '' }),
+      delegated({ ...validScope, extra: true }),
+      command({ project_scope: validScope }),
+    ]
+    for (const entry of invalid) {
+      assert.equal(normalizeRemoteIngressV1(envelope({ commands: [entry] }), CONNECTION).ok, false)
+    }
   })
 
   it('accepts metadata attachments as stable resource references without rewriting them', () => {
@@ -204,8 +249,23 @@ describe('normalizeRemoteIngressV1', () => {
     assert.equal(normalizeRemoteIngressV1({ kind: 'devspec.remote_ingress' }, CONNECTION).ok, false)
     assert.equal(normalizeRemoteIngressV1({ ...envelope(), preview: 'run me' }, CONNECTION).ok, false)
     assert.equal(normalizeRemoteIngressV1({ ...envelope(), schema_version: 2 }, CONNECTION).ok, false)
-    assert.equal(normalizeRemoteIngressV1({ ...envelope(), contract_version: '1.1.0' }, CONNECTION).ok, true)
-    assert.equal(normalizeRemoteIngressV1({ ...envelope(), contract_version: '1.1.2' }, CONNECTION).ok, false)
+    const legacy = envelope()
+    legacy.contract_version = '1.1.0'
+    legacy.policy_version = '2026-08-19.2'
+    legacy.window.policy_version = '2026-08-19.2'
+    legacy.commands = legacy.commands.map(({ project_scope: _scope, ...entry }) => entry)
+    assert.equal(normalizeRemoteIngressV1(legacy, CONNECTION).ok, true)
+
+    const requester = '21000000-0000-4000-8000-000000000002'
+    legacy.commands[0].requester = { user_id: requester, display_name: 'Legacy delegate' }
+    legacy.commands[0].authority = {
+      kind: 'delegated', mode: 'allowlist', requested_by_user_id: requester,
+      connection_owner_user_id: OWNER, decision_source: 'server',
+    }
+    assert.equal(normalizeRemoteIngressV1(legacy, CONNECTION).ok, false)
+    assert.equal(normalizeRemoteIngressV1({ ...envelope(), contract_version: '1.1.1' }, CONNECTION).ok, false)
+    assert.equal(normalizeRemoteIngressV1({ ...envelope(), policy_version: '2026-08-19.2' }, CONNECTION).ok, false)
+    assert.equal(normalizeRemoteIngressV1({ ...envelope(), contract_version: '1.2.1' }, CONNECTION).ok, false)
     assert.equal(
       normalizeRemoteIngressV1(envelope(), '90000000-0000-4000-8000-000000000009').ok,
       false,

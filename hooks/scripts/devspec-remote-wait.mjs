@@ -7,7 +7,8 @@
  * wake inputs are revalidated `canonical_commands`, typed `canonical_control`, or
  * explicit `playbook_run` records previously validated and written by the poller.
  * Typed context is rendered first as actor-labelled advisory model context; complete
- * canonical command objects follow. Summaries and previews are explicitly
+ * canonical commands follow as model-visible owner_message events, including validated
+ * server-owned delegated project scope. Summaries and previews are explicitly
  * non-authoritative/non-executable.
  *
  * The versioned execution policy lives at
@@ -494,8 +495,9 @@ export function parseOwnerBatches(lines, connectionId) {
 
 /**
  * Convert one durable canonical command record into Monitor events. The complete
- * canonical command object remains intact; stdout summaries/previews are labelled
- * non-authoritative and are never executable.
+ * canonical command object remains intact as the owner_message payload. Validated
+ * delegated scope and its server instruction are surfaced verbatim; owner commands
+ * receive no instruction injection. Summaries/previews remain non-authoritative.
  */
 export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
   const ingress = batch?.ingress
@@ -538,14 +540,20 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
   }
 
   for (const command of commands) {
+    const scopeAware = Object.hasOwn(command, 'project_scope')
+    const delegated = command.authority.kind === 'delegated'
     events.push({
-      type: 'canonical_command',
+      type: 'owner_message',
       session_id: sessionId,
       authoritative: true,
       executable: true,
       authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
       envelope_id: ingress.envelope_id,
-      command,
+      message: command,
+      ...(scopeAware ? { project_scope: command.project_scope } : {}),
+      ...(delegated && scopeAware
+        ? { project_scope_instruction: command.project_scope.instruction }
+        : {}),
       notification_preview: {
         authoritative: false,
         executable: false,

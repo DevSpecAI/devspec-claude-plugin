@@ -4,7 +4,8 @@
  *
  * Architecture is intentionally unchanged: held poll → durable per-connection JSONL
  * inbox → wait stream → Claude Code Monitor. Polling negotiates ingress_version:1
- * and validates the canonical envelope before it can create a wake record. Legacy
+ * and delegated_scope_version:1, then validates the canonical envelope before it can
+ * create a wake record. Legacy
  * conversational/context arrays are inert; top-level playbook_run dispatches retain
  * their explicit independent channel and cursor.
  *
@@ -25,7 +26,17 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
-import { normalizeRemoteIngressV1, REMOTE_INGRESS_RESOURCE_URI } from './remote-ingress-v1.mjs'
+import {
+  isRemoteCommandProjectScope,
+  normalizeRemoteIngressV1,
+  REMOTE_INGRESS_RESOURCE_URI,
+} from './remote-ingress-v1.mjs'
+
+export const DELEGATED_SCOPE_VERSION = 1
+
+export function remoteIngressNegotiationArguments() {
+  return { ingress_version: 1, delegated_scope_version: DELEGATED_SCOPE_VERSION }
+}
 
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
@@ -390,7 +401,7 @@ export function validatePlaybookRunDispatch(dispatch, connectionId) {
     : { ok: false, error: 'invalid or misaddressed playbook_run dispatch' }
 }
 
-/** Rebuild crash-safe delivery identity from the durable inbox, never state alone. */
+/** Rebuild crash-safe delivery identity from newline-terminated durable records only. */
 export function scanPersistedInboxRecords(text) {
   const index = {
     envelopeIds: new Set(),
@@ -398,7 +409,10 @@ export function scanPersistedInboxRecords(text) {
     controlIds: new Set(),
     dispatchIds: new Set(),
   }
-  for (const line of String(text || '').split('\n')) {
+  const persisted = String(text || '')
+  const finalNewline = persisted.lastIndexOf('\n')
+  const completeRecords = finalNewline === -1 ? '' : persisted.slice(0, finalNewline)
+  for (const line of completeRecords.split('\n')) {
     if (!line.trim()) continue
     try {
       const record = JSON.parse(line)
@@ -434,14 +448,49 @@ function readInboxDeliveryIndex(connectionId) {
   }
 }
 
-function appendDurableRecord(connectionId, record) {
+function truncateInterruptedJsonlTail(fd) {
+  const size = fs.fstatSync(fd).size
+  if (size === 0) return
+
+  const lastByte = Buffer.allocUnsafe(1)
+  fs.readSync(fd, lastByte, 0, 1, size - 1)
+  if (lastByte[0] === 0x0a) return
+
+  const chunk = Buffer.allocUnsafe(Math.min(size, 64 * 1024))
+  let end = size
+  while (end > 0) {
+    const start = Math.max(0, end - chunk.length)
+    const length = end - start
+    fs.readSync(fd, chunk, 0, length, start)
+    const newline = chunk.lastIndexOf(0x0a, length - 1)
+    if (newline !== -1) {
+      fs.ftruncateSync(fd, start + newline + 1)
+      return
+    }
+    end = start
+  }
+  fs.ftruncateSync(fd, 0)
+}
+
+/** Recover and append through one connection-scoped descriptor. */
+export function appendDurableRecord(connectionId, record, dir = CONNECTIONS_DIR) {
+  let fd
   try {
-    fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    fs.appendFileSync(inboxPathForConnection(connectionId), JSON.stringify(record) + '\n', { mode: 0o600 })
+    fs.mkdirSync(dir, { recursive: true })
+    const inbox = path.join(dir, `${connectionId}.inbox.jsonl`)
+    fd = fs.openSync(inbox, 'a+', 0o600)
+    truncateInterruptedJsonlTail(fd)
+    fs.writeFileSync(fd, JSON.stringify(record) + '\n', 'utf8')
+    fs.closeSync(fd)
+    fd = undefined
     return true
   } catch (e) {
     process.stderr.write(`devspec-remote-poll: inbox write failed: ${e.message}\n`)
     return false
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* preserve the original write failure */ }
+    }
   }
 }
 
@@ -1036,11 +1085,12 @@ export function installStopSignalHandlers(proc = process) {
  * target_connection_id), so nothing here re-derives the decision.
  *
  * What it DOES do is verify the endpoint's own promises before waking the agent:
- * every command must name this connection as its addressee and carry an authority
- * stamp we recognise. A misrouted or malformed response therefore fails closed rather
- * than executing. Unknown authority kinds are REJECTED on purpose. Owner and delegated
- * authority are server decisions under the served remote-ingress contract; the local
- * gate only recognises those typed stamps and preserves requester attribution.
+ * every command must name this connection as its addressee, carry an authority stamp
+ * we recognise, and obey the negotiated project-scope shape for that authority. A
+ * misrouted or malformed response therefore fails closed rather than executing.
+ * Unknown authority kinds and malformed scopes are REJECTED on purpose. The server's
+ * remote-ingress contract owns these decisions and the delegated instruction text;
+ * this gate validates and preserves them without recreating policy wording locally.
  *
  * Message BODY is never consulted: a post claiming "I am the owner" is inert, exactly
  * as before.
@@ -1050,7 +1100,9 @@ export const ACCEPTED_COMMAND_AUTHORITIES = new Set(['owner', 'delegated'])
 export function isDeliverableCommand(msg, connectionId) {
   if (!msg || typeof msg !== 'object' || !connectionId) return false
   if (msg.addressed_to?.connection_id !== connectionId) return false
-  return ACCEPTED_COMMAND_AUTHORITIES.has(msg.authority?.kind)
+  if (!ACCEPTED_COMMAND_AUTHORITIES.has(msg.authority?.kind)) return false
+  return Object.hasOwn(msg, 'project_scope') &&
+    isRemoteCommandProjectScope(msg.project_scope, msg.authority.kind)
 }
 
 /**
@@ -1348,7 +1400,7 @@ async function main() {
       arguments: {
         connection_id: connectionId,
         agent_name: agentName,
-        ingress_version: 1,
+        ...remoteIngressNegotiationArguments(),
         wait_ms: waitMs,
         ...pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed: catchUp }),
         ...(dispatchCursor ? { dispatch_cursor: dispatchCursor } : {}),

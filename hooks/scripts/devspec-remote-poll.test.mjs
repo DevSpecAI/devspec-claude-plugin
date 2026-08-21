@@ -35,13 +35,23 @@ import {
   advancePollCursors,
   validatePlaybookRunDispatch,
   scanPersistedInboxRecords,
+  appendDurableRecord,
   appendCanonicalInbox,
   appendPlaybookDispatches,
+  DELEGATED_SCOPE_VERSION,
+  remoteIngressNegotiationArguments,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
 const OTHER_CONN = 'conn-theirs-2222'
 const OWNER = 'owner-user-1'
+const PROJECT = '80000000-0000-4000-8000-000000000008'
+const DELEGATED_SCOPE = {
+  kind: 'devspec_project',
+  policy_id: 'delegated_project_v1',
+  project_id: PROJECT,
+  instruction: 'Use only the server-selected DevSpec project.',
+}
 
 /** A command as `poll_connection` shapes it: addressed + authority-stamped. */
 function command(over = {}) {
@@ -51,6 +61,7 @@ function command(over = {}) {
     created_at: '2026-07-25T20:00:00.000Z',
     addressed_to: { connection_id: ME, agent_name: 'Claude Code', codename: 'Honest Dragonfly' },
     authority: { kind: 'owner', capabilities: ['full'] },
+    project_scope: null,
     ...over,
   }
 }
@@ -75,12 +86,27 @@ describe('isDeliverableCommand (command gate)', () => {
     assert.equal(isDeliverableCommand({ content: 'do it', authority: { kind: 'owner' } }, ME), false)
   })
 
-  it('accepts a delegated command — an authorized teammate, not this connection owner', () => {
-    // Decision A (memory 61ba9948): enabled here by the deliberate edit the gate's
-    // comment demanded. Safe because the server decides who qualifies — `delegated`
-    // is only stamped when this connection's own command_authority permits that
-    // person, and only its owner can set that.
-    assert.equal(isDeliverableCommand(command({ authority: { kind: 'delegated' } }), ME), true)
+  it('accepts a delegated command only with the exact server-owned project scope', () => {
+    assert.equal(isDeliverableCommand(command({
+      authority: { kind: 'delegated' },
+      project_scope: DELEGATED_SCOPE,
+    }), ME), true)
+  })
+
+  it('fails closed on missing, malformed, or authority-incompatible legacy scope', () => {
+    assert.equal(isDeliverableCommand(command({
+      authority: { kind: 'delegated' },
+      project_scope: undefined,
+    }), ME), false)
+    assert.equal(isDeliverableCommand(command({
+      authority: { kind: 'delegated' },
+      project_scope: { ...DELEGATED_SCOPE, project_id: 'not-a-uuid' },
+    }), ME), false)
+    assert.equal(isDeliverableCommand(command({
+      authority: { kind: 'delegated' },
+      project_scope: { ...DELEGATED_SCOPE, policy_id: 'other' },
+    }), ME), false)
+    assert.equal(isDeliverableCommand(command({ project_scope: DELEGATED_SCOPE }), ME), false)
   })
 
   it('still rejects an unrecognised authority kind rather than assuming it is safe', () => {
@@ -95,7 +121,11 @@ describe('isDeliverableCommand (command gate)', () => {
     // Widening WHO may command must not widen WHICH agent acts (item 3e76a6cc).
     assert.equal(
       isDeliverableCommand(
-        command({ authority: { kind: 'delegated' }, addressed_to: { connection_id: 'someone-else' } }),
+        command({
+          authority: { kind: 'delegated' },
+          project_scope: DELEGATED_SCOPE,
+          addressed_to: { connection_id: 'someone-else' },
+        }),
         ME,
       ),
       false,
@@ -123,6 +153,16 @@ describe('isDeliverableCommand (command gate)', () => {
   it('rejects everything when we do not know our own connection id', () => {
     assert.equal(isDeliverableCommand(command(), null), false)
     assert.equal(isDeliverableCommand(null, ME), false)
+  })
+})
+
+describe('poll negotiation', () => {
+  it('requests canonical ingress and delegated project scope version 1', () => {
+    assert.equal(DELEGATED_SCOPE_VERSION, 1)
+    assert.deepEqual(remoteIngressNegotiationArguments(), {
+      ingress_version: 1,
+      delegated_scope_version: 1,
+    })
   })
 })
 
@@ -241,6 +281,95 @@ describe('explicit playbook dispatch channel', () => {
       validatePlaybookRunDispatch({ ...playbook, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }, connectionId).ok,
       false,
     )
+  })
+
+  it('preserves delegated scope across a failed append retry without pre-consuming identity', () => {
+    const ingress = {
+      envelope_id: 'env-delegated',
+      commands: [{ message_id: 'msg-delegated', project_scope: DELEGATED_SCOPE }],
+    }
+    const index = scanPersistedInboxRecords('')
+    const failed = appendCanonicalInbox(connectionId, ingress, index, {
+      channel: 'command',
+      writeRecord: () => false,
+    })
+    assert.deepEqual(failed, { ok: false, appended: false })
+    assert.equal(index.envelopeIds.size, 0)
+    assert.equal(index.commandMessageIds.size, 0)
+
+    let durable
+    const retried = appendCanonicalInbox(connectionId, ingress, index, {
+      channel: 'command',
+      writeRecord: (_connection, record) => { durable = record; return true },
+    })
+    assert.equal(retried.appended, true)
+    assert.equal(durable.ingress.commands[0].project_scope, DELEGATED_SCOPE)
+    assert.deepEqual(durable.execute_message_ids, ['msg-delegated'])
+  })
+
+  it('repairs complete JSON missing its newline before delivery and cursor acceptance', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-tail-recovery-'))
+    const inbox = path.join(dir, `${connectionId}.inbox.jsonl`)
+    try {
+      const prior = {
+        type: 'canonical_commands',
+        ingress: { envelope_id: 'env-prior' },
+        execute_message_ids: ['msg-prior'],
+      }
+      const ingress = {
+        envelope_id: 'env-retried',
+        commands: [{ message_id: 'msg-retried', project_scope: DELEGATED_SCOPE }],
+        window: { has_more: false, next_cursor: null },
+      }
+      const interrupted = JSON.stringify({
+        type: 'canonical_commands',
+        connection_id: connectionId,
+        ingress,
+        execute_message_ids: ['msg-retried'],
+      })
+      fs.writeFileSync(inbox, `${JSON.stringify(prior)}\n${interrupted}`)
+      assert.doesNotThrow(() => JSON.parse(interrupted), 'the crash tail is complete JSON')
+
+      const index = scanPersistedInboxRecords(fs.readFileSync(inbox, 'utf8'))
+      assert.deepEqual([...index.envelopeIds], ['env-prior'])
+      assert.equal(index.commandMessageIds.has('msg-retried'), false)
+
+      const retried = appendCanonicalInbox(connectionId, ingress, index, {
+        channel: 'command',
+        writeRecord: (scopedConnection, record) =>
+          appendDurableRecord(scopedConnection, record, dir),
+      })
+      assert.equal(retried.ok, true)
+      assert.equal(retried.appended, true)
+
+      const durableText = fs.readFileSync(inbox, 'utf8')
+      assert.equal(durableText.endsWith('\n'), true)
+      const records = durableText.trimEnd().split('\n').map((line) => JSON.parse(line))
+      assert.equal(records.length, 2)
+      assert.equal(records[0].ingress.envelope_id, 'env-prior')
+      assert.equal(records[1].ingress.envelope_id, 'env-retried')
+      assert.deepEqual(records[1].ingress.commands[0].project_scope, DELEGATED_SCOPE)
+
+      const recovered = scanPersistedInboxRecords(durableText)
+      assert.deepEqual([...recovered.envelopeIds], ['env-prior', 'env-retried'])
+      assert.deepEqual([...recovered.commandMessageIds], ['msg-prior', 'msg-retried'])
+      assert.deepEqual(
+        appendCanonicalInbox(connectionId, ingress, recovered, {
+          channel: 'command',
+          writeRecord: () => { throw new Error('durable retry must dedupe') },
+        }),
+        { ok: true, appended: false, duplicateEnvelope: true },
+      )
+
+      const cursor = advancePollCursors(
+        { liveCursorV2: 'cursor-before', legacyCursor: null, catchUpCursor: null },
+        { cursor_v2: 'cursor-after' },
+        ingress,
+      )
+      assert.equal(cursor.liveCursorV2, 'cursor-after')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('dedupes a command message after append-before-state-update with a new envelope id', () => {

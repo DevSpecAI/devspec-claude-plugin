@@ -16,8 +16,9 @@ A **session is optional**. Never invent a session because a cwd or another agent
 ## Shared DevSpec contract (all hosts)
 
 Remote-ingress wire shape, server-decided owner/delegated exact-target authority,
-immutable requester provenance, typed controls, wake, context, ordering, delivery,
-attachment and bounded-window policy is authoritative at
+delegated project scope and server-owned instruction, immutable requester provenance,
+typed controls, wake, context, ordering, delivery, attachment and bounded-window policy
+is authoritative at
 **`devspec://product/remote-ingress-contract`**. Operational docs point there rather
 than copying version-sensitive rules.
 
@@ -43,7 +44,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 ## Message journey (mental model)
 
 1. The owner or a server-authorized delegate sends to a specific connection from DevSpec (web/phone).
-2. Server stamps the exact-target canonical command and preserves its requester provenance.
+2. Server stamps the exact-target canonical command, preserves requester provenance, and supplies delegated project scope when applicable.
 3. Host plugin receives it via `poll_connection`.
 4. Host delivers it to the model (wake **or** inject — family-specific).
 5. Model works on the machine. If the command asks for action-item work, it reserves the named items and then claims them in order under the served implementation contract.

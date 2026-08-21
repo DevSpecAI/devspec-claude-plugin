@@ -7,8 +7,8 @@
 ## How a message reaches Claude
 
 1. DevSpec emits negotiated canonical ingress for this connection.
-2. `devspec-remote-poll.mjs` holds `poll_connection`, validates v1 at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
-3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints typed advisory context, complete canonical commands, explicit playbooks, or separate non-chat host controls.
+2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
+3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit playbooks, or separate non-chat host controls.
 4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
 5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
@@ -41,7 +41,7 @@ Design rules for anyone editing it:
 - **One writer.** `writeConnectionState` is shared with `remote-control-state.mjs write`. Do not grow a second state-writing path.
 - **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
 - Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered playbook is durable.
-- Remote-ingress policy is authoritative at `devspec://product/remote-ingress-contract`; do not restate mutable versions here.
+- Remote-ingress policy, including delegated project scope, is authoritative at `devspec://product/remote-ingress-contract`; validate and surface the server instruction verbatim rather than restating mutable wording here.
 - Action-item work acquisition and execution are authoritative at `devspec://product/implementation-contract`; teach only the conversation-requested reserve-then-claim order here.
 
 ### Conditional tiers and bounded reads

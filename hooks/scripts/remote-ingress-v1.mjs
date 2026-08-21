@@ -9,10 +9,17 @@
  */
 
 export const REMOTE_INGRESS_SCHEMA_VERSION = 1
-export const REMOTE_INGRESS_CONTRACT_VERSION = '1.1.1'
-const SUPPORTED_REMOTE_INGRESS_CONTRACT_VERSIONS = new Set(['1.1.0', REMOTE_INGRESS_CONTRACT_VERSION])
-export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-19.2'
+export const REMOTE_INGRESS_CONTRACT_VERSION = '1.2.0'
+export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-19.3'
 export const REMOTE_INGRESS_RESOURCE_URI = 'devspec://product/remote-ingress-contract'
+
+const CONTRACT_POLICY_PAIRS = new Map([
+  ['1.1.0', '2026-08-19.2'],
+  ['1.1.1', '2026-08-19.2'],
+  [REMOTE_INGRESS_CONTRACT_VERSION, REMOTE_INGRESS_POLICY_VERSION],
+])
+const SCOPE_AWARE_CONTRACT_VERSION = REMOTE_INGRESS_CONTRACT_VERSION
+const SUPPORTED_POLICY_VERSIONS = new Set(CONTRACT_POLICY_PAIRS.values())
 
 const UUID = /^(?:00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/
 const OFFSET_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/
@@ -190,18 +197,32 @@ function authority(value) {
   return (value.kind === 'owner') === requesterIsOwner && !(value.mode === 'owner' && value.kind !== 'owner')
 }
 
-function command(value) {
+export function isRemoteCommandProjectScope(value, authorityKind) {
+  if (authorityKind === 'owner') return value === null
   return (
-    exactKeys(value, [
-      'message_id',
-      'order',
-      'content',
-      'attachments',
-      'requester',
-      'authority',
-      'addressee',
-      'delivery',
-    ]) &&
+    authorityKind === 'delegated' &&
+    exactKeys(value, ['kind', 'policy_id', 'project_id', 'instruction']) &&
+    value.kind === 'devspec_project' &&
+    value.policy_id === 'delegated_project_v1' &&
+    uuid(value.project_id) &&
+    nonempty(value.instruction)
+  )
+}
+
+function command(value, scopeAware) {
+  const keys = [
+    'message_id',
+    'order',
+    'content',
+    'attachments',
+    'requester',
+    'authority',
+    'addressee',
+    'delivery',
+    ...(scopeAware ? ['project_scope'] : []),
+  ]
+  return (
+    exactKeys(value, keys) &&
     uuid(value.message_id) &&
     orderPoint(value.order) &&
     value.message_id === value.order.message_id &&
@@ -216,6 +237,9 @@ function command(value) {
     nullable(value.requester.display_name, nonempty) &&
     authority(value.authority) &&
     value.requester.user_id === value.authority.requested_by_user_id &&
+    (scopeAware
+      ? isRemoteCommandProjectScope(value.project_scope, value.authority.kind)
+      : value.authority.kind === 'owner') &&
     addressee(value.addressee) &&
     exactKeys(value.delivery, [
       'provenance_ref',
@@ -285,7 +309,7 @@ export function isRemoteIngressBoundedMetadata(value) {
       'fetch_id',
       'omission_reason',
     ]) ||
-    value.policy_version !== REMOTE_INGRESS_POLICY_VERSION ||
+    !SUPPORTED_POLICY_VERSIONS.has(value.policy_version) ||
     !nonnegativeInt(value.returned) ||
     !nullable(value.total_known, nonnegativeInt) ||
     !exactKeys(value.source_window, ['start', 'end']) ||
@@ -353,8 +377,9 @@ function envelopeV1(value) {
   ])) return 'ingress must contain exactly the canonical v1 fields'
   if (value.kind !== 'devspec.remote_ingress') return 'unknown ingress kind'
   if (value.schema_version !== REMOTE_INGRESS_SCHEMA_VERSION) return 'unsupported ingress schema_version'
-  if (!SUPPORTED_REMOTE_INGRESS_CONTRACT_VERSIONS.has(value.contract_version)) return 'unsupported ingress contract_version'
-  if (value.policy_version !== REMOTE_INGRESS_POLICY_VERSION) return 'unsupported ingress policy_version'
+  const pairedPolicy = CONTRACT_POLICY_PAIRS.get(value.contract_version)
+  if (!pairedPolicy) return 'unsupported ingress contract_version'
+  if (value.policy_version !== pairedPolicy) return 'ingress contract_version/policy_version mismatch'
   if (!uuid(value.envelope_id) || !addressee(value.connection)) return 'invalid envelope identity or connection'
   if (
     !exactKeys(value.wake, ['kind', 'active', 'reason_id']) ||
@@ -374,10 +399,17 @@ function envelopeV1(value) {
   if (!Array.isArray(value.command_message_ids) || !value.command_message_ids.every(uuid)) {
     return 'invalid command_message_ids'
   }
-  if (!Array.isArray(value.commands) || !value.commands.every(command)) return 'invalid canonical command'
+  const scopeAware = value.contract_version === SCOPE_AWARE_CONTRACT_VERSION
+  if (!Array.isArray(value.commands) || !value.commands.every((entry) => command(entry, scopeAware))) {
+    return 'invalid canonical command'
+  }
   if ((value.wake.kind === 'control') !== (value.control !== null)) return 'control payload/wake mismatch'
   if (value.control !== null && !control(value.control)) return 'invalid control payload'
-  if (!isRemoteIngressTypedContext(value.context) || !isRemoteIngressBoundedMetadata(value.window)) return 'invalid typed context or window'
+  if (
+    !isRemoteIngressTypedContext(value.context) ||
+    !isRemoteIngressBoundedMetadata(value.window) ||
+    value.window.policy_version !== value.policy_version
+  ) return 'invalid typed context or window'
 
   const listedIds = new Set(value.command_message_ids)
   const commandIds = new Set(value.commands.map((entry) => entry.message_id))

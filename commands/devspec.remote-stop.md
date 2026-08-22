@@ -19,12 +19,12 @@ Multiple remotes may run on one machine.
 
 ## Steps
 
-1. **Resolve connection id** from `$ARGUMENTS`, or this conversation's state via
+1. **Resolve connection id** from `$ARGUMENTS`, or this conversation's redacted resolver:
    ```bash
    node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" resolve-local \
      --agent "Claude Code" --local-id "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}"
    ```
-   (use its `connection_id`), or `~/.devspec/remote-control/connections/<uuid>.json`, or legacy `~/.devspec/remote-control.json`. If ambiguous, ask the user. Note its `session_id` (may be null = sessionless).
+   Use its `connection_id`. If an explicit id needs checking, use `remote-control-state.mjs status --connection-id '<uuid>'`; if the resolver is ambiguous, use `remote-control-state.mjs list` and ask the user. These are the only state-reading surfaces allowed here. **Never open, cat, parse, or direct the model to a raw remote-control JSON file**; it contains authentication material. `session_id` may be null for a sessionless connection.
 
 2. **Mark the connection offline (this connection only):**
    - `heartbeat_connection({ connection_id, status: "offline", end_reason: "local_stop" })` (one path, attached or sessionless), then optionally `detach_connection({ connection_id })`.

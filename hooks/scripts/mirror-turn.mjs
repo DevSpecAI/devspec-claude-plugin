@@ -19,6 +19,7 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
+import { readPrivateJson } from './private-state.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -143,8 +144,8 @@ export function loadState(conversationId) {
   const candidates = []
   try {
     if (fs.existsSync(LEGACY_STATE_PATH)) {
-      const raw = JSON.parse(fs.readFileSync(LEGACY_STATE_PATH, 'utf8'))
-      candidates.push({ raw, mtime: fs.statSync(LEGACY_STATE_PATH).mtimeMs })
+      const raw = readPrivateJson(LEGACY_STATE_PATH)
+      if (raw) candidates.push({ raw, mtime: fs.statSync(LEGACY_STATE_PATH).mtimeMs })
     }
   } catch {
     /* continue with per-connection state */
@@ -154,8 +155,8 @@ export function loadState(conversationId) {
       for (const file of fs.readdirSync(CONNECTIONS_DIR).filter((f) => f.endsWith('.json'))) {
         try {
           const p = path.join(CONNECTIONS_DIR, file)
-          const raw = JSON.parse(fs.readFileSync(p, 'utf8'))
-          candidates.push({ raw, mtime: fs.statSync(p).mtimeMs })
+          const raw = readPrivateJson(p)
+          if (raw) candidates.push({ raw, mtime: fs.statSync(p).mtimeMs })
         } catch {
           /* ignore an incomplete or concurrently-replaced state file */
         }

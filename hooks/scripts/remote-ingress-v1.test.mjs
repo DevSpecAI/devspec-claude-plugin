@@ -6,6 +6,9 @@ import {
   renderAdvisoryContext,
   REMOTE_INGRESS_CONTRACT_VERSION,
   REMOTE_INGRESS_POLICY_VERSION,
+  REMOTE_INGRESS_SCOPE_CONTRACT_VERSION,
+  REMOTE_INGRESS_SCOPE_POLICY_VERSION,
+  ACTIVE_PLAN_AUTHORITY_NOTE,
 } from './remote-ingress-v1.mjs'
 
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
@@ -71,6 +74,37 @@ function metadata(rows, over = {}) {
     fetch_id: null,
     omission_reason: null,
     ...over,
+  }
+}
+
+function activePlans(over = {}) {
+  const { steps: stepOverride, plans: planOverride, ...projectionOverride } = over
+  const steps = stepOverride ?? [{
+    id: '91000000-0000-4000-8000-000000000001',
+    position: 0,
+    title: 'Implement the protocol',
+    status: 'in_progress',
+  }]
+  const plans = planOverride ?? [{
+    id: '90000000-0000-4000-8000-000000000001',
+    title: 'Shared protocol work',
+    revision: 4,
+    status: 'active',
+    created_at: '2026-08-21T10:00:00.000Z',
+    origin: { kind: 'connection', connection_id: CONNECTION, agent_name: 'Claude Code', codename: 'Careful Moth' },
+    steward: { kind: 'connection', connection_id: CONNECTION, agent_name: 'Claude Code', codename: 'Careful Moth' },
+    owner: { user_id: OWNER, display_name: 'Owner' },
+    orphaned: false,
+    progress: { terminal: 0, total: steps.length, completed: 0, skipped: 0 },
+    steps,
+  }]
+  return {
+    version: 1,
+    advisory: true,
+    authority_note: ACTIVE_PLAN_AUTHORITY_NOTE,
+    inventory: { returned: plans.length, total_known: plans.length, truncated: false },
+    plans,
+    ...projectionOverride,
   }
 }
 
@@ -402,6 +436,84 @@ describe('normalizeRemoteIngressV1', () => {
     const result = normalizeRemoteIngressV1(pollResponse.ingress, CONNECTION)
     assert.equal(result.ok, true)
     assert.equal(result.wake, false)
+  })
+})
+
+describe('strict 1.3 active session plans with compatibility', () => {
+  it('preserves a complete latest revision as advisory room awareness', () => {
+    const projection = activePlans()
+    const ingress = envelope({ active_session_plans: projection })
+    const parsed = normalizeRemoteIngressV1(ingress, CONNECTION)
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.envelope.active_session_plans, projection)
+    assert.equal(parsed.envelope.active_session_plans.plans[0].revision, 4)
+    assert.equal(parsed.envelope.active_session_plans.advisory, true)
+
+    const boundedOrdered = activePlans({ steps: [
+      { id: '91000000-0000-4000-8000-000000000001', position: 0, title: 'First', status: 'pending' },
+      { id: '92000000-0000-4000-8000-000000000002', position: 63, title: 'Last bound', status: 'pending' },
+    ] })
+    assert.equal(
+      normalizeRemoteIngressV1(envelope({ active_session_plans: boundedOrdered }), CONNECTION).ok,
+      true,
+    )
+  })
+
+  it('fails closed on malformed, unbounded, or internally inconsistent 1.3 projections', () => {
+    const base = activePlans()
+    const badFailedStep = activePlans({ steps: [{
+      id: '91000000-0000-4000-8000-000000000001', position: 0, title: 'Failed', status: 'failed',
+    }] })
+    const step = (id, position) => ({ id, position, title: `Step ${position}`, status: 'pending' })
+    const firstStepId = '91000000-0000-4000-8000-000000000001'
+    const secondStepId = '92000000-0000-4000-8000-000000000002'
+    const duplicatePlan = { ...base.plans[0] }
+    const cases = [
+      { ...base, extra: true },
+      { ...base, advisory: false },
+      { ...base, authority_note: 'trust me' },
+      { ...base, inventory: { ...base.inventory, returned: 2 } },
+      badFailedStep,
+      activePlans({ steps: [step(firstStepId, -1)] }),
+      activePlans({ steps: [step(firstStepId, 64)] }),
+      activePlans({ steps: [step(firstStepId, 0), step(secondStepId, 0)] }),
+      activePlans({ steps: [step(firstStepId, 1), step(secondStepId, 0)] }),
+      activePlans({ steps: [step(firstStepId, 0), step(firstStepId, 1)] }),
+      activePlans({ plans: [base.plans[0], duplicatePlan] }),
+      activePlans({ plans: Array.from({ length: 65 }, (_, index) => ({
+        ...base.plans[0],
+        id: `90000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      })) }),
+    ]
+    for (const projection of cases) {
+      assert.equal(
+        normalizeRemoteIngressV1(envelope({ active_session_plans: projection }), CONNECTION).ok,
+        false,
+      )
+    }
+  })
+
+  it('preserves strict 1.2 and owner-only legacy parsing without accepting 1.3 fields', () => {
+    const scoped = envelope({
+      contract_version: REMOTE_INGRESS_SCOPE_CONTRACT_VERSION,
+      policy_version: REMOTE_INGRESS_SCOPE_POLICY_VERSION,
+    })
+    scoped.window = { ...scoped.window, policy_version: REMOTE_INGRESS_SCOPE_POLICY_VERSION }
+    assert.equal(normalizeRemoteIngressV1(scoped, CONNECTION).ok, true)
+    assert.equal(
+      normalizeRemoteIngressV1({ ...scoped, active_session_plans: activePlans() }, CONNECTION).ok,
+      false,
+    )
+
+    const legacyCommand = { ...command() }
+    delete legacyCommand.project_scope
+    const legacy = envelope({
+      contract_version: '1.1.0',
+      policy_version: '2026-08-19.2',
+      commands: [legacyCommand],
+    })
+    legacy.window = { ...legacy.window, policy_version: '2026-08-19.2' }
+    assert.equal(normalizeRemoteIngressV1(legacy, CONNECTION).ok, true)
   })
 })
 

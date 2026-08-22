@@ -58,6 +58,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -81,18 +82,40 @@ function connectionPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.json`)
 }
 
-function readJson(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return null
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
-  } catch {
-    return null
-  }
-}
+const readJson = readPrivateJson
+const writeJson = writePrivateJson
 
-function writeJson(filePath, state) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
+/** Model/terminal-safe state view. Raw authentication material never crosses stdout. */
+export function redactConnectionState(state) {
+  if (!state || typeof state !== 'object') return null
+  const ownerPid = Number(state.owner_pid)
+  const ownerIsAlive = Number.isInteger(ownerPid) && ownerPid > 1 ? ownerAlive(ownerPid) : null
+  const humanEnded = state.end_reason === 'ui' || state.end_reason === 'local_stop' ||
+    state.end_reason === 'ended_from_ui' || state.ended_from_ui === true
+  const disposition = humanEnded || ownerIsAlive === false ? 'stand_down' : 'reconnect'
+  return {
+    connection_id: state.connection_id || null,
+    session_id: state.session_id || null,
+    enabled: state.enabled !== false,
+    agent_name: state.agent_name || null,
+    session_codename: state.session_codename || state.codename || null,
+    local_id: state.local_id || null,
+    owner_pid: Number.isInteger(ownerPid) ? ownerPid : null,
+    owner_alive: ownerIsAlive,
+    cwd: state.cwd || null,
+    end_reason: state.end_reason || null,
+    ended_from_ui: state.ended_from_ui === true,
+    updated_at: state.updated_at || null,
+    token_present: typeof state.token === 'string' && state.token.length > 0,
+    connection_capability_present:
+      typeof state.connection_capability === 'string' && state.connection_capability.length > 0,
+    reconnect: {
+      disposition,
+      instruction: disposition === 'stand_down'
+        ? 'Stop and stay disconnected; do not re-register this conversation.'
+        : 'Re-run the original connect command for this conversation, then re-arm with --pending.',
+    },
+  }
 }
 
 function parseArgs(argv) {
@@ -817,6 +840,7 @@ export function writeConnectionState({
   title,
   url,
   hostToken: hostTokenArg,
+  connectionCapability,
   instructionTiers = null,
   noPoller = false,
   env = process.env,
@@ -850,6 +874,12 @@ export function writeConnectionState({
     owner_pid: ownerPid,
     mcp_url: url || auth.mcp_url || prev.mcp_url || 'https://devspec.ai/api/mcp',
     token: auth.token || prev.token || undefined,
+    connection_capability:
+      connectionCapability === undefined
+        ? prev.connection_capability
+        : (typeof connectionCapability === 'string' && connectionCapability
+            ? connectionCapability
+            : undefined),
     auth_source: auth.source || auth.error || prev.auth_source || null,
     auth_ok: !!auth.ok || !!prev.auth_ok,
     cwd: resolvedCwd,
@@ -892,6 +922,7 @@ export function writeConnectionState({
     auth_ok: state.auth_ok,
     auth_source: state.auth_source,
     token_present: !!state.token,
+    connection_capability_present: !!state.connection_capability,
     local_id: localId,
     owner_pid: ownerPid,
     bond_path: bond ? localBondPath(agentName, localId) : null,
@@ -1186,7 +1217,7 @@ if (isMain) {
     process.exit(0)
   }
 
-  if (cmd === 'read') {
+  if (cmd === 'read' || cmd === 'status') {
     let s = null
     if (args['connection-id']) {
       s = readJson(connectionPath(args['connection-id']))
@@ -1197,7 +1228,7 @@ if (isMain) {
         s = null
       }
     }
-    process.stdout.write(JSON.stringify(s, null, 2) + '\n')
+    process.stdout.write(JSON.stringify(redactConnectionState(s), null, 2) + '\n')
     process.exit(s ? 0 : 1)
   }
 

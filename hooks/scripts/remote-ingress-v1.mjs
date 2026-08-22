@@ -9,16 +9,31 @@
  */
 
 export const REMOTE_INGRESS_SCHEMA_VERSION = 1
-export const REMOTE_INGRESS_CONTRACT_VERSION = '1.2.0'
-export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-19.3'
+export const REMOTE_INGRESS_CONTRACT_VERSION = '1.3.0'
+export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-21.1'
+export const REMOTE_INGRESS_SCOPE_CONTRACT_VERSION = '1.2.0'
+export const REMOTE_INGRESS_SCOPE_POLICY_VERSION = '2026-08-19.3'
+export const ACTIVE_PLAN_PROJECTION_VERSION = 1
+export const ACTIVE_PLAN_MAX_PLANS = 64
+export const ACTIVE_PLAN_MAX_STEPS = 64
+export const ACTIVE_PLAN_MAX_TITLE_CHARS = 300
+export const ACTIVE_PLAN_MAX_FAILURE_REASON_CHARS = 4096
+export const ACTIVE_PLAN_MAX_IDENTITY_CHARS = 300
+export const ACTIVE_PLAN_MAX_TOTAL_TEXT_CHARS = 131_072
+export const ACTIVE_PLAN_AUTHORITY_NOTE =
+  'Advisory read-awareness only. Presence does not authorize execution or mutation; manage_plan still requires a capability-authenticated caller identity, explicit plan_id for cross-plan work, and expected_revision.'
 export const REMOTE_INGRESS_RESOURCE_URI = 'devspec://product/remote-ingress-contract'
 
 const CONTRACT_POLICY_PAIRS = new Map([
   ['1.1.0', '2026-08-19.2'],
   ['1.1.1', '2026-08-19.2'],
+  [REMOTE_INGRESS_SCOPE_CONTRACT_VERSION, REMOTE_INGRESS_SCOPE_POLICY_VERSION],
   [REMOTE_INGRESS_CONTRACT_VERSION, REMOTE_INGRESS_POLICY_VERSION],
 ])
-const SCOPE_AWARE_CONTRACT_VERSION = REMOTE_INGRESS_CONTRACT_VERSION
+const SCOPE_AWARE_CONTRACT_VERSIONS = new Set([
+  REMOTE_INGRESS_SCOPE_CONTRACT_VERSION,
+  REMOTE_INGRESS_CONTRACT_VERSION,
+])
 const SUPPORTED_POLICY_VERSIONS = new Set(CONTRACT_POLICY_PAIRS.values())
 
 const UUID = /^(?:00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/
@@ -359,8 +374,92 @@ function rowsFitWindow(rows, window) {
   )
 }
 
-function envelopeV1(value) {
+function activePlanIdentity(value) {
+  if (!exactKeys(value, ['kind', 'connection_id', 'agent_name', 'codename'])) return false
+  if (typeof value.agent_name !== 'string' || value.agent_name.length < 1 ||
+      value.agent_name.length > ACTIVE_PLAN_MAX_IDENTITY_CHARS ||
+      !nullable(value.codename, (item) => nonempty(item) && item.length <= ACTIVE_PLAN_MAX_IDENTITY_CHARS)) {
+    return false
+  }
+  return value.kind === 'dev'
+    ? value.connection_id === null
+    : value.kind === 'connection' && uuid(value.connection_id)
+}
+
+function activePlanStep(value) {
+  if (!optionalExactKeys(
+    value,
+    ['id', 'position', 'title', 'status'],
+    ['failure_reason', 'retryable'],
+  )) return false
+  if (!uuid(value.id) || !Number.isSafeInteger(value.position) ||
+      value.position < 0 || value.position >= ACTIVE_PLAN_MAX_STEPS ||
+      !nonempty(value.title) || value.title.length > ACTIVE_PLAN_MAX_TITLE_CHARS ||
+      !['pending', 'in_progress', 'completed', 'failed', 'skipped'].includes(value.status)) return false
+  const hasFailure = Object.hasOwn(value, 'failure_reason') || Object.hasOwn(value, 'retryable')
+  if ((value.status === 'failed') !== hasFailure) return false
+  if (value.status === 'failed') {
+    if (typeof value.retryable !== 'boolean') return false
+    if (Object.hasOwn(value, 'failure_reason') &&
+        (!nonempty(value.failure_reason) || value.failure_reason.length > ACTIVE_PLAN_MAX_FAILURE_REASON_CHARS)) {
+      return false
+    }
+  }
+  return true
+}
+
+function activePlan(value) {
   if (!exactKeys(value, [
+    'id', 'title', 'revision', 'status', 'created_at', 'origin', 'steward', 'owner',
+    'orphaned', 'progress', 'steps',
+  ])) return false
+  if (!uuid(value.id) || !nonempty(value.title) || value.title.length > ACTIVE_PLAN_MAX_TITLE_CHARS ||
+      !positiveInt(value.revision) || value.status !== 'active' || !datetime(value.created_at) ||
+      !activePlanIdentity(value.origin) || !activePlanIdentity(value.steward) ||
+      !exactKeys(value.owner, ['user_id', 'display_name']) || !uuid(value.owner.user_id) ||
+      !nonempty(value.owner.display_name) || value.owner.display_name.length > ACTIVE_PLAN_MAX_IDENTITY_CHARS ||
+      typeof value.orphaned !== 'boolean' ||
+      !exactKeys(value.progress, ['terminal', 'total', 'completed', 'skipped']) ||
+      !Object.values(value.progress).every(nonnegativeInt) ||
+      !Array.isArray(value.steps) || value.steps.length > ACTIVE_PLAN_MAX_STEPS ||
+      !value.steps.every(activePlanStep)) return false
+  if (new Set(value.steps.map((step) => step.id)).size !== value.steps.length ||
+      new Set(value.steps.map((step) => step.position)).size !== value.steps.length ||
+      value.steps.some((step, index) => index > 0 && step.position <= value.steps[index - 1].position)) {
+    return false
+  }
+  const completed = value.steps.filter((step) => step.status === 'completed').length
+  const skipped = value.steps.filter((step) => step.status === 'skipped').length
+  return value.progress.total === value.steps.length &&
+    value.progress.completed === completed &&
+    value.progress.skipped === skipped &&
+    value.progress.terminal === completed + skipped
+}
+
+export function isActiveSessionPlansProjectionV1(value) {
+  if (!exactKeys(value, ['version', 'advisory', 'authority_note', 'inventory', 'plans']) ||
+      value.version !== ACTIVE_PLAN_PROJECTION_VERSION || value.advisory !== true ||
+      value.authority_note !== ACTIVE_PLAN_AUTHORITY_NOTE ||
+      !exactKeys(value.inventory, ['returned', 'total_known', 'truncated']) ||
+      !positiveInt(value.inventory.returned) || value.inventory.returned > ACTIVE_PLAN_MAX_PLANS ||
+      !positiveInt(value.inventory.total_known) || value.inventory.total_known > ACTIVE_PLAN_MAX_PLANS ||
+      value.inventory.truncated !== false || !Array.isArray(value.plans) ||
+      value.plans.length < 1 || value.plans.length > ACTIVE_PLAN_MAX_PLANS ||
+      !value.plans.every(activePlan) ||
+      new Set(value.plans.map((plan) => plan.id)).size !== value.plans.length ||
+      value.inventory.returned !== value.plans.length ||
+      value.inventory.total_known !== value.plans.length) return false
+  const chars = value.plans.reduce((sum, plan) => sum + plan.title.length +
+    plan.origin.agent_name.length + (plan.origin.codename?.length ?? 0) +
+    plan.steward.agent_name.length + (plan.steward.codename?.length ?? 0) +
+    plan.owner.display_name.length + plan.steps.reduce((stepSum, step) =>
+      stepSum + step.title.length + (step.failure_reason?.length ?? 0), 0), 0)
+  return chars <= ACTIVE_PLAN_MAX_TOTAL_TEXT_CHARS
+}
+
+function envelopeV1(value) {
+  const enhanced = value?.contract_version === REMOTE_INGRESS_CONTRACT_VERSION
+  const requiredKeys = [
     'kind',
     'schema_version',
     'contract_version',
@@ -374,7 +473,10 @@ function envelopeV1(value) {
     'control',
     'context',
     'window',
-  ])) return 'ingress must contain exactly the canonical v1 fields'
+  ]
+  if (!(enhanced
+    ? optionalExactKeys(value, requiredKeys, ['active_session_plans'])
+    : exactKeys(value, requiredKeys))) return 'ingress must contain exactly the canonical v1 fields'
   if (value.kind !== 'devspec.remote_ingress') return 'unknown ingress kind'
   if (value.schema_version !== REMOTE_INGRESS_SCHEMA_VERSION) return 'unsupported ingress schema_version'
   const pairedPolicy = CONTRACT_POLICY_PAIRS.get(value.contract_version)
@@ -399,7 +501,7 @@ function envelopeV1(value) {
   if (!Array.isArray(value.command_message_ids) || !value.command_message_ids.every(uuid)) {
     return 'invalid command_message_ids'
   }
-  const scopeAware = value.contract_version === SCOPE_AWARE_CONTRACT_VERSION
+  const scopeAware = SCOPE_AWARE_CONTRACT_VERSIONS.has(value.contract_version)
   if (!Array.isArray(value.commands) || !value.commands.every((entry) => command(entry, scopeAware))) {
     return 'invalid canonical command'
   }
@@ -410,6 +512,10 @@ function envelopeV1(value) {
     !isRemoteIngressBoundedMetadata(value.window) ||
     value.window.policy_version !== value.policy_version
   ) return 'invalid typed context or window'
+  if (enhanced && Object.hasOwn(value, 'active_session_plans') &&
+      !isActiveSessionPlansProjectionV1(value.active_session_plans)) {
+    return 'invalid active_session_plans projection'
+  }
 
   const listedIds = new Set(value.command_message_ids)
   const commandIds = new Set(value.commands.map((entry) => entry.message_id))

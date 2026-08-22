@@ -170,14 +170,22 @@ async function main() {
     maxAgeMinutes: 30,
   })
 
-  const call = (name, toolArgs) =>
-    mcpToolsCall({ mcpUrl: auth.mcp_url, token: auth.token, name, arguments: toolArgs, timeoutMs: 30_000 })
+  const call = (name, toolArgs, options = {}) =>
+    mcpToolsCall({
+      mcpUrl: auth.mcp_url,
+      token: auth.token,
+      name,
+      arguments: toolArgs,
+      timeoutMs: 30_000,
+      ...options,
+    })
 
   // 1. Register (idempotent on the conversation bond). Scope goes up as facts —
   //    git_remote and/or the folder pin — and the server arbitrates. No list_projects
   //    round-trip: the router resolves the project from git_remote itself.
   const known = knownInstructionTiersFor(bond.connection_id)
   let registration
+  let connectionCapability = null
   try {
     registration = await call('register_connection', {
       local_id: localId,
@@ -187,7 +195,15 @@ async function main() {
       ...(gitRemote ? { git_remote: gitRemote } : {}),
       ...(pin ? { pinned_project_id: pin.project_id } : {}),
       ...(args.name ? { name: args.name } : {}),
+      connection_capability_version: 1,
       ...(known ? { known_instruction_tiers_version: known.version, known_instruction_tiers_hash: known.hash } : {}),
+    }, {
+      onResultMeta: (meta) => {
+        const negotiated = meta?.devspec?.connection_capability
+        if (negotiated?.version === 1 && typeof negotiated.value === 'string') {
+          connectionCapability = negotiated.value
+        }
+      },
     })
   } catch (e) {
     const hint =
@@ -257,6 +273,7 @@ async function main() {
       registration.instruction_tiers_hash && registration.instruction_tiers_version
         ? { hash: registration.instruction_tiers_hash, version: registration.instruction_tiers_version }
         : null,
+    connectionCapability,
     noPoller: !!args.noPoller,
   })
 
@@ -321,6 +338,7 @@ async function main() {
     bond_action: bond.action,
     state_path: written.path,
     arm_command: armCommand,
+    plan_access: connectionCapability ? 'manage_plan capability ready' : 'unavailable — reconnect/update required',
     orientation: seed?.transcript_window || (seed?.error ? { error: seed.error } : null),
   }
 
@@ -348,6 +366,7 @@ async function main() {
       ? `running (pid ${poller.pid})`
       : `NOT RUNNING — ${written.warning_poller || 'unknown'}`
   lines.push(`poller: ${pollerText} · host: ${auth.mcp_url}`)
+  lines.push(`plans: ${connectionCapability ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
   if (!written.auth_ok) lines.push(`auth: FAILED — ${written.warning}`)
   if (!localId) lines.push(`warning: ${written.warning_local}`)
   if (!ownerPid && !args.noPoller) {

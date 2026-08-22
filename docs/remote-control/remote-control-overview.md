@@ -17,7 +17,7 @@ A **session is optional**. Never invent a session because a cwd or another agent
 
 Remote-ingress wire shape, server-decided owner/delegated exact-target authority,
 delegated project scope and server-owned instruction, immutable requester provenance,
-typed controls, wake, context, ordering, delivery, attachment and bounded-window policy
+typed controls, wake, context, active-session-plan projection, ordering, delivery, attachment and bounded-window policy
 is authoritative at
 **`devspec://product/remote-ingress-contract`**. Operational docs point there rather
 than copying version-sensitive rules.
@@ -29,7 +29,9 @@ the agent reserve the requested order, then claim each reserved item as it reach
 
 The host-specific invariant is architectural: negotiate canonical ingress at
 `poll_connection`, validate it at the network boundary, preserve its complete durable
-record, and keep notification/preview output non-authoritative.
+record, and keep notification/preview output non-authoritative. Active plan inventories
+are room-wide read awareness only; they grant no execution or mutation authority and
+never substitute for action-item reserve/claim/record implementation.
 
 ## Three implementation families
 

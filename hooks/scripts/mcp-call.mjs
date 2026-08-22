@@ -14,11 +14,12 @@
  * deliberate abort from a network failure. Omitting them keeps the original behaviour.
  */
 
-export async function mcpToolsCall({
+export async function mcpRequest({
   mcpUrl,
   token,
-  name,
-  arguments: toolArgs,
+  method,
+  params = {},
+  connectionCapability = null,
   timeoutMs = 0,
   isAlive = null,
   aliveCheckMs = 2_000,
@@ -26,8 +27,8 @@ export async function mcpToolsCall({
   const body = {
     jsonrpc: '2.0',
     id: Date.now(),
-    method: 'tools/call',
-    params: { name, arguments: toolArgs || {} },
+    method,
+    params,
   }
 
   const controller = new AbortController()
@@ -65,13 +66,16 @@ export async function mcpToolsCall({
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
+        ...(connectionCapability
+          ? { 'x-devspec-connection-capability': connectionCapability }
+          : {}),
       },
       body: JSON.stringify(body),
       signal: controller.signal,
     })
   } catch (e) {
     if (abortCode) {
-      const err = new Error(`MCP call ${name} aborted: ${abortCode}`)
+      const err = new Error(`MCP request ${method} aborted: ${abortCode}`)
       err.code = abortCode
       throw err
     }
@@ -112,21 +116,52 @@ export async function mcpToolsCall({
     throw new Error(payload.error.message || JSON.stringify(payload.error))
   }
 
+  return payload.result ?? payload
+}
+
+export async function mcpToolsCall({
+  mcpUrl,
+  token,
+  name,
+  arguments: toolArgs,
+  connectionCapability = null,
+  onResultMeta = null,
+  timeoutMs = 0,
+  isAlive = null,
+  aliveCheckMs = 2_000,
+}) {
+  const result = await mcpRequest({
+    mcpUrl,
+    token,
+    method: 'tools/call',
+    params: { name, arguments: toolArgs || {} },
+    connectionCapability,
+    timeoutMs,
+    isAlive,
+    aliveCheckMs,
+  })
+  if (typeof onResultMeta === 'function' && result?._meta) onResultMeta(result._meta)
+
   // tools/call result content is usually { content: [{ type:'text', text:'...' }], isError? }
-  const content = payload.result?.content
+  const content = result?.content
   if (Array.isArray(content)) {
     const textParts = content
       .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
       .map((c) => c.text)
     const joined = textParts.join('\n')
-    if (payload.result?.isError) {
+    if (result?.isError) {
       throw new Error(joined || 'MCP tool error')
     }
     try {
       return JSON.parse(joined)
     } catch {
-      return { raw: joined, result: payload.result }
+      return { raw: joined, result }
     }
   }
-  return payload.result ?? payload
+  return result
+}
+
+export async function mcpToolsList(options) {
+  const result = await mcpRequest({ ...options, method: 'tools/list', params: {} })
+  return Array.isArray(result?.tools) ? result.tools : []
 }

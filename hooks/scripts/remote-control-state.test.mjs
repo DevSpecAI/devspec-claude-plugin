@@ -12,10 +12,37 @@ import {
   mintLocalId,
   ownerAlive,
   reapDeadPollers,
+  redactConnectionState,
   resolveLocalAction,
   resolveOwnerPid,
   resolveOwnerPidAutoWindows,
 } from './remote-control-state.mjs'
+
+describe('redacted connection status', () => {
+  it('never exposes bearer/capability bytes and gives the reconnect disposition directly', () => {
+    const secret = 'dvsc_never_model_visible'
+    const status = redactConnectionState({
+      connection_id: '10000000-0000-4000-8000-000000000001',
+      session_id: '20000000-0000-4000-8000-000000000002',
+      enabled: true,
+      owner_pid: process.pid,
+      token: 'dvs_bearer_secret',
+      connection_capability: secret,
+      end_reason: null,
+    })
+    assert.equal(status.reconnect.disposition, 'reconnect')
+    assert.equal(status.token_present, true)
+    assert.equal(status.connection_capability_present, true)
+    assert.doesNotMatch(JSON.stringify(status), /dvs_bearer_secret|dvsc_never_model_visible/)
+
+    const ended = redactConnectionState({
+      connection_id: '10000000-0000-4000-8000-000000000001',
+      owner_pid: process.pid,
+      end_reason: 'ui',
+    })
+    assert.equal(ended.reconnect.disposition, 'stand_down')
+  })
+})
 
 describe('detectLocalId', () => {
   it('prefers explicit --local-id over env', () => {

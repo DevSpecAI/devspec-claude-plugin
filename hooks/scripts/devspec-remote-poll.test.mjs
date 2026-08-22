@@ -39,6 +39,7 @@ import {
   appendCanonicalInbox,
   appendPlaybookDispatches,
   DELEGATED_SCOPE_VERSION,
+  ACTIVE_PLAN_PROJECTION_VERSION,
   remoteIngressNegotiationArguments,
 } from './devspec-remote-poll.mjs'
 
@@ -157,11 +158,13 @@ describe('isDeliverableCommand (command gate)', () => {
 })
 
 describe('poll negotiation', () => {
-  it('requests canonical ingress and delegated project scope version 1', () => {
+  it('requests canonical ingress, delegated scope, and active plan projection version 1', () => {
     assert.equal(DELEGATED_SCOPE_VERSION, 1)
+    assert.equal(ACTIVE_PLAN_PROJECTION_VERSION, 1)
     assert.deepEqual(remoteIngressNegotiationArguments(), {
       ingress_version: 1,
       delegated_scope_version: 1,
+      active_plan_projection_version: 1,
     })
   })
 })

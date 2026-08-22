@@ -16,7 +16,7 @@ describe('current Claude authority and work-acquisition prose', () => {
   it('teaches canonical authority and conversation-requested reserve then claim', () => {
     const command = source('commands/devspec.remote.md')
     const allowedTools = command.match(/^allowed-tools: (.+)$/m)?.[1] ?? ''
-    const workSection = command.slice(command.indexOf('## 5. Working action items when asked'))
+    const workSection = command.slice(command.indexOf('## 6. Working action items when asked'))
 
     assert.match(command, /devspec:\/\/product\/remote-ingress-contract/)
     assert.match(allowedTools, /mcp__devspec__claim_playbook_run/)

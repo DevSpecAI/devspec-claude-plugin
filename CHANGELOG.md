@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.20.0 - 2026-08-21
+
+### Shared session plans, without planning routine work
+
+Claude now negotiates the strict remote-ingress 1.3 active-plan projection and renders its bounded, complete active plan inventory as room-wide read awareness. The 1.2 scoped and legacy parsers remain available for compatible historical input, while malformed 1.3 projections fail closed before an inbox wake.
+
+Remote connect also negotiates and stores the server's hidden per-connection capability without exposing it to the model. Every runtime consumer now reads secret-bearing remote state through one helper that repairs existing files to mode 0600 before any byte is read; writes reassert the mode too. Terminal/model-facing `status`/`read` output is an explicit redacted view with the reconnect instruction rather than raw state, and both remote commands direct only redacted resolver/status/list surfaces. A narrow MCP `describe`/`use` bridge makes the server's schema-complete `manage_plan` reachable while refusing pump-only verbs and every property outside the exact plan schema. The Claude skill keeps the threshold high: routine read-only investigation never plans; material shared work creates once, advances atomically at meaningful boundaries, resumes at the latest revision, and explicitly completes or abandons. Cross-plan mutation and orphan adoption require explicit revisioned targeting.
+
+A no-command reconnect/reseed projection is now recovered from its durable `canonical_context` record and attached to the next real command after a poller restart. Projection validation also requires bounded nonnegative, strictly ordered unique positions plus unique step and plan identities.
+
+Session plans remain coordination only. They are outside action-item mutation claim enforcement, produce no claim or provenance evidence, and never replace reserve, claim, or record implementation.
+
 ## 0.19.1 - 2026-08-20
 
 ### Commit observation now respects jurisdiction, which the first live run showed it did not

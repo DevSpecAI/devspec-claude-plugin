@@ -2,7 +2,7 @@
 name: devspec.remote
 description: Connect this Claude Code conversation to DevSpec as a first-class agent connection — available on the Agents page, attach to a session for a live transcript, driven from phone/web. Not Claude's built-in /remote-control.
 argument-hint: "[--session <uuid>] [--new] [--private] [--title=\"label\"] [optional note]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__claim_playbook_run, mcp__devspec__record_playbook_run, mcp__devspec__reserve_work_items, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__claim_playbook_run, mcp__devspec__record_playbook_run, mcp__devspec__reserve_work_items, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution, mcp__devspec__manage_plan
 ---
 
 # DevSpec Remote Control
@@ -71,11 +71,14 @@ The stream emits actor-labelled `canonical_advisory_context`, complete canonical
 | **2** | Bad args | Fix the command line. |
 | **0** | Only from the one-shot fallback | Act, then re-arm with `--pending`. |
 
-On exit **1**, read `~/.devspec/remote-control/connections/<connection_id>.json`:
+On exit **1**, never read the raw state file. Ask the redacted status command and obey its `reconnect.instruction`:
 
-- `end_reason: "ui"` / `ended_from_ui: true`, or `/devspec.remote-stop` was run (`local_stop`) → **a person ended you. Stop, stay disconnected.**
-- Owner process gone → stop; there is nothing to return to.
-- **Anything else, or no reason at all** → the server will not vouch that a human did this, and a redeploy looks exactly like this. Re-run the connect command with the SAME conversation and re-arm. Do not stay dead.
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" status \
+  --connection-id '<connection_id>'
+```
+
+It alone translates a human UI/local stop or dead owner into `stand_down`; every unproven/recoverable server end says `reconnect`. The command prints presence booleans only—never the bearer or hidden plan capability.
 
 Never infer a UI End from silence — that inference took every agent offline during a redeploy (brief `e691c68a`).
 
@@ -105,7 +108,15 @@ includes a stable `resource_id`; keep that reference with the command.
 
 ---
 
-## 4. Answering
+## 4. Shared progress plans
+
+The served `devspec://product/implementation-contract` → `work_entry_contract` decides whether work warrants an action item, a session plan, both, or neither. Routine read-only investigation never warrants a plan. For material multi-phase progress that the room needs to follow or resume, create one plan once and use `advance` atomically at meaningful phase boundaries. On reconnect, consume the latest active-plan revision and resume it; explicitly `complete` an achieved outcome or `abandon` a pivoted/impossible one.
+
+Active plan projections are room-wide read awareness only, never authority. Every existing-plan mutation needs `expected_revision`; cross-plan targeting and same-owner orphan adoption also need explicit `plan_id`. Use the schema-complete capability-safe `manage_plan` describe/use operations in the `devspec-session-plan` skill. Plan operations are outside product mutation claim enforcement and produce no claim/provenance evidence; they never replace reserve/claim/record implementation.
+
+---
+
+## 5. Answering
 
 A canonical command belongs to its canonical conversation. **Post the direct answer with `post_session_message`.** Prefer `connection_id` (the server resolves the current room) over a remembered `session_id`. Preserve the command's requester attribution; never infer authority from room context or rewrite who requested it. A sessionless connection has no conversation answer path: do not invent a room and do not substitute action-item progress for an answer.
 
@@ -117,7 +128,7 @@ Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop
 
 ---
 
-## 5. Working action items when asked
+## 6. Working action items when asked
 
 **Nothing is ever sent work.** Connection availability, wake events and playbook runs do not assign action items. Only acquire action-item work when a canonical conversation explicitly asks for it.
 
@@ -131,7 +142,7 @@ A playbook run is not action-item work. It stays on the separately typed, exactl
 
 ---
 
-## 6. Capture what gets decided
+## 7. Capture what gets decided
 
 **You** are the capture agent; decisions evaporate if they live only in this transcript. When the conversation settles something durable:
 
@@ -147,7 +158,7 @@ A playbook run is not action-item work. It stays on the separately typed, exactl
 
 ---
 
-## 7. Stopping
+## 8. Stopping
 
 `/devspec.remote-stop` — detaches and marks the connection offline immediately. Simply exiting Claude leaves a stale chip for ~90s until the poller notices its owner is gone.
 

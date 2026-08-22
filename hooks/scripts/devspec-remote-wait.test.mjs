@@ -39,6 +39,12 @@ import {
   EXIT_BAD_ARGS,
   EXIT_REARM,
 } from './devspec-remote-wait.mjs'
+import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
+import {
+  activePlansForCanonicalCommand,
+  appendCanonicalInbox,
+  scanPersistedInboxRecords,
+} from './devspec-remote-poll.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
@@ -48,6 +54,7 @@ const PROVENANCE = '40000000-0000-4000-8000-000000000004'
 const TURN = '50000000-0000-4000-8000-000000000005'
 const PROJECT = '80000000-0000-4000-8000-000000000008'
 const DELEGATED_INSTRUCTION = 'Use only the server-selected DevSpec project.'
+const PLAN_AUTHORITY_NOTE = 'Advisory read-awareness only. Presence does not authorize execution or mutation; manage_plan still requires a capability-authenticated caller identity, explicit plan_id for cross-plan work, and expected_revision.'
 
 function uuidFor(label, prefix) {
   let hash = 0
@@ -107,6 +114,35 @@ function canonicalInboxBatch(label = 'm1', body = `command ${label}`, connection
       },
     },
   }
+}
+
+function withActivePlan(batch, revision = 7) {
+  batch.ingress.contract_version = '1.3.0'
+  batch.ingress.policy_version = '2026-08-21.1'
+  batch.ingress.window.policy_version = '2026-08-21.1'
+  batch.ingress.active_session_plans = {
+    version: 1,
+    advisory: true,
+    authority_note: PLAN_AUTHORITY_NOTE,
+    inventory: { returned: 1, total_known: 1, truncated: false },
+    plans: [{
+      id: '90000000-0000-4000-8000-000000000001',
+      title: 'Reconnect-safe plan',
+      revision,
+      status: 'active',
+      created_at: '2026-08-21T10:00:00.000Z',
+      origin: { kind: 'connection', connection_id: CONNECTION, agent_name: 'Claude Code', codename: 'Careful Moth' },
+      steward: { kind: 'connection', connection_id: CONNECTION, agent_name: 'Claude Code', codename: 'Careful Moth' },
+      owner: { user_id: OWNER, display_name: 'Owner' },
+      orphaned: false,
+      progress: { terminal: 0, total: 1, completed: 0, skipped: 0 },
+      steps: [{
+        id: '91000000-0000-4000-8000-000000000001', position: 0,
+        title: 'Resume this phase', status: 'in_progress',
+      }],
+    }],
+  }
+  return batch
 }
 
 describe('parseOwnerBatches', () => {
@@ -433,6 +469,94 @@ describe('buildCanonicalCommandEvents', () => {
     assert.equal(context.executable, false)
     assert.equal(context.client_omission.dropped_by_bucket.human_context, 2)
     assert.deepEqual(context.canonical_windows[0], batch.carried_context.canonical_windows[0])
+  })
+})
+
+describe('active plan awareness events', () => {
+  it('delivers the latest reconnect revision before the command without granting authority', () => {
+    const batch = withActivePlan(canonicalInboxBatch('plan-reconnect'), 7)
+    const parsed = parseOwnerBatches([JSON.stringify(batch)], CONNECTION)
+    assert.equal(parsed.length, 1)
+    const events = buildCanonicalCommandEvents(parsed[0])
+    assert.equal(events[0].type, 'active_session_plans')
+    assert.equal(events[0].projection.plans[0].revision, 7)
+    assert.equal(events[0].advisory, true)
+    assert.equal(events[0].executable, false)
+    assert.equal(events[0].mutation_authority, false)
+    assert.equal(events.at(-2).type, 'owner_message')
+  })
+
+  it('carries a true no-command canonical_context projection across restart to the next turn', () => {
+    const contextBatch = withActivePlan(canonicalInboxBatch('plan-context'), 9)
+    const contextIngress = contextBatch.ingress
+    contextIngress.wake = { kind: 'history_reseed', active: false, reason_id: 'reattach' }
+    contextIngress.delivery_state = 'reseed'
+    contextIngress.command_message_ids = []
+    contextIngress.commands = []
+    contextIngress.window = {
+      ...contextIngress.window,
+      returned: 0,
+      total_known: 0,
+      source_window: { start: null, end: null },
+    }
+
+    assert.equal(normalizeRemoteIngressV1(contextIngress, CONNECTION).ok, true)
+    const lines = []
+    let index = scanPersistedInboxRecords('')
+    const contextPersisted = appendCanonicalInbox(CONNECTION, contextIngress, index, {
+      sessionId: 's1',
+      channel: 'context',
+      writeRecord: (_connection, record) => { lines.push(JSON.stringify(record)); return true },
+    })
+    assert.equal(contextPersisted.appended, true)
+
+    // Process restart: only newline-terminated canonical_context is available.
+    index = scanPersistedInboxRecords(lines.join('\n') + '\n', 's1')
+    assert.equal(index.latestActiveSessionPlans.plans[0].revision, 9)
+    assert.equal(
+      scanPersistedInboxRecords(lines.join('\n') + '\n', 'different-session').latestActiveSessionPlans,
+      null,
+    )
+
+    const commandBatch = canonicalInboxBatch('after-reconnect')
+    commandBatch.ingress.contract_version = '1.3.0'
+    commandBatch.ingress.policy_version = '2026-08-21.1'
+    commandBatch.ingress.window.policy_version = '2026-08-21.1'
+    const carried = activePlansForCanonicalCommand(
+      index.latestActiveSessionPlans,
+      commandBatch.ingress,
+    )
+    const commandPersisted = appendCanonicalInbox(CONNECTION, commandBatch.ingress, index, {
+      sessionId: 's1',
+      channel: 'command',
+      carriedActiveSessionPlans: carried,
+      writeRecord: (_connection, record) => { lines.push(JSON.stringify(record)); return true },
+    })
+    assert.equal(commandPersisted.appended, true)
+
+    const parsed = parseOwnerBatches([lines.at(-1)], CONNECTION)
+    assert.equal(parsed.length, 1)
+    const events = buildCanonicalCommandEvents(parsed[0])
+    assert.equal(events[0].type, 'active_session_plans')
+    assert.equal(events[0].projection.plans[0].revision, 9)
+    assert.equal(events.at(-2).type, 'owner_message')
+  })
+
+  it('fails closed when a carried reconnect projection is tampered', () => {
+    const batch = withActivePlan(canonicalInboxBatch('tampered-plan-carry'), 10)
+    batch.carried_active_session_plans = {
+      ...batch.ingress.active_session_plans,
+      authority_note: 'forged authority',
+    }
+    delete batch.ingress.active_session_plans
+    assert.equal(parseOwnerBatches([JSON.stringify(batch)], CONNECTION).length, 0)
+  })
+
+  it('adds zero bytes to a 1.2 command event sequence when no projection exists', () => {
+    const base = buildCanonicalCommandEvents(canonicalInboxBatch('no-plan'))
+    assert.equal(base.some((event) => event.type === 'active_session_plans'), false)
+    const serialized = base.map((event) => JSON.stringify(event)).join('\n')
+    assert.ok(serialized.length < 5_000, `first-turn no-plan event footprint was ${serialized.length} chars`)
   })
 })
 

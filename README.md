@@ -11,6 +11,7 @@ Bring your team's DevSpec work into Claude Code — and drive Claude from your b
 - **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread; only the owner or a server-authorized delegate can send an exactly addressed command. → [Remote control](#-drive-a-session-from-devspec-remote-control)
 - **Work a task end to end.** Point Claude at an action item and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
 - **Work an explicit batch in order.** Ask Claude in a conversation to work named action items; it reserves the requested order, then claims and implements them one by one.
+- **Share material progress in the room.** For genuinely multi-phase work, Claude can maintain one revisioned session plan that every attached participant can follow and a reconnecting agent can resume. Routine read-only investigation stays plan-free.
 - **Small conveniences.** Create tasks, make tracked commits, and ask DevSpec's docs questions without leaving the terminal.
 
 Everything runs against your own DevSpec account and repositories, using an API token you control.
@@ -86,6 +87,12 @@ This lists the connection on DevSpec's Agents page without inventing a chat tran
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
 When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Waiting for your next instruction is a lightweight background check — it does **not** spend Claude usage while idle. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
+
+### Shared session plans
+
+Claude keeps routine read-only investigation and quick answers plan-free. When work has material multi-phase progress that others in the room need to follow or resume, it creates one shared plan, advances it atomically at meaningful boundaries, and explicitly completes or abandons it. Reconnecting agents receive the latest revision.
+
+Everyone attached to the room can read active plans, but visibility is not mutation authority. Cross-plan changes and adoption require explicit revisioned targeting, and adoption is restricted to an orphaned plan belonging to the same owner. Plans coordinate progress only: they do not claim action-item work, create provenance, or replace the reserve/claim/record implementation lifecycle.
 
 ### Who can talk to it
 

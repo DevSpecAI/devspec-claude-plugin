@@ -6,8 +6,8 @@
  * fallback and preferred session-scoped `--stream` Monitor architecture. Runtime
  * wake inputs are revalidated `canonical_commands`, typed `canonical_control`, or
  * explicit `playbook_run` records previously validated and written by the poller.
- * Typed context is rendered first as actor-labelled advisory model context; complete
- * canonical commands follow as model-visible owner_message events, including validated
+ * Active room plans and typed context are rendered first as explicitly advisory model
+ * awareness; complete canonical commands follow as model-visible owner_message events, including validated
  * server-owned delegated project scope. Summaries and previews are explicitly
  * non-authoritative/non-executable.
  *
@@ -29,7 +29,9 @@ import {
   materialiseAttachments,
   MAX_INLINE_ATTACHMENT_CHARS,
 } from './attachment-store.mjs'
+import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import {
+  isActiveSessionPlansProjectionV1,
   isRemoteIngressBoundedMetadata,
   isRemoteIngressTypedContext,
   normalizeRemoteIngressV1,
@@ -297,15 +299,11 @@ function inboxPath(connectionId) {
 function readState(connectionId) {
   const paths = [statePath(connectionId), LEGACY_STATE_PATH]
   for (const p of paths) {
-    try {
-      if (!fs.existsSync(p)) continue
-      const s = JSON.parse(fs.readFileSync(p, 'utf8'))
-      if (connectionId && s.connection_id && s.connection_id !== connectionId && p === LEGACY_STATE_PATH)
-        continue
-      return s
-    } catch {
-      /* next */
-    }
+    const s = readPrivateJson(p)
+    if (!s) continue
+    if (connectionId && s.connection_id && s.connection_id !== connectionId && p === LEGACY_STATE_PATH)
+      continue
+    return s
   }
   return null
 }
@@ -320,25 +318,16 @@ function writeStatePatch(connectionId, patch) {
       updated_at: new Date().toISOString(),
     }
     fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    fs.writeFileSync(statePath(connectionId), JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+    writePrivateJson(statePath(connectionId), next)
     // Mirror offset into legacy only if it points at this connection.
-    try {
-      if (fs.existsSync(LEGACY_STATE_PATH)) {
-        const leg = JSON.parse(fs.readFileSync(LEGACY_STATE_PATH, 'utf8'))
-        if (!leg.connection_id || leg.connection_id === connectionId) {
-          fs.writeFileSync(
-            LEGACY_STATE_PATH,
-            JSON.stringify(
-              { ...leg, ...patch, connection_id: connectionId, updated_at: next.updated_at },
-              null,
-              2,
-            ) + '\n',
-            { mode: 0o600 },
-          )
-        }
-      }
-    } catch {
-      /* ignore legacy */
+    const leg = readPrivateJson(LEGACY_STATE_PATH)
+    if (leg && (!leg.connection_id || leg.connection_id === connectionId)) {
+      writePrivateJson(LEGACY_STATE_PATH, {
+        ...leg,
+        ...patch,
+        connection_id: connectionId,
+        updated_at: next.updated_at,
+      })
     }
   } catch (e) {
     process.stderr.write(`devspec-remote-wait: state write failed: ${e.message}\n`)
@@ -465,12 +454,15 @@ export function parseInboxBatches(lines, connectionId) {
         const ids = Array.isArray(record.execute_message_ids)
           ? record.execute_message_ids
           : parsed.envelope.command_message_ids
+        if (Object.hasOwn(record, 'carried_active_session_plans') &&
+            !isActiveSessionPlansProjectionV1(record.carried_active_session_plans)) continue
         const commandIds = new Set(parsed.envelope.commands.map((command) => command.message_id))
         if (ids.length === 0 || new Set(ids).size !== ids.length || ids.some((id) => !commandIds.has(id))) continue
         batches.push({
           ...record,
           execute_message_ids: ids,
           carried_context: validCarriedContext(record.carried_context),
+          carried_active_session_plans: record.carried_active_session_plans ?? null,
         })
       } else if (record.type === 'canonical_control') {
         if (record.authoritative_source !== REMOTE_INGRESS_RESOURCE_URI) continue
@@ -499,6 +491,24 @@ export function parseOwnerBatches(lines, connectionId) {
  * delegated scope and its server instruction are surfaced verbatim; owner commands
  * receive no instruction injection. Summaries/previews remain non-authoritative.
  */
+function activePlanAwarenessEvent(ingress, sessionId, carried = null) {
+  const projection = ingress?.active_session_plans ?? carried
+  if (!projection) return null
+  return {
+    type: 'active_session_plans',
+    session_id: sessionId,
+    advisory: true,
+    executable: false,
+    authoritative_inventory: true,
+    mutation_authority: false,
+    authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
+    projection,
+    note:
+      'Room-wide read awareness only. Presence never authorizes execution or mutation. ' +
+      'Use manage_plan with explicit plan_id and expected_revision for any authorized cross-plan or adoption operation.',
+  }
+}
+
 export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
   const ingress = batch?.ingress
   const executeIds = new Set(Array.isArray(batch?.execute_message_ids) ? batch.execute_message_ids : [])
@@ -510,6 +520,12 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
   const advisoryContext = carried?.context ?? ingress?.context
   const rendered = renderAdvisoryContext(advisoryContext)
   const events = []
+  const plans = activePlanAwarenessEvent(
+    ingress,
+    sessionId,
+    batch?.carried_active_session_plans,
+  )
+  if (plans) events.push(plans)
 
   if (rendered.length > 0 || carried?.client_omission || ingress?.window) {
     events.push({
@@ -583,6 +599,8 @@ export function buildCanonicalControlEvents(batch, { inboxFile } = {}) {
   const ingress = batch.ingress
   const context = renderAdvisoryContext(ingress.context)
   const events = []
+  const plans = activePlanAwarenessEvent(ingress, batch.session_id ?? null)
+  if (plans) events.push(plans)
   if (context.length > 0 || ingress.window) {
     events.push({
       type: 'canonical_advisory_context',

@@ -7,8 +7,8 @@
 ## How a message reaches Claude
 
 1. DevSpec emits negotiated canonical ingress for this connection.
-2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
-3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit playbooks, or separate non-chat host controls.
+2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope plus active-plan projection v1, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
+3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints active plans as advisory room awareness, typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit playbooks, or separate non-chat host controls.
 4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
 5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
@@ -27,7 +27,7 @@ What the script does, in order:
 
 1. Node preflight; resolve cwd, `git remote get-url origin`, and the nearest `.devspec/project.json` pin.
 2. Resolve the conversation id and the local bond (`already_live` / `reconnect` / `register`).
-3. Resolve MCP auth, then `register_connection` **over raw JSON-RPC** (`mcp-call.mjs`).
+3. Resolve MCP auth, then `register_connection` **over raw JSON-RPC** (`mcp-call.mjs`), negotiating the hidden connection capability used by `manage_plan`.
 4. `attach_connection`, or `create_session` + attach for `--new`.
 5. `writeConnectionState(...)` — state file, conversation bond, dead-poller reap, poller start.
 6. A **bounded** `get_session_transcript` seed when attached.
@@ -38,7 +38,8 @@ Design rules for anyone editing it:
 - **It decides nothing.** It sends `git_remote` and/or `pinned_project_id` as facts and lets the server's `resolveProjectScope` arbitrate. Precedence is never implemented client-side — that is what lets a stale pin copied in with a template self-correct instead of hijacking a folder.
 - **No `list_projects` round-trip.** The router resolves the project from `git_remote` directly, so the extra call and its response were pure cost.
 - **Raw JSON-RPC, not host MCP tools.** Claude Code negotiates MCP capabilities **once per session**, so a server that starts advertising resources is invisible to every already-running session. The script layer never negotiates, so it can always reach the server even when the host cannot. Keep connect on `mcp-call.mjs` for that reason, not merely for tidiness.
-- **One writer.** `writeConnectionState` is shared with `remote-control-state.mjs write`. Do not grow a second state-writing path.
+- **One private state boundary.** `private-state.mjs` is the only reader/writer for remote-control JSON that can carry the bearer or hidden capability; every consumer (connect/state, plan, poll, wait, turn mirror, commit observation) goes through it, and it repairs older file modes before reading. `writeConnectionState` remains the one connection-state assembler. Model-facing diagnostics use `remote-control-state.mjs status|read`, which emits only the redacted view and direct reconnect disposition; both remote commands must use resolver/status/list and never tell the model to open the raw file.
+- **Plans are not pump verbs.** `devspec-plan.mjs describe|use` injects that capability mechanically and exposes only the server-advertised `manage_plan`. It must never become an alternate poll/heartbeat/dispatch client.
 - **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
 - Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered playbook is durable.
 - Remote-ingress policy, including delegated project scope, is authoritative at `devspec://product/remote-ingress-contract`; validate and surface the server instruction verbatim rather than restating mutable wording here.
@@ -55,7 +56,7 @@ The server shipped both capabilities in item `e98b2859`; this plugin was an "old
 
 Only if `devspec-remote-connect.mjs` is absent. Do not invent a third path — fix the plugin instead.
 
-1. `register_connection({ local_id, agent_name, git_remote })`, then `attach_connection` if a session was named.
+1. `register_connection({ local_id, agent_name, git_remote, connection_capability_version: 1 })`, retaining the hidden MCP result `_meta` capability outside model context, then `attach_connection` if a session was named.
 2. `remote-control-state.mjs write --connection-id … --owner-pid "$PPID"` to write state and start the poller.
 3. If even the poller script is gone, restore/fix the plugin rather than inventing a second ingress path. The negotiated wire and execution rules live at `devspec://product/remote-ingress-contract`.
 4. `status: "not_found"` / `"ended"` → check `end_reason` before standing down. Only `ui` or `local_stop` means a person ended you.

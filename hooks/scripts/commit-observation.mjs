@@ -50,6 +50,7 @@ import { execFileSync } from 'node:child_process'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { stateDir } from './commit-provenance.mjs'
 import { devspecFolderMarker } from './devspec-scope.mjs'
+import { readPrivateJson } from './private-state.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const REPORT_TIMEOUT_MS = 2_500
@@ -135,9 +136,8 @@ export function takeHead(sessionId, repoDir) {
   const file = markerPath(sessionId, repoDir)
   let raw
   try {
-    raw = JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch {
-    return null
+    raw = readPrivateJson(file)
+    if (!raw) return null
   } finally {
     try {
       fs.rmSync(file, { force: true })
@@ -192,7 +192,7 @@ export function boundConnection(sessionId, dir = CONNECTIONS_DIR) {
   const candidates = []
   for (const name of names) {
     try {
-      const raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+      const raw = readPrivateJson(path.join(dir, name))
       if (raw?.enabled === true && raw?.connection_id && raw?.local_id === sessionId) {
         candidates.push({ raw, mtime: fs.statSync(path.join(dir, name)).mtimeMs })
       }
@@ -296,7 +296,8 @@ async function main() {
   const mode = process.argv[2]
   let input = {}
   try {
-    input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
+    const inputText = fs.readFileSync(0, 'utf8')
+    input = JSON.parse(inputText || '{}')
   } catch {
     return
   }

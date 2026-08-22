@@ -3,8 +3,8 @@
  * Long-lived, model-free `poll_connection` client for one DevSpec connection.
  *
  * Architecture is intentionally unchanged: held poll → durable per-connection JSONL
- * inbox → wait stream → Claude Code Monitor. Polling negotiates ingress_version:1
- * and delegated_scope_version:1, then validates the canonical envelope before it can
+ * inbox → wait stream → Claude Code Monitor. Polling negotiates ingress_version:1,
+ * delegated_scope_version:1 and active_plan_projection_version:1, then validates the canonical envelope before it can
  * create a wake record. Legacy
  * conversational/context arrays are inert; top-level playbook_run dispatches retain
  * their explicit independent channel and cursor.
@@ -25,17 +25,25 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
 import {
+  isActiveSessionPlansProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
+  REMOTE_INGRESS_CONTRACT_VERSION,
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
 
 export const DELEGATED_SCOPE_VERSION = 1
+export const ACTIVE_PLAN_PROJECTION_VERSION = 1
 
 export function remoteIngressNegotiationArguments() {
-  return { ingress_version: 1, delegated_scope_version: DELEGATED_SCOPE_VERSION }
+  return {
+    ingress_version: 1,
+    delegated_scope_version: DELEGATED_SCOPE_VERSION,
+    active_plan_projection_version: ACTIVE_PLAN_PROJECTION_VERSION,
+  }
 }
 
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -195,8 +203,7 @@ function turnMarkerPath(connectionId) {
 function readTurnMarker(connectionId) {
   try {
     const p = turnMarkerPath(connectionId)
-    if (!fs.existsSync(p)) return null
-    const m = JSON.parse(fs.readFileSync(p, 'utf8'))
+    const m = readPrivateJson(p)
     return typeof m?.startedAt === 'number' ? m : null
   } catch {
     return null
@@ -251,21 +258,17 @@ function readState(connectionId) {
   if (connectionId) tryPaths.push(path.join(CONNECTIONS_DIR, `${connectionId}.json`))
   tryPaths.push(LEGACY_STATE_PATH)
   for (const p of tryPaths) {
-    try {
-      if (!fs.existsSync(p)) continue
-      const s = JSON.parse(fs.readFileSync(p, 'utf8'))
-      if (
-        connectionId &&
-        s.connection_id &&
-        s.connection_id !== connectionId &&
-        p === LEGACY_STATE_PATH
-      ) {
-        continue
-      }
-      return s
-    } catch {
-      /* try next */
+    const s = readPrivateJson(p)
+    if (!s) continue
+    if (
+      connectionId &&
+      s.connection_id &&
+      s.connection_id !== connectionId &&
+      p === LEGACY_STATE_PATH
+    ) {
+      continue
     }
+    return s
   }
   return null
 }
@@ -274,20 +277,11 @@ function writeState(state, connectionId) {
   const cid = connectionId || state.connection_id
   const paths = []
   if (cid) paths.push(path.join(CONNECTIONS_DIR, `${cid}.json`))
-  try {
-    const legacy = fs.existsSync(LEGACY_STATE_PATH)
-      ? JSON.parse(fs.readFileSync(LEGACY_STATE_PATH, 'utf8'))
-      : null
-    if (!legacy || !legacy.connection_id || legacy.connection_id === cid) {
-      paths.push(LEGACY_STATE_PATH)
-    }
-  } catch {
+  const legacy = readPrivateJson(LEGACY_STATE_PATH)
+  if (!legacy || !legacy.connection_id || legacy.connection_id === cid) {
     paths.push(LEGACY_STATE_PATH)
   }
-  for (const p of paths) {
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
-  }
+  for (const p of paths) writePrivateJson(p, state)
 }
 
 /**
@@ -402,12 +396,13 @@ export function validatePlaybookRunDispatch(dispatch, connectionId) {
 }
 
 /** Rebuild crash-safe delivery identity from newline-terminated durable records only. */
-export function scanPersistedInboxRecords(text) {
+export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
   const index = {
     envelopeIds: new Set(),
     commandMessageIds: new Set(),
     controlIds: new Set(),
     dispatchIds: new Set(),
+    latestActiveSessionPlans: null,
   }
   const persisted = String(text || '')
   const finalNewline = persisted.lastIndexOf('\n')
@@ -426,6 +421,22 @@ export function scanPersistedInboxRecords(text) {
             ? record.ingress.commands.map((command) => command?.message_id)
             : []
         for (const id of ids) if (typeof id === 'string') index.commandMessageIds.add(id)
+        // Any carried projection is attached to this durable command record and has
+        // therefore been consumed from the reconnect carry, even if the process dies
+        // before its in-memory state advances.
+        if (activeSessionId === undefined || record.session_id === activeSessionId) {
+          index.latestActiveSessionPlans = null
+        }
+      } else if (record?.type === 'canonical_context' &&
+          record.ingress?.contract_version === REMOTE_INGRESS_CONTRACT_VERSION &&
+          (activeSessionId === undefined || record.session_id === activeSessionId)) {
+        const parsedContext = normalizeRemoteIngressV1(record.ingress, record.connection_id)
+        if (parsedContext.ok) {
+          index.latestActiveSessionPlans =
+            isActiveSessionPlansProjectionV1(record.ingress.active_session_plans)
+              ? record.ingress.active_session_plans
+              : null
+        }
       }
       if (record?.type === 'canonical_control' && typeof record.ingress?.control?.id === 'string') {
         index.controlIds.add(record.ingress.control.id)
@@ -440,11 +451,14 @@ export function scanPersistedInboxRecords(text) {
   return index
 }
 
-function readInboxDeliveryIndex(connectionId) {
+function readInboxDeliveryIndex(connectionId, activeSessionId = undefined) {
   try {
-    return scanPersistedInboxRecords(fs.readFileSync(inboxPathForConnection(connectionId), 'utf8'))
+    return scanPersistedInboxRecords(
+      fs.readFileSync(inboxPathForConnection(connectionId), 'utf8'),
+      activeSessionId,
+    )
   } catch {
-    return scanPersistedInboxRecords('')
+    return scanPersistedInboxRecords('', activeSessionId)
   }
 }
 
@@ -501,6 +515,7 @@ export function appendCanonicalInbox(
   {
     sessionId = null,
     carriedContext = null,
+    carriedActiveSessionPlans = null,
     channel = 'context',
     writeRecord = appendDurableRecord,
   } = {},
@@ -538,6 +553,9 @@ export function appendCanonicalInbox(
     ingress,
     ...(channel === 'command' ? { execute_message_ids: executeMessageIds } : {}),
     ...(carriedContext ? { carried_context: carriedContext } : {}),
+    ...(carriedActiveSessionPlans
+      ? { carried_active_session_plans: carriedActiveSessionPlans }
+      : {}),
   }
   if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
   index.envelopeIds.add(ingress.envelope_id)
@@ -859,6 +877,25 @@ export function snapshotCanonicalCarry(state) {
 /** Failed appends retain carry; every accepted command identity consumes its snapshot. */
 export function carryAfterCanonicalInbox(state, channel, persisted) {
   return channel === 'command' && persisted?.ok === true ? createCanonicalCarryState() : state
+}
+
+/** Latest no-command active-plan projection to attach to the next real turn. */
+export function activePlansForCanonicalCommand(current, ingress) {
+  return isActiveSessionPlansProjectionV1(ingress?.active_session_plans)
+    ? ingress.active_session_plans
+    : current
+}
+
+/** Advance projection carry only after its canonical record is durable. */
+export function activePlansAfterCanonicalInbox(current, ingress, channel, persisted) {
+  if (persisted?.ok !== true) return current
+  if (channel === 'command') return null
+  if (ingress?.contract_version !== REMOTE_INGRESS_CONTRACT_VERSION) return current
+  return isActiveSessionPlansProjectionV1(ingress.active_session_plans)
+    ? ingress.active_session_plans
+    : channel === 'context'
+      ? null
+      : current
 }
 
 /**
@@ -1360,12 +1397,15 @@ async function main() {
   // Independent playbook clock. It advances only after every offered playbook is
   // already durable (new append or crash-recovered dedupe).
   let dispatchCursor = state?.dispatch_cursor || null
-  const persistedInbox = readInboxDeliveryIndex(connectionId)
+  const persistedInbox = readInboxDeliveryIndex(connectionId, sessionId)
   let lastTier = null
   let lastBusySent = null
   // Canonical typed advisory context carried forward since the last accepted
   // command. One combined budget and canonical order apply across actor buckets.
   let canonicalCarry = createCanonicalCarryState()
+  // Rebuild no-command/reseed plan awareness from newline-terminated durable
+  // canonical_context records, so a poller restart cannot skip the projection.
+  let activePlanCarry = persistedInbox.latestActiveSessionPlans
 
   /** Persist a state patch without clobbering concurrent fields. Best-effort. */
   function patchState(patch) {
@@ -1466,9 +1506,11 @@ async function main() {
 
     let channel = 'context'
     let carriedContext = null
+    let carriedActiveSessionPlans = null
     if (normalized.wake) {
       channel = 'command'
       carriedContext = takeCanonicalContext()
+      carriedActiveSessionPlans = activePlansForCanonicalCommand(activePlanCarry, ingress)
     } else if (ingress.wake.kind === 'control' && ingress.wake.active && ingress.delivery_state === 'live') {
       channel = 'control'
     }
@@ -1476,10 +1518,12 @@ async function main() {
     const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,
       carriedContext,
+      carriedActiveSessionPlans,
       channel,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
     canonicalCarry = carryAfterCanonicalInbox(canonicalCarry, channel, persisted)
+    activePlanCarry = activePlansAfterCanonicalInbox(activePlanCarry, ingress, channel, persisted)
     persistCanonicalCursorState(res, ingress, drainingContinuation)
 
     if (normalized.reason === 'unavailable_attachment') {
@@ -1743,6 +1787,7 @@ async function main() {
       catchUpCursor = null
       needsSeed = true
       canonicalCarry = createCanonicalCarryState()
+      activePlanCarry = null
       patchState({
         session_id: sessionId,
         cursor_after_message_id: null,

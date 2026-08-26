@@ -20,6 +20,14 @@ import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
 import { readPrivateJson } from './private-state.mjs'
+import {
+  activeContinuation,
+  continuationIdentity,
+  DELIVERED,
+  stopInteractionDecision,
+} from './interaction-events.mjs'
+// The bridge owns clearing a resolved continuation; Stop is its other resolver.
+import { clearStoredContinuation } from './devspec-question.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -395,6 +403,9 @@ export function countUnreadOwnerCommands(connectionId, offset, dir = CONNECTIONS
         count += ids.length
       } else if (obj?.type === 'canonical_control' || obj?.type === 'playbook_run') {
         count++
+      } else if (obj?.type === 'interaction_answer' && obj.disposition === DELIVERED) {
+        // Not a command, but a person is waiting on it just as directly.
+        count++
       }
     } catch {
       /* skip garbage */
@@ -614,16 +625,50 @@ async function main() {
       // long-poll tick — so Working / dots linger for seconds after the answer has
       // already landed. Calling it here drops them as soon as the turn ends, and
       // means a healthy Stop no longer depends on the poller to finish the turn.
+      //
+      // An exact directed-question attempt is the ONE case the generic call must not
+      // touch: closing an attempt from outside its claim generation is how other hosts
+      // sealed empty "No response" bubbles. It gets its own exact completion below,
+      // and only once its answer has actually reached the model.
       if (!turnActive) {
-        try {
-          await mcpToolsCall({
-            mcpUrl,
-            token,
-            name: 'report_complete',
-            arguments: { connection_id: connectionId, reason: 'turn_end' },
-          })
-        } catch {
-          /* non-fatal — the poller's marker-driven backstop still runs */
+        const stopDecision = stopInteractionDecision({
+          continuation: activeContinuation(state.interaction_continuation, {
+            connectionId,
+            sessionId,
+          }),
+          inboxByteOffset: state.inbox_byte_offset,
+        })
+        // 'hold' completes nothing at all: the answer is still in flight, and closing
+        // the connection's current attempt now would close THAT one. The window is the
+        // wait's poll interval (sub-second), and its cost is bounded — the delivery
+        // wakes the model immediately and that turn's end completes exactly — whereas
+        // sealing an attempt whose answer the model never saw is unrecoverable.
+        if (stopDecision.action !== 'hold') {
+          try {
+            await mcpToolsCall({
+              mcpUrl,
+              token,
+              ...(stopDecision.action === 'complete'
+                ? { connectionCapability: state.connection_capability }
+                : {}),
+              name: 'report_complete',
+              arguments: stopDecision.action === 'complete'
+                ? {
+                    connection_id: connectionId,
+                    attempt_id: stopDecision.continuation.attempt_id,
+                    reason: 'turn_end',
+                    ...continuationIdentity({
+                      event_id: stopDecision.continuation.event_id,
+                      response_id: stopDecision.continuation.response_id,
+                      claim_token: stopDecision.continuation.claim_token,
+                    }),
+                  }
+                : { connection_id: connectionId, reason: 'turn_end' },
+            })
+            if (stopDecision.action === 'complete') clearStoredContinuation(connectionId)
+          } catch {
+            /* non-fatal — the poller's marker-driven backstop still runs */
+          }
         }
       }
     }

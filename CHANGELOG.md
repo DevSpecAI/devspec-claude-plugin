@@ -2,6 +2,30 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.21.0 - 2026-08-26
+
+### Claude can ask the person driving a session one question, and pick up their answer
+
+When a decision is genuinely the driver's, Claude can now put a question with choices in
+front of them instead of guessing or stalling. The card sits above their composer; their
+answer wakes this conversation on the same stream everything else arrives on, and one
+call posts the reply and closes the turn that answer opened.
+
+The answer channel is deliberately its own lane, and never a command: it cannot carry an
+instruction, widen scope, or reach room chat, dispatch or control. Claude advertises the
+channel only while it can actually finish it, so a connection that could not apply an
+answer never takes a lease on one — the card simply stays pending, which is the truth.
+Each answer opens exactly one exact attempt, lands as a durable inbox record before it
+is acknowledged, and is deduplicated by event id, so a crash between the two
+acknowledges the redelivery rather than acting on it twice. While that attempt is open
+only its own writer may finish it, and a reply is never completed before it has actually
+reached the model — the two ways rooms elsewhere ended up showing "No response" or
+Working with nothing working.
+
+Delivery, leasing and completion authority remain the served
+`devspec://product/interaction-event-contract`. Asking a question is not work evidence
+and never stands in for claiming or recording an action item. 497 tests pass.
+
 ## 0.20.0 - 2026-08-21
 
 ### Shared session plans, without planning routine work

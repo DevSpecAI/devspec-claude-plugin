@@ -4,8 +4,12 @@
  *
  * It preserves the existing byte-offset cursor, armed-listener pidfile, one-shot
  * fallback and preferred session-scoped `--stream` Monitor architecture. Runtime
- * wake inputs are revalidated `canonical_commands`, typed `canonical_control`, or
- * explicit `playbook_run` records previously validated and written by the poller.
+ * wake inputs are revalidated `canonical_commands`, typed `canonical_control`,
+ * explicit `playbook_run`, or `interaction_answer` records previously validated and
+ * written by the poller. A directed-question answer wakes the model but is never
+ * authority: it is the mechanical response to a question this agent asked, and it
+ * names the one operation that finishes the turn it opened
+ * (devspec://product/interaction-event-contract).
  * Active room plans and typed context are rendered first as explicitly advisory model
  * awareness; complete canonical commands follow as model-visible owner_message events, including validated
  * server-owned delegated project scope. Summaries and previews are explicitly
@@ -38,6 +42,11 @@ import {
   renderAdvisoryContext,
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
+import {
+  buildInteractionAnswerEvents,
+  INTERACTION_ANSWER_RECORD_TYPE,
+  validateInteractionAnswerRecord,
+} from './interaction-events.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -470,6 +479,12 @@ export function parseInboxBatches(lines, connectionId) {
         if (!parsed.ok || parsed.envelope.wake.kind !== 'control' ||
             !parsed.envelope.wake.active || parsed.envelope.delivery_state !== 'live') continue
         batches.push(record)
+      } else if (record.type === INTERACTION_ANSWER_RECORD_TYPE) {
+        // Revalidated here as well as at write time: this is the only channel whose
+        // payload came from a person answering a card, and a record that no longer
+        // targets this exact connection and its source session must not wake anyone.
+        if (!validateInteractionAnswerRecord(record, connectionId)) continue
+        batches.push(record)
       } else if (validatePlaybookInboxRecord(record, connectionId)) {
         batches.push(record)
       }
@@ -857,7 +872,9 @@ async function main() {
             ? buildCanonicalCommandEvents(batch, { inboxFile: file })
             : batch.type === 'canonical_control'
               ? buildCanonicalControlEvents(batch, { inboxFile: file })
-              : buildPlaybookRunEvents(batch, { inboxFile: file })
+              : batch.type === INTERACTION_ANSWER_RECORD_TYPE
+                ? buildInteractionAnswerEvents(batch, { inboxFile: file })
+                : buildPlaybookRunEvents(batch, { inboxFile: file })
           await writeEventSequence(events)
           delivered += batch.type === 'canonical_commands'
             ? batch.execute_message_ids.length

@@ -61,7 +61,10 @@ describe('Claude shared-plan policy surfaces', () => {
     const hooks = JSON.parse(source('hooks/hooks.json'))
     const sessionStart = JSON.stringify(hooks.hooks.SessionStart)
     assert.doesNotMatch(sessionStart, /manage_plan|active_session_plans/)
-    assert.ok(Buffer.byteLength(remote) < 15_000, `remote command is ${Buffer.byteLength(remote)} bytes`)
+    // The bound protects idle context, and it moves only when a whole capability is
+    // added to the always-loaded command — here, directed questions (54b63e47), which
+    // cost ~600 bytes because the mechanics live in an on-demand skill.
+    assert.ok(Buffer.byteLength(remote) < 15_500, `remote command is ${Buffer.byteLength(remote)} bytes`)
     assert.ok(Buffer.byteLength(skill) < 3_200, `on-demand skill is ${Buffer.byteLength(skill)} bytes`)
   })
 })

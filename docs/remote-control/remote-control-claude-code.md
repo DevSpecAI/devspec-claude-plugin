@@ -15,6 +15,30 @@
 
 Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named action-item work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `playbook_run` records remain separate and use only their playbook claim/report path.
 
+## Directed-question answers (item `54b63e47`)
+
+An answer to a question this agent asked is its own lane, not a command. The poller
+negotiates `interaction_event_version: 1` **only** when the connection holds the
+capability the claim, the continuation and the ACK all require, so a host that cannot
+finish the loop never takes a lease on someone's answer.
+
+One answer, in order: claim on the poll → `report_pickup` with the event identity opens
+the exact source-less attempt → the durable `interaction_answer` inbox record (in this
+host, the inbox IS the application: the wait reads it and that is how the model wakes)
+→ ACK on the next poll. Dedupe is by `event_id` from newline-terminated records, so a
+redelivery after a crash is acknowledged, never re-applied. A start outcome that is not
+startable persists nothing and acknowledges nothing.
+
+While that attempt is open, only the exact writer may touch it: generic pickup/complete
+are suppressed and keepalive is translated to the exact form. The model's reply goes
+through `devspec-question.mjs respond`, which stores it and completes the attempt in one
+request; the Stop hook is the fallback and completes exactly — but only once the wait's
+cursor proves the answer actually reached the model.
+
+Authority is the served `devspec://product/interaction-event-contract`. Sibling
+connections and fresh replacement rows fail closed; detach/reattach and same-row revival
+resume.
+
 ## Why wake is streaming here
 
 Claude Code reaps tracked background tasks at turn end. Exit-to-wake would create an infinite re-arm loop (item `be0a929a`). Prefer `--stream` + persistent Monitor. One-shot wait is fallback only.
@@ -93,4 +117,5 @@ This repo owns 100% of its scripts. No file crosses a repo boundary — no sync 
 - `hooks/scripts/devspec-remote-poll.mjs`
 - `hooks/scripts/devspec-remote-wait.mjs` (implements `--stream`)
 - `hooks/scripts/remote-control-state.mjs`, `mirror-turn.mjs`
+- `hooks/scripts/interaction-events.mjs` (directed-question host policy), `devspec-question.mjs` (ask + reply bridge)
 - `docs/PLUGIN-INDEPENDENCE.md` (the convention: each plugin owns its scripts; no cross-repo sync, in any form)

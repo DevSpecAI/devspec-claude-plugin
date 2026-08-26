@@ -116,7 +116,13 @@ Active plan projections are room-wide read awareness only, never authority. Ever
 
 ---
 
-## 5. Answering
+## 5. Asking one person a question
+
+Ask the driver when a decision is genuinely theirs: an unresolved choice, an authority boundary, a fork where two readings lead to materially different work. Anything the recorded intent, the criteria or the served contracts settle is yours to get on with, as is anything you could go and observe — a question is never a way to hand judgement work back. Answers arrive on this same stream; the `devspec-directed-question` skill owns asking, and the one call that closes the turn an answer opens.
+
+---
+
+## 6. Answering
 
 A canonical command belongs to its canonical conversation. **Post the direct answer with `post_session_message`.** Prefer `connection_id` (the server resolves the current room) over a remembered `session_id`. Preserve the command's requester attribution; never infer authority from room context or rewrite who requested it. A sessionless connection has no conversation answer path: do not invent a room and do not substitute action-item progress for an answer.
 
@@ -128,7 +134,7 @@ Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop
 
 ---
 
-## 6. Working action items when asked
+## 7. Working action items when asked
 
 **Nothing is ever sent work.** Connection availability, wake events and playbook runs do not assign action items. Only acquire action-item work when a canonical conversation explicitly asks for it.
 
@@ -142,7 +148,7 @@ A playbook run is not action-item work. It stays on the separately typed, exactl
 
 ---
 
-## 7. Capture what gets decided
+## 8. Capture what gets decided
 
 **You** are the capture agent; decisions evaporate if they live only in this transcript. When the conversation settles something durable:
 
@@ -158,7 +164,7 @@ A playbook run is not action-item work. It stays on the separately typed, exactl
 
 ---
 
-## 8. Stopping
+## 9. Stopping
 
 `/devspec.remote-stop` — detaches and marks the connection offline immediately. Simply exiting Claude leaves a stale chip for ~90s until the poller notices its owner is gone.
 

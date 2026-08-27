@@ -32,9 +32,9 @@ fresh UUID per question — reusing one retries that same question rather than a
 new one. `list`, `get` and `cancel` reach only your own questions; cancel one that
 events have overtaken rather than leaving it up.
 
-**The call ends your turn.** Waiting for a person is not working, and a held-open turn
-also blocks their answer from reaching you. Do not poll or loop. Pass `--keep-turn` only
-if you have other work to carry on with after asking.
+**Asking ends Working.** The server closes the asking turn; do not poll or loop. Pass
+`--keep-turn` only if you still have work — that sets `keep_turn` so the server leaves
+the turn open.
 
 ## When they answer
 

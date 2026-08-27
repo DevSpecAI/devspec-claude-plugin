@@ -35,6 +35,7 @@ import {
 import {
   askTurnBoundaryPlan,
   clearStoredContinuation,
+  directedQuestionToolArguments,
   questionRequestOptions,
   readQuestionConnectionState,
   parseArgs as parseQuestionArgs,
@@ -984,6 +985,14 @@ describe('asking a question is a turn boundary (item 79c4aa63)', () => {
     }).endTurn, false)
     assert.equal(parseQuestionArgs(['use', '--keep-turn']).keepTurn, true)
     assert.equal(parseQuestionArgs(['use']).keepTurn, false)
+    assert.deepEqual(
+      directedQuestionToolArguments({ action: 'create', prompt: 'Q' }, { keepTurn: true }),
+      { action: 'create', prompt: 'Q', keep_turn: true },
+    )
+    assert.deepEqual(
+      directedQuestionToolArguments({ action: 'create', prompt: 'Q' }, { keepTurn: false }),
+      { action: 'create', prompt: 'Q' },
+    )
   })
 
   it('never ends the turn while an exact interaction attempt is open', () => {

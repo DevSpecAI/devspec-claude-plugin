@@ -44,7 +44,7 @@ const COMMANDS = new Set(['describe', 'use', 'status', 'respond'])
 const ACTIONS = new Set(['create', 'list', 'get', 'cancel'])
 const PROPERTIES = new Set([
   'action', 'question_id', 'client_request_id', 'response_kind', 'prompt', 'options',
-  'allow_custom', 'provenance_ref', 'expected_revision',
+  'allow_custom', 'keep_turn', 'provenance_ref', 'expected_revision',
 ])
 const RESPONSE_KINDS = new Set(['text', 'single_select', 'multi_select'])
 const MAX_PROMPT_CODE_POINTS = 4000
@@ -60,8 +60,7 @@ export function parseArgs(argv) {
     else if (arg === '--connection-id' || arg === '--connection_id') out.connectionId = argv[++index]
     else if (arg === '--input' || arg === '--json') out.input = argv[++index]
     else if (arg === '--message' || arg === '--reply') out.message = argv[++index]
-    // A host flag, never a tool argument: the server has no say in whether this agent
-    // has more work to do after asking.
+    // Maps onto manage_directed_question keep_turn so host and server cannot disagree.
     else if (arg === '--keep-turn' || arg === '--keep_turn') out.keepTurn = true
   }
   return out
@@ -80,13 +79,19 @@ export function parseArgs(argv) {
  * which is what the server already models — the continuation opens its own attempt.
  *
  * `--keep-turn` is for the genuine other case: asking something and carrying on with
- * other work. Then the turn must stay open, or the room claims idle while the agent
- * works, and this trade is the reason the default is not simply forced server-side.
+ * other work. It sets keep_turn on the create so the server leaves the turn open.
+ * Host-side complete remains a backstop for servers that have not yet deployed that.
  *
  * Never while holding a continuation: a generic complete would seal the exact
  * interaction attempt from outside its claim generation, which is the second-writer
  * failure that produced empty sealed bubbles elsewhere.
  */
+/** Keep host flag and tool argument on the same create payload. */
+export function directedQuestionToolArguments(input, { keepTurn } = {}) {
+  if (input?.action === 'create' && keepTurn) return { ...input, keep_turn: true }
+  return input
+}
+
 export function askTurnBoundaryPlan({ action, keepTurn, continuation, result } = {}) {
   if (action !== 'create') return { endTurn: false, reason: 'not an ask' }
   if (keepTurn) return { endTurn: false, reason: 'caller has more work this turn' }
@@ -156,6 +161,9 @@ export function validateDirectedQuestionArguments(input) {
     }
     if (Object.hasOwn(input, 'allow_custom') && typeof input.allow_custom !== 'boolean') {
       return { ok: false, error: 'allow_custom must be a boolean' }
+    }
+    if (Object.hasOwn(input, 'keep_turn') && typeof input.keep_turn !== 'boolean') {
+      return { ok: false, error: 'keep_turn must be a boolean' }
     }
     if (Object.hasOwn(input, 'provenance_ref') &&
         (typeof input.provenance_ref !== 'string' || !UUID.test(input.provenance_ref))) {
@@ -308,7 +316,11 @@ async function main() {
   }
   const validation = validateDirectedQuestionArguments(input)
   if (!validation.ok) throw new Error(validation.error)
-  const result = await mcpToolsCall({ ...options, name: TOOL, arguments: input })
+  const result = await mcpToolsCall({
+    ...options,
+    name: TOOL,
+    arguments: directedQuestionToolArguments(input, { keepTurn: args.keepTurn }),
+  })
 
   const boundary = askTurnBoundaryPlan({
     action: input.action,

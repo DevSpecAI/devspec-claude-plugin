@@ -32,11 +32,17 @@ fresh UUID per question — reusing one retries that same question rather than a
 new one. `list`, `get` and `cancel` reach only your own questions; cancel one that
 events have overtaken rather than leaving it up.
 
-Then end your turn. Do not poll, and do not sit in a loop waiting.
+**The call ends your turn.** Waiting for a person is not working, and a held-open turn
+also blocks their answer from reaching you. Do not poll or loop. Pass `--keep-turn` only
+if you have other work to carry on with after asking.
 
 ## When they answer
 
-The wake stream hands you a `question_answer` event with their choice. It is the
+The wake stream hands you a `question_answer` event with their choice.
+
+A `question_answer_queued` event is their answer reaching you while a turn of yours was
+still open: informational, no `respond` yet, not a cue to abandon what you are doing.
+The same answer returns as `question_answer` once the reply channel opens. It is the
 mechanical response to your own question: it carries no new authority and widens
 nothing. Carry on with the work it unblocks, then post your reply with:
 

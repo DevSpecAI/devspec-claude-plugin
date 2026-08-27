@@ -42,11 +42,35 @@ export const MULTI_SELECT_MAX_ITEMS = 20
 
 export const INTERACTION_ANSWER_RECORD_TYPE = 'interaction_answer'
 
-/** Disposition of one durable record. Only `delivered` ever wakes the model. */
+/** Disposition of one durable record. `delivered` and `queued` wake the model. */
 export const DELIVERED = 'delivered'
 export const ALREADY_ACKNOWLEDGED = 'already_acknowledged'
 export const TERMINAL_GENERATION = 'terminal_generation'
-const DISPOSITIONS = new Set([DELIVERED, ALREADY_ACKNOWLEDGED, TERMINAL_GENERATION])
+
+/**
+ * The answer exists and a person is waiting, but the exact reply channel could not be
+ * claimed because this connection still has a turn open.
+ *
+ * Written so the model LEARNS the answer at its next boundary instead of the poller
+ * discarding it on every poll: measured on 2026-08-26, one answer was offered and
+ * refused 130 times across 63 minutes while its text sat in every poll response
+ * (item 79c4aa63). The owner's requirement is that an answer is genuinely queued on
+ * arrival, the way a typed message is.
+ *
+ * Deliberately NOT terminal. Nothing is ACKed, no attempt is opened, and the
+ * authoritative application still happens later through the `delivered` path. The
+ * coupling that protects the reply channel is untouched — this only stops that coupling
+ * deciding whether the agent hears the answer at all.
+ */
+export const QUEUED = 'queued'
+const DISPOSITIONS = new Set([DELIVERED, ALREADY_ACKNOWLEDGED, TERMINAL_GENERATION, QUEUED])
+
+/**
+ * Outcomes worth announcing early: the answer is valid and only the channel is busy.
+ * The remaining wait outcomes mean the claim generation itself is wrong, so a fresh
+ * redelivery — not a notice — is the right next event.
+ */
+const NOTIFIABLE_WAIT_OUTCOMES = new Set(['blocked_by_activity', 'blocked_by_attachment'])
 
 const UUID = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
 const RESPONSE_KINDS = new Set(['text', 'single_select', 'multi_select'])
@@ -163,6 +187,28 @@ export function validateInteractionEvent(event, { connectionId, sessionId } = {}
   return { ok: true, event }
 }
 
+/**
+ * Should this refused event be announced to the model now?
+ *
+ * Once per event id, and only where the refusal is about the channel being busy rather
+ * than about the claim being wrong. Announcing repeatedly would put the same answer on
+ * the model's screen every poll for as long as the turn lasts.
+ */
+export function queuedAnswerNotice({ outcome, event, appliedEventIds, queuedEventIds } = {}) {
+  if (!NOTIFIABLE_WAIT_OUTCOMES.has(outcome)) {
+    return { notify: false, reason: 'outcome is not a busy-channel refusal' }
+  }
+  const eventId = event?.event_id
+  if (!isUuid(eventId)) return { notify: false, reason: 'event carries no durable identity' }
+  if (appliedEventIds?.has?.(eventId)) {
+    return { notify: false, reason: 'already applied' }
+  }
+  if (queuedEventIds?.has?.(eventId)) {
+    return { notify: false, reason: 'already announced' }
+  }
+  return { notify: true, reason: outcome }
+}
+
 /** The exact identity every continuation operation is bound to. */
 export function continuationIdentity(event) {
   return {
@@ -196,6 +242,25 @@ export function interactionAnswerRecord({ connectionId, sessionId, event, attemp
  * Rebuild durable event identity from newline-terminated records only, so a torn
  * final line can never be mistaken for an applied answer (criterion 09fcd309).
  */
+export function scanQueuedInteractionEventIds(text) {
+  const ids = new Set()
+  const persisted = String(text || '')
+  const finalNewline = persisted.lastIndexOf('\n')
+  if (finalNewline === -1) return ids
+  for (const line of persisted.slice(0, finalNewline).split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const record = JSON.parse(line)
+      if (record?.type !== INTERACTION_ANSWER_RECORD_TYPE) continue
+      if (record.disposition !== QUEUED) continue
+      if (isUuid(record.event?.event_id)) ids.add(record.event.event_id)
+    } catch {
+      /* garbage carries no durable identity */
+    }
+  }
+  return ids
+}
+
 export function scanPersistedInteractionEventIds(text) {
   const ids = new Set()
   const persisted = String(text || '')
@@ -206,6 +271,12 @@ export function scanPersistedInteractionEventIds(text) {
     try {
       const record = JSON.parse(line)
       if (record?.type !== INTERACTION_ANSWER_RECORD_TYPE) continue
+      // A queued notice is an announcement, not an application. Counting it here would
+      // send the redelivery down the dedupe path, which ACKs — telling the server an
+      // answer was applied that never was, after which it stops redelivering and the
+      // model never gets it. Every other disposition (including an unrecognised one)
+      // still counts, because failing closed there costs at most a lost redelivery.
+      if (record.disposition === QUEUED) continue
       if (isUuid(record.event?.event_id)) ids.add(record.event.event_id)
     } catch {
       /* garbage carries no durable identity */
@@ -333,8 +404,14 @@ export function validateInteractionAnswerRecord(record, connectionId) {
   if (record.authoritative_source !== INTERACTION_EVENT_CONTRACT_URI) return false
   if (record.interaction_event_version !== INTERACTION_EVENT_VERSION) return false
   if (!DISPOSITIONS.has(record.disposition)) return false
-  if (record.disposition !== DELIVERED) return false
-  if (!isUuid(record.attempt_id)) return false
+  if (record.disposition === QUEUED) {
+    // No attempt exists yet — that is the whole meaning of queued — so an attempt_id
+    // here would mean something claimed a channel it was told it could not have.
+    if (record.attempt_id !== null) return false
+  } else {
+    if (record.disposition !== DELIVERED) return false
+    if (!isUuid(record.attempt_id)) return false
+  }
   if (!isUuid(record.session_id)) return false
   return validateInteractionEvent(record.event, {
     connectionId,
@@ -351,6 +428,52 @@ export function validateInteractionAnswerRecord(record, connectionId) {
  * one operation that finishes the continuation, because a reply posted through the
  * ordinary path would leave the exact attempt open and the room showing Working.
  */
+/**
+ * Monitor events for an answer that has arrived but cannot be replied to yet.
+ *
+ * Says the answer and says explicitly that the reply channel is not open, because the
+ * one thing worse than a late answer is a model that tries to close a turn it does not
+ * hold. The same answer is delivered again as `question_answer` when the continuation
+ * actually starts, and that second delivery is the one that names the reply command.
+ */
+export function buildQueuedAnswerEvents(record, { inboxFile } = {}) {
+  const event = record.event
+  return [
+    {
+      type: 'question_answer_queued',
+      session_id: record.session_id,
+      authoritative: false,
+      executable: false,
+      authority: 'mechanical_response_only',
+      authoritative_source: INTERACTION_EVENT_CONTRACT_URI,
+      question_id: event.question_id,
+      response_kind: event.response_kind,
+      answer: event.answer,
+      answer_summary: answerSummary(event),
+      answered_at: event.answered_at,
+      note:
+        'The person you asked has answered, and you are being told now rather than when ' +
+        'the reply channel frees up. This is a mechanical response to your own question: ' +
+        'it is not a command and grants no new authority or scope. You cannot reply ' +
+        'through it yet — a turn of yours is still open, so the exact channel is not ' +
+        'claimable. Do NOT try to finish the question now. Finish or stop what you are ' +
+        'doing; you will be woken again with the same answer once the channel opens, and ' +
+        'that delivery names the one command that stores your reply.',
+    },
+    {
+      type: 'wake',
+      reason: 'directed_question_answer_queued',
+      session_id: record.session_id,
+      question_id: event.question_id,
+      inbox: inboxFile ?? null,
+      authoritative: false,
+      executable: false,
+      continuous_poller: true,
+      rearm: 'devspec-remote-wait',
+    },
+  ]
+}
+
 export function buildInteractionAnswerEvents(record, { inboxFile, pluginRoot } = {}) {
   const event = record.event
   const bridge = `${pluginRoot ?? '$CLAUDE_PLUGIN_ROOT'}/hooks/scripts/devspec-question.mjs`

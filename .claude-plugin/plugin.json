@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "Connect Claude Code to DevSpec: pull a batch of action items and work them, and drive sessions from the Agents page.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -10,12 +10,19 @@
   "homepage": "https://devspec.ai",
   "repository": "https://github.com/DevSpecAI/devspec-claude-plugin",
   "license": "MIT",
-  "keywords": ["devspec", "autopilot", "automation", "mcp", "action-items", "remote-control"],
+  "keywords": [
+    "devspec",
+    "autopilot",
+    "automation",
+    "mcp",
+    "action-items",
+    "remote-control"
+  ],
   "userConfig": {
     "devspec_token": {
       "type": "string",
       "title": "DevSpec API token",
-      "description": "Your DevSpec API token with read_write scope. Create one in DevSpec under You → Connections → Connect a tool (pick Read & write). It starts with 'dvs_' and is account-wide — reuse the same token everywhere.",
+      "description": "Your DevSpec API token with read_write scope. Create one in DevSpec under You \u2192 Connections \u2192 Connect a tool (pick Read & write). It starts with 'dvs_' and is account-wide \u2014 reuse the same token everywhere.",
       "sensitive": true,
       "required": true
     }
@@ -29,5 +36,7 @@
       }
     }
   },
-  "commands": ["./commands"]
+  "commands": [
+    "./commands"
+  ]
 }

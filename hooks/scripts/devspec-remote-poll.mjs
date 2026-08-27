@@ -50,6 +50,9 @@ import {
   interactionActivityPlan,
   interactionAnswerRecord,
   interactionNegotiationArguments,
+  QUEUED,
+  queuedAnswerNotice,
+  scanQueuedInteractionEventIds,
   INTERACTION_EVENT_CONTRACT_URI,
   INTERACTION_EVENT_VERSION,
   scanPersistedInteractionEventIds,
@@ -65,6 +68,16 @@ export function remoteIngressNegotiationArguments() {
     delegated_scope_version: DELEGATED_SCOPE_VERSION,
     active_plan_projection_version: ACTIVE_PLAN_PROJECTION_VERSION,
   }
+}
+
+/**
+ * Timestamp for the poller log. Absent until 2026-08-27, which is why a 40-minute gap
+ * between an agent going idle and its attempt closing could not be attributed to
+ * anything from the log alone (item 79c4aa63) — 130 identical untimed lines say nothing
+ * about when they happened.
+ */
+function nowStamp() {
+  return new Date().toISOString()
 }
 
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -441,6 +454,9 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
     // Durable interaction-event identity, so a poller that died between the inbox
     // append and the ACK acknowledges the redelivery instead of applying it twice.
     interactionEventIds: scanPersistedInteractionEventIds(text),
+    // Separately, because an announcement is not an application: these ids must NOT
+    // reach the dedupe/ACK path, only stop the same answer being announced twice.
+    queuedInteractionEventIds: scanQueuedInteractionEventIds(text),
     latestActiveSessionPlans: null,
   }
   const persisted = String(text || '')
@@ -1420,7 +1436,14 @@ async function main() {
         mcpUrl,
         token,
         name,
-        arguments: { connection_id: connectionId },
+        arguments: {
+          connection_id: connectionId,
+          // Name the reason. A completion with none lands as `done`/NULL, which is
+          // indistinguishable from the server's own not-busy sweep — and that ambiguity
+          // is exactly why a 40-minute delay could not be attributed to anything
+          // (item 79c4aa63). This path is the poller seeing the turn marker disappear.
+          ...(verb === 'complete' ? { reason: 'turn_marker_cleared' } : {}),
+        },
         timeoutMs: 10_000,
       })
     } catch (e) {
@@ -1602,9 +1625,37 @@ async function main() {
     const decision = classifyContinuationStart(start)
     if (decision.action === 'wait') {
       process.stderr.write(
-        `devspec-remote-poll: interaction continuation not startable (${decision.outcome ?? 'unknown'}` +
+        `devspec-remote-poll: ${nowStamp()} interaction continuation not startable ` +
+          `(${decision.outcome ?? 'unknown'}` +
           `${decision.error ? `: ${decision.error}` : ''}) — waiting for redelivery\n`,
       )
+      // The channel is busy, but the ANSWER is valid and a person is waiting on it. Tell
+      // the model now, once, so it arrives at the next turn boundary like any queued
+      // message instead of being discarded on every poll until a window opens
+      // (item 79c4aa63). Nothing is ACKed and no attempt is opened: the authoritative
+      // application still happens through the delivered path on a later redelivery.
+      const notice = queuedAnswerNotice({
+        outcome: decision.outcome,
+        event,
+        appliedEventIds: persistedInbox.interactionEventIds,
+        queuedEventIds: persistedInbox.queuedInteractionEventIds,
+      })
+      if (notice.notify) {
+        const queuedRecord = interactionAnswerRecord({
+          connectionId,
+          sessionId: event.source_session_id,
+          event,
+          attemptId: null,
+          disposition: QUEUED,
+        })
+        if (appendDurableRecord(connectionId, queuedRecord)) {
+          persistedInbox.queuedInteractionEventIds.add(event.event_id)
+          process.stderr.write(
+            `devspec-remote-poll: ${nowStamp()} announced queued answer for question ` +
+              `${event.question_id} (channel busy: ${decision.outcome})\n`,
+          )
+        }
+      }
       return { delivered: false }
     }
 

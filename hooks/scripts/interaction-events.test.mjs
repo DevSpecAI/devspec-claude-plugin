@@ -697,6 +697,75 @@ describe('question bridge', () => {
     }
   })
 
+  /**
+   * The server ends the asking turn itself. This host must stop CLAIMING the turn and
+   * write nothing to the attempt: measured 2026-08-27 on a live Claude Code connection,
+   * the extra report_complete this used to send was a pure no-op, and Cursor and Grok had
+   * already dropped theirs. Stop and the poller still own generic completion, so a server
+   * without the change is covered one layer later.
+   */
+  it('releases the asking turn without writing to the attempt itself', async () => {
+    const stub = await stubMcp(() => ({
+      content: [{ type: 'text', text: JSON.stringify({
+        question: { id: QUESTION, status: 'pending', revision: 1 },
+      }) }],
+    }))
+    const { home, dir } = stateHome({ mcp_url: stub.url })
+    const marker = path.join(dir, `${CONNECTION}.turn`)
+    fs.writeFileSync(marker, '1')
+    try {
+      const child = await run(QUESTION_SCRIPT, [
+        'use', '--connection-id', CONNECTION, '--input', JSON.stringify({
+          action: 'create',
+          client_request_id: QUESTION,
+          response_kind: 'text',
+          prompt: 'Which way?',
+        }),
+      ], { home })
+      assert.equal(child.status, 0, child.stderr)
+      const names = stub.requests.map((entry) => entry.parsed.params.name)
+      assert.deepEqual(names, ['manage_directed_question'],
+        'asking must be ONE request: the server closes the turn inside the create')
+      assert.equal(names.includes('report_complete'), false)
+      assert.equal(fs.existsSync(marker), false,
+        'the marker must go, or the poller keepalives the attempt the server just closed')
+      assert.equal(JSON.parse(child.stdout).turn_ended, true)
+    } finally {
+      await stub.close()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the turn marker when the caller says it has more work', async () => {
+    const stub = await stubMcp(() => ({
+      content: [{ type: 'text', text: JSON.stringify({
+        question: { id: QUESTION, status: 'pending', revision: 1 },
+      }) }],
+    }))
+    const { home, dir } = stateHome({ mcp_url: stub.url })
+    const marker = path.join(dir, `${CONNECTION}.turn`)
+    fs.writeFileSync(marker, '1')
+    try {
+      const child = await run(QUESTION_SCRIPT, [
+        'use', '--connection-id', CONNECTION, '--keep-turn', '--input', JSON.stringify({
+          action: 'create',
+          client_request_id: QUESTION,
+          response_kind: 'text',
+          prompt: 'Which way?',
+        }),
+      ], { home })
+      assert.equal(child.status, 0, child.stderr)
+      // The flag reaches the server AND the marker survives, so host and server cannot
+      // disagree about whether Working stays on.
+      assert.equal(stub.requests[0].parsed.params.arguments.keep_turn, true)
+      assert.equal(fs.existsSync(marker), true)
+      assert.equal(JSON.parse(child.stdout).turn_ended, false)
+    } finally {
+      await stub.close()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('completes the exact attempt in the same request as the reply', async () => {
     const stub = await stubMcp(() => ({
       content: [{ type: 'text', text: JSON.stringify({ posted: true }) }],

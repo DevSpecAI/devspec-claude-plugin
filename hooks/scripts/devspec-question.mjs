@@ -80,11 +80,14 @@ export function parseArgs(argv) {
  *
  * `--keep-turn` is for the genuine other case: asking something and carrying on with
  * other work. It sets keep_turn on the create so the server leaves the turn open.
- * Host-side complete remains a backstop for servers that have not yet deployed that.
  *
- * Never while holding a continuation: a generic complete would seal the exact
- * interaction attempt from outside its claim generation, which is the second-writer
- * failure that produced empty sealed bubbles elsewhere.
+ * The server ends the turn inside the create, so this host only stops CLAIMING it.
+ * Generic completion belongs to Stop and the poller; see the boundary block below.
+ *
+ * Never while holding a continuation: releasing the marker there would let Stop
+ * generically complete the exact interaction attempt from outside its claim
+ * generation, which is the second-writer failure that produced empty sealed
+ * bubbles elsewhere.
  */
 /** Keep host flag and tool argument on the same create payload. */
 export function directedQuestionToolArguments(input, { keepTurn } = {}) {
@@ -329,28 +332,22 @@ async function main() {
     result,
   })
   if (boundary.endTurn) {
-    // Clear the marker first so the poller cannot observe a true→true tick and keepalive
-    // the attempt we are about to close, then complete directly rather than waiting for
-    // the poller to notice: the whole point is that the room stops claiming Working the
-    // moment the question is on someone's screen.
+    // The server closes the asking turn inside the create, so all this host has to do
+    // is stop claiming it: clear the marker, or the poller observes a true→true tick
+    // and keepalives the attempt the server just closed.
+    //
+    // It deliberately does not complete the turn itself. Measured on a live Claude Code
+    // connection 2026-08-27: the server closed the generic attempt 67ms after the card
+    // existed, naming `directed_question_asked`, and this host's extra report_complete
+    // was a pure no-op — one attempt row, no phantom, no empty sealed bubble. Cursor
+    // (f23030e) and Grok (edc5157) had already dropped theirs; keeping one here only
+    // bought a redundant round trip per ask and a second writer on a row it does not own.
+    //
+    // Dropping it does not leave the turn unguarded. Stop completes an ordinary turn end
+    // with `turn_end` and the poller completes on the marker transition, so a server
+    // without the ask-ends-turn change still gets its turn closed — one layer later, by
+    // the two mechanisms that already own generic completion.
     clearTurnMarker(args.connectionId)
-    try {
-      await mcpToolsCall({
-        ...options,
-        name: 'report_complete',
-        arguments: {
-          connection_id: args.connectionId,
-          reason: 'directed_question_asked',
-        },
-      })
-    } catch (error) {
-      // Non-fatal: the question exists and is the point of the call. The poller's own
-      // marker transition still completes the turn on its next tick.
-      process.stderr.write(
-        `devspec-question: asked, but could not end the turn (${error?.message || error}); ` +
-        'the poller will complete it on its next tick\n',
-      )
-    }
   }
   process.stdout.write(JSON.stringify({ ...result, turn_ended: boundary.endTurn }, null, 2) + '\n')
 }

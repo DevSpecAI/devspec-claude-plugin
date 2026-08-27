@@ -28,6 +28,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mcpToolsCall, mcpToolsList } from './mcp-call.mjs'
+import { clearTurnMarker } from './devspec-remote-wait.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import {
@@ -52,15 +53,48 @@ const MAX_OPTIONS = 20
 const MAX_REPLY_CHARS = 12_000
 
 export function parseArgs(argv) {
-  const out = { command: null, connectionId: null, input: null, message: null }
+  const out = { command: null, connectionId: null, input: null, message: null, keepTurn: false }
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]
     if (!out.command && COMMANDS.has(arg)) out.command = arg
     else if (arg === '--connection-id' || arg === '--connection_id') out.connectionId = argv[++index]
     else if (arg === '--input' || arg === '--json') out.input = argv[++index]
     else if (arg === '--message' || arg === '--reply') out.message = argv[++index]
+    // A host flag, never a tool argument: the server has no say in whether this agent
+    // has more work to do after asking.
+    else if (arg === '--keep-turn' || arg === '--keep_turn') out.keepTurn = true
   }
   return out
+}
+
+/**
+ * Asking is a turn boundary.
+ *
+ * Waiting for a person is not working, but the turn used to stay open across the wait,
+ * so the room showed Working while nothing worked — and, worse, the open attempt is
+ * exactly what stops the answer's exact reply channel being claimed, so the answer
+ * could not be delivered until the turn happened to end. Measured 2026-08-26: 63
+ * minutes, 40 of them with the agent idle (item 79c4aa63).
+ *
+ * So a successful ask ends the turn by default. The answer then starts a fresh turn,
+ * which is what the server already models — the continuation opens its own attempt.
+ *
+ * `--keep-turn` is for the genuine other case: asking something and carrying on with
+ * other work. Then the turn must stay open, or the room claims idle while the agent
+ * works, and this trade is the reason the default is not simply forced server-side.
+ *
+ * Never while holding a continuation: a generic complete would seal the exact
+ * interaction attempt from outside its claim generation, which is the second-writer
+ * failure that produced empty sealed bubbles elsewhere.
+ */
+export function askTurnBoundaryPlan({ action, keepTurn, continuation, result } = {}) {
+  if (action !== 'create') return { endTurn: false, reason: 'not an ask' }
+  if (keepTurn) return { endTurn: false, reason: 'caller has more work this turn' }
+  if (continuation) return { endTurn: false, reason: 'an exact interaction attempt is open' }
+  if (result?.question?.status !== 'pending') {
+    return { endTurn: false, reason: 'no pending question was created' }
+  }
+  return { endTurn: true, reason: 'asked and stopped' }
 }
 
 function codePoints(value) {
@@ -275,7 +309,38 @@ async function main() {
   const validation = validateDirectedQuestionArguments(input)
   if (!validation.ok) throw new Error(validation.error)
   const result = await mcpToolsCall({ ...options, name: TOOL, arguments: input })
-  process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+
+  const boundary = askTurnBoundaryPlan({
+    action: input.action,
+    keepTurn: args.keepTurn,
+    continuation,
+    result,
+  })
+  if (boundary.endTurn) {
+    // Clear the marker first so the poller cannot observe a true→true tick and keepalive
+    // the attempt we are about to close, then complete directly rather than waiting for
+    // the poller to notice: the whole point is that the room stops claiming Working the
+    // moment the question is on someone's screen.
+    clearTurnMarker(args.connectionId)
+    try {
+      await mcpToolsCall({
+        ...options,
+        name: 'report_complete',
+        arguments: {
+          connection_id: args.connectionId,
+          reason: 'directed_question_asked',
+        },
+      })
+    } catch (error) {
+      // Non-fatal: the question exists and is the point of the call. The poller's own
+      // marker transition still completes the turn on its next tick.
+      process.stderr.write(
+        `devspec-question: asked, but could not end the turn (${error?.message || error}); ` +
+        'the poller will complete it on its next tick\n',
+      )
+    }
+  }
+  process.stdout.write(JSON.stringify({ ...result, turn_ended: boundary.endTurn }, null, 2) + '\n')
 }
 
 const isMain = Boolean(process.argv[1]) &&

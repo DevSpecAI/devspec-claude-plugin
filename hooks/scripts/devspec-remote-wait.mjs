@@ -44,7 +44,9 @@ import {
 } from './remote-ingress-v1.mjs'
 import {
   buildInteractionAnswerEvents,
+  buildQueuedAnswerEvents,
   INTERACTION_ANSWER_RECORD_TYPE,
+  QUEUED,
   validateInteractionAnswerRecord,
 } from './interaction-events.mjs'
 
@@ -873,7 +875,9 @@ async function main() {
             : batch.type === 'canonical_control'
               ? buildCanonicalControlEvents(batch, { inboxFile: file })
               : batch.type === INTERACTION_ANSWER_RECORD_TYPE
-                ? buildInteractionAnswerEvents(batch, { inboxFile: file })
+                ? (batch.disposition === QUEUED
+                    ? buildQueuedAnswerEvents(batch, { inboxFile: file })
+                    : buildInteractionAnswerEvents(batch, { inboxFile: file }))
                 : buildPlaybookRunEvents(batch, { inboxFile: file })
           await writeEventSequence(events)
           delivered += batch.type === 'canonical_commands'

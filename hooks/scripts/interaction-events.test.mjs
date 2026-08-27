@@ -9,13 +9,19 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 import {
   activeContinuation,
+  ALREADY_ACKNOWLEDGED,
   answerSummary,
   buildInteractionAnswerEvents,
   classifyContinuationStart,
   continuationDelivered,
   continuationIdentity,
+  buildQueuedAnswerEvents,
   DELIVERED,
   interactionActivityPlan,
+  QUEUED,
+  queuedAnswerNotice,
+  scanQueuedInteractionEventIds,
+  TERMINAL_GENERATION,
   interactionAnswerRecord,
   interactionEventsNegotiable,
   interactionNegotiationArguments,
@@ -27,9 +33,11 @@ import {
   validateInteractionEvent,
 } from './interaction-events.mjs'
 import {
+  askTurnBoundaryPlan,
   clearStoredContinuation,
   questionRequestOptions,
   readQuestionConnectionState,
+  parseArgs as parseQuestionArgs,
   respondArguments,
   validateDirectedQuestionArguments,
 } from './devspec-question.mjs'
@@ -847,5 +855,154 @@ describe('directed-question policy surfaces', () => {
 
   it('keeps the on-demand skill small enough to load without thinking about it', () => {
     assert.ok(Buffer.byteLength(skill) < 3_600, `skill is ${Buffer.byteLength(skill)} bytes`)
+  })
+})
+
+describe('an answer is announced on arrival, not discarded until the channel frees up (item 79c4aa63)', () => {
+  function queuedRecord(overrides = {}) {
+    return {
+      ...interactionAnswerRecord({
+        connectionId: CONNECTION,
+        sessionId: SESSION,
+        event: event(),
+        attemptId: null,
+        disposition: QUEUED,
+      }),
+      ...overrides,
+    }
+  }
+
+  it('NEVER counts a queued notice as an application', () => {
+    // The one unrecoverable mistake: if the dedupe path sees this event id, the next
+    // redelivery is ACKed as "already applied", the server stops redelivering, and the
+    // person's answer is lost for good.
+    const line = JSON.stringify(queuedRecord()) + '\n'
+    assert.equal(scanPersistedInteractionEventIds(line).has(EVENT), false)
+    assert.equal(scanQueuedInteractionEventIds(line).has(EVENT), true)
+    // ...while a real application still counts, from the same file.
+    const both = line + JSON.stringify(record()) + '\n'
+    assert.equal(scanPersistedInteractionEventIds(both).has(EVENT), true)
+  })
+
+  it('counts an unrecognised disposition as applied, because that fails closed', () => {
+    const line = JSON.stringify(record({ disposition: 'something_new' })) + '\n'
+    assert.equal(scanPersistedInteractionEventIds(line).has(EVENT), true)
+    assert.equal(scanQueuedInteractionEventIds(line).has(EVENT), false)
+  })
+
+  it('lets a queued notice wake the model, but only with no attempt claimed', () => {
+    assert.equal(validateInteractionAnswerRecord(queuedRecord(), CONNECTION), true)
+    // An attempt_id here would mean something claimed a channel it was refused.
+    assert.equal(
+      validateInteractionAnswerRecord(queuedRecord({ attempt_id: ATTEMPT }), CONNECTION),
+      false,
+    )
+    // The delivered contract is unchanged: it still requires a real attempt.
+    assert.equal(validateInteractionAnswerRecord(record(), CONNECTION), true)
+    assert.equal(validateInteractionAnswerRecord(record({ attempt_id: null }), CONNECTION), false)
+    // Settled generations still never wake anyone.
+    for (const disposition of [ALREADY_ACKNOWLEDGED, TERMINAL_GENERATION]) {
+      assert.equal(validateInteractionAnswerRecord(record({ disposition }), CONNECTION), false)
+    }
+  })
+
+  it('announces once, and only where the refusal is about a busy channel', () => {
+    const empty = new Set()
+    for (const outcome of ['blocked_by_activity', 'blocked_by_attachment']) {
+      assert.equal(
+        queuedAnswerNotice({ outcome, event: event(), appliedEventIds: empty, queuedEventIds: empty }).notify,
+        true,
+        outcome,
+      )
+    }
+    // These mean the claim generation is wrong, so a fresh redelivery is the right next
+    // event — not an announcement built on a claim the server rejected.
+    for (const outcome of ['stale_generation', 'recovery_requires_reclaim',
+      'source_session_unavailable', 'unknown', null]) {
+      assert.equal(
+        queuedAnswerNotice({ outcome, event: event(), appliedEventIds: empty, queuedEventIds: empty }).notify,
+        false,
+        String(outcome),
+      )
+    }
+    // Re-offered every ~29s for as long as the turn lasts: announcing each time would
+    // put the same answer on the model's screen dozens of times (130, as measured).
+    assert.equal(queuedAnswerNotice({
+      outcome: 'blocked_by_activity',
+      event: event(),
+      appliedEventIds: empty,
+      queuedEventIds: new Set([EVENT]),
+    }).notify, false)
+    assert.equal(queuedAnswerNotice({
+      outcome: 'blocked_by_activity',
+      event: event(),
+      appliedEventIds: new Set([EVENT]),
+      queuedEventIds: empty,
+    }).notify, false)
+    assert.equal(queuedAnswerNotice({
+      outcome: 'blocked_by_activity',
+      event: event({ event_id: 'not-a-uuid' }),
+      appliedEventIds: empty,
+      queuedEventIds: empty,
+    }).notify, false)
+  })
+
+  it('tells the model the answer AND that it cannot reply yet', () => {
+    const [answer, wake] = buildQueuedAnswerEvents(queuedRecord(), { inboxFile: '/tmp/inbox.jsonl' })
+    assert.equal(answer.type, 'question_answer_queued')
+    assert.equal(answer.authoritative, false)
+    assert.equal(answer.executable, false)
+    assert.equal(answer.question_id, QUESTION)
+    assert.ok(answer.answer_summary.length > 0)
+    // The trap: naming the reply command here would send the model at a channel the
+    // server just refused it, and the failure would look like a broken feature.
+    assert.equal(/respond/.test(answer.note), false)
+    assert.match(answer.note, /cannot reply/i)
+    assert.match(answer.note, /woken again/i)
+    // A distinct wake reason, so a queued announcement is never mistaken in a log for
+    // the delivery that actually opened the reply channel.
+    assert.equal(wake.reason, 'directed_question_answer_queued')
+    assert.notEqual(wake.reason, 'directed_question_answer')
+  })
+})
+
+describe('asking a question is a turn boundary (item 79c4aa63)', () => {
+  const created = { question: { id: QUESTION, status: 'pending' } }
+
+  it('ends the turn after a successful ask, because waiting is not working', () => {
+    // The open attempt is what blocks the answer's reply channel, so a turn held across
+    // a human wait makes the room lie AND delays the answer. Measured: 63 minutes.
+    const plan = askTurnBoundaryPlan({ action: 'create', keepTurn: false, continuation: null, result: created })
+    assert.equal(plan.endTurn, true)
+  })
+
+  it('keeps the turn when the caller says it has more to do', () => {
+    // The genuine other case: ask, then carry on. Ending the turn there would show the
+    // room idle while the agent works, which is the same lie in the other direction.
+    assert.equal(askTurnBoundaryPlan({
+      action: 'create', keepTurn: true, continuation: null, result: created,
+    }).endTurn, false)
+    assert.equal(parseQuestionArgs(['use', '--keep-turn']).keepTurn, true)
+    assert.equal(parseQuestionArgs(['use']).keepTurn, false)
+  })
+
+  it('never ends the turn while an exact interaction attempt is open', () => {
+    // A generic complete would seal that attempt from outside its claim generation —
+    // the second-writer failure behind the empty sealed bubbles.
+    assert.equal(askTurnBoundaryPlan({
+      action: 'create', keepTurn: false, continuation: continuation(), result: created,
+    }).endTurn, false)
+  })
+
+  it('only ends the turn for an ask that actually produced a pending question', () => {
+    for (const action of ['list', 'get', 'cancel', undefined]) {
+      assert.equal(askTurnBoundaryPlan({ action, keepTurn: false, result: created }).endTurn, false, String(action))
+    }
+    // A cancel returns a question too, so the status is what distinguishes them.
+    assert.equal(askTurnBoundaryPlan({
+      action: 'create', keepTurn: false, result: { question: { status: 'cancelled' } },
+    }).endTurn, false)
+    assert.equal(askTurnBoundaryPlan({ action: 'create', keepTurn: false, result: {} }).endTurn, false)
+    assert.equal(askTurnBoundaryPlan({ action: 'create', keepTurn: false }).endTurn, false)
   })
 })

@@ -49,6 +49,7 @@ describe('private remote-control state helper', () => {
     const expected = [
       'commit-observation.mjs',
       'devspec-plan.mjs',
+      'devspec-poll.mjs',
       'devspec-question.mjs',
       'devspec-remote-poll.mjs',
       'devspec-remote-wait.mjs',

@@ -2,6 +2,22 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.24.0 - 2026-08-29
+
+### Finding the conversation where something was only ever said
+
+Claude can now search your DevSpec sessions from a remote conversation, not just open one
+it already has the id for. Ask "didn't we talk about this somewhere?" and it can search
+session titles and transcripts for a keyword or short phrase, get ranked hits with an
+excerpt each, and open only the room that actually matters.
+
+It is deliberately the last thing it reaches for. Action items, memories and documents
+come first — anything that was written down is already there, already summarised. Session
+search is for the discussion that happened, mattered, and never became a record.
+
+Only the remote conversation command can use it. Nothing was added to unattended work,
+which should still be leaning on settled records rather than re-reading old rooms.
+
 ## 0.21.0 - 2026-08-26
 
 ### Claude can ask the person driving a session one question, and pick up their answer

@@ -2,41 +2,40 @@
 /**
  * Resolve DevSpec MCP URL + Bearer token for remote-control hooks/poller.
  *
- * Lookup order:
+ * Credentials are enumerated as token+URL PAIRS from a single source. Never mix
+ * a token from one place with a URL from another (item 8bb707fd): a plugin
+ * userConfig token must not inherit the project `.mcp.json` URL.
+ *
+ * Lookup order (first token pair wins for the default pick):
  * 1. DEVSPEC_MCP_TOKEN / DEVSPEC_TOKEN (+ DEVSPEC_MCP_URL) — explicit human override.
  * 2. opts.hostToken — the bearer the HOST MCP client used to call register_connection,
- *    when the caller can supply it (token symmetry, item 74b29c76). Wins over the
- *    .mcp.json / ~/.claude.json walk so the poller heartbeats the connection under
- *    the SAME identity register used — otherwise the server rejects with "This
- *    connection belongs to a different token" and dispatch delivery spams. Absent →
- *    resolution is unchanged (backward compatible).
- * 3. Project .mcp.json (cwd and parents)
+ *    paired with THIS source's URL (plugin → prod default; never `.mcp.json`).
+ * 3. Project .mcp.json (cwd and parents) — that file's token AND url.
  * 4. ~/.claude.json project entries that match cwd (mcpServers.devspec)
  * 5. ~/.claude.json top-level mcpServers.devspec
- * 6. CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — the plugin userConfig token
- *    (keychain-stored; Claude Code exports it to hook/tool subprocesses).
- *    Lowest priority so a developer's own .mcp.json (e.g. staging) still wins.
+ * 6. CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — plugin userConfig token + plugin URL
+ *    (https://devspec.ai/api/mcp). Lowest priority so a developer's own .mcp.json
+ *    (e.g. staging) still wins when no host token was supplied.
  *
- * MULTI-TOKEN SETUPS. When more than one DevSpec token is reachable (e.g. a
- * marketplace plugin userConfig token AND a project .mcp.json staging token), the
- * HOST MCP client and the poller could otherwise resolve DIFFERENT ones — the poller
- * then heartbeats a connection register created under another token and every
- * dispatch is rejected. hostTokenFromEnv() surfaces the host's own token (the plugin
- * userConfig env Claude Code exports — the token register_connection runs on for the
- * plugin-declared `devspec` server); passing it as opts.hostToken keeps register and
- * poller on ONE token from the start. To force a specific token regardless, set
- * DEVSPEC_MCP_TOKEN (step 1). On the non-Claude local-poller plugins the plugin env
- * is never set, so hostTokenFromEnv() returns null and nothing changes.
+ * At write time, proveCredentialPair heartbeats the just-registered connection
+ * under each distinct token until one owns it. The poller caches that pair.
  *
  * Prints JSON: { ok, token?, mcp_url?, source?, error? }
  * Never prints the full token in human logs — only to stdout JSON for piping.
  */
 
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 const DEFAULT_PROD_URL = 'https://devspec.ai/api/mcp'
+const WRONG_TOKEN_RE = /belongs to a different token/i
+
+export const DEFAULT_MCP_URL = DEFAULT_PROD_URL
+
+export const TOKENS_WARNING_FIX =
+  'Open You → Connections, reveal the key you want, and make the plugin key and the project .mcp.json key the same.'
 
 function readJson(file) {
   try {
@@ -117,6 +116,22 @@ function fromClaudeJson(cwd) {
   return null
 }
 
+function trimToken(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function pairIdentity(pair) {
+  return `${pair.token}\0${pair.mcp_url}`
+}
+
+/**
+ * SHA-256 prefix — enough to tell two keys apart, never the secret itself.
+ */
+export function fingerprintToken(token) {
+  if (typeof token !== 'string' || !token) return 'unknown'
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex').slice(0, 8)
+}
+
 /**
  * The bearer the HOST MCP client is expected to have used for register_connection,
  * drawn from the reachable process env. The one host-token carrier that reaches
@@ -133,6 +148,158 @@ export function hostTokenFromEnv(env = process.env) {
   return typeof t === 'string' && t.trim() ? t.trim() : null
 }
 
+function pluginTokenFromEnv(env) {
+  return trimToken(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN || env.CLAUDE_PLUGIN_OPTION_devspec_token)
+}
+
+/**
+ * Every reachable credential as a { token, mcp_url } pair from ONE source.
+ * First occurrence of an identical token+URL wins (precedence order).
+ */
+export function enumerateCredentialPairs(cwd = process.cwd(), opts = {}) {
+  const env = opts.env || process.env
+  const pairs = []
+  const seen = new Set()
+
+  const push = (pair) => {
+    if (!pair?.token) return
+    const id = pairIdentity(pair)
+    if (seen.has(id)) return
+    seen.add(id)
+    pairs.push(pair)
+  }
+
+  const envToken = trimToken(env.DEVSPEC_MCP_TOKEN || env.DEVSPEC_TOKEN)
+  const envUrl = trimToken(env.DEVSPEC_MCP_URL) || DEFAULT_PROD_URL
+  const pluginToken = pluginTokenFromEnv(env)
+  const hostToken =
+    typeof opts.hostToken === 'string' && opts.hostToken.trim() ? opts.hostToken.trim() : null
+  const fromProject = walkMcpJson(cwd)
+  const fromClaude = fromClaudeJson(cwd)
+
+  if (envToken) {
+    push({
+      source: 'env',
+      sourceLabel: 'DEVSPEC_MCP_TOKEN',
+      token: envToken,
+      mcp_url: envUrl,
+    })
+  }
+
+  if (hostToken) {
+    let mcp_url = DEFAULT_PROD_URL
+    let sourceLabel = 'host MCP client'
+    if (hostToken === envToken) {
+      mcp_url = envUrl
+      sourceLabel = 'DEVSPEC_MCP_TOKEN'
+    } else if (pluginToken && hostToken === pluginToken) {
+      mcp_url = DEFAULT_PROD_URL
+      sourceLabel = 'plugin userConfig'
+    } else if (fromProject?.token && hostToken === fromProject.token) {
+      mcp_url = fromProject.mcp_url || DEFAULT_PROD_URL
+      sourceLabel = 'project .mcp.json'
+    } else if (fromClaude?.token && hostToken === fromClaude.token) {
+      mcp_url = fromClaude.mcp_url || DEFAULT_PROD_URL
+      sourceLabel = '~/.claude.json'
+    }
+    push({
+      source: 'host',
+      sourceLabel,
+      token: hostToken,
+      mcp_url,
+    })
+  }
+
+  if (fromProject?.token) {
+    push({
+      source: fromProject.source,
+      sourceLabel: 'project .mcp.json',
+      token: fromProject.token,
+      mcp_url: fromProject.mcp_url || DEFAULT_PROD_URL,
+    })
+  }
+
+  if (fromClaude?.token) {
+    push({
+      source: fromClaude.source,
+      sourceLabel: '~/.claude.json',
+      token: fromClaude.token,
+      mcp_url: fromClaude.mcp_url || DEFAULT_PROD_URL,
+    })
+  }
+
+  if (pluginToken) {
+    push({
+      source: 'plugin_user_config',
+      sourceLabel: 'plugin userConfig',
+      token: pluginToken,
+      mcp_url: DEFAULT_PROD_URL,
+    })
+  }
+
+  return { pairs, fromProject }
+}
+
+export function distinctTokenPairs(pairs) {
+  const seen = new Set()
+  const out = []
+  for (const pair of pairs || []) {
+    if (!pair?.token || seen.has(pair.token)) continue
+    seen.add(pair.token)
+    out.push(pair)
+  }
+  return out
+}
+
+export function buildTokensWarning(pairs) {
+  const tokens = distinctTokenPairs(pairs)
+  if (tokens.length < 2) return null
+  const named = tokens
+    .map((pair) => `${pair.sourceLabel} (${fingerprintToken(pair.token)})`)
+    .join(', ')
+  return (
+    `This machine has more than one DevSpec key: ${named}. ` +
+    `Connect will use the key that owns this connection. ${TOKENS_WARNING_FIX}`
+  )
+}
+
+export function isWrongTokenError(err) {
+  const msg = err?.message || String(err || '')
+  return WRONG_TOKEN_RE.test(msg)
+}
+
+/**
+ * Probe candidates with heartbeat_connection. Skip the probe when only one
+ * distinct token is reachable (it is the only candidate).
+ *
+ * `probe(pair, connectionId)` should throw on failure. A "belongs to a different
+ * token" error falls through to the next pair; other errors also try the next
+ * pair (a token sent to the wrong host looks like a network/auth failure).
+ */
+export async function proveCredentialPair(pairs, { connectionId, probe } = {}) {
+  const warning = buildTokensWarning(pairs)
+  const tokens = distinctTokenPairs(pairs)
+  if (tokens.length === 0) {
+    return { pair: null, probed: false, warning: null, error: 'no_token' }
+  }
+  if (tokens.length === 1) {
+    return { pair: tokens[0], probed: false, warning: null, error: null }
+  }
+  if (typeof probe !== 'function') {
+    return { pair: null, probed: false, warning, error: 'unproven' }
+  }
+  for (const pair of tokens) {
+    try {
+      await probe(pair, connectionId)
+      return { pair, probed: true, warning, error: null }
+    } catch (err) {
+      if (isWrongTokenError(err)) continue
+      continue
+    }
+  }
+  return { pair: null, probed: true, warning, error: 'no_proven_pair' }
+}
+
 /**
  * `opts.env` exists so a caller that is already handed an environment can resolve
  * against THAT one instead of the ambient process — the commit-provenance hook takes
@@ -142,66 +309,15 @@ export function hostTokenFromEnv(env = process.env) {
  */
 export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
   const env = opts.env || process.env
-  const envToken = env.DEVSPEC_MCP_TOKEN || env.DEVSPEC_TOKEN || null
-  const envUrl = env.DEVSPEC_MCP_URL || null
-  if (envToken) {
+  const envUrl = trimToken(env.DEVSPEC_MCP_URL)
+  const { pairs, fromProject } = enumerateCredentialPairs(cwd, opts)
+  const first = pairs.find((p) => p.token)
+  if (first) {
     return {
       ok: true,
-      token: envToken,
-      mcp_url: envUrl || DEFAULT_PROD_URL,
-      source: 'env',
-    }
-  }
-
-  const fromProject = walkMcpJson(cwd)
-
-  // Host-provided token wins over the .mcp.json / ~/.claude.json walk (token
-  // symmetry, item 74b29c76) but stays below the explicit DEVSPEC_MCP_TOKEN
-  // override. Backward compatible: absent → the walk below is unchanged.
-  const hostToken =
-    typeof opts.hostToken === 'string' && opts.hostToken.trim() ? opts.hostToken.trim() : null
-  if (hostToken) {
-    return {
-      ok: true,
-      token: hostToken,
-      mcp_url: envUrl || fromProject?.mcp_url || DEFAULT_PROD_URL,
-      source: 'host',
-    }
-  }
-
-  if (fromProject?.token) {
-    return {
-      ok: true,
-      token: fromProject.token,
-      mcp_url: envUrl || fromProject.mcp_url || DEFAULT_PROD_URL,
-      source: fromProject.source,
-    }
-  }
-
-  const fromClaude = fromClaudeJson(cwd)
-  if (fromClaude?.token) {
-    return {
-      ok: true,
-      token: fromClaude.token,
-      mcp_url: envUrl || fromClaude.mcp_url || DEFAULT_PROD_URL,
-      source: fromClaude.source,
-    }
-  }
-
-  // Plugin userConfig token (sensitive; stored in the OS keychain, exported to
-  // subprocesses as CLAUDE_PLUGIN_OPTION_<KEY>). This is how a marketplace-
-  // installed user's token reaches the remote-control hooks/poller — they never
-  // put it in .mcp.json. Kept last so an explicit local .mcp.json wins.
-  const pluginOptionToken =
-    env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN ||
-    env.CLAUDE_PLUGIN_OPTION_devspec_token ||
-    null
-  if (pluginOptionToken) {
-    return {
-      ok: true,
-      token: pluginOptionToken,
-      mcp_url: envUrl || fromProject?.mcp_url || DEFAULT_PROD_URL,
-      source: 'plugin_user_config',
+      token: first.token,
+      mcp_url: first.mcp_url,
+      source: first.source,
     }
   }
 
@@ -209,7 +325,7 @@ export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
   if (fromProject?.mcp_url) {
     return {
       ok: false,
-      mcp_url: envUrl || fromProject.mcp_url,
+      mcp_url: fromProject.mcp_url,
       source: fromProject.source,
       error:
         'Found DevSpec MCP URL but no Bearer token. Set DEVSPEC_MCP_TOKEN or add headers.Authorization on the devspec server in .mcp.json.',

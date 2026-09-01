@@ -56,7 +56,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
+import { mcpToolsCall } from './mcp-call.mjs'
+import {
+  enumerateCredentialPairs,
+  hostTokenFromEnv,
+  proveCredentialPair,
+  resolveDevspecMcpAuth,
+} from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 
@@ -829,7 +835,17 @@ export function resolveLocalAction({
  * persisted so the NEXT register on this conversation can echo it and receive
  * `instructions_unchanged` instead of the full tier texts again (item e98b2859).
  */
-export function writeConnectionState({
+async function heartbeatOwnsConnection(pair, connectionId) {
+  await mcpToolsCall({
+    mcpUrl: pair.mcp_url,
+    token: pair.token,
+    name: 'heartbeat_connection',
+    arguments: { connection_id: connectionId, status: 'live' },
+    timeoutMs: 15_000,
+  })
+}
+
+export async function writeConnectionState({
   connectionId,
   sessionId,
   agent,
@@ -844,13 +860,37 @@ export function writeConnectionState({
   instructionTiers = null,
   noPoller = false,
   env = process.env,
+  probe = heartbeatOwnsConnection,
 }) {
+  void url
   const resolvedCwd = cwd || process.cwd()
-  // Token symmetry (item 74b29c76): heartbeat under the SAME bearer that registered.
+  // Token symmetry (item 74b29c76 + 8bb707fd): enumerate coherent pairs, then
+  // prove which token owns the just-registered connection before the poller starts.
   const hostToken =
     (typeof hostTokenArg === 'string' && hostTokenArg.trim() ? hostTokenArg.trim() : null) ||
     hostTokenFromEnv(env)
-  const auth = resolveDevspecMcpAuth(resolvedCwd, { hostToken })
+  const { pairs } = enumerateCredentialPairs(resolvedCwd, { hostToken, env })
+  const proven = await proveCredentialPair(pairs, { connectionId, probe })
+  const fallback = resolveDevspecMcpAuth(resolvedCwd, { hostToken, env })
+  const auth = proven.pair
+    ? {
+        ok: true,
+        token: proven.pair.token,
+        mcp_url: proven.pair.mcp_url,
+        source: proven.pair.source,
+      }
+    : {
+        ok: false,
+        token: null,
+        mcp_url: fallback.mcp_url,
+        source: fallback.source || fallback.error || null,
+        error:
+          proven.error === 'no_proven_pair'
+            ? 'No reachable DevSpec key owns this connection. Open You → Connections and make the plugin key and the project .mcp.json key the same.'
+            : proven.error === 'unproven'
+              ? 'This machine has more than one DevSpec key; the poller will not start until one is proven to own this connection.'
+              : fallback.error,
+      }
   const prev = readJson(connectionPath(connectionId)) || {}
   const agentName = agent || prev.agent_name || AGENT_NAME
   const localId = localIdArg ?? detectLocalId({}, env).local_id
@@ -872,8 +912,10 @@ export function writeConnectionState({
     agent_name: agentName,
     local_id: localId ?? prev.local_id ?? null,
     owner_pid: ownerPid,
-    mcp_url: url || auth.mcp_url || prev.mcp_url || 'https://devspec.ai/api/mcp',
-    token: auth.token || prev.token || undefined,
+    mcp_url: auth.ok
+      ? auth.mcp_url
+      : (auth.mcp_url || prev.mcp_url || 'https://devspec.ai/api/mcp'),
+    token: auth.ok ? auth.token : undefined,
     connection_capability:
       connectionCapability === undefined
         ? prev.connection_capability
@@ -881,7 +923,8 @@ export function writeConnectionState({
             ? connectionCapability
             : undefined),
     auth_source: auth.source || auth.error || prev.auth_source || null,
-    auth_ok: !!auth.ok || !!prev.auth_ok,
+    auth_ok: !!auth.ok,
+    auth_proven: !!auth.ok,
     cwd: resolvedCwd,
     session_codename: codename || prev.session_codename || prev.codename || null,
     title: title || prev.title || null,
@@ -928,6 +971,7 @@ export function writeConnectionState({
     bond_path: bond ? localBondPath(agentName, localId) : null,
   }
   if (!state.auth_ok) result.warning = auth.error
+  if (proven.warning) result.warning_tokens = proven.warning
   if (!localId) {
     result.warning_local =
       'No --local-id / conversation env; soft-reconnect and already_live will not work until write is called with a local id.'
@@ -980,6 +1024,7 @@ const isMain =
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
 
 if (isMain) {
+  void (async () => {
   const args = parseArgs(process.argv.slice(2))
   const cmd = args._[0] || 'read'
 
@@ -1321,7 +1366,7 @@ if (isMain) {
       )
       process.exit(2)
     }
-    const result = writeConnectionState({
+    const result = await writeConnectionState({
       connectionId,
       sessionId: args.session,
       agent: args.agent,
@@ -1337,6 +1382,9 @@ if (isMain) {
     if (result.warning_poller) {
       process.stderr.write(`remote-control-state: ensure-poller failed — ${result.warning_poller}\n`)
     }
+    if (result.warning_tokens) {
+      process.stderr.write(`remote-control-state: ${result.warning_tokens}\n`)
+    }
 
     process.stdout.write(JSON.stringify(result, null, 2) + '\n')
     process.exit(result.auth_ok ? 0 : 1)
@@ -1344,4 +1392,8 @@ if (isMain) {
 
   process.stderr.write(`Unknown command: ${cmd}\n`)
   process.exit(2)
+  })().catch((err) => {
+    process.stderr.write(`${err?.message || err}\n`)
+    process.exit(1)
+  })
 }

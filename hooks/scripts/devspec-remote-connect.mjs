@@ -260,7 +260,7 @@ async function main() {
   }
 
   // 3. State + bond + poller. One writer, shared with the `write` command.
-  const written = writeConnectionState({
+  const written = await writeConnectionState({
     connectionId,
     sessionId,
     agent: agentName,
@@ -332,8 +332,9 @@ async function main() {
       pin_path: pin?.path || null,
       resolved_by_server: true,
     },
-    mcp_url: auth.mcp_url,
+    mcp_url: written.mcp_url,
     auth_source: written.auth_source,
+    warning_tokens: written.warning_tokens || null,
     poller: written.poller || null,
     bond_action: bond.action,
     state_path: written.path,
@@ -365,9 +366,10 @@ async function main() {
     : poller?.ok
       ? `running (pid ${poller.pid})`
       : `NOT RUNNING — ${written.warning_poller || 'unknown'}`
-  lines.push(`poller: ${pollerText} · host: ${auth.mcp_url}`)
+  lines.push(`poller: ${pollerText} · host: ${written.mcp_url}`)
   lines.push(`plans: ${connectionCapability ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
   if (!written.auth_ok) lines.push(`auth: FAILED — ${written.warning}`)
+  if (written.warning_tokens) lines.push(`warning: ${written.warning_tokens}`)
   if (!localId) lines.push(`warning: ${written.warning_local}`)
   if (!ownerPid && !args.noPoller) {
     lines.push(

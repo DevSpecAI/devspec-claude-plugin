@@ -11,7 +11,16 @@ import { after, before, describe, it } from 'node:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import {
+  buildTokensWarning,
+  enumerateCredentialPairs,
+  fingerprintToken,
+  hostTokenFromEnv,
+  proveCredentialPair,
+  resolveDevspecMcpAuth,
+} from './resolve-mcp-auth.mjs'
+
+const PROD = 'https://devspec.ai/api/mcp'
 
 describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)', () => {
   let tmp
@@ -54,6 +63,7 @@ describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)'
     assert.equal(r.ok, true)
     assert.equal(r.token, 'from-host')
     assert.equal(r.source, 'host')
+    assert.equal(r.mcp_url, PROD, 'host token must not inherit the .mcp.json URL')
   })
 
   it('falls back to .mcp.json when no host token (backward compatible)', () => {
@@ -118,5 +128,145 @@ describe('hostTokenFromEnv', () => {
   it('trims and ignores blank', () => {
     assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: '  x ' }), 'x')
     assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: '   ' }), null)
+  })
+})
+
+describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', () => {
+  let tmp
+  const saved = {}
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-pairs-'))
+    fs.writeFileSync(
+      path.join(tmp, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          devspec: {
+            url: 'https://staging.devspec.ai/api/mcp',
+            headers: { Authorization: 'Bearer dvs_project_staging' },
+          },
+        },
+      }),
+    )
+    for (const k of ['DEVSPEC_MCP_TOKEN', 'DEVSPEC_TOKEN', 'DEVSPEC_MCP_URL']) {
+      saved[k] = process.env[k]
+      delete process.env[k]
+    }
+  })
+
+  after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  })
+
+  it('enumerates plugin userConfig and .mcp.json as separate pairs', () => {
+    const { pairs } = enumerateCredentialPairs(tmp, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
+    })
+    const plugin = pairs.find((p) => p.source === 'plugin_user_config')
+    const project = pairs.find((p) => p.sourceLabel === 'project .mcp.json')
+    assert.equal(plugin.token, 'dvs_plugin_prod')
+    assert.equal(plugin.mcp_url, PROD)
+    assert.equal(project.token, 'dvs_project_staging')
+    assert.equal(project.mcp_url, 'https://staging.devspec.ai/api/mcp')
+  })
+
+  it('plugin token does not inherit the .mcp.json URL', () => {
+    const r = resolveDevspecMcpAuth(tmp, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
+    })
+    // Without hostToken, .mcp.json still wins (staging) — that pair is coherent.
+    assert.equal(r.token, 'dvs_project_staging')
+    assert.equal(r.mcp_url, 'https://staging.devspec.ai/api/mcp')
+
+    const host = resolveDevspecMcpAuth(tmp, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
+      hostToken: 'dvs_plugin_prod',
+    })
+    assert.equal(host.token, 'dvs_plugin_prod')
+    assert.equal(host.mcp_url, PROD)
+  })
+
+  it('env token uses env URL only — never the .mcp.json URL', () => {
+    const r = resolveDevspecMcpAuth(tmp, {
+      env: {
+        DEVSPEC_MCP_TOKEN: 'dvs_env_only',
+        DEVSPEC_MCP_URL: 'https://injected.invalid/api/mcp',
+      },
+    })
+    assert.equal(r.token, 'dvs_env_only')
+    assert.equal(r.mcp_url, 'https://injected.invalid/api/mcp')
+  })
+
+  it('warning names both sources with fingerprints and never the raw tokens', () => {
+    const { pairs } = enumerateCredentialPairs(tmp, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
+      hostToken: 'dvs_plugin_prod',
+    })
+    const warning = buildTokensWarning(pairs)
+    assert.match(warning, /plugin userConfig/)
+    assert.match(warning, /project \.mcp\.json/)
+    assert.match(warning, /You → Connections/)
+    assert.ok(warning.includes(fingerprintToken('dvs_plugin_prod')))
+    assert.ok(warning.includes(fingerprintToken('dvs_project_staging')))
+    assert.doesNotMatch(warning, /dvs_plugin_prod|dvs_project_staging/)
+  })
+
+  it('skips the probe when only one distinct token is reachable', async () => {
+    let called = 0
+    const proven = await proveCredentialPair(
+      [{ source: 'env', sourceLabel: 'DEVSPEC_MCP_TOKEN', token: 'only', mcp_url: PROD }],
+      {
+        connectionId: 'conn-1',
+        probe: async () => {
+          called += 1
+        },
+      },
+    )
+    assert.equal(proven.pair.token, 'only')
+    assert.equal(proven.probed, false)
+    assert.equal(proven.warning, null)
+    assert.equal(called, 0)
+  })
+
+  it('falls through a "belongs to a different token" probe to the next pair', async () => {
+    const { pairs } = enumerateCredentialPairs(tmp, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
+      hostToken: 'dvs_plugin_prod',
+    })
+    const seen = []
+    const proven = await proveCredentialPair(pairs, {
+      connectionId: 'conn-1',
+      probe: async (pair) => {
+        seen.push(pair.token)
+        if (pair.token === 'dvs_plugin_prod') {
+          throw new Error('This connection belongs to a different token')
+        }
+      },
+    })
+    assert.deepEqual(seen, ['dvs_plugin_prod', 'dvs_project_staging'])
+    assert.equal(proven.pair.token, 'dvs_project_staging')
+    assert.equal(proven.pair.mcp_url, 'https://staging.devspec.ai/api/mcp')
+    assert.equal(proven.probed, true)
+    assert.match(proven.warning, /You → Connections/)
+    assert.doesNotMatch(proven.warning, /dvs_plugin_prod|dvs_project_staging/)
+  })
+
+  it('refuses an unproven pick when two tokens exist and no probe is supplied', async () => {
+    const { pairs } = enumerateCredentialPairs(tmp, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
+      hostToken: 'dvs_plugin_prod',
+    })
+    const proven = await proveCredentialPair(pairs, { connectionId: 'conn-1' })
+    assert.equal(proven.pair, null)
+    assert.equal(proven.error, 'unproven')
+    assert.match(proven.warning, /more than one DevSpec key/)
   })
 })

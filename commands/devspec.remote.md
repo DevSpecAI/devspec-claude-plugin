@@ -38,7 +38,7 @@ Pass `--owner-pid "$PPID"` exactly as written. Never hunt for the pid yourself (
 
 **Then do exactly three things:**
 
-1. **Print its status block in this terminal.** Terminal only — never post it, or any connect/reconnect/"waiting for your command" chrome, into a session.
+1. **Print its status block in this terminal.** Terminal only — never post it, or any connect/reconnect/"waiting for your command" chrome, into a session. If the block includes a `warning:` about more than one DevSpec key, relay that text to the user **verbatim** (fingerprints only — never print a raw token).
 2. **Obey the instructions it printed.** Connect prints the four tiers in force (your owner's style and machine rules, the project's principles and execution rules), or says they are unchanged since this conversation last connected. They govern the whole run. Never invent one that is absent, and never disclose another user's.
 3. **Arm the wake stream** — section 2. Non-optional.
 

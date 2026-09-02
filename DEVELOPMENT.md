@@ -38,7 +38,14 @@ Keep them in lockstep and record the change in `CHANGELOG.md`.
 
 ## Local dev against staging (or any non-prod endpoint)
 
-The plugin bakes the production MCP endpoint (`https://devspec.ai/api/mcp`) into `plugin.json`. To develop against staging, **define your own `devspec` MCP server** in your project's `.mcp.json` (or `~/.claude.json`) — a user-defined server of the same name completely overrides the plugin's, and it's also what the hook scripts resolve first:
+The plugin bakes the production MCP endpoint (`https://devspec.ai/api/mcp`) into `plugin.json`. To develop against staging, override that server **once at user home** so every folder dogfoods staging — including repos that have no project `.mcp.json` (ColdTrace). Do not copy a project `.mcp.json` into each repo.
+
+Put the block in `~/.claude.json`, or run `claude mcp add` at **user** scope:
+
+```bash
+claude mcp add --scope user --transport http devspec https://staging.devspec.ai/api/mcp \
+  --header "Authorization: Bearer dvs_your_staging_token"
+```
 
 ```json
 {
@@ -52,11 +59,13 @@ The plugin bakes the production MCP endpoint (`https://devspec.ai/api/mcp`) into
 }
 ```
 
+A project `.mcp.json` is still a valid **local** override (the hook scripts prefer it when present). It is not the default for staging dogfood.
+
 Token/endpoint resolution order used by the hook scripts (`hooks/scripts/resolve-mcp-auth.mjs`):
 
 1. `DEVSPEC_MCP_TOKEN` / `DEVSPEC_TOKEN` (+ `DEVSPEC_MCP_URL`)
-2. Project `.mcp.json` (cwd and parents)
-3. `~/.claude.json` matching entries
-4. `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` (the `userConfig` token from the keychain) — lowest priority, so your local `.mcp.json` always wins.
+2. Project `.mcp.json` (cwd and parents) — optional local override
+3. `~/.claude.json` matching entries — **use this for staging**
+4. `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` (the `userConfig` token from the keychain)
 
-Because your `.mcp.json` wins, you can keep the plugin installed from the local marketplace and still hit staging. (Claude Code may still prompt for the `userConfig` token when you enable the plugin even though the override makes it unused — enter anything, or your staging token.)
+Keep the plugin installed from the marketplace. A user-defined `devspec` server of the same name overrides the plugin's baked-in production URL. (Claude Code may still prompt for the `userConfig` token when you enable the plugin even though the override makes it unused — enter anything, or your staging token.)

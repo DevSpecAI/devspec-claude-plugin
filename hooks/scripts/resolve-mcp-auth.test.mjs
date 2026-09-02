@@ -270,3 +270,94 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     assert.match(proven.warning, /more than one DevSpec key/)
   })
 })
+
+describe('plugin userConfig URL (item 17f38cfa — one server, pointed once)', () => {
+  const STAGING = 'https://staging.devspec.ai/api/mcp'
+  let empty
+
+  before(() => {
+    // A folder with NO .mcp.json — the customer shape, and the shape we move to
+    // once the project override is deleted.
+    empty = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-url-'))
+  })
+
+  after(() => {
+    try {
+      fs.rmSync(empty, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  })
+
+  it('defaults to production when the plugin URL is unset', () => {
+    const r = resolveDevspecMcpAuth(empty, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin' },
+    })
+    assert.equal(r.token, 'dvs_plugin')
+    assert.equal(r.mcp_url, PROD)
+  })
+
+  it('follows the plugin URL the host was configured with', () => {
+    const r = resolveDevspecMcpAuth(empty, {
+      env: {
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin',
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
+      },
+    })
+    assert.equal(r.token, 'dvs_plugin')
+    assert.equal(r.mcp_url, STAGING)
+  })
+
+  it('accepts the lowercase env spelling, like the token does', () => {
+    const r = resolveDevspecMcpAuth(empty, {
+      env: {
+        CLAUDE_PLUGIN_OPTION_devspec_token: 'dvs_plugin',
+        CLAUDE_PLUGIN_OPTION_devspec_mcp_url: STAGING,
+      },
+    })
+    assert.equal(r.mcp_url, STAGING)
+  })
+
+  it('keeps the host-token pair on the plugin URL, not production', () => {
+    // The regression this guards: register_connection runs on the plugin server at
+    // STAGING, so a poller that assumed production would heartbeat the wrong host.
+    const r = resolveDevspecMcpAuth(empty, {
+      env: {
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin',
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
+      },
+      hostToken: 'dvs_plugin',
+    })
+    assert.equal(r.token, 'dvs_plugin')
+    assert.equal(r.mcp_url, STAGING)
+  })
+
+  it('still refuses to lend the plugin URL to a .mcp.json token', () => {
+    const withProject = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-url-proj-'))
+    fs.writeFileSync(
+      path.join(withProject, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          devspec: {
+            url: 'https://other.example/api/mcp',
+            headers: { Authorization: 'Bearer dvs_project' },
+          },
+        },
+      }),
+    )
+    try {
+      const { pairs } = enumerateCredentialPairs(withProject, {
+        env: {
+          CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin',
+          CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
+        },
+      })
+      const plugin = pairs.find((p) => p.source === 'plugin_user_config')
+      const project = pairs.find((p) => p.sourceLabel === 'project .mcp.json')
+      assert.equal(plugin.mcp_url, STAGING)
+      assert.equal(project.mcp_url, 'https://other.example/api/mcp')
+    } finally {
+      fs.rmSync(withProject, { recursive: true, force: true })
+    }
+  })
+})

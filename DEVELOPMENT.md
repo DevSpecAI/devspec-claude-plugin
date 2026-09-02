@@ -38,34 +38,50 @@ Keep them in lockstep and record the change in `CHANGELOG.md`.
 
 ## Local dev against staging (or any non-prod endpoint)
 
-The plugin bakes the production MCP endpoint (`https://devspec.ai/api/mcp`) into `plugin.json`. To develop against staging, override that server **once at user home** so every folder dogfoods staging — including repos that have no project `.mcp.json` (ColdTrace). Do not copy a project `.mcp.json` into each repo.
+Set the plugin's **DevSpec server** field to staging. That is the whole thing:
 
-Put the block in `~/.claude.json`, or run `claude mcp add` at **user** scope:
-
-```bash
-claude mcp add --scope user --transport http devspec https://staging.devspec.ai/api/mcp \
-  --header "Authorization: Bearer dvs_your_staging_token"
+```
+https://staging.devspec.ai/api/mcp
 ```
 
-```json
-{
-  "mcpServers": {
-    "devspec": {
-      "type": "http",
-      "url": "https://staging.devspec.ai/api/mcp",
-      "headers": { "Authorization": "Bearer dvs_your_staging_token" }
-    }
-  }
-}
+`plugin.json` declares the server as `"url": "${user_config.devspec_mcp_url}"`, defaulting
+to `https://devspec.ai/api/mcp`. Point that field at staging and the plugin's own
+`devspec` server goes to staging — and so do the hook scripts and the poller, because
+Claude Code exports the field to subprocesses as `CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL`
+and `resolve-mcp-auth.mjs` pairs it with the plugin token. One server, one host, nothing
+to keep in sync.
+
+Set the token field to a staging token at the same time. Token and URL always travel as a
+pair (item `8bb707fd`); a production token against staging will not own the connection.
+
+### Do not add a second `devspec` server to get staging
+
+A user- or project-defined server named `devspec` does **not** replace the plugin's.
+Claude Code namespaces plugin servers, so you end up running both:
+
+```
+plugin:devspec:devspec: https://devspec.ai/api/mcp          ✘ Failed to connect
+devspec:                https://staging.devspec.ai/api/mcp  ✔ Connected
 ```
 
-A project `.mcp.json` is still a valid **local** override (the hook scripts prefer it when present). It is not the default for staging dogfood.
+Check with `claude mcp list`. The hook scripts do prefer your own entry, so the *tools*
+work — which is why this looked fine for months — but the plugin's server stays
+registered and stays red for as long as production is not serving. That is noise you
+cannot clear, and it hides the one failure a fresh customer install actually hits.
 
-Token/endpoint resolution order used by the hook scripts (`hooks/scripts/resolve-mcp-auth.mjs`):
+A project `.mcp.json` is still a legitimate local override for a one-off endpoint. It is
+not the way to dogfood staging, and it should not be committed — it carries a live
+account-wide token.
 
-1. `DEVSPEC_MCP_TOKEN` / `DEVSPEC_TOKEN` (+ `DEVSPEC_MCP_URL`)
-2. Project `.mcp.json` (cwd and parents) — optional local override
-3. `~/.claude.json` matching entries — **use this for staging**
-4. `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` (the `userConfig` token from the keychain)
+### Resolution order used by the hook scripts
 
-Keep the plugin installed from the marketplace. A user-defined `devspec` server of the same name overrides the plugin's baked-in production URL. (Claude Code may still prompt for the `userConfig` token when you enable the plugin even though the override makes it unused — enter anything, or your staging token.)
+`hooks/scripts/resolve-mcp-auth.mjs`, first token pair wins. Each source supplies its own
+token **and** its own URL; the two are never mixed.
+
+1. `DEVSPEC_MCP_TOKEN` / `DEVSPEC_TOKEN` (+ `DEVSPEC_MCP_URL`) — explicit override
+2. The host token, paired with the URL of whichever source it came from
+3. Project `.mcp.json` (cwd and parents)
+4. `~/.claude.json` entries matching the cwd
+5. `~/.claude.json` top-level
+6. `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` + `CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL` — the
+   plugin's own configured pair

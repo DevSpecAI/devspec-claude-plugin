@@ -2,6 +2,20 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.25.0 - 2026-09-02
+
+### Pointing the plugin at a different DevSpec server
+
+The DevSpec server address is now a setting instead of a fixed value. It stays on
+`https://devspec.ai/api/mcp` unless you change it, so a normal install is unaffected and
+needs no configuring.
+
+Changing it moves everything at once: the tools Claude calls, the background connection
+that keeps your agent reachable, and the hooks all follow the address you set, using the
+key you entered alongside it. Previously the address could only be changed by defining a
+second DevSpec server, which left the original one configured and failing, and could pair
+a key from one place with an address from another.
+
 ## 0.24.0 - 2026-08-29
 
 ### Finding the conversation where something was only ever said

@@ -13,8 +13,9 @@
  * 3. Project .mcp.json (cwd and parents) — that file's token AND url.
  * 4. ~/.claude.json project entries that match cwd (mcpServers.devspec)
  * 5. ~/.claude.json top-level mcpServers.devspec
- * 6. CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — plugin userConfig token + plugin URL
- *    (https://devspec.ai/api/mcp). Lowest priority so a developer's own .mcp.json
+ * 6. CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — plugin userConfig token, paired with the
+ *    plugin's OWN configured URL (CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL, defaulting to
+ *    https://devspec.ai/api/mcp). Lowest priority so a developer's own .mcp.json
  *    (e.g. staging) still wins when no host token was supplied.
  *
  * At write time, proveCredentialPair heartbeats the just-registered connection
@@ -153,6 +154,23 @@ function pluginTokenFromEnv(env) {
 }
 
 /**
+ * The URL the plugin-declared `devspec` MCP server is actually pointed at.
+ *
+ * `plugin.json` declares `"url": "${user_config.devspec_mcp_url}"`, so the host talks
+ * to whatever that userConfig field holds — production by default, staging for us.
+ * Claude Code exports userConfig to subprocesses as CLAUDE_PLUGIN_OPTION_<KEY>, so the
+ * poller can read the same value and stay on the SAME host as the server that ran
+ * register_connection. Reading only the token and assuming production would recreate
+ * exactly the cross-wiring item 8bb707fd removed, one field along.
+ */
+function pluginUrlFromEnv(env) {
+  return (
+    trimToken(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL || env.CLAUDE_PLUGIN_OPTION_devspec_mcp_url) ||
+    DEFAULT_PROD_URL
+  )
+}
+
+/**
  * Every reachable credential as a { token, mcp_url } pair from ONE source.
  * First occurrence of an identical token+URL wins (precedence order).
  */
@@ -172,6 +190,7 @@ export function enumerateCredentialPairs(cwd = process.cwd(), opts = {}) {
   const envToken = trimToken(env.DEVSPEC_MCP_TOKEN || env.DEVSPEC_TOKEN)
   const envUrl = trimToken(env.DEVSPEC_MCP_URL) || DEFAULT_PROD_URL
   const pluginToken = pluginTokenFromEnv(env)
+  const pluginUrl = pluginUrlFromEnv(env)
   const hostToken =
     typeof opts.hostToken === 'string' && opts.hostToken.trim() ? opts.hostToken.trim() : null
   const fromProject = walkMcpJson(cwd)
@@ -187,13 +206,13 @@ export function enumerateCredentialPairs(cwd = process.cwd(), opts = {}) {
   }
 
   if (hostToken) {
-    let mcp_url = DEFAULT_PROD_URL
+    let mcp_url = pluginUrl
     let sourceLabel = 'host MCP client'
     if (hostToken === envToken) {
       mcp_url = envUrl
       sourceLabel = 'DEVSPEC_MCP_TOKEN'
     } else if (pluginToken && hostToken === pluginToken) {
-      mcp_url = DEFAULT_PROD_URL
+      mcp_url = pluginUrl
       sourceLabel = 'plugin userConfig'
     } else if (fromProject?.token && hostToken === fromProject.token) {
       mcp_url = fromProject.mcp_url || DEFAULT_PROD_URL
@@ -233,7 +252,7 @@ export function enumerateCredentialPairs(cwd = process.cwd(), opts = {}) {
       source: 'plugin_user_config',
       sourceLabel: 'plugin userConfig',
       token: pluginToken,
-      mcp_url: DEFAULT_PROD_URL,
+      mcp_url: pluginUrl,
     })
   }
 

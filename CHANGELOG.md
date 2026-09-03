@@ -2,6 +2,21 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.26.0 - 2026-09-03
+
+### Remote control now works on a plain install
+
+Connecting a conversation to DevSpec with `/devspec:devspec.remote` failed to
+authenticate unless you had also set up a DevSpec MCP server by hand. The key you enter
+when you enable the plugin reached the plugin's background pieces but not its commands,
+so the commands had nothing to sign in with.
+
+They can now see the key and server address you entered, so installing the plugin and
+pasting your key is genuinely all that is needed — on macOS, Windows and Linux alike.
+
+If you had added your own DevSpec server or environment variables to work around this,
+they keep working and still take priority; nothing you have set up changes.
+
 ## 0.25.0 - 2026-09-02
 
 ### Pointing the plugin at a different DevSpec server

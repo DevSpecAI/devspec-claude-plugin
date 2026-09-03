@@ -1,5 +1,5 @@
 {
-  "description": "Load the canonical DevSpec implementation contract pointer, assist Git commit provenance (ADR 71c23b46) without ever blocking edits or execution, report which commits this agent made so work can be attributed to it (item 27fab61a), and mirror remote-control turns. Commit references are observed only on commit-message surfaces this can read with certainty; every uncertainty, missing runtime or hook failure allows the operation.",
+  "description": "Load the canonical DevSpec implementation contract pointer, assist Git commit provenance (ADR 71c23b46) without ever blocking edits or execution, report which commits this agent made so work can be attributed to it (item 27fab61a), mirror remote-control turns, and carry the plugin's configured DevSpec key and server address into the session environment so the plugin's own commands can reach them (item bb97c9f6 - Claude Code gives userConfig to hooks but not to Bash tool calls). Commit references are observed only on commit-message surfaces this can read with certainty; every uncertainty, missing runtime or hook failure allows the operation.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,15 @@
           {
             "type": "command",
             "command": "if command -v node >/dev/null 2>&1; then node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-provenance.mjs\" session-start; else printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"DevSpec implementation contract: devspec://product/implementation-contract\"}}'; fi",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-env-credentials.mjs\" || true",
             "timeout": 10
           }
         ]

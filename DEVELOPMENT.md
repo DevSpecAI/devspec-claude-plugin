@@ -46,10 +46,9 @@ https://staging.devspec.ai/api/mcp
 
 `plugin.json` declares the server as `"url": "${user_config.devspec_mcp_url}"`, defaulting
 to `https://devspec.ai/api/mcp`. Point that field at staging and the plugin's own
-`devspec` server goes to staging — and so do the hook scripts and the poller, because
-Claude Code exports the field to subprocesses as `CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL`
-and `resolve-mcp-auth.mjs` pairs it with the plugin token. One server, one host, nothing
-to keep in sync.
+`devspec` server goes to staging — and so do the hooks, the commands and the poller.
+One server, one host, nothing to keep in sync. How the last part works is worth knowing,
+because it is not automatic: see **Where `userConfig` actually reaches** below.
 
 Set the token field to a staging token at the same time. Token and URL always travel as a
 pair (item `8bb707fd`); a production token against staging will not own the connection.
@@ -73,6 +72,44 @@ A project `.mcp.json` is still a legitimate local override for a one-off endpoin
 not the way to dogfood staging, and it should not be committed — it carries a live
 account-wide token.
 
+### Where `userConfig` actually reaches
+
+Claude Code puts `userConfig` into **hook** subprocesses only, as
+`CLAUDE_PLUGIN_OPTION_<KEY>` — the token included, there is no sensitivity filter. Its
+own manifest schema says so: the values "become `CLAUDE_PLUGIN_OPTION_<KEY>` env vars
+**in hooks**".
+
+**Bash tool calls are a different spawn path and get none of it.** Every script under
+`commands/` runs as a Bash tool call, so the connect/poll/wait trio saw an empty
+environment and `resolve-mcp-auth.mjs` source 6 was unreachable from exactly the scripts
+it existed for. That is item `bb97c9f6`: on a plain plugin install — no `.mcp.json`, no
+env vars, which is every customer — `/devspec:devspec.remote` could not authenticate at
+all. It appeared to work here only because a hand-written project `.mcp.json` was
+supplying the pair.
+
+`hooks/scripts/session-env-credentials.mjs` closes it. On `SessionStart` Claude Code
+hands the hook a `CLAUDE_ENV_FILE` path (`session-env/<session>/sessionstart-hook-<n>.sh`)
+and applies whatever is written there to the session environment, which Bash tool calls
+inherit. The hook re-exports the two `CLAUDE_PLUGIN_OPTION_*` values it was given.
+
+Two things about that are deliberate:
+
+- **It re-exports the same names, not `DEVSPEC_MCP_TOKEN`.** `DEVSPEC_MCP_TOKEN` is
+  source 1. Feeding plugin config in at the top would make the plugin's key outrank a
+  developer's project `.mcp.json` and `~/.claude.json`, inverting the order below for
+  everyone. Re-exporting the plugin's own names keeps it at source 6, where it belongs.
+  The environment is being *carried*, not *changed*.
+- **It does not read the credential store.** There is no portable one to read:
+  `pluginSecrets` goes through the macOS Keychain, the Windows Credential Manager, or
+  `~/.claude/.credentials.json` on Linux. Only the last is a file, so reading it would
+  work on a Linux dev box and fail silently for most customers. The hook is handed the
+  resolved value whatever stored it.
+
+If a host ever stops setting `CLAUDE_ENV_FILE`, the hook writes nothing and the sources
+below still work — but `/devspec:devspec.remote` goes back to needing an explicit
+`.mcp.json` or env var, so that is the thing to check first if remote connect starts
+failing on auth after a Claude Code upgrade.
+
 ### Resolution order used by the hook scripts
 
 `hooks/scripts/resolve-mcp-auth.mjs`, first token pair wins. Each source supplies its own
@@ -84,4 +121,5 @@ token **and** its own URL; the two are never mixed.
 4. `~/.claude.json` entries matching the cwd
 5. `~/.claude.json` top-level
 6. `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` + `CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL` — the
-   plugin's own configured pair
+   plugin's own configured pair. Present in hooks because Claude Code sets it, and in
+   command scripts because the `SessionStart` hook carries it there (see above).

@@ -11,7 +11,7 @@ A **connection** is a first-class DevSpec agent identity for one local coding-ag
 - **Sessionless** — available on the Agents page without a chat transcript. This does not assign it action-item work.
 - **Attached** to a DevSpec session — optional canonical conversation + shared transcript and room context.
 
-A **session is optional**. Never invent a session because a cwd or another agent recently stopped. Bond on the local conversation / thread id only. Explicit owner-scoped playbook runs remain a separately typed, exactly addressed channel; they are not action-item assignments.
+A **session is optional**. Never invent a session because a cwd or another agent recently stopped. Bond on the local conversation / thread id only. Explicit owner-scoped automation runs remain a separately typed, exactly addressed channel; they are not action-item assignments.
 
 ## Shared DevSpec contract (all hosts)
 
@@ -57,7 +57,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 - Do not reintroduce Stop-hook **full-turn** mirroring as the primary answer path.
 - Do not copy wake/auth/state files across plugin repos — plugins are independent; **no file crosses a repo boundary**. There is no sync list, no `owns` tier, no canonical plugin, and no sync tooling: it was deleted on 2026-08-03 because porting one host's fix outward kept breaking hosts that already worked. Duplicate by hand, in the affected repo. Reading another plugin as a reference is fine.
 - Do not treat advisory room traffic as instructions.
-- Do not turn connection availability or a playbook run into action-item work.
+- Do not turn connection availability or an automation run into action-item work.
 - Do not bond on `SHELL_SESSION_ID` / cwd — conversation/thread id only.
 - Do not assume OpenCode-style inject exists on Claude/Cursor/Grok/Antigravity.
 

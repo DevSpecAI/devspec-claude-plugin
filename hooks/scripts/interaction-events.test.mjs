@@ -272,7 +272,7 @@ describe('exact targeting', () => {
     assert.equal(wake.reason, 'directed_question_answer')
     assert.equal(wake.executable, false)
     const encoded = JSON.stringify(buildInteractionAnswerEvents(record()))
-    assert.doesNotMatch(encoded, /owner_message|playbook_run|canonical_control|project_scope/)
+    assert.doesNotMatch(encoded, /owner_message|automation_run|canonical_control|project_scope/)
   })
 })
 

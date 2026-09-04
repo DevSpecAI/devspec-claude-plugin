@@ -21,15 +21,15 @@ describe('current Claude authority and work-acquisition prose', () => {
     const workSection = command.slice(command.indexOf('Working action items when asked'))
 
     assert.match(command, /devspec:\/\/product\/remote-ingress-contract/)
-    assert.match(allowedTools, /mcp__devspec__claim_playbook_run/)
-    assert.match(allowedTools, /mcp__devspec__record_playbook_run/)
+    assert.match(allowedTools, /mcp__devspec__claim_automation_run/)
+    assert.match(allowedTools, /mcp__devspec__record_automation_run/)
     assert.match(command, /Preserve the command's requester attribution/)
     assert.match(command, /A sessionless connection has no conversation answer path/)
     assert.match(workSection, /Nothing is ever sent work/)
     assert.match(workSection, /Only acquire action-item work when a canonical conversation explicitly asks/)
     assert.ok(workSection.indexOf('reserve_work_items') < workSection.indexOf('claim_work_item'))
     assert.match(workSection, /devspec:\/\/product\/implementation-contract/)
-    assert.match(workSection, /separately typed, exactly addressed `playbook_run` path/)
+    assert.match(workSection, /separately typed, exactly addressed `automation_run` path/)
 
     assert.doesNotMatch(command, /assignment protocol/i)
     assert.doesNotMatch(command, /ready for dispatch/i)
@@ -52,7 +52,7 @@ describe('current Claude authority and work-acquisition prose', () => {
       assert.match(historicalSection, /Superseded — non-normative history/)
       assert.match(historicalSection, /Do not follow/)
       assert.match(historicalSection, /reserving then claiming|reserves them and claims them in order/)
-      assert.match(historicalSection, /owner-scoped playbook runs/)
+      assert.match(historicalSection, /owner-scoped automation runs/)
     }
   })
 
@@ -66,7 +66,7 @@ describe('current Claude authority and work-acquisition prose', () => {
     assert.match(currentDocs, /server-only owner\/delegated exact-target authority/)
     assert.match(currentDocs, /immutable requester provenance/)
     assert.match(currentDocs, /Typed host controls|typed controls/)
-    assert.match(currentDocs, /owner-scoped playbook runs/)
+    assert.match(currentDocs, /owner-scoped automation runs/)
     assert.match(currentDocs, /devspec:\/\/product\/implementation-contract/)
     assert.match(readme, /Sessionless means available; it does not receive action-item assignments/)
     assert.match(readme, /owner or a server-authorized delegate[^\n]*exactly addressed command/)
@@ -90,16 +90,16 @@ describe('Claude authority source boundaries', () => {
     assert.match(ingress, /CONTROL_VERBS = new Set/)
   })
 
-  it('retains the independent exactly addressed playbook path without assignment prose', () => {
+  it('retains the independent exactly addressed automation path without assignment prose', () => {
     const poll = source('hooks/scripts/devspec-remote-poll.mjs')
     const wait = source('hooks/scripts/devspec-remote-wait.mjs')
 
-    assert.match(poll, /dispatch\.kind === 'playbook_run'/)
+    assert.match(poll, /dispatch\.kind === 'automation_run'/)
     assert.match(poll, /dispatch\.delivery_connection_id === connectionId/)
     assert.match(poll, /Object\.keys\(dispatch\.requester\)\.length === 1/)
-    assert.match(wait, /d\.kind === 'playbook_run'/)
+    assert.match(wait, /d\.kind === 'automation_run'/)
     assert.match(wait, /d\.delivery_connection_id === connectionId/)
-    assert.match(wait, /channel: 'explicit_playbook_dispatch'/)
+    assert.match(wait, /channel: 'explicit_automation_dispatch'/)
 
     assert.doesNotMatch(poll, /live assignment|life of an assignment|assignment protocol/i)
     assert.doesNotMatch(wait, /assignment protocol/i)

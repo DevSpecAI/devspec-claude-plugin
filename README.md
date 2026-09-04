@@ -82,7 +82,7 @@ This is the feature most people come for. You run a real Claude Code session on 
 /devspec:devspec.remote
 ```
 
-This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped playbook runs may still target the connection through their own validated claim/report path.
+This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped automation runs may still target the connection through their own validated claim/report path.
 
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 

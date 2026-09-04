@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.27.0 - 2026-09-04
+
+### Playbooks are now Automations
+
+DevSpec has renamed Playbooks to Automations. This plugin now uses the renamed tools
+(`claim_automation_run`, `record_automation_run`, `get_automations` and the rest) and reads
+the renamed fields in what the server sends it. It needs a DevSpec server that carries the
+same rename; against an older server, automation runs are not picked up.
+
 ## 0.26.0 - 2026-09-03
 
 ### Remote control now works on a plain install
@@ -763,7 +772,7 @@ Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which wa
 
 ## 0.8.0 - 2026-08-11
 
-> **Superseded — non-normative history:** This release documented the retired assignment-delivery model. Do not follow its migration, routing, unattended-mode or idle-connection directions. Since 0.13.0, nothing sends action-item work: a conversation must ask for named items, then the agent reserves them and claims them in order. Explicit owner-scoped playbook runs use their separate typed path.
+> **Superseded — non-normative history:** This release documented the retired assignment-delivery model. Do not follow its migration, routing, unattended-mode or idle-connection directions. Since 0.13.0, nothing sends action-item work: a conversation must ask for named items, then the agent reserves them and claims them in order. Explicit owner-scoped automation runs use their separate typed path.
 
 ### The `/autopilot.*` commands are gone — staged work now arrives at any idle connection
 
@@ -934,7 +943,7 @@ Items `8b4ceaa3`, `d655b2a4`.
 
 ## 0.5.1 - 2026-07-24
 
-> **Superseded — non-normative history:** The sessionless assignment/progress-only answer rule and assignment protocol below were retired. Do not follow them as current guidance. Canonical conversation answers use their conversation; action-item work is acquired only when a conversation asks, by reserving then claiming. Explicit owner-scoped playbook runs remain separate.
+> **Superseded — non-normative history:** The sessionless assignment/progress-only answer rule and assignment protocol below were retired. Do not follow them as current guidance. Canonical conversation answers use their conversation; action-item work is acquired only when a conversation asks, by reserving then claiming. Explicit owner-scoped automation runs remain separate.
 
 ### Remote control — agent-canonical, connection-scoped, session optional
 

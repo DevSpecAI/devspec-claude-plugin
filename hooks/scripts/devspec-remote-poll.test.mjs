@@ -33,11 +33,11 @@ import {
   materialiseContextAttachments,
   pollCursorArguments,
   advancePollCursors,
-  validatePlaybookRunDispatch,
+  validateAutomationRunDispatch,
   scanPersistedInboxRecords,
   appendDurableRecord,
   appendCanonicalInbox,
-  appendPlaybookDispatches,
+  appendAutomationDispatches,
   DELEGATED_SCOPE_VERSION,
   ACTIVE_PLAN_PROJECTION_VERSION,
   remoteIngressNegotiationArguments,
@@ -260,14 +260,14 @@ describe('independent poll cursors', () => {
   })
 })
 
-describe('explicit playbook dispatch channel', () => {
+describe('explicit automation dispatch channel', () => {
   const connectionId = '10000000-0000-4000-8000-000000000001'
-  const playbook = {
+  const automation = {
     id: '20000000-0000-4000-8000-000000000002',
-    kind: 'playbook_run',
+    kind: 'automation_run',
     run_id: '20000000-0000-4000-8000-000000000002',
-    playbook_id: '30000000-0000-4000-8000-000000000003',
-    playbook_name: 'Review',
+    automation_id: '30000000-0000-4000-8000-000000000003',
+    automation_name: 'Review',
     instruction: 'Review the change',
     permission: 'look_only',
     requester: { user_id: '40000000-0000-4000-8000-000000000004' },
@@ -277,11 +277,11 @@ describe('explicit playbook dispatch channel', () => {
     state: 'queued',
   }
 
-  it('accepts only an exactly addressed playbook_run', () => {
-    assert.equal(validatePlaybookRunDispatch(playbook, connectionId).ok, true)
-    assert.equal(validatePlaybookRunDispatch({ ...playbook, kind: 'assignment' }, connectionId).ok, false)
+  it('accepts only an exactly addressed automation_run', () => {
+    assert.equal(validateAutomationRunDispatch(automation, connectionId).ok, true)
+    assert.equal(validateAutomationRunDispatch({ ...automation, kind: 'assignment' }, connectionId).ok, false)
     assert.equal(
-      validatePlaybookRunDispatch({ ...playbook, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }, connectionId).ok,
+      validateAutomationRunDispatch({ ...automation, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }, connectionId).ok,
       false,
     )
   })
@@ -402,10 +402,10 @@ describe('explicit playbook dispatch channel', () => {
     assert.deepEqual(second, { ok: true, appended: false })
   })
 
-  it('does not make a failed playbook append eligible for dispatch_cursor advancement', () => {
-    const result = appendPlaybookDispatches(
+  it('does not make a failed automation append eligible for dispatch_cursor advancement', () => {
+    const result = appendAutomationDispatches(
       connectionId,
-      [playbook],
+      [automation],
       'dispatch-next',
       scanPersistedInboxRecords(''),
       null,
@@ -415,17 +415,17 @@ describe('explicit playbook dispatch channel', () => {
     assert.equal(result.appended, 0)
   })
 
-  it('rebuilds envelope/message/control/playbook dedupe after an append-before-state crash', () => {
+  it('rebuilds envelope/message/control/automation dedupe after an append-before-state crash', () => {
     const text = [
       { type: 'canonical_commands', ingress: { envelope_id: 'env-1' }, execute_message_ids: ['msg-1'] },
       { type: 'canonical_control', ingress: { envelope_id: 'env-2', control: { id: 'control-1' } } },
-      { type: 'playbook_run', dispatch: playbook },
+      { type: 'automation_run', dispatch: automation },
     ].map((record) => JSON.stringify(record)).join('\n') + '\n'
     const index = scanPersistedInboxRecords(text)
     assert.deepEqual([...index.envelopeIds], ['env-1', 'env-2'])
     assert.deepEqual([...index.commandMessageIds], ['msg-1'])
     assert.deepEqual([...index.controlIds], ['control-1'])
-    assert.deepEqual([...index.dispatchIds], [playbook.id])
+    assert.deepEqual([...index.dispatchIds], [automation.id])
   })
 })
 
@@ -1077,11 +1077,11 @@ describe('countUnconsumedCommands', () => {
     )
   })
 
-  it('counts typed controls and explicit playbook runs as wake backlog', () => {
+  it('counts typed controls and explicit automation runs as wake backlog', () => {
     withInbox(
       [
         { type: 'canonical_control', ingress: { control: { id: 'c' } } },
-        { type: 'playbook_run', dispatch: { id: 'p' } },
+        { type: 'automation_run', dispatch: { id: 'p' } },
       ],
       ({ dir, conn }) => assert.equal(countUnconsumedCommands(conn, 0, dir), 2),
     )

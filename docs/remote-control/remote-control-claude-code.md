@@ -7,13 +7,13 @@
 ## How a message reaches Claude
 
 1. DevSpec emits negotiated canonical ingress for this connection.
-2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope plus active-plan projection v1, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `playbook_run` dispatches remain a separately validated/deduped channel; assignments do not.
-3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints active plans as advisory room awareness, typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit playbooks, or separate non-chat host controls.
+2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope plus active-plan projection v1, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `automation_run` dispatches remain a separately validated/deduped channel; assignments do not.
+3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints active plans as advisory room awareness, typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit automations, or separate non-chat host controls.
 4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
 5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
 
-Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named action-item work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `playbook_run` records remain separate and use only their playbook claim/report path.
+Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named action-item work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `automation_run` records remain separate and use only their automation claim/report path.
 
 ## Directed-question answers (item `54b63e47`)
 
@@ -65,7 +65,7 @@ Design rules for anyone editing it:
 - **One private state boundary.** `private-state.mjs` is the only reader/writer for remote-control JSON that can carry the bearer or hidden capability; every consumer (connect/state, plan, poll, wait, turn mirror, commit observation) goes through it, and it repairs older file modes before reading. `writeConnectionState` remains the one connection-state assembler. Model-facing diagnostics use `remote-control-state.mjs status|read`, which emits only the redacted view and direct reconnect disposition; both remote commands must use resolver/status/list and never tell the model to open the raw file.
 - **Plans are not pump verbs.** `devspec-plan.mjs describe|use` injects that capability mechanically and exposes only the server-advertised `manage_plan`. It must never become an alternate poll/heartbeat/dispatch client.
 - **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
-- Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered playbook is durable.
+- Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered automation is durable.
 - Remote-ingress policy, including delegated project scope, is authoritative at `devspec://product/remote-ingress-contract`; validate and surface the server instruction verbatim rather than restating mutable wording here.
 - Action-item work acquisition and execution are authoritative at `devspec://product/implementation-contract`; teach only the conversation-requested reserve-then-claim order here.
 

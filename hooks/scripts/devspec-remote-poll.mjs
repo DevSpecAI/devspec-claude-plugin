@@ -6,7 +6,7 @@
  * inbox → wait stream → Claude Code Monitor. Polling negotiates ingress_version:1,
  * delegated_scope_version:1 and active_plan_projection_version:1, then validates the canonical envelope before it can
  * create a wake record. Legacy
- * conversational/context arrays are inert; top-level playbook_run dispatches retain
+ * conversational/context arrays are inert; top-level automation_run dispatches retain
  * their explicit independent channel and cursor.
  *
  * Typed advisory context is carried forward with the existing bounded newest-first
@@ -206,7 +206,7 @@ export function countUnconsumedCommands(connectionId, inboxOffset, dir = CONNECT
             ? obj.ingress.command_message_ids
             : []
         count += ids.length
-      } else if (obj?.type === 'canonical_control' || obj?.type === 'playbook_run') {
+      } else if (obj?.type === 'canonical_control' || obj?.type === 'automation_run') {
         count++
       } else if (obj?.type === 'interaction_answer' && obj.disposition === DELIVERED) {
         count++
@@ -410,24 +410,24 @@ function appendInbox(
  */
 const UUID_PATTERN = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
 
-/** Only the server's explicit playbook_run dispatch shape is executable here. */
-export function validatePlaybookRunDispatch(dispatch, connectionId) {
+/** Only the server's explicit automation_run dispatch shape is executable here. */
+export function validateAutomationRunDispatch(dispatch, connectionId) {
   if (!dispatch || typeof dispatch !== 'object' || Array.isArray(dispatch)) {
     return { ok: false, error: 'dispatch is not an object' }
   }
   const required = [
-    'id', 'kind', 'run_id', 'playbook_id', 'playbook_name', 'instruction', 'permission',
+    'id', 'kind', 'run_id', 'automation_id', 'automation_name', 'instruction', 'permission',
     'requester', 'original_target_connection_id', 'delivery_connection_id', 'queued_at', 'state',
   ]
   if (Object.keys(dispatch).length !== required.length || required.some((key) => !Object.hasOwn(dispatch, key))) {
-    return { ok: false, error: 'dispatch does not exactly match playbook_run' }
+    return { ok: false, error: 'dispatch does not exactly match automation_run' }
   }
   const valid =
-    dispatch.kind === 'playbook_run' &&
+    dispatch.kind === 'automation_run' &&
     typeof dispatch.id === 'string' && UUID_PATTERN.test(dispatch.id) &&
     dispatch.run_id === dispatch.id &&
-    typeof dispatch.playbook_id === 'string' && UUID_PATTERN.test(dispatch.playbook_id) &&
-    typeof dispatch.playbook_name === 'string' && dispatch.playbook_name.length > 0 &&
+    typeof dispatch.automation_id === 'string' && UUID_PATTERN.test(dispatch.automation_id) &&
+    typeof dispatch.automation_name === 'string' && dispatch.automation_name.length > 0 &&
     typeof dispatch.instruction === 'string' &&
     ['look_only', 'can_commit', 'can_push'].includes(dispatch.permission) &&
     dispatch.requester && typeof dispatch.requester === 'object' && !Array.isArray(dispatch.requester) &&
@@ -441,7 +441,7 @@ export function validatePlaybookRunDispatch(dispatch, connectionId) {
     ['queued', 'waiting_for_agent'].includes(dispatch.state)
   return valid
     ? { ok: true, dispatch }
-    : { ok: false, error: 'invalid or misaddressed playbook_run dispatch' }
+    : { ok: false, error: 'invalid or misaddressed automation_run dispatch' }
 }
 
 /** Rebuild crash-safe delivery identity from newline-terminated durable records only. */
@@ -496,7 +496,7 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
       if (record?.type === 'canonical_control' && typeof record.ingress?.control?.id === 'string') {
         index.controlIds.add(record.ingress.control.id)
       }
-      if (record?.type === 'playbook_run' && typeof record.dispatch?.id === 'string') {
+      if (record?.type === 'automation_run' && typeof record.dispatch?.id === 'string') {
         index.dispatchIds.add(record.dispatch.id)
       }
     } catch {
@@ -619,7 +619,7 @@ export function appendCanonicalInbox(
   return { ok: true, appended: true, executeMessageIds }
 }
 
-export function appendPlaybookDispatches(
+export function appendAutomationDispatches(
   connectionId,
   dispatches,
   dispatchCursor,
@@ -629,7 +629,7 @@ export function appendPlaybookDispatches(
 ) {
   const validated = []
   for (const offered of Array.isArray(dispatches) ? dispatches : []) {
-    const parsed = validatePlaybookRunDispatch(offered, connectionId)
+    const parsed = validateAutomationRunDispatch(offered, connectionId)
     if (!parsed.ok) return { ok: false, appended: 0, error: parsed.error }
     validated.push(parsed.dispatch)
   }
@@ -637,7 +637,7 @@ export function appendPlaybookDispatches(
   for (const dispatch of validated) {
     if (index.dispatchIds.has(dispatch.id)) continue
     const record = {
-      type: 'playbook_run',
+      type: 'automation_run',
       connection_id: connectionId,
       session_id: sessionId,
       received_at: new Date().toISOString(),
@@ -645,7 +645,7 @@ export function appendPlaybookDispatches(
       dispatch,
     }
     if (!writeRecord(connectionId, record)) {
-      return { ok: false, appended, error: 'playbook inbox persistence failed' }
+      return { ok: false, appended, error: 'automation inbox persistence failed' }
     }
     index.dispatchIds.add(dispatch.id)
     appended++
@@ -1016,7 +1016,7 @@ export const RECOVERABLE_TERMINAL_MAX = 10
  * Backoff after a poll that reported change but delivered nothing new.
  *
  * Defence in depth for a marker that is hot for a reason the response does not
- * contain. The independent playbook cursor prevents known persistent markers at the
+ * contain. The independent automation cursor prevents known persistent markers at the
  * source, while an old server or future marker of the same shape would otherwise spin
  * this loop at full rate. Escalates to the tier's own hold length, so the worst case
  * degrades to exactly the normal poll rate rather than to a hot loop, and resets the
@@ -1277,33 +1277,33 @@ function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
 }
 
 /**
- * Wake text for a dispatched PLAYBOOK RUN (DevSpecV2 child ae168718).
+ * Wake text for a dispatched AUTOMATION RUN (DevSpecV2 child ae168718).
  *
- * A playbook is not an action item — it is a job the owner saved to run again and
- * again, and it never completes. It stays on the separate playbook run tools and
+ * An automation is not an action item — it is a job the owner saved to run again and
+ * again, and it never completes. It stays on the separate automation run tools and
  * never enters action-item reserve/claim acquisition.
  *
- * The permission line matters: a look-only playbook must not be "helpfully" fixed
+ * The permission line matters: a look-only automation must not be "helpfully" fixed
  * while the agent is in there.
  *
  * Always pass provider on claim (hard match against preferred_provider). Omitting
  * it fails even when this agent is the named one — same habit as claim_work_item.
  */
-function playbookRunCommandText(d) {
+function automationRunCommandText(d) {
   const permission =
     d.permission === 'can_push'
       ? 'You MAY edit, commit and push.'
       : d.permission === 'can_commit'
         ? 'You MAY edit and commit locally, but MUST NOT push.'
-        : 'This playbook is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
+        : 'This automation is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
 
   return [
-    `▶️ Playbook run dispatched to this connection: "${d.playbook_name}" (run ${d.run_id}).`,
+    `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
     '',
     'What to do:',
-    `1. claim_playbook_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider (and model if the playbook names one). If claimed:false the run was already taken by another of your agents, which is normal; stop there.`,
+    `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider (and model if the automation names one). If claimed:false the run was already taken by another of your agents, which is normal; stop there.`,
     '2. Do the work described below, in this repo.',
-    '3. record_playbook_run — report status, a verdict for EACH acceptance criterion WITH evidence, and whatever the run produced as artifacts.',
+    '3. record_automation_run — report status, a verdict for EACH acceptance criterion WITH evidence, and whatever the run produced as artifacts.',
     '',
     `Permission: ${permission}`,
     '',
@@ -1511,7 +1511,7 @@ async function main() {
   let legacyCursor = args.cursor || state?.cursor_after_message_id || null
   let liveCursorV2 = state?.cursor_v2 || null
   let catchUpCursor = state?.catch_up_cursor || null
-  // Independent playbook clock. It advances only after every offered playbook is
+  // Independent automation clock. It advances only after every offered automation is
   // already durable (new append or crash-recovered dedupe).
   let dispatchCursor = state?.dispatch_cursor || null
   const persistedInbox = readInboxDeliveryIndex(connectionId, sessionId)
@@ -1723,7 +1723,7 @@ async function main() {
 
   /**
    * The independent event lane. Returns `lane:true` for any response carrying events,
-   * so the caller never re-reads it as a room/playbook page: an event-only response
+   * so the caller never re-reads it as a room/automation page: an event-only response
    * carries no canonical ingress by design and rejecting it as malformed would be a
    * lie about a perfectly valid delivery.
    */
@@ -1924,15 +1924,15 @@ async function main() {
     return { ok: true, delivered: true }
   }
 
-  /** Independent explicit playbook channel; action-item assignments are rejected. */
-  function consumePlaybookDispatches(res) {
+  /** Independent explicit automation channel; action-item assignments are rejected. */
+  function consumeAutomationDispatches(res) {
     if (!Array.isArray(res?.dispatches)) {
       process.stderr.write('devspec-remote-poll: rejected malformed dispatches channel\n')
       return { ok: false, delivered: false }
     }
     const nextDispatchCursor =
       typeof res.dispatch_cursor === 'string' ? res.dispatch_cursor : dispatchCursor
-    const persisted = appendPlaybookDispatches(
+    const persisted = appendAutomationDispatches(
       connectionId,
       res.dispatches,
       nextDispatchCursor,
@@ -1940,7 +1940,7 @@ async function main() {
       sessionId,
     )
     if (!persisted.ok) {
-      process.stderr.write(`devspec-remote-poll: rejected playbook dispatch (${persisted.error})\n`)
+      process.stderr.write(`devspec-remote-poll: rejected automation dispatch (${persisted.error})\n`)
       return { ok: false, delivered: false }
     }
     // Only now is the complete response dispatch set durable/deduped.
@@ -1952,7 +1952,7 @@ async function main() {
     if (persisted.appended > 0) {
       process.stdout.write(JSON.stringify({
         type: 'wake',
-        reason: 'playbook_run',
+        reason: 'automation_run',
         count: persisted.appended,
         inbox: inboxPathForConnection(connectionId),
         authoritative: false,
@@ -2188,16 +2188,16 @@ async function main() {
         continue
       }
       // Conversational commands/context come only from canonical ingress. Explicit
-      // playbook runs remain an independent top-level channel with their own clock.
-      const playbooks = consumePlaybookDispatches(res)
+      // automation runs remain an independent top-level channel with their own clock.
+      const automations = consumeAutomationDispatches(res)
       const canonical = consumeCanonicalIngress(res)
       if (canonical.ok) needsSeed = false
-      if (playbooks.delivered || canonical.delivered) {
+      if (automations.delivered || canonical.delivered) {
         consecutiveEmpty = 0
         continue // something real landed — go straight back to holding
       }
       // Changed but nothing to deliver. An independent cursor keeps a persistent
-      // playbook marker from staying hot, and this backoff keeps ANY future marker
+      // automation marker from staying hot, and this backoff keeps ANY future marker
       // of that shape from hot-looping.
       consecutiveEmpty++
       const floor = emptyTurnBackoffMs(consecutiveEmpty, tier.waitMs)

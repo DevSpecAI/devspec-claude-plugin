@@ -2,7 +2,7 @@
 name: devspec.remote
 description: Connect this Claude Code conversation to DevSpec as a first-class agent connection — available on the Agents page, attach to a session for a live transcript, driven from phone/web. Not Claude's built-in /remote-control.
 argument-hint: "[--session <uuid>] [--new] [--private] [--title=\"label\"] [optional note]"
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__search_sessions, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__claim_playbook_run, mcp__devspec__record_playbook_run, mcp__devspec__reserve_work_items, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution, mcp__devspec__manage_plan, mcp__devspec__manage_poll
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__devspec__list_projects, mcp__devspec__register_connection, mcp__devspec__attach_connection, mcp__devspec__detach_connection, mcp__devspec__heartbeat_connection, mcp__devspec__create_session, mcp__devspec__post_session_message, mcp__devspec__get_session_transcript, mcp__devspec__search_sessions, mcp__devspec__create_action_item, mcp__devspec__update_action_item, mcp__devspec__get_action_item, mcp__devspec__search_action_items, mcp__devspec__get_memory, mcp__devspec__search_memories, mcp__devspec__record_memory, mcp__devspec__supersede_memory, mcp__devspec__retract_memory, mcp__devspec__get_resources, mcp__devspec__search_resources, mcp__devspec__get_resource, mcp__devspec__create_resource, mcp__devspec__update_resource, mcp__devspec__supersede_resource, mcp__devspec__archive_resource, mcp__devspec__claim_automation_run, mcp__devspec__record_automation_run, mcp__devspec__reserve_work_items, mcp__devspec__claim_work_item, mcp__devspec__release_work_item, mcp__devspec__fail_work_item, mcp__devspec__record_implementation, mcp__devspec__report_progress, mcp__devspec__record_criterion_verdicts, mcp__devspec__classify_criterion, mcp__devspec__get_personal_instructions, mcp__devspec__update_personal_instructions, mcp__devspec__get_project_instruction_rules, mcp__devspec__write_project_instruction_rule, mcp__devspec__import_instruction_rules, mcp__devspec__preview_conflict_resolution, mcp__devspec__manage_plan, mcp__devspec__manage_poll
 ---
 
 # DevSpec Remote Control
@@ -26,7 +26,7 @@ Map what the user asked for onto flags — that mapping is the only judgement he
 
 | Invocation | Flags | Result |
 |---|---|---|
-| bare `/devspec.remote` | *(none)* | Available, **sessionless**. No chat transcript; attach it to a session for a canonical conversation. Explicit playbook runs remain a separate typed channel. |
+| bare `/devspec.remote` | *(none)* | Available, **sessionless**. No chat transcript; attach it to a session for a canonical conversation. Explicit automation runs remain a separate typed channel. |
 | `--session <uuid>` | `--session <uuid>` | Attach to that existing session. |
 | `--new` | `--new` | Create a session, then attach. It is an ordinary **shared** session. |
 | `--private` | `--private` | Only with `--new`. Alone or with `--session` it does nothing — say so rather than ignoring it. |
@@ -60,7 +60,7 @@ node ".../devspec-remote-wait.mjs" --connection-id <uuid> --owner-pid <pid> --st
 
 **Not** `Bash` with `run_in_background`, and never a timeout. A background task wakes you by *exiting*, which ties the listener to the turn; this host reaps background tasks at turn end, so the agent re-armed once per turn for ever (item `be0a929a`). `Monitor` wakes you by printing a line and `persistent: true` scopes it to the session — one arm serves the whole session.
 
-The stream emits actor-labelled `canonical_advisory_context`, complete canonical commands as `owner_message` objects, explicit `playbook_run` dispatches, typed `canonical_control` host events, and non-executable `wake` summaries. Conversational work comes only from complete canonical owner messages; a playbook event follows its explicit claim/run protocol. Claude Code cannot safely execute lifecycle controls from this script layer, so its control event is `supported:false`, never chat, and never acknowledged as executed. The stream keeps watching; there is nothing to re-arm between events.
+The stream emits actor-labelled `canonical_advisory_context`, complete canonical commands as `owner_message` objects, explicit `automation_run` dispatches, typed `canonical_control` host events, and non-executable `wake` summaries. Conversational work comes only from complete canonical owner messages; an automation event follows its explicit claim/run protocol. Claude Code cannot safely execute lifecycle controls from this script layer, so its control event is `supported:false`, never chat, and never acknowledged as executed. The stream keeps watching; there is nothing to re-arm between events.
 
 **When the stream ends,** the Monitor surfaces an exit code:
 
@@ -101,7 +101,7 @@ from the durable inbox. Act conversationally only on those objects. A delegated 
 also carries its validated `project_scope` and the server's instruction verbatim; an
 owner command receives no scope instruction. Do not infer broader permission from the
 command body. The top-level dispatch channel is reserved exclusively for explicit
-`playbook_run` events; it never carries action-item assignments.
+`automation_run` events; it never carries action-item assignments.
 `canonical_advisory_context`, `wake`, poller notifications and all
 `notification_preview` fields are non-executable. Canonical attachment metadata
 includes a stable `resource_id`; keep that reference with the command.
@@ -136,7 +136,7 @@ Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop
 
 ## 7. Working action items when asked
 
-**Nothing is ever sent work.** Connection availability, wake events and playbook runs do not assign action items. Only acquire action-item work when a canonical conversation explicitly asks for it.
+**Nothing is ever sent work.** Connection availability, wake events and automation runs do not assign action items. Only acquire action-item work when a canonical conversation explicitly asks for it.
 
 For the requested item or ordered items:
 
@@ -144,7 +144,7 @@ For the requested item or ordered items:
 2. **Then claim in order:** call `claim_work_item` for each reserved item only as you reach it, always with this `connection_id`. Never force past `possible_conflict`.
 3. Follow the served **`devspec://product/implementation-contract`** for lifecycle, isolation, decision boundaries, verification, commit provenance, reporting and completion. The work-entry response supplies the live contract; this command does not duplicate it.
 
-A playbook run is not action-item work. It stays on the separately typed, exactly addressed `playbook_run` path and uses `claim_playbook_run` / `record_playbook_run`, never `reserve_work_items` or `claim_work_item`.
+An automation run is not action-item work. It stays on the separately typed, exactly addressed `automation_run` path and uses `claim_automation_run` / `record_automation_run`, never `reserve_work_items` or `claim_work_item`.
 
 ---
 

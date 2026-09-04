@@ -5,7 +5,7 @@
  * It preserves the existing byte-offset cursor, armed-listener pidfile, one-shot
  * fallback and preferred session-scoped `--stream` Monitor architecture. Runtime
  * wake inputs are revalidated `canonical_commands`, typed `canonical_control`,
- * explicit `playbook_run`, or `interaction_answer` records previously validated and
+ * explicit `automation_run`, or `interaction_answer` records previously validated and
  * written by the poller. A directed-question answer wakes the model but is never
  * authority: it is the mechanical response to a question this agent asked, and it
  * names the one operation that finishes the turn it opened
@@ -424,20 +424,20 @@ function validCarriedContext(carried) {
 
 const INBOX_UUID = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
 
-function validatePlaybookInboxRecord(record, connectionId) {
+function validateAutomationInboxRecord(record, connectionId) {
   const d = record?.dispatch
   const keys = [
-    'id', 'kind', 'run_id', 'playbook_id', 'playbook_name', 'instruction', 'permission',
+    'id', 'kind', 'run_id', 'automation_id', 'automation_name', 'instruction', 'permission',
     'requester', 'original_target_connection_id', 'delivery_connection_id', 'queued_at', 'state',
   ]
   return Boolean(
-    record?.type === 'playbook_run' &&
+    record?.type === 'automation_run' &&
     d && typeof d === 'object' && !Array.isArray(d) &&
     Object.keys(d).length === keys.length && keys.every((key) => Object.hasOwn(d, key)) &&
-    d.kind === 'playbook_run' &&
+    d.kind === 'automation_run' &&
     typeof d.id === 'string' && INBOX_UUID.test(d.id) && d.run_id === d.id &&
-    typeof d.playbook_id === 'string' && INBOX_UUID.test(d.playbook_id) &&
-    typeof d.playbook_name === 'string' && d.playbook_name.length > 0 &&
+    typeof d.automation_id === 'string' && INBOX_UUID.test(d.automation_id) &&
+    typeof d.automation_name === 'string' && d.automation_name.length > 0 &&
     typeof d.instruction === 'string' &&
     ['look_only', 'can_commit', 'can_push'].includes(d.permission) &&
     d.delivery_connection_id === connectionId &&
@@ -487,7 +487,7 @@ export function parseInboxBatches(lines, connectionId) {
         // targets this exact connection and its source session must not wake anyone.
         if (!validateInteractionAnswerRecord(record, connectionId)) continue
         batches.push(record)
-      } else if (validatePlaybookInboxRecord(record, connectionId)) {
+      } else if (validateAutomationInboxRecord(record, connectionId)) {
         batches.push(record)
       }
     } catch {
@@ -657,20 +657,20 @@ export function buildCanonicalControlEvents(batch, { inboxFile } = {}) {
   return events
 }
 
-function playbookRunCommandText(d) {
+function automationRunCommandText(d) {
   const permission =
     d.permission === 'can_push'
       ? 'You MAY edit, commit and push.'
       : d.permission === 'can_commit'
         ? 'You MAY edit and commit locally, but MUST NOT push.'
-        : 'This playbook is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
+        : 'This automation is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
   return [
-    `▶️ Playbook run dispatched to this connection: "${d.playbook_name}" (run ${d.run_id}).`,
+    `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
     '',
     'What to do:',
-    `1. claim_playbook_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider. If claimed:false, stop; another agent took it.`,
+    `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider. If claimed:false, stop; another agent took it.`,
     '2. Do the work described below, in this repo.',
-    '3. record_playbook_run with one verdict and evidence per acceptance criterion.',
+    '3. record_automation_run with one verdict and evidence per acceptance criterion.',
     '',
     `Permission: ${permission}`,
     '',
@@ -679,20 +679,20 @@ function playbookRunCommandText(d) {
   ].join('\n')
 }
 
-export function buildPlaybookRunEvents(batch, { inboxFile } = {}) {
+export function buildAutomationRunEvents(batch, { inboxFile } = {}) {
   return [
     {
-      type: 'playbook_run',
+      type: 'automation_run',
       session_id: batch.session_id ?? null,
       authoritative: true,
       executable: true,
-      channel: 'explicit_playbook_dispatch',
+      channel: 'explicit_automation_dispatch',
       dispatch: batch.dispatch,
-      content: playbookRunCommandText(batch.dispatch),
+      content: automationRunCommandText(batch.dispatch),
     },
     {
       type: 'wake',
-      reason: 'playbook_run',
+      reason: 'automation_run',
       run_id: batch.dispatch.run_id,
       inbox: inboxFile ?? null,
       authoritative: false,
@@ -878,7 +878,7 @@ async function main() {
                 ? (batch.disposition === QUEUED
                     ? buildQueuedAnswerEvents(batch, { inboxFile: file })
                     : buildInteractionAnswerEvents(batch, { inboxFile: file }))
-                : buildPlaybookRunEvents(batch, { inboxFile: file })
+                : buildAutomationRunEvents(batch, { inboxFile: file })
           await writeEventSequence(events)
           delivered += batch.type === 'canonical_commands'
             ? batch.execute_message_ids.length

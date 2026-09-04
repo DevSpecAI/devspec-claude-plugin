@@ -24,7 +24,7 @@ import {
   buildOwnerMessageEvents,
   buildCanonicalCommandEvents,
   buildCanonicalControlEvents,
-  buildPlaybookRunEvents,
+  buildAutomationRunEvents,
   writeEventSequence,
   describeAttachment,
   materialiseAttachments,
@@ -238,18 +238,18 @@ function canonicalControlBatch(connectionId = CONNECTION) {
   return batch
 }
 
-function playbookBatch(connectionId = CONNECTION) {
+function automationBatch(connectionId = CONNECTION) {
   const id = '90000000-0000-4000-8000-000000000009'
   return {
-    type: 'playbook_run',
+    type: 'automation_run',
     connection_id: connectionId,
     session_id: null,
     dispatch: {
       id,
-      kind: 'playbook_run',
+      kind: 'automation_run',
       run_id: id,
-      playbook_id: '91000000-0000-4000-8000-000000000009',
-      playbook_name: 'Audit',
+      automation_id: '91000000-0000-4000-8000-000000000009',
+      automation_name: 'Audit',
       instruction: 'Audit the ingress path',
       permission: 'look_only',
       requester: { user_id: OWNER },
@@ -372,18 +372,18 @@ describe('wait-boundary revalidation and independent channels', () => {
     assert.equal(events.some((event) => event.type === 'owner_message'), false)
   })
 
-  it('accepts explicit playbook runs but rejects assignment-shaped dispatches', () => {
-    const playbook = playbookBatch()
-    const assignment = { ...playbook, dispatch: { ...playbook.dispatch, kind: 'assignment' } }
+  it('accepts explicit automation runs but rejects assignment-shaped dispatches', () => {
+    const automation = automationBatch()
+    const assignment = { ...automation, dispatch: { ...automation.dispatch, kind: 'assignment' } }
     const records = parseInboxBatches(
-      [JSON.stringify(playbook), JSON.stringify(assignment)],
+      [JSON.stringify(automation), JSON.stringify(assignment)],
       CONNECTION,
     )
     assert.equal(records.length, 1)
-    const events = buildPlaybookRunEvents(records[0])
-    assert.equal(events[0].type, 'playbook_run')
+    const events = buildAutomationRunEvents(records[0])
+    assert.equal(events[0].type, 'automation_run')
     assert.equal(events[0].executable, true)
-    assert.match(events[0].content, /claim_playbook_run/)
+    assert.match(events[0].content, /claim_automation_run/)
   })
 
   it('does not complete a record sequence or permit offset advancement after a write failure', async () => {

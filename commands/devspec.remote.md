@@ -158,8 +158,8 @@ An automation run is not action-item work. It stays on the separately typed, exa
   - The owner's own machine/tooling context: `update_personal_instructions`. This is the right home for anything true of *them across their machines* — it reaches every agent they run, everywhere, unlike a file on one box.
   - A repo `CLAUDE.md` full of team rules: offer `import_instruction_rules`, which categorises it for approval rather than pasting it in.
 - Show the exact text and get a clear yes **before** writing, every time.
-- **Read the `outcome` and report what it says.** `committed` = live now. `queued_for_review` = **not in effect** until a maintainer accepts it. Saying "done" when it is queued leaves someone believing their team's rules changed when they did not.
-- Safety-class rules (branch protection, force-push, secrets) are maintainer-only and need `confirm_safety_change`. Never move a rule in or out of that class in passing.
+- **Read the `outcome` and report what it says.** `committed` = live now. `queued_for_review` = **not in effect**: relay the `proposal_id` and the reason the server gave, and say a maintainer has to accept it before it applies. Saying "done" when it is queued leaves someone believing their team's rules changed when they did not. Who may commit which kind of write, and why a call was queued, is the served contract's decision — `devspec://product/implementation-contract` → `authority_contract` — not this command's; do not predict the outcome, read it.
+- Safety-class rules (branch protection, force-push, secrets) need `confirm_safety_change`. Never move a rule in or out of that class in passing.
 - Do not rely on post-session extraction for this channel. Mirror a short confirmation into the room so the phone sees knowledge landing.
 
 ---

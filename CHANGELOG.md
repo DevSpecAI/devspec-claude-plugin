@@ -2,6 +2,17 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.28.0 - 2026-09-05
+
+### Authority is the served contract's, not this plugin's
+
+The remote command no longer says which role may commit a team rule or when a write is
+queued. That decision is served by DevSpec at `devspec://product/implementation-contract`
+→ `authority_contract`, and the command now points there and keeps only its own step:
+read each write's `outcome`, and when it is `queued_for_review` relay the `proposal_id`
+and the reason, saying a maintainer has to accept it before it applies. Safety-class rules
+still need `confirm_safety_change`.
+
 ## 0.27.0 - 2026-09-04
 
 ### Playbooks are now Automations

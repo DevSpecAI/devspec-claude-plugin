@@ -132,6 +132,16 @@ Body = the answer to the latest command. Lead with it. No preamble, no thinking,
 
 Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop does not post your answer**. You do.
 
+**Say which model you are:** pass `model: { providerID, modelID }` — for this
+host, `{ providerID: 'anthropic', modelID: '<your exact model id>' }`. The
+transcript renders it beside the timestamp, so a reader can tell a Fable answer
+from an Opus one without asking. It is optional and omitting it fails nothing,
+which is exactly why it gets forgotten: over the fourteen days to 2026-09-07,
+Claude Code managed it on 66 of 1094 messages. Pi and OpenCode stamp it in
+extension code and never have to remember, but this host's answer is posted by
+you through MCP, not by a hook (`ADR b98a39a9` — no dual writers), so here there
+is nobody else to do it.
+
 ---
 
 ## 7. Working action items when asked

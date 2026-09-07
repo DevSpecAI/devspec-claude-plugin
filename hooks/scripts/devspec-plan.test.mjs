@@ -14,6 +14,23 @@ import {
 } from './devspec-plan.mjs'
 import { mcpToolsCall, mcpToolsList } from './mcp-call.mjs'
 
+/**
+ * A BLOAT ceiling for one tool's discovery entry, not a budget to write up against.
+ *
+ * This was 2,100 against a real server `manage_plan` entry of 2,091 — nine
+ * characters of headroom, so it would have failed on adding a word to the
+ * description rather than on real bloat. Owner direction, 2026-09-05 (DevSpec item
+ * 45588384, corrected in Pi first): an instruction should be sensible, not as short
+ * as possible, and a hard test must not make it difficult or lossy to tell a model
+ * something it genuinely needs. DevSpec's own aggregate cap was the cautionary case
+ * — it sat at 123,498 of 123,500 and was silently cutting 49 instructions off
+ * mid-sentence.
+ *
+ * What this still catches is the thing that actually costs: a pasted contract or a
+ * dumped verb map arriving in one tool's schema.
+ */
+const DISCOVERY_BLOAT_CEILING_CHARS = 4_000
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const STATE_SCRIPT = path.join(HERE, 'remote-control-state.mjs')
@@ -61,12 +78,29 @@ describe('Claude shared-plan policy surfaces', () => {
     const hooks = JSON.parse(source('hooks/hooks.json'))
     const sessionStart = JSON.stringify(hooks.hooks.SessionStart)
     assert.doesNotMatch(sessionStart, /manage_plan|active_session_plans/)
-    // The bound protects idle context, and it moves only when a whole capability is
-    // added to the always-loaded command — directed questions (54b63e47) cost ~600
-    // bytes, session search (93b2fd12) ~430, because the mechanics live elsewhere:
-    // an on-demand skill, or in search_sessions' own server-side tool description.
-    assert.ok(Buffer.byteLength(remote) < 15_700, `remote command is ${Buffer.byteLength(remote)} bytes`)
-    assert.ok(Buffer.byteLength(skill) < 3_200, `on-demand skill is ${Buffer.byteLength(skill)} bytes`)
+    // BLOAT ceilings, not budgets to write up against. The idle-context concern is
+    // real — this command is always loaded — but the previous numbers were rations:
+    // 15,700 against a command that had already reached 15,970, so main was RED and
+    // the only way through was to delete something a model needs. 3,200 against a
+    // 2,755-byte skill was 445 bytes of room.
+    //
+    // Owner direction, 2026-09-05 (DevSpec item 45588384, corrected in Pi first):
+    // an instruction should be sensible, not as short as possible, and a hard test
+    // must not make it difficult or lossy to tell a model something it genuinely
+    // needs. The mechanics that keep this cheap are structural and unchanged —
+    // capability detail lives in an on-demand skill or in the server's own tool
+    // description, not here. If you are near these, move a section out to a skill
+    // or point at the served contract; do not raise the number.
+    const REMOTE_COMMAND_BLOAT_CEILING_BYTES = 24_000
+    const ON_DEMAND_SKILL_BLOAT_CEILING_BYTES = 6_000
+    assert.ok(
+      Buffer.byteLength(remote) < REMOTE_COMMAND_BLOAT_CEILING_BYTES,
+      `remote command bloated to ${Buffer.byteLength(remote)} bytes (ceiling ${REMOTE_COMMAND_BLOAT_CEILING_BYTES})`,
+    )
+    assert.ok(
+      Buffer.byteLength(skill) < ON_DEMAND_SKILL_BLOAT_CEILING_BYTES,
+      `on-demand skill bloated to ${Buffer.byteLength(skill)} bytes (ceiling ${ON_DEMAND_SKILL_BLOAT_CEILING_BYTES})`,
+    )
   })
 })
 
@@ -199,7 +233,10 @@ describe('schema-complete MCP describe/use reachability', () => {
       }
       const tools = await mcpToolsList(options)
       assert.deepEqual(tools.map((tool) => tool.name), ['manage_plan'])
-      assert.ok(JSON.stringify(tools[0]).length < 2_100, 'manage_plan discovery must stay bounded')
+      assert.ok(
+        JSON.stringify(tools[0]).length < DISCOVERY_BLOAT_CEILING_CHARS,
+        `manage_plan discovery bloated to ${JSON.stringify(tools[0]).length} chars (ceiling ${DISCOVERY_BLOAT_CEILING_CHARS})`,
+      )
       const properties = tools[0].inputSchema.properties
       for (const property of ['expected_revision', 'current_step_id', 'next_step_id', 'retryable']) {
         assert.ok(Object.hasOwn(properties, property), `missing ${property}`)

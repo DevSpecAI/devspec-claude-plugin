@@ -13,6 +13,23 @@ import {
 } from './devspec-poll.mjs'
 import { mcpToolsCall, mcpToolsList } from './mcp-call.mjs'
 
+/**
+ * A BLOAT ceiling for one tool's discovery entry, not a budget to write up against.
+ *
+ * This was 2,100 against a real server `manage_plan` entry of 2,091 — nine
+ * characters of headroom, so it would have failed on adding a word to the
+ * description rather than on real bloat. Owner direction, 2026-09-05 (DevSpec item
+ * 45588384, corrected in Pi first): an instruction should be sensible, not as short
+ * as possible, and a hard test must not make it difficult or lossy to tell a model
+ * something it genuinely needs. DevSpec's own aggregate cap was the cautionary case
+ * — it sat at 123,498 of 123,500 and was silently cutting 49 instructions off
+ * mid-sentence.
+ *
+ * What this still catches is the thing that actually costs: a pasted contract or a
+ * dumped verb map arriving in one tool's schema.
+ */
+const DISCOVERY_BLOAT_CEILING_CHARS = 4_000
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
@@ -218,7 +235,10 @@ describe('manage_poll describe/use reachability', () => {
       }
       const tools = await mcpToolsList(options)
       assert.deepEqual(tools.map((tool) => tool.name), ['manage_poll'])
-      assert.ok(JSON.stringify(tools[0]).length < 2_100, 'manage_poll discovery must stay bounded')
+      assert.ok(
+        JSON.stringify(tools[0]).length < DISCOVERY_BLOAT_CEILING_CHARS,
+        `manage_poll discovery bloated to ${JSON.stringify(tools[0]).length} chars (ceiling ${DISCOVERY_BLOAT_CEILING_CHARS})`,
+      )
       const properties = tools[0].inputSchema.properties
       for (const property of ['poll_id', 'expected_revision', 'client_request_id',
         'recommendation_index', 'allow_write_in', 'series_label']) {

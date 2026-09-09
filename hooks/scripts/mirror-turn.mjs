@@ -19,7 +19,12 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
-import { readPrivateJson } from './private-state.mjs'
+import {
+  STATE_OK,
+  STATE_UNREADABLE,
+  readPrivateJson,
+  readPrivateJsonResult,
+} from './private-state.mjs'
 import {
   activeContinuation,
   continuationIdentity,
@@ -144,6 +149,78 @@ export function consumeExplicitReplyMarker(connectionId) {
   } catch {
     return false
   }
+}
+
+/** Is a pid still running? EPERM means alive and not ours. */
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return !!e && e.code === 'EPERM'
+  }
+}
+
+/**
+ * Why did this Stop fail to find its connection, when the failure is one we can
+ * NAME? (item 3b88955e.) An unbound Stop is ordinary — most conversations on a
+ * machine are not connected to DevSpec, and they must stay silent. But two shapes
+ * are real faults, and both present to the driver as a turn that never ends:
+ *
+ *  - a state file that exists and cannot be read (a torn read against a writer);
+ *  - a state file whose bond is GONE (no local_id, so it can never match any
+ *    conversation) while its poller is still alive and still holding a turn open.
+ *
+ * Only the second needs the liveness and marker checks: a wiped file for a dead
+ * connection harms nobody and would otherwise warn in every terminal on the box.
+ *
+ * Returns a one-line reason, or null when there is nothing honest to say.
+ */
+export function stopBondDiagnostic(dir = CONNECTIONS_DIR) {
+  let names = []
+  try {
+    names = fs.readdirSync(dir).filter((f) => f.endsWith('.json'))
+  } catch {
+    return null
+  }
+  const unreadable = []
+  const wiped = []
+  for (const name of names) {
+    const connectionId = name.slice(0, -'.json'.length)
+    const result = readPrivateJsonResult(path.join(dir, name))
+    if (result.status === STATE_UNREADABLE) {
+      unreadable.push(connectionId)
+      continue
+    }
+    if (result.status !== STATE_OK || !result.value) continue
+    if (result.value.local_id) continue
+    if (!fs.existsSync(path.join(dir, `${connectionId}.turn`))) continue
+    const pollPid = Number.parseInt(
+      (() => {
+        try {
+          return fs.readFileSync(path.join(dir, `${connectionId}.poll.pid`), 'utf8').trim()
+        } catch {
+          return ''
+        }
+      })(),
+      10,
+    )
+    if (processAlive(pollPid)) wiped.push(connectionId)
+  }
+  if (unreadable.length > 0) {
+    return (
+      `state file unreadable for ${unreadable.join(', ')} — this turn cannot be ended ` +
+      'from here; the connection must reconnect'
+    )
+  }
+  if (wiped.length > 0) {
+    return (
+      `state file has lost its bond for ${wiped.join(', ')} (no local_id) while a live ` +
+      'poller holds its turn open — that connection will show Working until it reconnects'
+    )
+  }
+  return null
 }
 
 export function loadState(conversationId) {
@@ -523,7 +600,15 @@ async function main() {
   const raw = readStdin()
   const conversationId = resolveHookConversationId(raw)
   const state = loadState(conversationId)
-  if (!state) process.exit(0)
+  if (!state) {
+    // Unbound is normal and silent. A NAMED fault is not: say it once, so a turn
+    // that will not end has a cause someone can read instead of a spinner.
+    if (mode === 'stop') {
+      const reason = stopBondDiagnostic()
+      if (reason) process.stderr.write(`[devspec-remote] stop could not bind: ${reason}\n`)
+    }
+    process.exit(0)
+  }
 
   let token = state.token
   let mcpUrl = state.mcp_url

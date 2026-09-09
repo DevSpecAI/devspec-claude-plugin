@@ -33,7 +33,13 @@ import {
   materialiseAttachments,
   MAX_INLINE_ATTACHMENT_CHARS,
 } from './attachment-store.mjs'
-import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import {
+  STATE_ABSENT,
+  STATE_OK,
+  STATE_UNREADABLE,
+  readPrivateJsonResult,
+  writePrivateJson,
+} from './private-state.mjs'
 import {
   isActiveSessionPlansProjectionV1,
   isRemoteIngressBoundedMetadata,
@@ -299,42 +305,79 @@ function ownerAlive(pid) {
   }
 }
 
-function statePath(connectionId) {
-  return path.join(CONNECTIONS_DIR, `${connectionId}.json`)
+function statePath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.json`)
 }
 
 function inboxPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.inbox.jsonl`)
 }
 
-function readState(connectionId) {
-  const paths = [statePath(connectionId), LEGACY_STATE_PATH]
-  for (const p of paths) {
-    const s = readPrivateJson(p)
-    if (!s) continue
-    if (connectionId && s.connection_id && s.connection_id !== connectionId && p === LEGACY_STATE_PATH)
-      continue
-    return s
+/**
+ * Read this connection's state, saying WHICH kind of nothing it found.
+ * An UNREADABLE per-connection file stops the search: falling through to the legacy
+ * file would let it stand in for the very file a patch is about to overwrite, which
+ * is how the bond gets replaced by two cursor fields (item 3b88955e).
+ */
+function readStateResult(connectionId, { dir = CONNECTIONS_DIR, legacyPath = LEGACY_STATE_PATH } = {}) {
+  const own = readPrivateJsonResult(statePath(connectionId, dir))
+  if (own.status !== STATE_ABSENT) return own
+  // Falling back to the legacy single-connection file: it stands in only when it is
+  // readable AND ours. An unreadable legacy file is reported as ABSENT rather than
+  // UNREADABLE — there is no per-connection state to lose, so the patch should still
+  // create it. The legacy file itself is protected separately, at the write.
+  const legacy = readPrivateJsonResult(legacyPath)
+  if (legacy.status !== STATE_OK) return { status: STATE_ABSENT, value: null }
+  if (
+    connectionId &&
+    legacy.value?.connection_id &&
+    legacy.value.connection_id !== connectionId
+  ) {
+    return { status: STATE_ABSENT, value: null }
   }
-  return null
+  return legacy
 }
 
-function writeStatePatch(connectionId, patch) {
+function readState(connectionId) {
+  const result = readStateResult(connectionId)
+  return result.status === STATE_OK ? result.value : null
+}
+
+export function writeStatePatch(
+  connectionId,
+  patch,
+  { dir = CONNECTIONS_DIR, legacyPath = LEGACY_STATE_PATH } = {},
+) {
   try {
-    const prev = readState(connectionId) || { connection_id: connectionId }
+    const current = readStateResult(connectionId, { dir, legacyPath })
+    // The file is there and we could not read it — a torn read against the poller
+    // mid-write, or corruption. There is nothing to merge into, and writing a state
+    // built from scratch would drop local_id, owner_pid and the token, leaving the
+    // Stop hook unable to end the turn. Skip the offset; the delivery replays.
+    if (current.status === STATE_UNREADABLE) {
+      process.stderr.write(
+        `devspec-remote-wait: state unreadable for ${connectionId} — patch skipped to preserve the bond\n`,
+      )
+      return
+    }
     const next = {
-      ...prev,
+      ...(current.value ?? { connection_id: connectionId }),
       ...patch,
       connection_id: connectionId,
       updated_at: new Date().toISOString(),
     }
-    fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    writePrivateJson(statePath(connectionId), next)
-    // Mirror offset into legacy only if it points at this connection.
-    const leg = readPrivateJson(LEGACY_STATE_PATH)
-    if (leg && (!leg.connection_id || leg.connection_id === connectionId)) {
-      writePrivateJson(LEGACY_STATE_PATH, {
-        ...leg,
+    fs.mkdirSync(dir, { recursive: true })
+    writePrivateJson(statePath(connectionId, dir), next)
+    // Mirror offset into legacy only if it points at this connection — and never
+    // over a legacy file we could not read.
+    const leg = readPrivateJsonResult(legacyPath)
+    if (
+      leg.status === STATE_OK &&
+      leg.value &&
+      (!leg.value.connection_id || leg.value.connection_id === connectionId)
+    ) {
+      writePrivateJson(legacyPath, {
+        ...leg.value,
         ...patch,
         connection_id: connectionId,
         updated_at: next.updated_at,

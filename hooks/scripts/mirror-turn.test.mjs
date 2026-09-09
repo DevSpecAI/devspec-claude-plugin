@@ -24,6 +24,7 @@ import {
   parseStopHookActive,
   decideStopBlock,
   listenerArmedWithGrace,
+  stopBondDiagnostic,
 } from './mirror-turn.mjs'
 
 /** A pid above any plausible pid_max — guaranteed ESRCH, i.e. provably dead. */
@@ -506,5 +507,65 @@ describe('listenerArmedWithGrace', () => {
     })
     assert.equal(armed, true)
     assert.equal(calls, 1)
+  })
+})
+
+describe('stopBondDiagnostic — a turn that will not end says why (item 3b88955e)', () => {
+  const CONNECTION = '6218f6fa-798e-4b5e-a98b-d440e3f61f57'
+
+  function tempDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-stop-diag-'))
+  }
+
+  it('says nothing for an ordinary unconnected conversation', () => {
+    const dir = tempDir()
+    try {
+      assert.equal(stopBondDiagnostic(dir), null)
+      fs.writeFileSync(
+        path.join(dir, `${CONNECTION}.json`),
+        JSON.stringify({ connection_id: CONNECTION, local_id: 'someone-else', enabled: true }),
+      )
+      assert.equal(stopBondDiagnostic(dir), null)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('names a state file it could not read', () => {
+    const dir = tempDir()
+    try {
+      fs.writeFileSync(path.join(dir, `${CONNECTION}.json`), '{"connection_id":"x","tok')
+      const reason = stopBondDiagnostic(dir)
+      assert.match(reason ?? '', /unreadable/)
+      assert.match(reason ?? '', new RegExp(CONNECTION))
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('names a wiped bond only while a live poller still holds the turn open', () => {
+    const dir = tempDir()
+    try {
+      // The exact residue of the clobber: cursor fields, no local_id.
+      fs.writeFileSync(
+        path.join(dir, `${CONNECTION}.json`),
+        JSON.stringify({ connection_id: CONNECTION, inbox_byte_offset: 12, cursor_v2: 'x' }),
+      )
+      // No marker yet: nothing is stuck, so nothing to say.
+      fs.writeFileSync(path.join(dir, `${CONNECTION}.poll.pid`), String(process.pid))
+      assert.equal(stopBondDiagnostic(dir), null)
+
+      // Marker + live poller: a turn is being held open by a connection nobody can end.
+      fs.writeFileSync(path.join(dir, `${CONNECTION}.turn`), JSON.stringify({ startedAt: Date.now() }))
+      const reason = stopBondDiagnostic(dir)
+      assert.match(reason ?? '', /lost its bond/)
+      assert.match(reason ?? '', new RegExp(CONNECTION))
+
+      // Dead poller: the wiped file harms nobody, so stay quiet.
+      fs.writeFileSync(path.join(dir, `${CONNECTION}.poll.pid`), String(DEAD_PID))
+      assert.equal(stopBondDiagnostic(dir), null)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

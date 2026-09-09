@@ -16,6 +16,7 @@ import {
   installStopSignalHandlers,
   resolveServerAttachment,
   verbForTurnTransition,
+  patchConnectionState,
   trimAdvisoryCarry,
   createCanonicalCarryState,
   accumulateCanonicalCarry,
@@ -1232,5 +1233,93 @@ describe('reseed end-to-end shape (the 89fc4063 replay)', () => {
     assert.deepEqual(wake.map((c) => c.id), ['live'])
     // Advisory is never filtered by seed — a reconnecting agent still needs the room.
     assert.equal(advisory.length, 1)
+  })
+})
+
+describe('connection state patches never invent a state file (item 3b88955e)', () => {
+  function withDirs(run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-poll-state-'))
+    const stderr = []
+    const original = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk) => {
+      stderr.push(String(chunk))
+      return true
+    }
+    try {
+      return run({
+        paths: { dir, legacyPath: path.join(dir, 'remote-control.json') },
+        dir,
+        stderr,
+      })
+    } finally {
+      process.stderr.write = original
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  const CONNECTION = '6218f6fa-798e-4b5e-a98b-d440e3f61f57'
+
+  it('leaves an unreadable state file exactly as it found it, and says so', () => {
+    withDirs(({ paths, dir, stderr }) => {
+      const file = path.join(dir, `${CONNECTION}.json`)
+      // What a reader saw mid-write before writes became atomic: a truncated bond.
+      const torn = '{\n  "connection_id": "' + CONNECTION + '",\n  "local_id": "conv-1",\n  "tok'
+      fs.writeFileSync(file, torn, { mode: 0o600 })
+
+      assert.equal(patchConnectionState(CONNECTION, { cursor_after_message_id: 'm1' }, paths), false)
+      assert.equal(fs.readFileSync(file, 'utf8'), torn)
+      assert.match(stderr.join(''), /state unreadable/)
+    })
+  })
+
+  it('merges into a healthy file, keeping the bond the Stop hook needs', () => {
+    withDirs(({ paths, dir }) => {
+      const file = path.join(dir, `${CONNECTION}.json`)
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          connection_id: CONNECTION,
+          local_id: 'conv-1',
+          owner_pid: 4242,
+          agent_name: 'Claude Code',
+          enabled: true,
+          token: 'bearer-value',
+        }),
+        { mode: 0o600 },
+      )
+
+      assert.equal(patchConnectionState(CONNECTION, { cursor_after_message_id: 'm1' }, paths), true)
+      const after = JSON.parse(fs.readFileSync(file, 'utf8'))
+      assert.equal(after.cursor_after_message_id, 'm1')
+      assert.equal(after.local_id, 'conv-1')
+      assert.equal(after.owner_pid, 4242)
+      assert.equal(after.agent_name, 'Claude Code')
+      assert.equal(after.enabled, true)
+      assert.equal(after.token, 'bearer-value')
+    })
+  })
+
+  it('writes a fresh file when there is genuinely no state yet', () => {
+    withDirs(({ paths, dir }) => {
+      assert.equal(patchConnectionState(CONNECTION, { cursor_after_message_id: 'm1' }, paths), true)
+      const after = JSON.parse(fs.readFileSync(path.join(dir, `${CONNECTION}.json`), 'utf8'))
+      assert.equal(after.connection_id, CONNECTION)
+      assert.equal(after.cursor_after_message_id, 'm1')
+    })
+  })
+
+  it('leaves an unreadable LEGACY file alone rather than mirroring over it', () => {
+    withDirs(({ paths, dir }) => {
+      const legacy = paths.legacyPath
+      const torn = '{"connection_id":"someone-else","tok'
+      fs.writeFileSync(legacy, torn, { mode: 0o600 })
+
+      assert.equal(patchConnectionState(CONNECTION, { cursor_after_message_id: 'm1' }, paths), true)
+      assert.equal(fs.readFileSync(legacy, 'utf8'), torn)
+      assert.equal(
+        JSON.parse(fs.readFileSync(path.join(dir, `${CONNECTION}.json`), 'utf8')).cursor_after_message_id,
+        'm1',
+      )
+    })
   })
 })

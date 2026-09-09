@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   parseArgs,
+  writeStatePatch,
   resolveDeadline,
   parseOwnerBatches,
   parseInboxBatches,
@@ -1182,5 +1183,66 @@ describe('--stream mode: one arm, many wakes (item be0a929a)', () => {
       child.kill('SIGKILL')
       fs.rmSync(home, { recursive: true, force: true })
     }
+  })
+})
+
+describe('the wait stream never rebuilds a state file it could not read (item 3b88955e)', () => {
+  const CONNECTION = '6218f6fa-798e-4b5e-a98b-d440e3f61f57'
+
+  function withDir(run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-wait-state-'))
+    const stderr = []
+    const original = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk) => {
+      stderr.push(String(chunk))
+      return true
+    }
+    try {
+      return run({ dir, paths: { dir, legacyPath: path.join(dir, 'remote-control.json') }, stderr })
+    } finally {
+      process.stderr.write = original
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('skips the offset write rather than dropping the bond', () => {
+    withDir(({ dir, paths, stderr }) => {
+      const file = path.join(dir, `${CONNECTION}.json`)
+      const torn = '{"connection_id":"' + CONNECTION + '","local_id":"conv-1","tok'
+      fs.writeFileSync(file, torn, { mode: 0o600 })
+
+      writeStatePatch(CONNECTION, { inbox_byte_offset: 4096 }, paths)
+
+      assert.equal(fs.readFileSync(file, 'utf8'), torn)
+      assert.match(stderr.join(''), /state unreadable/)
+    })
+  })
+
+  it('records the offset on a healthy file without touching the bond', () => {
+    withDir(({ dir, paths }) => {
+      const file = path.join(dir, `${CONNECTION}.json`)
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          connection_id: CONNECTION,
+          local_id: 'conv-1',
+          owner_pid: 4242,
+          agent_name: 'Claude Code',
+          enabled: true,
+          token: 'bearer-value',
+          inbox_byte_offset: 0,
+        }),
+        { mode: 0o600 },
+      )
+
+      writeStatePatch(CONNECTION, { inbox_byte_offset: 4096 }, paths)
+
+      const after = JSON.parse(fs.readFileSync(file, 'utf8'))
+      assert.equal(after.inbox_byte_offset, 4096)
+      assert.equal(after.local_id, 'conv-1')
+      assert.equal(after.owner_pid, 4242)
+      assert.equal(after.enabled, true)
+      assert.equal(after.token, 'bearer-value')
+    })
   })
 })

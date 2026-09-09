@@ -33,7 +33,14 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
-import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import {
+  STATE_ABSENT,
+  STATE_OK,
+  STATE_UNREADABLE,
+  readPrivateJson,
+  readPrivateJsonResult,
+  writePrivateJson,
+} from './private-state.mjs'
 import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
 import {
   isActiveSessionPlansProjectionV1,
@@ -301,36 +308,86 @@ function parseArgs(argv) {
   return out
 }
 
-/** Prefer per-connection state so concurrent remotes do not clobber each other. */
-function readState(connectionId) {
-  const tryPaths = []
-  if (connectionId) tryPaths.push(path.join(CONNECTIONS_DIR, `${connectionId}.json`))
-  tryPaths.push(LEGACY_STATE_PATH)
-  for (const p of tryPaths) {
-    const s = readPrivateJson(p)
-    if (!s) continue
-    if (
-      connectionId &&
-      s.connection_id &&
-      s.connection_id !== connectionId &&
-      p === LEGACY_STATE_PATH
-    ) {
-      continue
-    }
-    return s
-  }
-  return null
+function connectionStatePath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.json`)
 }
 
-function writeState(state, connectionId) {
-  const cid = connectionId || state.connection_id
-  const paths = []
-  if (cid) paths.push(path.join(CONNECTIONS_DIR, `${cid}.json`))
-  const legacy = readPrivateJson(LEGACY_STATE_PATH)
-  if (!legacy || !legacy.connection_id || legacy.connection_id === cid) {
-    paths.push(LEGACY_STATE_PATH)
+/**
+ * Prefer per-connection state so concurrent remotes do not clobber each other,
+ * saying WHICH kind of nothing it found (item 3b88955e).
+ *
+ * An UNREADABLE per-connection file stops the search rather than falling through
+ * to the legacy file. Falling through is the whole bug: a legacy read would stand
+ * in for the very file we are about to overwrite, and the bond in it — local_id,
+ * owner_pid, the token — would be replaced by whatever fields this writer holds.
+ */
+function readStateResult(connectionId, { dir = CONNECTIONS_DIR, legacyPath = LEGACY_STATE_PATH } = {}) {
+  if (connectionId) {
+    const own = readPrivateJsonResult(connectionStatePath(connectionId, dir))
+    if (own.status !== STATE_ABSENT) return own
   }
-  for (const p of paths) writePrivateJson(p, state)
+  // Falling back to the legacy single-connection file: it stands in only when it is
+  // readable AND ours. An unreadable legacy file is reported as ABSENT rather than
+  // UNREADABLE — there is no per-connection state to lose, so the patch should still
+  // create it. The legacy file itself is protected separately, at the write.
+  const legacy = readPrivateJsonResult(legacyPath)
+  if (legacy.status !== STATE_OK) return { status: STATE_ABSENT, value: null }
+  if (
+    connectionId &&
+    legacy.value?.connection_id &&
+    legacy.value.connection_id !== connectionId
+  ) {
+    return { status: STATE_ABSENT, value: null }
+  }
+  return legacy
+}
+
+/** Lenient read: the state, or null. Never the basis for a write — see patchConnectionState. */
+function readState(connectionId) {
+  const result = readStateResult(connectionId)
+  return result.status === STATE_OK ? result.value : null
+}
+
+/**
+ * Merge a patch into this connection's state. Declines — and says so — when the
+ * file exists but could not be read: there is nothing to merge into, and writing
+ * anyway is what wiped the bond and left Working ticking for an hour.
+ * Returns whether the state was written.
+ */
+export function patchConnectionState(connectionId, patch, paths = {}) {
+  const current = readStateResult(connectionId, paths)
+  if (current.status === STATE_UNREADABLE) {
+    process.stderr.write(
+      `devspec-remote-poll: state unreadable for ${connectionId} — patch skipped to preserve the bond\n`,
+    )
+    return false
+  }
+  const next = {
+    ...(current.value ?? {}),
+    ...patch,
+    connection_id: connectionId,
+    updated_at: new Date().toISOString(),
+  }
+  writeState(next, connectionId, paths)
+  return true
+}
+
+function writeState(state, connectionId, { dir = CONNECTIONS_DIR, legacyPath = LEGACY_STATE_PATH } = {}) {
+  const cid = connectionId || state.connection_id
+  const targets = []
+  if (cid) targets.push(connectionStatePath(cid, dir))
+  // Mirror into the legacy single-connection file only when it is absent or already
+  // ours. An UNREADABLE legacy file is left alone: it may belong to another
+  // connection, and overwriting what we could not read is the same clobber.
+  const legacy = readPrivateJsonResult(legacyPath)
+  if (
+    legacy.status === STATE_ABSENT ||
+    (legacy.status === STATE_OK &&
+      (!legacy.value?.connection_id || legacy.value.connection_id === cid))
+  ) {
+    targets.push(legacyPath)
+  }
+  for (const p of targets) writePrivateJson(p, state)
 }
 
 /**
@@ -656,22 +713,15 @@ export function appendAutomationDispatches(
 /** Disable THIS connection only — never other remotes on the machine. */
 function disableLocalState({ connectionId, reason }) {
   try {
-    const prev = readState(connectionId) || {}
-    writeState(
-      {
-        ...prev,
-        enabled: false,
-        connection_id: connectionId || prev.connection_id,
-        // The server's real word for an Agents-page End is 'ui'; 'ended_from_ui' is
-        // this poller's own legacy label. Both must set the flag, or a genuine UI
-        // End would stop stamping it the moment the server started telling the
-        // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
-        ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
-        end_reason: reason,
-        updated_at: new Date().toISOString(),
-      },
-      connectionId,
-    )
+    patchConnectionState(connectionId, {
+      enabled: false,
+      // The server's real word for an Agents-page End is 'ui'; 'ended_from_ui' is
+      // this poller's own legacy label. Both must set the flag, or a genuine UI
+      // End would stop stamping it the moment the server started telling the
+      // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
+      ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
+      end_reason: reason,
+    })
   } catch (e) {
     process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
   }
@@ -1239,13 +1289,11 @@ function deliverOwnerMessages(connectionId, ownerMsgs, nextCursor, ownerUserId, 
   // Turn start at pickup — poller re-asserts busy while the marker is fresh.
   writeTurnMarker(connectionId)
   try {
-    const s = readState(connectionId) || {}
-    s.cursor_after_message_id = nextCursor
-    s.owner_user_id = ownerUserId
-    s.connection_id = connectionId
-    s.last_owner_wake_at = new Date().toISOString()
-    s.updated_at = new Date().toISOString()
-    writeState(s, connectionId)
+    patchConnectionState(connectionId, {
+      cursor_after_message_id: nextCursor,
+      owner_user_id: ownerUserId,
+      last_owner_wake_at: new Date().toISOString(),
+    })
   } catch {
     /* ignore */
   }
@@ -1380,11 +1428,7 @@ async function main() {
   } else if (ownerAnchor) {
     process.stderr.write(`devspec-remote-poll: owner-pid anchor ${ownerAnchor} adopted\n`)
     try {
-      const s = readState(connectionId) || {}
-      s.owner_pid = ownerAnchor
-      s.connection_id = connectionId
-      s.updated_at = new Date().toISOString()
-      writeState(s, connectionId)
+      patchConnectionState(connectionId, { owner_pid: ownerAnchor })
     } catch {
       /* non-fatal */
     }
@@ -1524,12 +1568,13 @@ async function main() {
   // canonical_context records, so a poller restart cannot skip the projection.
   let activePlanCarry = persistedInbox.latestActiveSessionPlans
 
-  /** Persist a state patch without clobbering concurrent fields. Best-effort. */
+  /**
+   * Persist a state patch without clobbering concurrent fields. Best-effort — and
+   * a no-op when the file is unreadable rather than a fresh file built from {}.
+   */
   function patchState(patch) {
     try {
-      const s = readState(connectionId) || {}
-      Object.assign(s, patch, { connection_id: connectionId, updated_at: new Date().toISOString() })
-      writeState(s, connectionId)
+      patchConnectionState(connectionId, patch)
     } catch {
       /* ignore */
     }

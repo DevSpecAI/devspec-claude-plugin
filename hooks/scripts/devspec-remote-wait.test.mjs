@@ -1245,4 +1245,23 @@ describe('the wait stream never rebuilds a state file it could not read (item 3b
       assert.equal(after.token, 'bearer-value')
     })
   })
+
+  it('refuses to author a state file that does not exist', () => {
+    // A cursor patch carries cursors and nothing else, so anything it creates
+    // from scratch is a state file with no token, no connection_capability, no
+    // local_id and no owner_pid — and every later reader takes that stub for
+    // real state. Observed 2026-09-09: `devspec-plan` reported "connection MCP
+    // authentication is unavailable" and the Stop hook could not bind, so
+    // report_complete never ran and the room showed the agent Working for 47
+    // minutes after it had answered. One stub, both faults.
+    withDir(({ dir, paths, stderr }) => {
+      const file = path.join(dir, `${CONNECTION}.json`)
+      assert.equal(fs.existsSync(file), false)
+
+      writeStatePatch(CONNECTION, { inbox_byte_offset: 4096 }, paths)
+
+      assert.equal(fs.existsSync(file), false, 'a cursor patch must not create the bond')
+      assert.match(stderr.join(''), /state absent/)
+    })
+  })
 })

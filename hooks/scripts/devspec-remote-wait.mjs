@@ -350,18 +350,35 @@ export function writeStatePatch(
 ) {
   try {
     const current = readStateResult(connectionId, { dir, legacyPath })
-    // The file is there and we could not read it — a torn read against the poller
-    // mid-write, or corruption. There is nothing to merge into, and writing a state
-    // built from scratch would drop local_id, owner_pid and the token, leaving the
-    // Stop hook unable to end the turn. Skip the offset; the delivery replays.
-    if (current.status === STATE_UNREADABLE) {
+    // A CURSOR PATCH MAY NEVER AUTHOR A STATE FILE. It can only ever contribute
+    // cursor fields, so anything it creates from scratch is a state file with no
+    // token, no connection_capability, no local_id and no owner_pid — a stub
+    // that every later reader mistakes for real state.
+    //
+    // Both kinds of nothing are fatal here, for the same reason:
+    //
+    //   unreadable — the file is there and we could not parse it (a torn read
+    //     against the poller mid-write, or corruption). Merging into `{}` would
+    //     REPLACE a good file with a stub.
+    //   absent — no file at all. Writing one invents a bond that connect never
+    //     made, and it is indistinguishable afterwards from a real one.
+    //
+    // What that costs, observed on 2026-09-09: the state file for a live
+    // connection held nothing but cursors, so `devspec-plan` reported "connection
+    // MCP authentication is unavailable", and `mirror-turn`'s Stop could not bind
+    // and exited silently — so `report_complete` never ran and the room showed the
+    // agent Working for 47 minutes after it had answered. One stub, both faults.
+    //
+    // Skipping is always safe: the cursor simply stays where it was and the
+    // delivery replays. Only `writeConnectionState` may author this file.
+    if (current.status === STATE_UNREADABLE || current.status === STATE_ABSENT) {
       process.stderr.write(
-        `devspec-remote-wait: state unreadable for ${connectionId} — patch skipped to preserve the bond\n`,
+        `devspec-remote-wait: state ${current.status} for ${connectionId} — patch skipped to preserve the bond\n`,
       )
       return
     }
     const next = {
-      ...(current.value ?? { connection_id: connectionId }),
+      ...current.value,
       ...patch,
       connection_id: connectionId,
       updated_at: new Date().toISOString(),

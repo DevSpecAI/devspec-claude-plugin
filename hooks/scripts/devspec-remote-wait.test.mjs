@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   parseArgs,
+  readInboxRecords,
   writeStatePatch,
   resolveDeadline,
   parseOwnerBatches,
@@ -1264,4 +1265,242 @@ describe('the wait stream never rebuilds a state file it could not read (item 3b
       assert.match(stderr.join(''), /state absent/)
     })
   })
+})
+
+// Responder-dismissal repair: race persistence in A against monitor startup in B.
+import { interactionAnswerRecord, dismissalDeliveryDecision } from './interaction-events.mjs'
+const DISMISSAL_A = 'a0000000-0000-4000-8000-000000000001'
+const DISMISSAL_B = 'b0000000-0000-4000-8000-000000000002'
+function readerDismissal(disposition = 'delivered') {
+  return interactionAnswerRecord({ connectionId: CONNECTION, sessionId: DISMISSAL_A, attemptId: disposition === 'queued' ? null : TURN, disposition, event: {
+    kind: 'devspec.question_dismissal_event', version: 1, event_id: PROVENANCE, question_id: PROJECT,
+    origin_connection_id: CONNECTION, source_session_id: DISMISSAL_A, response_kind: 'text', prompt: 'Original room A',
+    dismissed_by_user_id: OWNER, dismissed_at: '2026-09-11T12:00:00Z', claim_token: TURN, lease_expires_at: '2026-09-11T12:05:00Z',
+  } })
+}
+function readerHeld(record) {
+  return { kind: record.event.kind, connection_id: CONNECTION, session_id: record.session_id, event_id: record.event.event_id,
+    question_id: record.event.question_id, claim_token: record.event.claim_token, attempt_id: record.attempt_id }
+}
+async function awaitReader(predicate) {
+  const deadline = Date.now() + 4000
+  while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.ok(predicate(), 'reader did not reach expected boundary')
+}
+async function dismissalReaderFixture(record, state, nextCommand = null, unavailable = null) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-dismissal-reader-'))
+  const dir = path.join(home, '.devspec', 'remote-control', 'connections')
+  fs.mkdirSync(dir, { recursive: true })
+  const stateFile = path.join(dir, `${CONNECTION}.json`)
+  const inbox = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+  const initial = { enabled: true, connection_id: CONNECTION, session_id: DISMISSAL_A, inbox_byte_offset: 0, interaction_continuation: readerHeld(record), ...state }
+  // Persist the unread A record before applying the attachment change.
+  fs.writeFileSync(stateFile, JSON.stringify({ ...initial, session_id: DISMISSAL_A, interaction_continuation: record.disposition === 'queued' ? null : readerHeld(record) }))
+  fs.writeFileSync(inbox, [record, ...(nextCommand ? [nextCommand] : [])].map(JSON.stringify).join('\n') + '\n')
+  fs.writeFileSync(stateFile, JSON.stringify(initial))
+  if (unavailable) {
+    fs.writeFileSync(path.join(home, '.devspec', 'remote-control.json'), JSON.stringify({ ...initial, session_id: DISMISSAL_A, interaction_continuation: readerHeld(record) }))
+    if (unavailable === 'missing') fs.unlinkSync(stateFile)
+    else fs.writeFileSync(stateFile, '{unreadable')
+  }
+  const child = spawn(process.execPath, [WAIT_SCRIPT, '--connection-id', CONNECTION, '--pending', '--poll-ms', '20'], { env: { ...process.env, HOME: home } })
+  let stdout = '', stderr = ''
+  child.stdout.on('data', chunk => { stdout += chunk }); child.stderr.on('data', chunk => { stderr += chunk })
+  const closed = new Promise(resolve => child.once('close', resolve))
+  return { stateFile, inbox, initial, stdout: () => stdout, stderr: () => stderr,
+    async cleanup() {
+      const timer = setTimeout(() => child.kill('SIGKILL'), 500)
+      child.kill('SIGTERM'); await closed; clearTimeout(timer)
+      fs.rmSync(home, { recursive: true, force: true })
+    } }
+}
+describe('dismissal reader live-source admission', () => {
+  for (const disposition of ['delivered', 'queued']) {
+    it(`drops obsolete A ${disposition} without losing newer B command`, async () => {
+      const next = { ...canonicalInboxBatch('room-B', 'newer B command'), session_id: DISMISSAL_B }
+      const run = await dismissalReaderFixture(readerDismissal(disposition), { session_id: DISMISSAL_B, interaction_continuation: null }, next)
+      try {
+        await awaitReader(() => run.stdout().includes('newer B command'))
+        assert.doesNotMatch(run.stdout(), /question_dismissal|Original room A/)
+        await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === fs.statSync(run.inbox).size)
+        assert.equal(JSON.parse(fs.readFileSync(run.stateFile)).interaction_continuation, null)
+        assert.match(fs.readFileSync(run.inbox, 'utf8'), /Original room A/, 'obsolete record retained, not rewritten')
+      } finally { await run.cleanup() }
+    })
+    it(`allows current-source ${disposition} with its distinct authority rules`, async () => {
+      const record = readerDismissal(disposition)
+      const run = await dismissalReaderFixture(record, { interaction_continuation: disposition === 'queued' ? null : readerHeld(record) })
+      try {
+        await awaitReader(() => run.stdout().includes('question_dismissal'))
+        const event = JSON.parse(run.stdout().trim().split('\n')[0])
+        assert.equal(event.type, disposition === 'queued' ? 'question_dismissal_queued' : 'question_dismissal')
+        assert.equal(event.authoritative, false)
+      } finally { await run.cleanup() }
+    })
+  }
+  for (const unavailable of ['missing', 'unreadable']) it(`defers ${unavailable} own state despite stale legacy attachment`, async () => {
+    const next = { ...canonicalInboxBatch('room-B', 'newer B command'), session_id: DISMISSAL_B }
+    const run = await dismissalReaderFixture(readerDismissal(), {}, next, unavailable)
+    try {
+      await awaitReader(() => run.stderr().includes('watching'))
+      await new Promise(resolve => setTimeout(resolve, 100))
+      assert.equal(run.stdout(), '')
+      fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, session_id: DISMISSAL_B, interaction_continuation: null }))
+      await awaitReader(() => run.stdout().includes('newer B command'))
+      assert.doesNotMatch(run.stdout(), /question_dismissal|Original room A/)
+    } finally { await run.cleanup() }
+  })
+  it('requires the complete held tuple for delivery, not for an authority-free queued notice', () => {
+    const record = readerDismissal(), state = { enabled: true, connection_id: CONNECTION, session_id: DISMISSAL_A, interaction_continuation: readerHeld(readerDismissal()) }
+    assert.equal(dismissalDeliveryDecision(record, state, CONNECTION), 'deliver')
+    for (const key of ['event_id', 'question_id', 'claim_token', 'attempt_id', 'connection_id', 'session_id']) assert.equal(dismissalDeliveryDecision(record, { ...state, interaction_continuation: { ...state.interaction_continuation, [key]: DISMISSAL_B } }, CONNECTION), 'obsolete', key)
+    assert.equal(dismissalDeliveryDecision(readerDismissal('queued'), { ...state, interaction_continuation: null }, CONNECTION), 'deliver')
+  })
+})
+
+// Pass 2: a fully emitted command must not replay while a later record is deferred.
+async function emittedPrefixFixture(stream, unavailable, extraPrefix = []) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-emitted-prefix-'))
+  const dir = path.join(home, '.devspec', 'remote-control', 'connections')
+  fs.mkdirSync(dir, { recursive: true })
+  const stateFile = path.join(dir, `${CONNECTION}.json`), inbox = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+  const dismissal = readerDismissal()
+  const initial = { enabled: true, connection_id: CONNECTION, session_id: DISMISSAL_A, inbox_byte_offset: 0, interaction_continuation: readerHeld(dismissal) }
+  const prefixCommand = { ...canonicalInboxBatch('emitted-prefix', '前🙂 café command'), session_id: DISMISSAL_A }
+  const nextSession = unavailable === 'missing' ? DISMISSAL_A : DISMISSAL_B
+  const laterCommand = { ...canonicalInboxBatch('later-command', 'later command 完'), session_id: nextSession }
+  const prefix = ' \r\n' + [prefixCommand, ...extraPrefix].map(JSON.stringify).join('\r\n') + '\r\n'
+  const dismissalLine = JSON.stringify(dismissal) + '\r\n'
+  const tail = JSON.stringify(laterCommand)
+  const split = tail.indexOf('later command') + 5
+  fs.writeFileSync(inbox, prefix + dismissalLine + tail.slice(0, split))
+  fs.writeFileSync(path.join(home, '.devspec', 'remote-control.json'), JSON.stringify(initial))
+  if (unavailable === 'unreadable') fs.writeFileSync(stateFile, '{unreadable')
+  const child = spawn(process.execPath, [WAIT_SCRIPT, '--connection-id', CONNECTION, '--pending', '--poll-ms', '20', '--owner-pid', String(process.pid), ...(stream ? ['--stream'] : [])], {
+    env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = '', stderr = ''
+  child.stdout.on('data', chunk => { stdout += chunk }); child.stderr.on('data', chunk => { stderr += chunk })
+  const closed = new Promise(resolve => child.once('close', resolve))
+  const events = () => stdout.split('\n').filter(Boolean).map(line => JSON.parse(line))
+  return { stateFile, inbox, initial, nextSession, prefixBytes: Buffer.byteLength(prefix), dismissalEndBytes: Buffer.byteLength(prefix + dismissalLine), tailRest: tail.slice(split) + '\r\n',
+    prefixId: prefixCommand.execute_message_ids[0], laterId: laterCommand.execute_message_ids[0], events, closed, exitCode: () => child.exitCode,
+    stderr: () => stderr,
+    async cleanup() {
+      const timer = setTimeout(() => child.kill('SIGKILL'), 500)
+      child.kill('SIGTERM'); await closed; clearTimeout(timer)
+      fs.rmSync(home, { recursive: true, force: true })
+    } }
+}
+describe('normal-loop emitted-prefix cursor before deferred dismissal', () => {
+  for (const stream of [false, true]) for (const unavailable of ['missing', 'unreadable']) {
+    it(`${stream ? 'stream' : 'one-shot'} with ${unavailable} own state emits command once and retains deferred bytes`, async () => {
+      const run = await emittedPrefixFixture(stream, unavailable)
+      const commands = id => run.events().filter(event => event.type === 'owner_message' && event.message.message_id === id)
+      try {
+        await awaitReader(() => commands(run.prefixId).length > 0)
+        await new Promise(resolve => setTimeout(resolve, 180)) // several 20ms polls
+        assert.equal(commands(run.prefixId).length, 1, 'normal deferral must not replay the fully emitted prefix')
+        assert.equal(run.events().some(event => event.type === 'question_dismissal'), false)
+        assert.equal(commands(run.laterId).length, 0, 'torn trailing record is not publishable')
+        if (unavailable === 'missing') assert.equal(fs.existsSync(run.stateFile), false, 'do not recreate attachment from legacy')
+        else assert.equal(fs.readFileSync(run.stateFile, 'utf8'), '{unreadable')
+
+        // Restore readable own state but no known attachment: still defer, now persist
+        // only the already emitted byte prefix (including CRLF and multibyte UTF-8).
+        fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, session_id: null, interaction_continuation: null }))
+        await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === run.prefixBytes)
+        await new Promise(resolve => setTimeout(resolve, 80))
+        assert.equal(commands(run.prefixId).length, 1)
+        assert.equal(run.events().some(event => event.type === 'question_dismissal'), false)
+
+        // Complete the tail, then either authorize A's exact continuation or move
+        // to B and obsolete A. Both must preserve the later canonical record.
+        fs.appendFileSync(run.inbox, run.tailRest)
+        fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, inbox_byte_offset: run.prefixBytes, session_id: run.nextSession,
+          interaction_continuation: run.nextSession === DISMISSAL_A ? run.initial.interaction_continuation : null }))
+        await awaitReader(() => commands(run.laterId).length === 1)
+        await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === fs.statSync(run.inbox).size)
+        assert.equal(commands(run.prefixId).length, 1)
+        assert.equal(run.events().filter(event => event.type === 'question_dismissal').length, run.nextSession === DISMISSAL_A ? 1 : 0)
+        assert.equal(JSON.parse(fs.readFileSync(run.stateFile)).session_id, run.nextSession)
+        if (stream) assert.equal(run.exitCode(), null, 'stream stays armed after the suffix is resolved')
+        else assert.equal(await run.closed, 0, 'one-shot closes after completing the deferred read')
+      } finally { await run.cleanup() }
+    })
+  }
+})
+
+describe('readInboxRecords exact fully terminated byte boundaries', () => {
+  it('counts raw UTF-8/CRLF/blank bytes, retains incomplete multibyte tail, and resumes exactly', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-record-boundaries-'))
+    const file = path.join(dir, 'inbox.jsonl')
+    try {
+      const first = Buffer.from(JSON.stringify({ text: '前🙂 café' }) + '\r\n')
+      const blank = Buffer.from(' \r\n')
+      const malformed = Buffer.from([0xff, 0x0a]) // decoded replacement must not inflate the byte cursor
+      const prefix = Buffer.concat([first, blank, malformed])
+      const torn = Buffer.from(JSON.stringify({ text: 'unfinished 🧩' }))
+      const split = torn.indexOf(Buffer.from('🧩')) + 2
+      fs.writeFileSync(file, Buffer.concat([prefix, torn.subarray(0, split)]))
+      assert.deepEqual(readInboxRecords(file, 0), [
+        { line: first.subarray(0, -1).toString('utf8'), endOffset: first.length },
+        { line: ' \r', endOffset: first.length + blank.length },
+        { line: '\ufffd', endOffset: prefix.length },
+      ])
+      assert.deepEqual(readInboxRecords(file, prefix.length), [])
+      fs.appendFileSync(file, Buffer.concat([torn.subarray(split), Buffer.from('\r\n')]))
+      assert.deepEqual(readInboxRecords(file, prefix.length), [{ line: torn.toString('utf8') + '\r', endOffset: prefix.length + torn.length + 2 }])
+      assert.deepEqual(readInboxRecords(file, fs.statSync(file).size), [])
+      assert.deepEqual(readInboxRecords(file, first.length).map(record => record.endOffset), [first.length + blank.length, prefix.length, fs.statSync(file).size])
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+it('fully emits command batches, control, answer and automation once before a deferred suffix', async () => {
+  const multi = canonicalInboxBatch('atomic-one', 'atomic command one')
+  const second = canonicalInboxBatch('atomic-two', 'atomic command two').ingress.commands[0]
+  second.order.sequence = 2
+  second.delivery.provenance_ref = second.message_id
+  second.delivery.is_primary = false
+  multi.execute_message_ids.push(second.message_id)
+  multi.ingress.command_message_ids.push(second.message_id)
+  multi.ingress.commands.push(second)
+  multi.ingress.window.returned = 2
+  multi.ingress.window.total_known = 2
+  multi.ingress.window.source_window.end = second.order
+  assert.equal(parseInboxBatches([JSON.stringify(multi)], CONNECTION)[0].execute_message_ids.length, 2)
+  const { prompt, dismissed_by_user_id, dismissed_at, ...base } = readerDismissal().event
+  const answer = interactionAnswerRecord({ connectionId: CONNECTION, sessionId: DISMISSAL_A, disposition: 'delivered', attemptId: TURN,
+    event: { ...base, kind: 'devspec.interaction_event', response_id: OWNER, answer: 'retained answer', answered_at: dismissed_at } })
+  const run = await emittedPrefixFixture(true, 'missing', [multi, canonicalControlBatch(), answer, automationBatch()])
+  const count = type => run.events().filter(event => event.type === type).length
+  try {
+    await awaitReader(() => count('automation_run') === 1)
+    await new Promise(resolve => setTimeout(resolve, 180))
+    assert.equal(count('owner_message'), 3, 'entire two-command record remains one emission unit')
+    assert.equal(count('canonical_control'), 1)
+    assert.equal(count('question_answer'), 1)
+    assert.equal(count('automation_run'), 1)
+    assert.equal(count('question_dismissal'), 0)
+    fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, session_id: null, interaction_continuation: null }))
+    await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === run.prefixBytes)
+    const events = run.events()
+    const commandIndices = events.map((event, index) => event.type === 'owner_message' ? index : -1).filter(index => index >= 0)
+    assert.ok(commandIndices[2] < events.findIndex(event => event.type === 'canonical_control'))
+    assert.equal(count('owner_message'), 3)
+  } finally { await run.cleanup() }
+})
+
+it('one-shot completes its emitted prefix after an obsolete suffix without consuming a torn next record', async () => {
+  const run = await emittedPrefixFixture(false, 'unreadable')
+  try {
+    await awaitReader(() => run.events().some(event => event.type === 'owner_message'))
+    fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, session_id: DISMISSAL_B, interaction_continuation: null }))
+    assert.equal(await run.closed, 0)
+    assert.equal(run.events().filter(event => event.type === 'owner_message').length, 1)
+    assert.equal(run.events().some(event => event.type === 'question_dismissal'), false)
+    assert.equal(JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset, run.dismissalEndBytes)
+    assert.ok(fs.statSync(run.inbox).size > run.dismissalEndBytes, 'torn next record remains unread on disk')
+  } finally { await run.cleanup() }
 })

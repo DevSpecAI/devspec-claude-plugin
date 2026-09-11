@@ -63,3 +63,5 @@ Delivery, leasing and completion authority are the served
 `devspec://product/interaction-event-contract`. Nothing here overrides it, and asking a
 question never becomes work evidence: it cannot stand in for `claim_work_item` or
 `record_implementation`.
+
+`question_dismissal` is no answer or authority. Use `respond` after delivery, not `_queued`. Never retarget or cancel on disconnect. See `devspec://product/question-dismissal-event-contract`.

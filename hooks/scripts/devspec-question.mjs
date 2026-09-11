@@ -247,11 +247,7 @@ export function respondArguments({ connectionId, continuation, message }) {
     attempt_id: continuation.attempt_id,
     command_turn_unbound: true,
     complete_turn: true,
-    ...continuationIdentity({
-      event_id: continuation.event_id,
-      response_id: continuation.response_id,
-      claim_token: continuation.claim_token,
-    }),
+    ...continuationIdentity(continuation),
   }
 }
 

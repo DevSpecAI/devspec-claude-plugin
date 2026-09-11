@@ -31,6 +31,8 @@
  * reaches room chat, dispatch, control or command channels.
  */
 
+import { DISMISSAL_KIND, DISMISSAL_RECORD_TYPE, DISMISSAL_CONTRACT_URI, validateQuestionDismissalEvent, buildQuestionDismissalEvents } from './question-dismissal-events.mjs'
+
 export const INTERACTION_EVENT_VERSION = 1
 export const INTERACTION_EVENT_KIND = 'devspec.interaction_event'
 export const INTERACTION_EVENT_CONTRACT_URI = 'devspec://product/interaction-event-contract'
@@ -124,7 +126,7 @@ export function interactionEventsNegotiable(state) {
 /** Poll arguments for this host's negotiation state. Empty object = unaware caller. */
 export function interactionNegotiationArguments(state) {
   return interactionEventsNegotiable(state)
-    ? { interaction_event_version: INTERACTION_EVENT_VERSION }
+    ? { interaction_event_version: INTERACTION_EVENT_VERSION, question_dismissal_event_version: 1 }
     : {}
 }
 
@@ -142,6 +144,7 @@ export function validateInteractionEvent(event, { connectionId, sessionId } = {}
   if (!event || typeof event !== 'object' || Array.isArray(event)) {
     return { ok: false, error: 'event is not an object' }
   }
+  if (event.kind === DISMISSAL_KIND) return validateQuestionDismissalEvent(event, { connectionId, sessionId })
   const keys = Object.keys(event)
   if (keys.length !== EVENT_KEYS.length || EVENT_KEYS.some((key) => !Object.hasOwn(event, key))) {
     return { ok: false, error: 'event does not exactly match interaction event v1' }
@@ -211,6 +214,9 @@ export function queuedAnswerNotice({ outcome, event, appliedEventIds, queuedEven
 
 /** The exact identity every continuation operation is bound to. */
 export function continuationIdentity(event) {
+  if (event.kind === DISMISSAL_KIND) return {
+    question_dismissal_event_id: event.event_id, question_dismissal_question_id: event.question_id, question_dismissal_claim_token: event.claim_token,
+  }
   return {
     interaction_event_id: event.event_id,
     interaction_response_id: event.response_id,
@@ -226,12 +232,12 @@ export function continuationIdentity(event) {
  */
 export function interactionAnswerRecord({ connectionId, sessionId, event, attemptId, disposition }) {
   return {
-    type: INTERACTION_ANSWER_RECORD_TYPE,
+    type: event.kind === DISMISSAL_KIND ? DISMISSAL_RECORD_TYPE : INTERACTION_ANSWER_RECORD_TYPE,
     connection_id: connectionId,
     session_id: sessionId,
     received_at: new Date().toISOString(),
-    authoritative_source: INTERACTION_EVENT_CONTRACT_URI,
-    interaction_event_version: INTERACTION_EVENT_VERSION,
+    authoritative_source: event.kind === DISMISSAL_KIND ? DISMISSAL_CONTRACT_URI : INTERACTION_EVENT_CONTRACT_URI,
+    ...(event.kind === DISMISSAL_KIND ? { question_dismissal_event_version: 1 } : { interaction_event_version: INTERACTION_EVENT_VERSION }),
     disposition,
     attempt_id: attemptId ?? null,
     event,
@@ -251,7 +257,7 @@ export function scanQueuedInteractionEventIds(text) {
     if (!line.trim()) continue
     try {
       const record = JSON.parse(line)
-      if (record?.type !== INTERACTION_ANSWER_RECORD_TYPE) continue
+      if (record?.type !== INTERACTION_ANSWER_RECORD_TYPE && record?.type !== DISMISSAL_RECORD_TYPE) continue
       if (record.disposition !== QUEUED) continue
       if (isUuid(record.event?.event_id)) ids.add(record.event.event_id)
     } catch {
@@ -270,7 +276,7 @@ export function scanPersistedInteractionEventIds(text) {
     if (!line.trim()) continue
     try {
       const record = JSON.parse(line)
-      if (record?.type !== INTERACTION_ANSWER_RECORD_TYPE) continue
+      if (record?.type !== INTERACTION_ANSWER_RECORD_TYPE && record?.type !== DISMISSAL_RECORD_TYPE) continue
       // A queued notice is an announcement, not an application. Counting it here would
       // send the redelivery down the dedupe path, which ACKs — telling the server an
       // answer was applied that never was, after which it stops redelivering and the
@@ -325,7 +331,9 @@ export function classifyContinuationStart(result) {
 /** The continuation this host is holding, or null. Validated, never trusted raw. */
 export function activeContinuation(raw, { connectionId, sessionId } = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const required = ['event_id', 'response_id', 'claim_token', 'attempt_id', 'question_id',
+  if (raw.kind && raw.kind !== DISMISSAL_KIND && raw.kind !== INTERACTION_EVENT_KIND) return null
+  if (raw.kind === DISMISSAL_KIND && Object.hasOwn(raw, 'response_id')) return null
+  const required = ['event_id', ...(raw.kind === DISMISSAL_KIND ? [] : ['response_id']), 'claim_token', 'attempt_id', 'question_id',
     'connection_id', 'session_id']
   if (required.some((key) => !isUuid(raw[key]))) return null
   if (isUuid(connectionId) && raw.connection_id !== connectionId) return null
@@ -399,10 +407,11 @@ export function answerSummary(event) {
 
 /** Revalidate a durable record on the read side before it can wake anyone. */
 export function validateInteractionAnswerRecord(record, connectionId) {
-  if (!record || record.type !== INTERACTION_ANSWER_RECORD_TYPE) return false
+  if (!record || (record.type !== INTERACTION_ANSWER_RECORD_TYPE && record.type !== DISMISSAL_RECORD_TYPE)) return false
   if (record.connection_id !== connectionId) return false
-  if (record.authoritative_source !== INTERACTION_EVENT_CONTRACT_URI) return false
-  if (record.interaction_event_version !== INTERACTION_EVENT_VERSION) return false
+  if (record.type === DISMISSAL_RECORD_TYPE) {
+    if (record.event?.kind !== DISMISSAL_KIND || record.authoritative_source !== DISMISSAL_CONTRACT_URI || record.question_dismissal_event_version !== 1) return false
+  } else if (record.event?.kind !== INTERACTION_EVENT_KIND || record.authoritative_source !== INTERACTION_EVENT_CONTRACT_URI || record.interaction_event_version !== INTERACTION_EVENT_VERSION) return false
   if (!DISPOSITIONS.has(record.disposition)) return false
   if (record.disposition === QUEUED) {
     // No attempt exists yet — that is the whole meaning of queued — so an attempt_id
@@ -437,6 +446,7 @@ export function validateInteractionAnswerRecord(record, connectionId) {
  * actually starts, and that second delivery is the one that names the reply command.
  */
 export function buildQueuedAnswerEvents(record, { inboxFile } = {}) {
+  if (record.event.kind === DISMISSAL_KIND) return buildQuestionDismissalEvents(record, { inboxFile })
   const event = record.event
   return [
     {
@@ -448,8 +458,7 @@ export function buildQueuedAnswerEvents(record, { inboxFile } = {}) {
       authoritative_source: INTERACTION_EVENT_CONTRACT_URI,
       question_id: event.question_id,
       response_kind: event.response_kind,
-      answer: event.answer,
-      answer_summary: answerSummary(event),
+      context: formatAnswerEventContext(event),
       answered_at: event.answered_at,
       note:
         'The person you asked has answered, and you are being told now rather than when ' +
@@ -477,6 +486,7 @@ export function buildQueuedAnswerEvents(record, { inboxFile } = {}) {
 export function buildInteractionAnswerEvents(record, { inboxFile, pluginRoot } = {}) {
   const event = record.event
   const bridge = `${pluginRoot ?? '$CLAUDE_PLUGIN_ROOT'}/hooks/scripts/devspec-question.mjs`
+  if (event.kind === DISMISSAL_KIND) return buildQuestionDismissalEvents(record, { inboxFile, bridge })
   return [
     {
       type: 'question_answer',
@@ -487,8 +497,7 @@ export function buildInteractionAnswerEvents(record, { inboxFile, pluginRoot } =
       authoritative_source: INTERACTION_EVENT_CONTRACT_URI,
       question_id: event.question_id,
       response_kind: event.response_kind,
-      answer: event.answer,
-      answer_summary: answerSummary(event),
+      context: formatAnswerEventContext(event),
       answered_at: event.answered_at,
       note:
         'The person you asked has answered your directed question. This is a mechanical ' +
@@ -511,4 +520,22 @@ export function buildInteractionAnswerEvents(record, { inboxFile, pluginRoot } =
       rearm: 'devspec-remote-wait',
     },
   ]
+}
+
+/** Raw answer stays in the durable event; only this fenced projection reaches the model. */
+export function formatAnswerEventContext(event) {
+  const strip = value => value.replace(/<\/?devspec_question_answer_data>/gi, '')
+  const answer = Array.isArray(event.answer) ? event.answer.map(strip) : strip(event.answer)
+  return '<devspec_question_answer_data>\n' + JSON.stringify({ question_id: event.question_id, response_kind: event.response_kind, answer }) + '\n</devspec_question_answer_data>'
+}
+
+/** Live reader admission, not a grant derived from the record's own session. */
+export function dismissalDeliveryDecision(record, state, connectionId) {
+  if (!state || state.connection_id !== connectionId || state.enabled !== true || !isUuid(state.session_id)) return 'defer'
+  if (!validateInteractionAnswerRecord(record, connectionId)) return 'obsolete'
+  if (state.session_id !== record.session_id) return 'obsolete'
+  if (record.disposition === QUEUED) return 'deliver'
+  const held = activeContinuation(state.interaction_continuation, { connectionId, sessionId: state.session_id })
+  if (!held || held.kind !== DISMISSAL_KIND || held.event_id !== record.event.event_id || held.question_id !== record.event.question_id || held.claim_token !== record.event.claim_token || held.attempt_id !== record.attempt_id) return 'obsolete'
+  return 'deliver'
 }

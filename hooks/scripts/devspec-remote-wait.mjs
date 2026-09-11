@@ -22,6 +22,7 @@
  *   node devspec-remote-wait.mjs --connection-id <uuid> [--stream] [--from-end|--pending] [--owner-pid <pid>]
  */
 
+import { DISMISSAL_RECORD_TYPE } from './question-dismissal-events.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -49,6 +50,7 @@ import {
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
 import {
+  dismissalDeliveryDecision,
   buildInteractionAnswerEvents,
   buildQueuedAnswerEvents,
   INTERACTION_ANSWER_RECORD_TYPE,
@@ -338,6 +340,12 @@ function readStateResult(connectionId, { dir = CONNECTIONS_DIR, legacyPath = LEG
   return legacy
 }
 
+// Dismissal admission never falls back to an old machine-global attachment.
+function readDismissalState(connectionId) {
+  const result = readPrivateJsonResult(statePath(connectionId))
+  return result.status === STATE_OK ? result.value : null
+}
+
 function readState(connectionId) {
   const result = readStateResult(connectionId)
   return result.status === STATE_OK ? result.value : null
@@ -418,24 +426,25 @@ function fileSize(p) {
 }
 
 /**
- * Read new bytes from offset; return { lines, newOffset }.
- * Incomplete trailing line (no final \n) is left for the next read.
+ * Complete JSONL records with absolute byte boundaries. Scan raw LF bytes before
+ * decoding so UTF-8, CRLF, blank lines and a torn tail cannot shift the cursor.
+ * One record may contain an entire canonical batch; only its full emission commits it.
  */
-function readNewLines(file, offset) {
+export function readInboxRecords(file, offset) {
   const size = fileSize(file)
-  if (size <= offset) return { lines: [], newOffset: offset }
+  if (size <= offset) return []
   const fd = fs.openSync(file, 'r')
   try {
-    const len = size - offset
-    const buf = Buffer.alloc(len)
-    fs.readSync(fd, buf, 0, len, offset)
-    const text = buf.toString('utf8')
-    const lastNl = text.lastIndexOf('\n')
-    if (lastNl === -1) return { lines: [], newOffset: offset }
-    const completeText = text.slice(0, lastNl + 1)
-    const lines = completeText.split('\n').filter((l) => l.trim().length > 0)
-    const newOffset = offset + Buffer.byteLength(completeText, 'utf8')
-    return { lines, newOffset }
+    const buf = Buffer.alloc(size - offset)
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, offset)
+    const bytes = buf.subarray(0, bytesRead)
+    const records = []
+    let start = 0
+    for (let newline = bytes.indexOf(0x0a, start); newline !== -1; newline = bytes.indexOf(0x0a, start)) {
+      records.push({ line: bytes.subarray(start, newline).toString('utf8'), endOffset: offset + newline + 1 })
+      start = newline + 1
+    }
+    return records
   } finally {
     fs.closeSync(fd)
   }
@@ -541,7 +550,7 @@ export function parseInboxBatches(lines, connectionId) {
         if (!parsed.ok || parsed.envelope.wake.kind !== 'control' ||
             !parsed.envelope.wake.active || parsed.envelope.delivery_state !== 'live') continue
         batches.push(record)
-      } else if (record.type === INTERACTION_ANSWER_RECORD_TYPE) {
+      } else if ((record.type === INTERACTION_ANSWER_RECORD_TYPE || record.type === DISMISSAL_RECORD_TYPE)) {
         // Revalidated here as well as at write time: this is the only channel whose
         // payload came from a person answering a card, and a record that no longer
         // targets this exact connection and its source session must not wake anyone.
@@ -874,11 +883,11 @@ async function main() {
   }
 
   let offset = 0
-  if (args.pending && typeof state?.inbox_byte_offset === 'number') {
-    offset = state.inbox_byte_offset
+  if (args.pending) {
+    offset = typeof state?.inbox_byte_offset === 'number' ? state.inbox_byte_offset : 0
   } else if (args.fromEnd) {
     offset = fileSize(file)
-    writeStatePatch(connectionId, { inbox_byte_offset: offset })
+    if (readDismissalState(connectionId)) writeStatePatch(connectionId, { inbox_byte_offset: offset })
   } else if (typeof state?.inbox_byte_offset === 'number') {
     offset = state.inbox_byte_offset
   } else {
@@ -892,7 +901,7 @@ async function main() {
   // Announce that this connection now has a listener. Written AFTER the offset is
   // settled so the marker never claims we are listening from an unknown position.
   armWaitPidfile(connectionId)
-  writeStatePatch(connectionId, { wait_pid: process.pid, wait_armed_at: new Date().toISOString() })
+  if (readDismissalState(connectionId)) writeStatePatch(connectionId, { wait_pid: process.pid, wait_armed_at: new Date().toISOString() })
 
   const pollMs = args.pollMs || POLL_MS
   const started = Date.now()
@@ -903,6 +912,8 @@ async function main() {
       `deadline=${deadline === null ? `none (anchored to owner pid ${ownerAnchor})` : new Date(deadline).toISOString()}\n`,
   )
 
+  // Retain completed delivery accounting across a deferred suffix, including one-shot mode.
+  let delivered = 0
   while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
     if (live && live.enabled === false) {
@@ -923,39 +934,52 @@ async function main() {
       process.exit(EXIT_TERMINAL)
     }
 
-    const { lines, newOffset } = readNewLines(file, offset)
-    if (lines.length > 0) {
-      const batches = parseInboxBatches(lines, connectionId)
-      let delivered = 0
-
-      if (batches.length > 0) {
-        for (const batch of batches) {
+    const records = readInboxRecords(file, offset)
+    if (records.length > 0) {
+      let deferred = false
+      for (const record of records) {
+        const [batch] = parseInboxBatches([record.line], connectionId)
+        if (batch) {
+          if (batch.type === DISMISSAL_RECORD_TYPE) {
+            const decision = dismissalDeliveryDecision(batch, readDismissalState(connectionId), connectionId)
+            if (decision === 'defer') { deferred = true; break }
+            // Keep the immutable record on disk, but tombstone it by advancing the cursor.
+            if (decision === 'obsolete') { offset = record.endOffset; continue }
+          }
           const events = batch.type === 'canonical_commands'
             ? buildCanonicalCommandEvents(batch, { inboxFile: file })
             : batch.type === 'canonical_control'
               ? buildCanonicalControlEvents(batch, { inboxFile: file })
-              : batch.type === INTERACTION_ANSWER_RECORD_TYPE
+              : (batch.type === INTERACTION_ANSWER_RECORD_TYPE || batch.type === DISMISSAL_RECORD_TYPE)
                 ? (batch.disposition === QUEUED
                     ? buildQueuedAnswerEvents(batch, { inboxFile: file })
                     : buildInteractionAnswerEvents(batch, { inboxFile: file }))
                 : buildAutomationRunEvents(batch, { inboxFile: file })
-          await writeEventSequence(events)
+          if (batch.type === DISMISSAL_RECORD_TYPE) {
+            let emitted = false
+            for (const event of events) {
+              const decision = dismissalDeliveryDecision(batch, readDismissalState(connectionId), connectionId)
+              if (decision !== 'deliver') { deferred = decision === 'defer'; break }
+              await writeEventSequence([event])
+              emitted = true
+            }
+            if (deferred) break
+            if (!emitted) { offset = record.endOffset; continue }
+          } else await writeEventSequence(events)
           delivered += batch.type === 'canonical_commands'
             ? batch.execute_message_ids.length
             : 1
         }
+        // Commit only complete records, never a partially emitted canonical batch.
+        // Keeping this prefix in memory also prevents replay when own state cannot
+        // currently be written. A crash before persistence remains at-least-once.
+        offset = record.endOffset
       }
 
-      // The cursor advances only AFTER the events are on stdout, so dying in between
-      // RE-delivers rather than swallows. At-least-once is the correct side to fail on:
-      // a duplicated owner command is visible and harmless, whereas a dropped one is
-      // precisely the "consumed the inbox and woke nobody" failure of item d655b2a4.
-      // This ordering matters far more in --stream mode, where one process survives
-      // many deliveries and so has many more chances to be killed mid-delivery than a
-      // one-shot arm that exited immediately after its only one.
-      offset = newOffset
-      writeStatePatch(connectionId, { inbox_byte_offset: offset })
-
+      if (readDismissalState(connectionId)) writeStatePatch(connectionId, { inbox_byte_offset: offset })
+      // The deferred record remains unread, but a fully emitted prefix is never
+      // read again by this loop. Persist that prefix once own state is readable.
+      if (deferred) { await sleep(pollMs); continue }
       if (delivered > 0) {
         if (!args.stream) {
           process.stderr.write(`devspec-remote-wait: wake (${delivered} msg) — exit 0\n`)
@@ -965,6 +989,7 @@ async function main() {
         process.stderr.write(
           `devspec-remote-wait: streamed wake (${delivered} msg) — still watching\n`,
         )
+        delivered = 0
       }
     }
 

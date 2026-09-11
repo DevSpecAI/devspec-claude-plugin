@@ -66,6 +66,8 @@ import {
   validateInteractionEvent,
 } from './interaction-events.mjs'
 
+import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
+
 export const DELEGATED_SCOPE_VERSION = 1
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
 
@@ -1518,9 +1520,7 @@ async function main() {
         arguments: {
           connection_id: connectionId,
           attempt_id: held.attempt_id,
-          interaction_event_id: held.event_id,
-          interaction_response_id: held.response_id,
-          interaction_claim_token: held.claim_token,
+          ...continuationIdentity(held),
         },
         timeoutMs: 10_000,
       })
@@ -1639,12 +1639,11 @@ async function main() {
    *   4. only then ACK.
    */
   async function applyInteractionEvent(event) {
-    if (persistedInbox.interactionEventIds.has(event.event_id)) {
-      pendingInteractionAck = {
-        event_id: event.event_id,
-        response_id: event.response_id,
-        claim_token: event.claim_token,
-      }
+    const dismissalDisposition = event.kind === DISMISSAL_KIND
+      ? persistedDismissalDisposition(fs.existsSync(inboxPathForConnection(connectionId)) ? fs.readFileSync(inboxPathForConnection(connectionId), 'utf8') : '', event) : null
+    if (dismissalDisposition === 'conflict') return { delivered: false }
+    if (dismissalDisposition === 'applied' || (dismissalDisposition === null && persistedInbox.interactionEventIds.has(event.event_id))) {
+      pendingInteractionAck = questionEventAck(event)
       process.stderr.write(
         `devspec-remote-poll: interaction event ${event.event_id} already applied — acknowledging redelivery\n`,
       )
@@ -1660,7 +1659,7 @@ async function main() {
         name: 'report_pickup',
         arguments: {
           connection_id: connectionId,
-          interaction_event_version: INTERACTION_EVENT_VERSION,
+          ...questionEventStartVersion(event),
           ...continuationIdentity(event),
         },
         timeoutMs: 15_000,
@@ -1673,6 +1672,11 @@ async function main() {
     }
 
     const decision = classifyContinuationStart(start)
+    if (event.kind === DISMISSAL_KIND && decision.action === 'apply' && (start.source_session_id !== event.source_session_id || start.phase !== 'working' || typeof start.idempotent !== 'boolean')) {
+      await releaseUnappliedContinuation(event, decision.attemptId)
+      return { delivered: false }
+    }
+    if (event.kind === DISMISSAL_KIND && decision.action === 'settle') return { delivered: false }
     if (decision.action === 'wait') {
       process.stderr.write(
         `devspec-remote-poll: ${nowStamp()} interaction continuation not startable ` +
@@ -1716,7 +1720,28 @@ async function main() {
       attemptId: decision.attemptId,
       disposition: decision.action === 'apply' ? DELIVERED : decision.disposition,
     })
+    if (event.kind === DISMISSAL_KIND && decision.action === 'apply') {
+      // Persist cross-process lifecycle identity BEFORE publishing the inbox entry.
+      // A failed state write must not leave a wake that no bridge can complete.
+      try {
+        const current = readState(connectionId)
+        if (current?.session_id !== event.source_session_id || current?.connection_capability !== connectionCapability) throw Error('dismissal source authority changed')
+        const inbox = inboxPathForConnection(connectionId)
+        const text = fs.existsSync(inbox) ? fs.readFileSync(inbox, 'utf8') : ''
+        const prefix = text.slice(0, text.lastIndexOf('\n') + 1)
+        const held = { kind: DISMISSAL_KIND, event_id: event.event_id, question_id: event.question_id,
+          claim_token: event.claim_token, attempt_id: decision.attemptId, connection_id: connectionId,
+          session_id: event.source_session_id, started_at: new Date().toISOString(),
+          inbox_offset_after: Buffer.byteLength(prefix + JSON.stringify(record) + '\n') }
+        if (!patchConnectionState(connectionId, { interaction_continuation: held })) throw Error('dismissal state not persisted')
+      } catch (error) {
+        process.stderr.write(`devspec-remote-poll: dismissal persistence failed: ${error.message}\n`)
+        await releaseUnappliedContinuation(event, decision.attemptId)
+        return { delivered: false }
+      }
+    }
     if (!appendDurableRecord(connectionId, record)) {
+      if (event.kind === DISMISSAL_KIND) patchState({ interaction_continuation: null })
       if (decision.action === 'apply' && decision.attemptId) {
         await releaseUnappliedContinuation(event, decision.attemptId)
       }
@@ -1734,7 +1759,7 @@ async function main() {
 
     interactionContinuation = {
       event_id: event.event_id,
-      response_id: event.response_id,
+      ...(event.kind === DISMISSAL_KIND ? { kind: DISMISSAL_KIND } : { response_id: event.response_id }),
       claim_token: event.claim_token,
       question_id: event.question_id,
       attempt_id: decision.attemptId,
@@ -1746,18 +1771,14 @@ async function main() {
       inbox_offset_after: inboxSizeFor(connectionId),
     }
     patchState({ interaction_continuation: interactionContinuation })
-    pendingInteractionAck = {
-      event_id: event.event_id,
-      response_id: event.response_id,
-      claim_token: event.claim_token,
-    }
+    pendingInteractionAck = questionEventAck(event)
     // The busy signal the poll already carries keepalives THIS attempt (never opens a
     // second one), so marking the turn active is what keeps Working truthful between
     // delivery and the model's own turn actually starting.
     writeTurnMarker(connectionId)
     process.stdout.write(JSON.stringify({
       type: 'wake',
-      reason: 'directed_question_answer',
+      reason: event.kind === DISMISSAL_KIND ? 'directed_question_dismissal' : 'directed_question_answer',
       question_id: event.question_id,
       inbox: inboxPathForConnection(connectionId),
       authoritative: false,
@@ -1773,7 +1794,11 @@ async function main() {
    * lie about a perfectly valid delivery.
    */
   async function consumeInteractionEvents(res) {
-    const offered = Array.isArray(res?.interaction_events) ? res.interaction_events : []
+    let offered
+    try { offered = questionEventOffers(res, Boolean(connectionCapability)) } catch (error) {
+      process.stderr.write(`devspec-remote-poll: ${error.message}\n`)
+      return { lane: true, delivered: false }
+    }
     if (offered.length === 0) return { lane: false, delivered: false }
     if (res.interaction_event_version !== INTERACTION_EVENT_VERSION) {
       process.stderr.write(
@@ -1834,7 +1859,7 @@ async function main() {
         agent_name: agentName,
         ...remoteIngressNegotiationArguments(),
         ...interactionArgs,
-        ...(ack ? { interaction_event_ack: ack } : {}),
+        ...(ack ? questionEventAckArguments(ack) : {}),
         wait_ms: waitMs,
         ...pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed: catchUp }),
         ...(dispatchCursor ? { dispatch_cursor: dispatchCursor } : {}),

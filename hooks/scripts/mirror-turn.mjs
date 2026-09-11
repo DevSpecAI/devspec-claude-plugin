@@ -742,11 +742,7 @@ async function main() {
                     connection_id: connectionId,
                     attempt_id: stopDecision.continuation.attempt_id,
                     reason: 'turn_end',
-                    ...continuationIdentity({
-                      event_id: stopDecision.continuation.event_id,
-                      response_id: stopDecision.continuation.response_id,
-                      claim_token: stopDecision.continuation.claim_token,
-                    }),
+                    ...continuationIdentity(stopDecision.continuation),
                   }
                 : { connection_id: connectionId, reason: 'turn_end' },
             })

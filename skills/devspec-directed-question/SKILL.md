@@ -22,12 +22,13 @@ sits above their composer until they respond or cancel it.
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-question.mjs" describe --connection-id '<connection_id>'
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-question.mjs" use --connection-id '<connection_id>' \
   --input '{"action":"create","client_request_id":"<fresh uuid>","response_kind":"single_select",
-            "prompt":"<the question>","options":["<choice>","<choice>"],"allow_custom":true}'
+            "prompt":"<the question>","options":["<choice>","<choice>"]}'
 ```
 
 `describe` returns the server's current schema. `response_kind` is `text`,
 `single_select` or `multi_select`; select kinds need at least two distinct choices, and
-`allow_custom` lets them answer in their own words instead. `client_request_id` is a
+`allow_custom` is on by default — they can always answer in their own words. Pass
+`allow_custom: false` only when the choices must be strictly constrained. `client_request_id` is a
 fresh UUID per question — reusing one retries that same question rather than asking a
 new one. `list`, `get` and `cancel` reach only your own questions; cancel one that
 events have overtaken rather than leaving it up.

@@ -13,8 +13,8 @@ import path from 'node:path'
 import { buildSessionEnvScript, writeSessionEnvCredentials } from './session-env-credentials.mjs'
 import { enumerateCredentialPairs } from './resolve-mcp-auth.mjs'
 
-const PROD = 'https://devspec.ai/api/mcp'
-const STAGING = 'https://staging.devspec.ai/api/mcp'
+const PROD = 'https://api.devspec.ai/api/mcp'
+const STAGING = 'https://api.devspecstaging.com/api/mcp'
 
 describe('buildSessionEnvScript', () => {
   it('says nothing when no token is configured', () => {

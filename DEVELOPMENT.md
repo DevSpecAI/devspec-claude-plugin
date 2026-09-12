@@ -41,11 +41,11 @@ Keep them in lockstep and record the change in `CHANGELOG.md`.
 Set the plugin's **DevSpec server** field to staging. That is the whole thing:
 
 ```
-https://staging.devspec.ai/api/mcp
+https://api.devspecstaging.com/api/mcp
 ```
 
 `plugin.json` declares the server as `"url": "${user_config.devspec_mcp_url}"`, defaulting
-to `https://devspec.ai/api/mcp`. Point that field at staging and the plugin's own
+to `https://api.devspec.ai/api/mcp`. Point that field at staging and the plugin's own
 `devspec` server goes to staging — and so do the hooks, the commands and the poller.
 One server, one host, nothing to keep in sync. How the last part works is worth knowing,
 because it is not automatic: see **Where `userConfig` actually reaches** below.
@@ -59,8 +59,8 @@ A user- or project-defined server named `devspec` does **not** replace the plugi
 Claude Code namespaces plugin servers, so you end up running both:
 
 ```
-plugin:devspec:devspec: https://devspec.ai/api/mcp          ✘ Failed to connect
-devspec:                https://staging.devspec.ai/api/mcp  ✔ Connected
+plugin:devspec:devspec: https://api.devspec.ai/api/mcp          ✘ Failed to connect
+devspec:                https://api.devspecstaging.com/api/mcp  ✔ Connected
 ```
 
 Check with `claude mcp list`. The hook scripts do prefer your own entry, so the *tools*

@@ -20,7 +20,7 @@ import {
   resolveDevspecMcpAuth,
 } from './resolve-mcp-auth.mjs'
 
-const PROD = 'https://devspec.ai/api/mcp'
+const PROD = 'https://api.devspec.ai/api/mcp'
 
 describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)', () => {
   let tmp
@@ -33,14 +33,25 @@ describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)'
       JSON.stringify({
         mcpServers: {
           devspec: {
-            url: 'https://staging.devspec.ai/api/mcp',
+            url: 'https://api.devspecstaging.com/api/mcp',
             headers: { Authorization: 'Bearer from-mcp-json' },
           },
         },
       }),
     )
     // Neutralise ambient env overrides so precedence is deterministic on any machine.
-    for (const k of ['DEVSPEC_MCP_TOKEN', 'DEVSPEC_TOKEN', 'DEVSPEC_MCP_URL']) {
+    // The CLAUDE_PLUGIN_OPTION_* pairs matter too: the plugin exports its own userConfig
+    // into the session (item bb97c9f6), so a developer pointed at staging otherwise sees
+    // the host-token pair resolve to staging instead of the manifest default.
+    for (const k of [
+      'DEVSPEC_MCP_TOKEN',
+      'DEVSPEC_TOKEN',
+      'DEVSPEC_MCP_URL',
+      'CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN',
+      'CLAUDE_PLUGIN_OPTION_devspec_token',
+      'CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL',
+      'CLAUDE_PLUGIN_OPTION_devspec_mcp_url',
+    ]) {
       saved[k] = process.env[k]
       delete process.env[k]
     }
@@ -142,7 +153,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
       JSON.stringify({
         mcpServers: {
           devspec: {
-            url: 'https://staging.devspec.ai/api/mcp',
+            url: 'https://api.devspecstaging.com/api/mcp',
             headers: { Authorization: 'Bearer dvs_project_staging' },
           },
         },
@@ -175,7 +186,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     assert.equal(plugin.token, 'dvs_plugin_prod')
     assert.equal(plugin.mcp_url, PROD)
     assert.equal(project.token, 'dvs_project_staging')
-    assert.equal(project.mcp_url, 'https://staging.devspec.ai/api/mcp')
+    assert.equal(project.mcp_url, 'https://api.devspecstaging.com/api/mcp')
   })
 
   it('plugin token does not inherit the .mcp.json URL', () => {
@@ -184,7 +195,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     })
     // Without hostToken, .mcp.json still wins (staging) — that pair is coherent.
     assert.equal(r.token, 'dvs_project_staging')
-    assert.equal(r.mcp_url, 'https://staging.devspec.ai/api/mcp')
+    assert.equal(r.mcp_url, 'https://api.devspecstaging.com/api/mcp')
 
     const host = resolveDevspecMcpAuth(tmp, {
       env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
@@ -253,7 +264,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     })
     assert.deepEqual(seen, ['dvs_plugin_prod', 'dvs_project_staging'])
     assert.equal(proven.pair.token, 'dvs_project_staging')
-    assert.equal(proven.pair.mcp_url, 'https://staging.devspec.ai/api/mcp')
+    assert.equal(proven.pair.mcp_url, 'https://api.devspecstaging.com/api/mcp')
     assert.equal(proven.probed, true)
     assert.match(proven.warning, /You → Connections/)
     assert.doesNotMatch(proven.warning, /dvs_plugin_prod|dvs_project_staging/)
@@ -272,7 +283,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
 })
 
 describe('plugin userConfig URL (item 17f38cfa — one server, pointed once)', () => {
-  const STAGING = 'https://staging.devspec.ai/api/mcp'
+  const STAGING = 'https://api.devspecstaging.com/api/mcp'
   let empty
 
   before(() => {

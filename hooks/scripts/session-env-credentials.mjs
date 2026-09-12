@@ -62,7 +62,7 @@ import fs from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 /** Mirrors DEFAULT_PROD_URL in resolve-mcp-auth.mjs — the manifest's declared default. */
-const DEFAULT_PROD_URL = 'https://devspec.ai/api/mcp'
+const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
 
 /**
  * The names Claude Code uses for this plugin's `userConfig` keys, both spellings.

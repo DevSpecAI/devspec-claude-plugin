@@ -15,7 +15,7 @@
  * 5. ~/.claude.json top-level mcpServers.devspec
  * 6. CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — plugin userConfig token, paired with the
  *    plugin's OWN configured URL (CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL, defaulting to
- *    https://devspec.ai/api/mcp). Lowest priority so a developer's own .mcp.json
+ *    https://api.devspec.ai/api/mcp). Lowest priority so a developer's own .mcp.json
  *    (e.g. staging) still wins when no host token was supplied.
  *
  * At write time, proveCredentialPair heartbeats the just-registered connection
@@ -30,7 +30,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const DEFAULT_PROD_URL = 'https://devspec.ai/api/mcp'
+const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
 const WRONG_TOKEN_RE = /belongs to a different token/i
 
 export const DEFAULT_MCP_URL = DEFAULT_PROD_URL

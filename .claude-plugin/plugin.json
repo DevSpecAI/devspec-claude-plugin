@@ -30,7 +30,7 @@
       "type": "string",
       "title": "DevSpec server",
       "description": "Leave this as it is. It only changes if DevSpec ask you to point at a different server.",
-      "default": "https://devspec.ai/api/mcp",
+      "default": "https://api.devspec.ai/api/mcp",
       "required": false
     }
   },

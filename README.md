@@ -184,7 +184,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 | Auto-push / Auto-merge | Whether branches are pushed, and merged into the target branch |
 | Target branch (per repo) | The branch Claude's work lands on |
 | Branch / commit prefixes | How Claude names branches and commits |
-| Test commands | What Claude runs after making a change (unit, E2E, typecheck) |
+| Agent rules | The execution mechanics Claude follows — including what it runs to check a change before pushing |
 | Protected paths | Files and folders Claude must not touch |
 | Custom instructions | Extra project rules Claude follows |
 

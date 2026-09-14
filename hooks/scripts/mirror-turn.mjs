@@ -392,9 +392,16 @@ export function isOperationalChrome(text) {
  * requirement; TURN-scoped was the accident. A tracked background task is reaped at turn
  * end, so the agent could comply perfectly and still be blocked on the next turn, for
  * ever. The fix keeps this hook exactly as it is and changes what it points at: a
- * `--stream` arm under a persistent monitor is still harness-managed (its stdout reaches
- * the model) but session-scoped, so one arm satisfies every subsequent Stop. Persistent
+ * `--stream` arm under Monitor is still harness-managed (its stdout reaches the model)
+ * but is not tied to the turn, so one arm satisfies every subsequent Stop. Harness-managed
  * is not detached — that distinction is what makes it safe here.
+ *
+ * The host serves one of two Monitor schemas. With `persistent`, one arm lasts the whole
+ * session. Without it (`timeout_ms` capped, "re-arm at expiry"), `persistent: true` is
+ * accepted and silently discarded, so the arm dies at its deadline and this block is how
+ * the agent learns to re-arm — which is correct, and is why the way out must NEVER name a
+ * background task. That fallback used to be written here and is verbatim the be0a929a
+ * configuration; on this host it is a loop, not a fallback.
  */
 
 function inboxPathFor(connectionId, dir = CONNECTIONS_DIR) {
@@ -562,11 +569,11 @@ export function decideStopBlock({ connectionId, inboxOffset, stopHookActive, arm
   const rearm =
     'node "$CLAUDE_PLUGIN_ROOT/hooks/scripts/devspec-remote-wait.mjs" ' +
     `--connection-id ${connectionId} --owner-pid "$PPID" --stream --pending` +
-    '\nArm it with the Monitor tool (persistent: true) — NOT as a background task. It ' +
-    'prints one JSON line per owner command and keeps watching, so you arm it once and ' +
-    'never re-arm, and nothing reaps it at the end of this turn. If this host has no ' +
-    'persistent monitor, fall back to the one-shot form (drop --stream) as a background ' +
-    'task with no timeout, and re-arm it after every wake.'
+    '\nArm it with the Monitor tool — NEVER as a background task, which this host reaps ' +
+    'at turn end (item be0a929a). It prints one JSON line per owner command and keeps ' +
+    'watching. If Monitor has a persistent property, pass persistent: true and one arm ' +
+    'lasts the session. If it has not, pass the largest timeout_ms it allows and arm ' +
+    'again with --stream --pending each time it expires.'
 
   if (unread > 0) {
     return (

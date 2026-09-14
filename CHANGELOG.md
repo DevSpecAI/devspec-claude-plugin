@@ -2,6 +2,28 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.28.1 - 2026-09-14
+
+### Remote control no longer goes deaf half an hour after connecting
+
+Claude Code ships two versions of its `Monitor` tool and picks one per session. One can
+keep a watch running for as long as the session lasts; the other caps every watch —
+currently at 30 minutes — and expects you to start it again when it expires. This plugin
+assumed the first. On the second, the wake stream died on that cap and remote control
+stopped hearing anything, with nothing to say so: the option that asks for a session-long
+watch is accepted there and quietly ignored.
+
+Connecting now checks which `Monitor` it was given and arms the right one — a session-long
+watch where that exists, otherwise the longest one available, restarted each time it
+expires. Nothing is lost when it restarts; the stream resumes from exactly where it
+stopped, so commands that arrived in the gap are still delivered.
+
+Also removed advice that told the agent to fall back to a plain background task when a
+session-long watch was unavailable. On Claude Code that is the setup that caused the
+re-arm loop 0.7.0 was written to fix, so it turned a brief gap into a stuck session.
+
+`marketplace.json` had drifted to 0.26.0 against `plugin.json`; both now read 0.28.1.
+
 ## 0.28.0 - 2026-09-05
 
 ### Authority is the served contract's, not this plugin's

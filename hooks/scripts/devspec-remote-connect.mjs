@@ -431,8 +431,13 @@ async function main() {
   }
 
   lines.push('')
-  lines.push('ARM THE WAKE STREAM NOW (Monitor tool, persistent: true):')
+  lines.push('ARM THE WAKE STREAM NOW (Monitor tool — never a background task):')
   lines.push(armCommand)
+  lines.push(
+    '  (persistent: true if Monitor\'s schema offers it — one arm then lasts the session.' +
+      ' If it does not, pass the largest timeout_ms it allows and re-arm with --stream' +
+      ' --pending at each expiry; persistent is silently discarded on that schema.)',
+  )
   if (cursorFlag === '--pending') {
     lines.push(
       '  (--pending, not --from-end: this connection already existed, so mail may be waiting.' +

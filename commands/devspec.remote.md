@@ -52,13 +52,22 @@ If it exits non-zero, read the message: it names the failure (auth, no project r
 
 ## 2. The wake stream (required)
 
-Connect prints the exact command. Run it with the **`Monitor`** tool, `persistent: true`, description `canonical commands for <codename>`:
+Connect prints the exact command. Run it with the **`Monitor`** tool, description `canonical commands for <codename>`:
 
 ```
 node ".../devspec-remote-wait.mjs" --connection-id <uuid> --owner-pid <pid> --stream --from-end
 ```
 
-**Not** `Bash` with `run_in_background`, and never a timeout. A background task wakes you by *exiting*, which ties the listener to the turn; this host reaps background tasks at turn end, so the agent re-armed once per turn for ever (item `be0a929a`). `Monitor` wakes you by printing a line and `persistent: true` scopes it to the session — one arm serves the whole session.
+**Never** `Bash` with `run_in_background` — on either path below. A background task wakes you by *exiting*, which ties the listener to the turn; this host reaps background tasks at turn end, so the agent re-armed once per turn for ever (item `be0a929a`). `Monitor` wakes you by printing a line instead, so nothing has to die.
+
+**Two `Monitor` schemas exist and the host chooses one per session — read the one you were served.**
+
+| Its schema | Arm with | Re-arm |
+|---|---|---|
+| has a **`persistent`** property | `persistent: true` | never — one arm lasts the session |
+| has **no** `persistent` (its `timeout_ms` says deadlines are capped and you can re-arm at expiry) | the **largest** `timeout_ms` it allows | at every expiry notice, with `--stream --pending` |
+
+On the second, `persistent: true` is **accepted and silently discarded** — no error, and the arm still dies at `timeout_ms`. The schema is what tells you which arm you are holding; passing the flag never is.
 
 The stream emits actor-labelled `canonical_advisory_context`, complete canonical commands as `owner_message` objects, explicit `automation_run` dispatches, typed `canonical_control` host events, and non-executable `wake` summaries. Conversational work comes only from complete canonical owner messages; an automation event follows its explicit claim/run protocol. Claude Code cannot safely execute lifecycle controls from this script layer, so its control event is `supported:false`, never chat, and never acknowledged as executed. The stream keeps watching; there is nothing to re-arm between events.
 
@@ -66,7 +75,7 @@ The stream emits actor-labelled `canonical_advisory_context`, complete canonical
 
 | Exit | Meaning | Do |
 |---|---|---|
-| **3** | **Not a failure.** The monitor was stopped or an unanchored arm hit its 24h cap. It emits `listener_rollover` first. Your host may report this as the monitor "failing" — trust the event, not the label. | Arm again with `--stream --pending`. Do not re-register or stand down. |
+| **3** | **Not a failure.** The monitor was stopped, a bounded monitor hit its `timeout_ms`, or an arm that could not anchor to an owner pid hit its 24h cap. Only the last emits `listener_rollover` first — a bounded expiry arrives as the host's own notice with nothing ahead of it. Your host may call any of these "failing"; none of them is. | Arm again with `--stream --pending`. Do not re-register or stand down. |
 | **1** | Something ended — *maybe* a human, maybe not | Check why, below. |
 | **2** | Bad args | Fix the command line. |
 | **0** | Only from the one-shot fallback | Act, then re-arm with `--pending`. |
@@ -84,7 +93,7 @@ Never infer a UI End from silence — that inference took every agent offline du
 
 **Re-arming always uses `--pending`,** never `--from-end`: `--pending` drains mail already in the inbox, `--from-end` jumps the cursor to EOF and permanently drops it.
 
-**Stop will refuse to end a turn deaf.** If a turn ends with no armed listener, or with commands unread, the Stop hook blocks and hands you the arm command. A session-scoped stream satisfies this from one arm, so you should never see it.
+**Stop will refuse to end a turn deaf.** If a turn ends with no armed listener, or with commands unread, the Stop hook blocks and hands you the arm command. A `persistent` arm satisfies this for the whole session; a bounded one satisfies it until it expires, so meeting this block after an expiry notice is expected — re-arm, and never reach for a background task.
 
 **Turn end is mechanical.** Stop clears the turn marker, heartbeats, and calls `report_complete`. Do not call it yourself. A spinner that persists after your reply has landed is a bond bug worth reporting, not something to paper over.
 

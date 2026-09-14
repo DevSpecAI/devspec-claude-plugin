@@ -446,7 +446,7 @@ describe('decideStopBlock', () => {
     assert.equal(decideStopBlock({}), null)
   })
 
-  it('points the way out at the SESSION-scoped stream, not a reapable background task', () => {
+  it('points the way out at Monitor on either schema, and never at a background task', () => {
     withConnDir(({ dir, conn }) => {
       const reason = decideStopBlock({ connectionId: conn, inboxOffset: 0, armed: false, dir })
       // Item be0a929a: the block was correct, but its remediation named a TURN-scoped
@@ -454,7 +454,16 @@ describe('decideStopBlock', () => {
       // blocked again — one model turn per lap, with no exit. The way out has to be the
       // arm that outlives the turn.
       assert.match(reason, /--stream/)
+      // Both Monitor schemas must be covered: `persistent` where the host offers it, and
+      // a capped `timeout_ms` re-armed at expiry where it does not — on that one
+      // `persistent: true` is accepted and silently discarded, so naming it alone would
+      // leave the agent believing it holds a session-scoped arm it does not have.
       assert.match(reason, /persistent: true/)
+      assert.match(reason, /timeout_ms/)
+      // The regression this pins. The remediation used to offer a background task as the
+      // fallback "if this host has no persistent monitor" — which is verbatim the
+      // be0a929a configuration, on the host where it loops.
+      assert.doesNotMatch(reason, /fall back[^.]*background/i)
     })
   })
 

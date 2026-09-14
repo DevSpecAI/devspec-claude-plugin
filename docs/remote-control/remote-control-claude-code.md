@@ -9,7 +9,7 @@
 1. DevSpec emits negotiated canonical ingress for this connection.
 2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope plus active-plan projection v1, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `automation_run` dispatches remain a separately validated/deduped channel; assignments do not.
 3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints active plans as advisory room awareness, typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit automations, or separate non-chat host controls.
-4. Claude Code **Monitor** (`persistent: true`) turns those lines into model-visible events without exiting; notification/preview summaries are non-authoritative.
+4. Claude Code **Monitor** turns those lines into model-visible events without exiting — `persistent: true` where the host serves that schema, otherwise the largest `timeout_ms` it allows, re-armed at each expiry; notification/preview summaries are non-authoritative.
 5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
 
@@ -41,7 +41,9 @@ resume.
 
 ## Why wake is streaming here
 
-Claude Code reaps tracked background tasks at turn end. Exit-to-wake would create an infinite re-arm loop (item `be0a929a`). Prefer `--stream` + persistent Monitor. One-shot wait is fallback only.
+Claude Code reaps tracked background tasks at turn end. Exit-to-wake would create an infinite re-arm loop (item `be0a929a`). Always `--stream` under **Monitor**, never a background task.
+
+The host serves one of two Monitor schemas, and the difference is silent. With a `persistent` property, one arm lasts the session. Without it the arm is capped (currently 30 minutes) and `persistent: true` is accepted and discarded, so it must be armed with the largest `timeout_ms` available and re-armed with `--stream --pending` at each expiry. An anchored `--stream` arm sets no deadline of its own (0.7.2), so a bounded expiry produces no `listener_rollover` — only the host's notice. The SIGTERM handler still releases the pidfile and exits `EXIT_REARM`, so the Stop keeper sees no listener and hands back the arm. The one-shot wait is for hosts with no Monitor at all; it is **not** a fallback here.
 
 ## Connect is mechanical (item `5a393e4c`)
 
@@ -64,7 +66,7 @@ Design rules for anyone editing it:
 - **Raw JSON-RPC, not host MCP tools.** Claude Code negotiates MCP capabilities **once per session**, so a server that starts advertising resources is invisible to every already-running session. The script layer never negotiates, so it can always reach the server even when the host cannot. Keep connect on `mcp-call.mjs` for that reason, not merely for tidiness.
 - **One private state boundary.** `private-state.mjs` is the only reader/writer for remote-control JSON that can carry the bearer or hidden capability; every consumer (connect/state, plan, poll, wait, turn mirror, commit observation) goes through it, and it repairs older file modes before reading. `writeConnectionState` remains the one connection-state assembler. Model-facing diagnostics use `remote-control-state.mjs status|read`, which emits only the redacted view and direct reconnect disposition; both remote commands must use resolver/status/list and never tell the model to open the raw file.
 - **Plans are not pump verbs.** `devspec-plan.mjs describe|use` injects that capability mechanically and exposes only the server-advertised `manage_plan`. It must never become an alternate poll/heartbeat/dispatch client.
-- **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → persistent Monitor, including byte-offset resume semantics.
+- **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → Monitor, including byte-offset resume semantics. The byte-offset cursor is what makes a re-arm after a bounded expiry lossless.
 - Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered automation is durable.
 - Remote-ingress policy, including delegated project scope, is authoritative at `devspec://product/remote-ingress-contract`; validate and surface the server instruction verbatim rather than restating mutable wording here.
 - Action-item work acquisition and execution are authoritative at `devspec://product/implementation-contract`; teach only the conversation-requested reserve-then-claim order here.

@@ -77,8 +77,10 @@ as universal is what produced item `be0a929a`:
 - **Claude Code** reaps tracked background tasks at turn end. Exit-to-wake there ties the
   listener's lifetime to the *turn*: a perfectly compliant agent arms, gets reaped, is
   blocked by the Stop hook, re-arms, gets reaped — one model turn per lap, with no exit.
-  Claude Code therefore arms `--stream` under a **persistent monitor**, where the wake is
-  a stdout *line* and the arm is session-scoped.
+  Claude Code therefore arms `--stream` under its **Monitor** tool, where the wake is a
+  stdout *line* rather than a death. Whether one arm lasts the session or has to be
+  re-armed at a cap depends on which Monitor schema the host serves — but exit-to-wake is
+  wrong here either way.
 - **Grok Build**'s monitor tool already turns every stdout line into a model-visible
   event — the same shape, arrived at independently.
 - **Codex** is an app-server bridge with no local waker at all.

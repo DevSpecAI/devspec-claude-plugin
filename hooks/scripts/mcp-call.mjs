@@ -14,6 +14,71 @@
  * deliberate abort from a network failure. Omitting them keeps the original behaviour.
  */
 
+/** HTTP statuses that describe a transient condition, not a verdict on the request. */
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 502, 503, 504])
+
+/**
+ * Read the server's typed failure contract off a non-OK response body (DevSpec
+ * item 798e2375). A validation outage answers 503 with
+ * `{code:'auth_validation_unavailable', retryable:true, credential_type}`; a
+ * genuinely rejected credential answers 401 with
+ * `{code:'invalid_api_token'|'invalid_connection_capability', retryable:false}`.
+ *
+ * Without this the status and the machine code exist only inside the error's
+ * message string, so every caller has to regex them back out — the pattern that
+ * turned transient 503s into "your token is revoked, go log in" in the Pi client
+ * (DevSpec item 781886cf).
+ *
+ * The server's word is carried as `serverCode`, deliberately NOT `code`: in this
+ * module `err.code` already means the ABORT reason ('timeout' | 'owner_gone') and
+ * callers switch on it. Exported for tests.
+ */
+export function readServerFailure(status, bodyText) {
+  const out = {
+    status: Number.isInteger(status) ? status : null,
+    serverCode: null,
+    retryable: null,
+    credentialType: null,
+  }
+  const text = typeof bodyText === 'string' ? bodyText : ''
+  const start = text.indexOf('{')
+  // No JSON at all — a proxy's body-less "Bad Gateway" is the common case, and
+  // the status alone still has to be enough to classify it.
+  if (start < 0) return out
+  let body = null
+  try {
+    body = JSON.parse(text.slice(start))
+  } catch {
+    body = null
+  }
+  if (!body || typeof body !== 'object') return out
+  if (typeof body.code === 'string') out.serverCode = body.code
+  if (typeof body.retryable === 'boolean') out.retryable = body.retryable
+  if (body.credential_type === 'api_token' || body.credential_type === 'connection_capability') {
+    out.credentialType = body.credential_type
+  }
+  return out
+}
+
+/**
+ * Should this failure be tried again?
+ *
+ * The server's explicit word wins over the status, so a credential it has actually
+ * rejected is never retried however the transport dressed it up. A body-less
+ * 502/503 from a proxy mid-redeploy carries no word to offer — that is exactly the
+ * case that killed `/devspec.remote` on 2026-09-14 — hence the status fallback.
+ *
+ * A deliberate abort is never retried: 'owner_gone' means the owning agent died,
+ * and retrying a timeout would double a ceiling the caller chose. Exported for tests.
+ */
+export function isRetryableHttpFailure(err) {
+  if (!err || typeof err !== 'object') return false
+  if (err.code === 'owner_gone' || err.code === 'timeout') return false
+  if (err.retryable === false) return false
+  if (err.retryable === true) return true
+  return RETRYABLE_HTTP_STATUSES.has(err.status)
+}
+
 export async function mcpRequest({
   mcpUrl,
   token,
@@ -87,7 +152,11 @@ export async function mcpRequest({
 
   const text = await res.text()
   if (!res.ok) {
-    throw new Error(`MCP HTTP ${res.status}: ${text.slice(0, 400)}`)
+    // Message text is deliberately unchanged — logs and existing matching read it.
+    // The structure goes alongside it so callers stop parsing prose (item 1f0e1e3b).
+    const err = new Error(`MCP HTTP ${res.status}: ${text.slice(0, 400)}`)
+    Object.assign(err, readServerFailure(res.status, text))
+    throw err
   }
 
   // Parse JSON or SSE-ish responses

@@ -31,7 +31,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mcpToolsCall } from './mcp-call.mjs'
+import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
@@ -41,6 +41,44 @@ import {
   writeConnectionState,
   knownInstructionTiersFor,
 } from './remote-control-state.mjs'
+
+/**
+ * Connect is a one-shot command, so a transient failure is the whole command
+ * failing: there was no retry here at all, and `/devspec.remote` died outright on
+ * `MCP HTTP 502: Bad Gateway` that succeeded on the very next attempt
+ * (2026-09-14, item 1f0e1e3b). Three attempts over ~1.5s covers a container swap
+ * without making a genuinely-down server feel hung.
+ */
+const CONNECT_ATTEMPTS = 3
+const CONNECT_BACKOFF_MS = [300, 1_200]
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Run one MCP call, retrying only what the server called retryable or what the
+ * status says cannot be a verdict on this request. A rejected credential falls
+ * straight through on the first attempt, so a dead token still reports as a dead
+ * token instead of as a slow connect.
+ *
+ * `sleepFn` is injected so tests do not pay the backoff. Exported for tests.
+ */
+export async function withHttpRetry(invoke, options = {}) {
+  const {
+    attempts = CONNECT_ATTEMPTS,
+    backoff = CONNECT_BACKOFF_MS,
+    onRetry = null,
+    sleepFn = sleep,
+  } = options
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await invoke()
+    } catch (e) {
+      if (attempt >= attempts - 1 || !isRetryableHttpFailure(e)) throw e
+      if (onRetry) onRetry(e, attempt)
+      await sleepFn(backoff[attempt] ?? backoff[backoff.length - 1] ?? 1_200)
+    }
+  }
+}
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url))
 const WAIT_SCRIPT = path.join(THIS_DIR, 'devspec-remote-wait.mjs')
@@ -171,14 +209,23 @@ async function main() {
   })
 
   const call = (name, toolArgs, options = {}) =>
-    mcpToolsCall({
-      mcpUrl: auth.mcp_url,
-      token: auth.token,
-      name,
-      arguments: toolArgs,
-      timeoutMs: 30_000,
-      ...options,
-    })
+    withHttpRetry(
+      () =>
+        mcpToolsCall({
+          mcpUrl: auth.mcp_url,
+          token: auth.token,
+          name,
+          arguments: toolArgs,
+          timeoutMs: 30_000,
+          ...options,
+        }),
+      {
+        onRetry: (e) =>
+          process.stderr.write(
+            `devspec-remote-connect: ${name} failed (${e.message}) — retrying\n`,
+          ),
+      },
+    )
 
   // 1. Register (idempotent on the conversation bond). Scope goes up as facts —
   //    git_remote and/or the folder pin — and the server arbitrates. No list_projects

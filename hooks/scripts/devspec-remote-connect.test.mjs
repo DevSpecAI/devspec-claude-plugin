@@ -13,7 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { after, describe, it } from 'node:test'
-import { armCursorFlag, findProjectPin } from './devspec-remote-connect.mjs'
+import { armCursorFlag, findProjectPin, withHttpRetry } from './devspec-remote-connect.mjs'
 
 const tmpRoots = []
 
@@ -199,5 +199,92 @@ describe('findProjectPin', () => {
 
     const found = findProjectPin(outside, { home: path.join(root, 'home', 'someone'), root: outside })
     assert.equal(found?.project_id, '99999999-0000-4000-8000-000000000009')
+  })
+})
+
+describe('withHttpRetry — a one-shot connect must ride out a blip', () => {
+  const noSleep = async () => {}
+
+  /** The exact error mcp-call throws for the 502 that killed a real connect. */
+  const badGateway = () =>
+    Object.assign(new Error('MCP HTTP 502: Bad Gateway'), {
+      status: 502, serverCode: null, retryable: null, credentialType: null,
+    })
+
+  it('retries a body-less 502 and returns the eventual success', async () => {
+    let calls = 0
+    const result = await withHttpRetry(
+      async () => {
+        calls++
+        if (calls < 3) throw badGateway()
+        return { ok: true }
+      },
+      { sleepFn: noSleep },
+    )
+    assert.deepEqual(result, { ok: true })
+    assert.equal(calls, 3)
+  })
+
+  it('retries what the server itself called retryable', async () => {
+    let calls = 0
+    await withHttpRetry(
+      async () => {
+        calls++
+        if (calls < 2) {
+          throw Object.assign(new Error('MCP HTTP 503: unavailable'), {
+            status: 503, serverCode: 'auth_validation_unavailable', retryable: true,
+          })
+        }
+        return 'ok'
+      },
+      { sleepFn: noSleep },
+    )
+    assert.equal(calls, 2)
+  })
+
+  it('does NOT retry a credential the server rejected — one attempt, error surfaces', async () => {
+    let calls = 0
+    await assert.rejects(
+      withHttpRetry(
+        async () => {
+          calls++
+          throw Object.assign(new Error('MCP HTTP 401: Invalid or revoked API token'), {
+            status: 401, serverCode: 'invalid_api_token', retryable: false,
+          })
+        },
+        { sleepFn: noSleep },
+      ),
+      /Invalid or revoked API token/,
+    )
+    assert.equal(calls, 1, 'a dead token must not be hammered')
+  })
+
+  it('gives up after the bounded number of attempts and rethrows the last error', async () => {
+    let calls = 0
+    await assert.rejects(
+      withHttpRetry(
+        async () => { calls++; throw badGateway() },
+        { sleepFn: noSleep },
+      ),
+      /MCP HTTP 502/,
+    )
+    assert.equal(calls, 3, 'bounded, not infinite')
+  })
+
+  it('never retries a deliberate abort, whatever the status', async () => {
+    let calls = 0
+    await assert.rejects(
+      withHttpRetry(
+        async () => {
+          calls++
+          throw Object.assign(new Error('MCP request aborted: owner_gone'), {
+            code: 'owner_gone', status: 503,
+          })
+        },
+        { sleepFn: noSleep },
+      ),
+      /owner_gone/,
+    )
+    assert.equal(calls, 1)
   })
 })

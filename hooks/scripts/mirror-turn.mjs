@@ -42,7 +42,7 @@ const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'c
 // UserPromptSubmit (turn start) writes it; Stop (turn end) clears it. The long-lived
 // poller reads it (by connection_id) to re-assert busy on heartbeats while a turn
 // runs, so long turns stay "working" and the server's busy freshness doesn't decay.
-function turnMarkerPath(connectionId) {
+export function turnMarkerPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
 }
 function writeTurnMarker(connectionId) {
@@ -56,7 +56,7 @@ function writeTurnMarker(connectionId) {
     /* non-fatal — the immediate busy heartbeat below still fires */
   }
 }
-function clearTurnMarker(connectionId) {
+export function clearTurnMarker(connectionId) {
   if (!connectionId) return
   try {
     fs.rmSync(turnMarkerPath(connectionId), { force: true })

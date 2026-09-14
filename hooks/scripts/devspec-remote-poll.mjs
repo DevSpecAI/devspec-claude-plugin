@@ -284,6 +284,34 @@ function writeTurnMarker(connectionId) {
   }
 }
 
+/**
+ * Drop the local turn marker. Used when the SERVER says there is no working attempt
+ * to keep alive: continuing to re-assert busy against a completed attempt is what
+ * makes the indicator oscillate (item 55d1bac8).
+ */
+function clearTurnMarker(connectionId) {
+  if (!connectionId) return
+  try {
+    fs.rmSync(turnMarkerPath(connectionId), { force: true })
+  } catch {
+    /* ignore — next tick re-reads it anyway */
+  }
+}
+
+/**
+ * The server's refusal when a keepalive names no live attempt. It answers
+ * `{ ok:false, code:'not_working', error:'No working attempt to keep alive…' }`,
+ * but the MCP layer forwards only `res.error` through errorResult(), so the machine
+ * code does not survive the boundary and the exact string is all a client gets.
+ * Anchored on that exact sentence on purpose rather than a loose /working/ match:
+ * a broad pattern here would clear a live turn's marker on unrelated errors and
+ * show Idle while the agent is still working. Exported for tests.
+ */
+export function isNoWorkingAttemptRefusal(err) {
+  const message = err instanceof Error ? err.message : String(err ?? '')
+  return /No working attempt to keep alive/i.test(message)
+}
+
 /** Owner (agent) process liveness — see the anti-zombie contract. EPERM = alive. */
 function ownerAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false
@@ -1499,6 +1527,17 @@ async function main() {
       })
     } catch (e) {
       process.stderr.write(`devspec-remote-poll: activity verb ${verb} (${name}) failed: ${e.message}\n`)
+      // The server has no working attempt for us, so our turn marker is stale —
+      // something already completed this turn (typically the agent's own
+      // complete_turn). Keep re-asserting busy and the indicator flickers between
+      // our keepalive and that completion for up to MAX_TURN_MS. Drop the marker
+      // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
+      if (isNoWorkingAttemptRefusal(e)) {
+        clearTurnMarker(connectionId)
+        process.stderr.write(
+          'devspec-remote-poll: server reports no working attempt — clearing the stale turn marker\n',
+        )
+      }
     }
   }
 

@@ -132,6 +132,17 @@ Body = the answer to the latest command. Lead with it. No preamble, no thinking,
 
 Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop does not post your answer**. You do.
 
+**`complete_turn: true` means the turn is OVER — only pass it on your final
+answer.** A mid-turn post (progress on a long brief, an answer to one question
+while other work continues) must omit it. This is not bookkeeping: your local
+turn marker is what the poller re-asserts "working" from every tick, so
+declaring completion early leaves two writers contradicting each other and the
+Working indicator flickers between them until the marker expires — up to an
+hour. Observed twice on 2026-09-14 (item `55d1bac8`). The hook now clears the
+marker when you pass the flag, so a wrong `complete_turn` no longer flickers —
+it shows Idle while you are still working, which is quieter but no more true.
+The flag is a statement about your turn; only you know when that ends.
+
 **Say which model you are:** pass `model: { providerID, modelID }` — for this
 host, `{ providerID: 'anthropic', modelID: '<your exact model id>' }`. The
 transcript renders it beside the timestamp, so a reader can tell a Fable answer

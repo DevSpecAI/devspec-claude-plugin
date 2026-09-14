@@ -5,6 +5,14 @@
  * Stop hook (mirror-turn.mjs) knows to skip mirroring the turn's own end-of-turn
  * narration as a second, redundant session message (item b9fb49a9).
  *
+ * ALSO clears the `<connection_id>.turn` marker when the post declared
+ * `complete_turn: true` (item 55d1bac8). The marker is host-observed liveness and
+ * the poller re-asserts busy from it every tick, so without this an agent that
+ * declares completion leaves two writers disagreeing: the completed attempt reads
+ * Idle, the next keepalive reads Working, and the indicator oscillates at the poll
+ * cadence until the marker ages out up to an hour later. Cursor fixed the same
+ * thing in 265d2c45; this is the Claude Code half.
+ *
  * Purely mechanical, no LLM tokens. Never blocks or reports failure back to the
  * tool call — a missing/unreadable state file just means no marker is written,
  * and Stop falls back to its normal mirror behavior.
@@ -13,7 +21,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { resolveHookConversationId, loadState, explicitReplyMarkerPath } from './mirror-turn.mjs'
+import {
+  resolveHookConversationId,
+  loadState,
+  explicitReplyMarkerPath,
+  clearTurnMarker,
+} from './mirror-turn.mjs'
 
 const TARGET_TOOL = 'mcp__devspec__post_session_message'
 
@@ -34,6 +47,22 @@ function toolNameFrom(raw) {
   }
 }
 
+/**
+ * Did this post declare the turn finished? Only an explicit boolean true counts —
+ * a missing or malformed field must never be read as completion, because clearing
+ * the marker wrongly would show Idle while the agent is still working. Exported
+ * for tests.
+ */
+export function declaresCompleteTurn(raw) {
+  try {
+    const data = JSON.parse(raw || '{}')
+    const input = data.tool_input || data.toolInput || {}
+    return input.complete_turn === true
+  } catch {
+    return false
+  }
+}
+
 async function main() {
   const raw = readStdin()
   if (toolNameFrom(raw) !== TARGET_TOOL) process.exit(0)
@@ -49,6 +78,12 @@ async function main() {
   } catch {
     /* non-fatal — worst case Stop also mirrors the turn's narration */
   }
+
+  // The agent said this turn is over, so stop the poller re-asserting that it is
+  // not. Deliberately AFTER the explicit-reply marker: that one must be written
+  // even if this throws, since Stop depends on it.
+  if (declaresCompleteTurn(raw)) clearTurnMarker(connectionId)
+
   process.exit(0)
 }
 

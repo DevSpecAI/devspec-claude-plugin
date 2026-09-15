@@ -269,13 +269,12 @@ describe('explicit automation dispatch channel', () => {
     run_id: '20000000-0000-4000-8000-000000000002',
     automation_id: '30000000-0000-4000-8000-000000000003',
     automation_name: 'Review',
-    instruction: 'Review the change',
+    trigger_kind: 'pressed',
+    owner: { user_id: '40000000-0000-4000-8000-000000000004', display_name: 'Ali Price' },
     permission: 'look_only',
-    requester: { user_id: '40000000-0000-4000-8000-000000000004' },
-    original_target_connection_id: null,
-    delivery_connection_id: connectionId,
     queued_at: '2026-08-20T12:00:00.000Z',
-    state: 'queued',
+    delivery_connection_id: connectionId,
+    requester: { user_id: '40000000-0000-4000-8000-000000000004' },
   }
 
   it('accepts only an exactly addressed automation_run', () => {
@@ -285,6 +284,24 @@ describe('explicit automation dispatch channel', () => {
       validateAutomationRunDispatch({ ...automation, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }, connectionId).ok,
       false,
     )
+  })
+
+  it('accepts an unattended wake and rejects the old instruction payload', () => {
+    const unattended = {
+      ...automation,
+      trigger_kind: 'scheduled',
+      requester: null,
+    }
+    assert.equal(validateAutomationRunDispatch(unattended, connectionId).ok, true)
+    const legacy = {
+      ...automation,
+      instruction: 'Review the change',
+      original_target_connection_id: null,
+      state: 'queued',
+    }
+    delete legacy.trigger_kind
+    delete legacy.owner
+    assert.equal(validateAutomationRunDispatch(legacy, connectionId).ok, false)
   })
 
   it('preserves delegated scope across a failed append retry without pre-consuming identity', () => {

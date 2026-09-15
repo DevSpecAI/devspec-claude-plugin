@@ -252,13 +252,12 @@ function automationBatch(connectionId = CONNECTION) {
       run_id: id,
       automation_id: '91000000-0000-4000-8000-000000000009',
       automation_name: 'Audit',
-      instruction: 'Audit the ingress path',
+      trigger_kind: 'pressed',
+      owner: { user_id: OWNER, display_name: 'Ali Price' },
       permission: 'look_only',
-      requester: { user_id: OWNER },
-      original_target_connection_id: null,
-      delivery_connection_id: connectionId,
       queued_at: '2026-08-20T12:00:00.000Z',
-      state: 'queued',
+      delivery_connection_id: connectionId,
+      requester: { user_id: OWNER },
     },
   }
 }

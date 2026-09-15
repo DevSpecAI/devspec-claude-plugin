@@ -496,9 +496,18 @@ const INBOX_UUID = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f
 function validateAutomationInboxRecord(record, connectionId) {
   const d = record?.dispatch
   const keys = [
-    'id', 'kind', 'run_id', 'automation_id', 'automation_name', 'instruction', 'permission',
-    'requester', 'original_target_connection_id', 'delivery_connection_id', 'queued_at', 'state',
+    'id', 'kind', 'run_id', 'automation_id', 'automation_name', 'trigger_kind', 'owner',
+    'permission', 'queued_at', 'delivery_connection_id', 'requester',
   ]
+  const owner = d?.owner
+  const pressed = d?.trigger_kind === 'pressed'
+  const requesterOk = pressed
+    ? Boolean(
+        d.requester && typeof d.requester === 'object' && !Array.isArray(d.requester) &&
+        Object.keys(d.requester).length === 1 &&
+        typeof d.requester.user_id === 'string' && INBOX_UUID.test(d.requester.user_id),
+      )
+    : d?.requester === null
   return Boolean(
     record?.type === 'automation_run' &&
     d && typeof d === 'object' && !Array.isArray(d) &&
@@ -507,16 +516,15 @@ function validateAutomationInboxRecord(record, connectionId) {
     typeof d.id === 'string' && INBOX_UUID.test(d.id) && d.run_id === d.id &&
     typeof d.automation_id === 'string' && INBOX_UUID.test(d.automation_id) &&
     typeof d.automation_name === 'string' && d.automation_name.length > 0 &&
-    typeof d.instruction === 'string' &&
+    ['scheduled', 'event', 'pressed'].includes(d.trigger_kind) &&
+    owner && typeof owner === 'object' && !Array.isArray(owner) &&
+    Object.keys(owner).length === 2 &&
+    typeof owner.user_id === 'string' && INBOX_UUID.test(owner.user_id) &&
+    typeof owner.display_name === 'string' && owner.display_name.length > 0 &&
     ['look_only', 'can_commit', 'can_push'].includes(d.permission) &&
     d.delivery_connection_id === connectionId &&
-    d.requester && typeof d.requester === 'object' && !Array.isArray(d.requester) &&
-    Object.keys(d.requester).length === 1 &&
-    typeof d.requester.user_id === 'string' && INBOX_UUID.test(d.requester.user_id) &&
-    (d.original_target_connection_id === null ||
-      (typeof d.original_target_connection_id === 'string' && INBOX_UUID.test(d.original_target_connection_id))) &&
     typeof d.queued_at === 'string' && !Number.isNaN(Date.parse(d.queued_at)) &&
-    ['queued', 'waiting_for_agent'].includes(d.state),
+    requesterOk,
   )
 }
 
@@ -733,18 +741,24 @@ function automationRunCommandText(d) {
       : d.permission === 'can_commit'
         ? 'You MAY edit and commit locally, but MUST NOT push.'
         : 'This automation is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
+  const started =
+    d.trigger_kind === 'pressed'
+      ? 'Someone pressed Run.'
+      : d.trigger_kind === 'scheduled'
+        ? 'This run started on a schedule.'
+        : 'This run started because of an event.'
+  const ownerName = d.owner?.display_name || 'the owner'
   return [
     `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
+    started,
+    `Owner: ${ownerName}`,
     '',
     'What to do:',
     `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider. If claimed:false, stop; another agent took it.`,
-    '2. Do the work described below, in this repo.',
+    '2. Follow the instruction returned by that claim, in this repo.',
     '3. record_automation_run with one verdict and evidence per acceptance criterion.',
     '',
     `Permission: ${permission}`,
-    '',
-    'The instruction:',
-    d.instruction,
   ].join('\n')
 }
 

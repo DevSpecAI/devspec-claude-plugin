@@ -497,35 +497,42 @@ function appendInbox(
  */
 const UUID_PATTERN = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
 
-/** Only the server's explicit automation_run dispatch shape is executable here. */
+/** Only the server's explicit automation_run wake envelope is executable here. */
 export function validateAutomationRunDispatch(dispatch, connectionId) {
   if (!dispatch || typeof dispatch !== 'object' || Array.isArray(dispatch)) {
     return { ok: false, error: 'dispatch is not an object' }
   }
   const required = [
-    'id', 'kind', 'run_id', 'automation_id', 'automation_name', 'instruction', 'permission',
-    'requester', 'original_target_connection_id', 'delivery_connection_id', 'queued_at', 'state',
+    'id', 'kind', 'run_id', 'automation_id', 'automation_name', 'trigger_kind', 'owner',
+    'permission', 'queued_at', 'delivery_connection_id', 'requester',
   ]
   if (Object.keys(dispatch).length !== required.length || required.some((key) => !Object.hasOwn(dispatch, key))) {
     return { ok: false, error: 'dispatch does not exactly match automation_run' }
   }
+  const owner = dispatch.owner
+  const pressed = dispatch.trigger_kind === 'pressed'
+  const requesterOk = pressed
+    ? Boolean(
+        dispatch.requester && typeof dispatch.requester === 'object' && !Array.isArray(dispatch.requester) &&
+        Object.keys(dispatch.requester).length === 1 &&
+        typeof dispatch.requester.user_id === 'string' && UUID_PATTERN.test(dispatch.requester.user_id),
+      )
+    : dispatch.requester === null
   const valid =
     dispatch.kind === 'automation_run' &&
     typeof dispatch.id === 'string' && UUID_PATTERN.test(dispatch.id) &&
     dispatch.run_id === dispatch.id &&
     typeof dispatch.automation_id === 'string' && UUID_PATTERN.test(dispatch.automation_id) &&
     typeof dispatch.automation_name === 'string' && dispatch.automation_name.length > 0 &&
-    typeof dispatch.instruction === 'string' &&
+    ['scheduled', 'event', 'pressed'].includes(dispatch.trigger_kind) &&
+    owner && typeof owner === 'object' && !Array.isArray(owner) &&
+    Object.keys(owner).length === 2 &&
+    typeof owner.user_id === 'string' && UUID_PATTERN.test(owner.user_id) &&
+    typeof owner.display_name === 'string' && owner.display_name.length > 0 &&
     ['look_only', 'can_commit', 'can_push'].includes(dispatch.permission) &&
-    dispatch.requester && typeof dispatch.requester === 'object' && !Array.isArray(dispatch.requester) &&
-    Object.keys(dispatch.requester).length === 1 &&
-    typeof dispatch.requester.user_id === 'string' && UUID_PATTERN.test(dispatch.requester.user_id) &&
-    (dispatch.original_target_connection_id === null ||
-      (typeof dispatch.original_target_connection_id === 'string' &&
-        UUID_PATTERN.test(dispatch.original_target_connection_id))) &&
     dispatch.delivery_connection_id === connectionId &&
     typeof dispatch.queued_at === 'string' && !Number.isNaN(Date.parse(dispatch.queued_at)) &&
-    ['queued', 'waiting_for_agent'].includes(dispatch.state)
+    requesterOk
   return valid
     ? { ok: true, dispatch }
     : { ok: false, error: 'invalid or misaddressed automation_run dispatch' }
@@ -1375,18 +1382,24 @@ function automationRunCommandText(d) {
         ? 'You MAY edit and commit locally, but MUST NOT push.'
         : 'This automation is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
 
+  const started =
+    d.trigger_kind === 'pressed'
+      ? 'Someone pressed Run.'
+      : d.trigger_kind === 'scheduled'
+        ? 'This run started on a schedule.'
+        : 'This run started because of an event.'
+  const ownerName = d.owner?.display_name || 'the owner'
   return [
     `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
+    started,
+    `Owner: ${ownerName}`,
     '',
     'What to do:',
     `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider (and model if the automation names one). If claimed:false the run was already taken by another of your agents, which is normal; stop there.`,
-    '2. Do the work described below, in this repo.',
+    '2. Follow the instruction returned by that claim, in this repo.',
     '3. record_automation_run — report status, a verdict for EACH acceptance criterion WITH evidence, and whatever the run produced as artifacts.',
     '',
     `Permission: ${permission}`,
-    '',
-    'The instruction:',
-    d.instruction || '(claim the run to read it)',
   ].join('\n')
 }
 

@@ -183,6 +183,7 @@ An automation run is not action-item work. It stays on the separately typed, exa
 **You** are the capture agent; decisions evaporate if they live only in this transcript. When the conversation settles something durable:
 
 - **A fact, decision, convention, architecture choice or risk → a memory.** `search_memories` first, `get_memory` the closest match and read it in full, then `record_memory` or `supersede_memory`. The search result is a card: it tells you *which* memory, not whether replacing it is right.
+- **The state of work in flight → an action item, not a memory.** "Approved, not yet built", "awaiting a pick", "blocked on someone" can read like a decision, but it is transient workflow state: it belongs on an action item where it gets completed. Left in memory it decays into a phantom standing rule.
 - **An instruction someone must follow → a rule, not a memory.** A memory records what the team decided; a rule is what an agent is made to do about it every time. The same conversation often produces both.
   - Team: `write_project_instruction_rule` (`add`/`amend`/`retract`, one at a time). `get_project_instruction_rules` first.
   - The owner's own machine/tooling context: `update_personal_instructions`. This is the right home for anything true of *them across their machines* — it reaches every agent they run, everywhere, unlike a file on one box.

@@ -11,6 +11,18 @@
 export const REMOTE_INGRESS_SCHEMA_VERSION = 1
 export const REMOTE_INGRESS_CONTRACT_VERSION = '1.3.0'
 export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-21.1'
+/**
+ * 1.4 adds system_notices; 1.5 adds the sender's response style per delivered
+ * command (item af5e3d6c). The ladder is nested, so asking for style means
+ * asking for notices too — the server refuses sender_style_version without
+ * system_notice_version.
+ */
+export const REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION = '1.5.0'
+export const REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION = '2026-09-18.1'
+export const REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION = '1.4.0'
+export const REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION = '2026-08-22.1'
+export const SYSTEM_NOTICE_VERSION = 1
+export const SENDER_STYLE_VERSION = 1
 export const REMOTE_INGRESS_SCOPE_CONTRACT_VERSION = '1.2.0'
 export const REMOTE_INGRESS_SCOPE_POLICY_VERSION = '2026-08-19.3'
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
@@ -29,10 +41,16 @@ const CONTRACT_POLICY_PAIRS = new Map([
   ['1.1.1', '2026-08-19.2'],
   [REMOTE_INGRESS_SCOPE_CONTRACT_VERSION, REMOTE_INGRESS_SCOPE_POLICY_VERSION],
   [REMOTE_INGRESS_CONTRACT_VERSION, REMOTE_INGRESS_POLICY_VERSION],
+  [REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION, REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION],
+  [REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION, REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION],
 ])
+// Every version from 1.2 up carries project_scope on delegated commands. 1.4 and
+// 1.5 inherit that; leaving them out rejected every command on the new lanes.
 const SCOPE_AWARE_CONTRACT_VERSIONS = new Set([
   REMOTE_INGRESS_SCOPE_CONTRACT_VERSION,
   REMOTE_INGRESS_CONTRACT_VERSION,
+  REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
+  REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION,
 ])
 const SUPPORTED_POLICY_VERSIONS = new Set(CONTRACT_POLICY_PAIRS.values())
 
@@ -41,6 +59,7 @@ const OFFSET_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d
 const WAKE_KINDS = new Set([
   'conversational_command',
   'control',
+  'system_notice',
   'advisory_update',
   'history_reseed',
   'idle',
@@ -457,8 +476,26 @@ export function isActiveSessionPlansProjectionV1(value) {
   return chars <= ACTIVE_PLAN_MAX_TOTAL_TEXT_CHARS
 }
 
+/**
+ * The sender's response style for one delivered command (item af5e3d6c).
+ *
+ * Read verbatim and never recomputed: the server froze this onto the message
+ * row when it was sent, so an older command keeps rendering the same way on a
+ * later poll.
+ */
+export function isSenderResponseStyleV1(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  if (!exactKeys(value, ['message_id', 'notes'])) return false
+  if (!uuid(value.message_id)) return false
+  if (!Array.isArray(value.notes) || value.notes.length === 0 || value.notes.length > 8) return false
+  return value.notes.every((note) => nonempty(note))
+}
+
 function envelopeV1(value) {
-  const enhanced = value?.contract_version === REMOTE_INGRESS_CONTRACT_VERSION
+  const senderStyleLane = value?.contract_version === REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION
+  const noticeLane = senderStyleLane ||
+    value?.contract_version === REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION
+  const enhanced = noticeLane || value?.contract_version === REMOTE_INGRESS_CONTRACT_VERSION
   const requiredKeys = [
     'kind',
     'schema_version',
@@ -474,8 +511,15 @@ function envelopeV1(value) {
     'context',
     'window',
   ]
+  // 1.4 always carries system_notices (possibly empty); 1.5 adds an optional
+  // sender_response_styles. Both are additive sections, which is the only shape
+  // this validator tolerates — a CHANGED key would fail here, by design.
+  const laneRequiredKeys = noticeLane ? [...requiredKeys, 'system_notices'] : requiredKeys
+  const laneOptionalKeys = senderStyleLane
+    ? ['active_session_plans', 'sender_response_styles']
+    : ['active_session_plans']
   if (!(enhanced
-    ? optionalExactKeys(value, requiredKeys, ['active_session_plans'])
+    ? optionalExactKeys(value, laneRequiredKeys, laneOptionalKeys)
     : exactKeys(value, requiredKeys))) return 'ingress must contain exactly the canonical v1 fields'
   if (value.kind !== 'devspec.remote_ingress') return 'unknown ingress kind'
   if (value.schema_version !== REMOTE_INGRESS_SCHEMA_VERSION) return 'unsupported ingress schema_version'
@@ -489,7 +533,8 @@ function envelopeV1(value) {
     typeof value.wake.active !== 'boolean' ||
     !nonempty(value.wake.reason_id)
   ) return 'invalid wake metadata'
-  const activeKind = value.wake.kind === 'conversational_command' || value.wake.kind === 'control'
+  const activeKind = value.wake.kind === 'conversational_command' ||
+    value.wake.kind === 'control' || value.wake.kind === 'system_notice'
   if (value.wake.active !== activeKind) return 'wake active flag contradicts kind'
   if (!['live', 'replay', 'reseed'].includes(value.delivery_state)) return 'invalid delivery_state'
   if (value.delivery_state !== 'live' && (value.wake.kind !== 'history_reseed' || value.wake.active)) {
@@ -512,6 +557,35 @@ function envelopeV1(value) {
     !isRemoteIngressBoundedMetadata(value.window) ||
     value.window.policy_version !== value.policy_version
   ) return 'invalid typed context or window'
+  if (noticeLane) {
+    // Always present on 1.4+, usually empty. Nonempty only on a notice wake, and
+    // never alongside commands — the server's own invariant, checked here so a
+    // malformed package cannot be mistaken for work.
+    if (!Array.isArray(value.system_notices) || value.system_notices.length > 25) {
+      return 'invalid system_notices'
+    }
+    const hasNotices = value.system_notices.length > 0
+    if (hasNotices !== (value.wake.kind === 'system_notice')) {
+      return 'system_notices must be nonempty iff wake kind is system_notice'
+    }
+    if (hasNotices && (value.commands.length > 0 || value.control !== null)) {
+      return 'system notices cannot accompany commands or control'
+    }
+  }
+  if (senderStyleLane && Object.hasOwn(value, 'sender_response_styles')) {
+    const styles = value.sender_response_styles
+    if (!Array.isArray(styles) || !styles.every(isSenderResponseStyleV1)) {
+      return 'invalid sender_response_styles'
+    }
+    // Style describes a command this delta delivered, exactly once. A style for
+    // a command we were never handed would be a preference with nothing to apply
+    // it to.
+    const delivered = new Set(value.command_message_ids)
+    const ids = styles.map((style) => style.message_id)
+    if (ids.some((id) => !delivered.has(id)) || new Set(ids).size !== ids.length) {
+      return 'sender response style must name a delivered command exactly once'
+    }
+  }
   if (enhanced && Object.hasOwn(value, 'active_session_plans') &&
       !isActiveSessionPlansProjectionV1(value.active_session_plans)) {
     return 'invalid active_session_plans projection'

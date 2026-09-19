@@ -70,12 +70,42 @@ import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEv
 
 export const DELEGATED_SCOPE_VERSION = 1
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
+export const SYSTEM_NOTICE_VERSION = 1
+export const SENDER_STYLE_VERSION = 1
+
+/**
+ * The ingress ladder we ask for, and it is nested: each tier requires the one
+ * below it.
+ *
+ * `sender_style_version` is what makes the person who SENT a command decide how
+ * they get answered, rather than whoever happens to own this connection
+ * (item af5e3d6c). The server refuses it without `system_notice_version`, so
+ * notices come along for the ride; we accept them and treat them as advisory —
+ * they never carry commands or authority.
+ */
+/**
+ * Echo the instruction tiers this connection already holds, so the server can
+ * answer `instructions_unchanged` instead of re-sending the full text.
+ *
+ * Without this the server re-sends all four tiers on every command-bearing poll
+ * and the poller throws them away — measured at ~4,000 tokens of the rules tiers
+ * per delivery. The hash is written by connect; a state file that predates it
+ * simply omits the echo and gets today's behaviour (item af5e3d6c).
+ */
+export function knownInstructionTierArguments(state) {
+  const version = state?.instruction_tiers_version
+  const hash = state?.instruction_tiers_hash
+  if (version !== 1 || typeof hash !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(hash)) return {}
+  return { known_instruction_tiers_version: version, known_instruction_tiers_hash: hash }
+}
 
 export function remoteIngressNegotiationArguments() {
   return {
     ingress_version: 1,
     delegated_scope_version: DELEGATED_SCOPE_VERSION,
     active_plan_projection_version: ACTIVE_PLAN_PROJECTION_VERSION,
+    system_notice_version: SYSTEM_NOTICE_VERSION,
+    sender_style_version: SENDER_STYLE_VERSION,
   }
 }
 
@@ -1910,6 +1940,7 @@ async function main() {
         connection_id: connectionId,
         agent_name: agentName,
         ...remoteIngressNegotiationArguments(),
+        ...knownInstructionTierArguments(listenerState),
         ...interactionArgs,
         ...(ack ? questionEventAckArguments(ack) : {}),
         wait_ms: waitMs,

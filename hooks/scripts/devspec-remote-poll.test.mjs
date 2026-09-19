@@ -42,6 +42,7 @@ import {
   DELEGATED_SCOPE_VERSION,
   ACTIVE_PLAN_PROJECTION_VERSION,
   remoteIngressNegotiationArguments,
+  knownInstructionTierArguments,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
@@ -159,14 +160,56 @@ describe('isDeliverableCommand (command gate)', () => {
 })
 
 describe('poll negotiation', () => {
-  it('requests canonical ingress, delegated scope, and active plan projection version 1', () => {
+  it('requests the whole nested ingress ladder, up to sender response style', () => {
     assert.equal(DELEGATED_SCOPE_VERSION, 1)
     assert.equal(ACTIVE_PLAN_PROJECTION_VERSION, 1)
     assert.deepEqual(remoteIngressNegotiationArguments(), {
       ingress_version: 1,
       delegated_scope_version: 1,
       active_plan_projection_version: 1,
+      system_notice_version: 1,
+      sender_style_version: 1,
     })
+  })
+
+  it('echoes the instruction tiers it already holds, so the server can suppress them', () => {
+    assert.deepEqual(
+      knownInstructionTierArguments({
+        instruction_tiers_version: 1,
+        instruction_tiers_hash: `sha256:${'a'.repeat(64)}`,
+      }),
+      {
+        known_instruction_tiers_version: 1,
+        known_instruction_tiers_hash: `sha256:${'a'.repeat(64)}`,
+      },
+    )
+  })
+
+  it('echoes nothing when the state cannot prove what it holds', () => {
+    // A state file written before the hash existed, a wrong version, or a
+    // malformed hash must all fall back to today's behaviour rather than
+    // claiming possession of tier text this process may not have.
+    for (const state of [
+      undefined,
+      null,
+      {},
+      { instruction_tiers_version: 1 },
+      { instruction_tiers_hash: `sha256:${'a'.repeat(64)}` },
+      { instruction_tiers_version: 2, instruction_tiers_hash: `sha256:${'a'.repeat(64)}` },
+      { instruction_tiers_version: 1, instruction_tiers_hash: 'not-a-hash' },
+      { instruction_tiers_version: 1, instruction_tiers_hash: `sha256:${'A'.repeat(64)}` },
+    ]) {
+      assert.deepEqual(knownInstructionTierArguments(state), {}, JSON.stringify(state))
+    }
+  })
+
+  it('never asks for sender style without system notices, which the server refuses', () => {
+    // The ladder is nested (item af5e3d6c). Dropping notices while keeping style
+    // would make every poll fail with an upgrade-required error rather than
+    // quietly losing the section.
+    const args = remoteIngressNegotiationArguments()
+    assert.equal(Object.hasOwn(args, 'sender_style_version'), true)
+    assert.equal(Object.hasOwn(args, 'system_notice_version'), true)
   })
 })
 

@@ -9,6 +9,10 @@ import {
   REMOTE_INGRESS_SCOPE_CONTRACT_VERSION,
   REMOTE_INGRESS_SCOPE_POLICY_VERSION,
   ACTIVE_PLAN_AUTHORITY_NOTE,
+  REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION,
+  REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION,
+  REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
+  REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION,
 } from './remote-ingress-v1.mjs'
 
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
@@ -554,5 +558,106 @@ describe('renderAdvisoryContext', () => {
       'AI: ai actor',
       'SYSTEM: system actor',
     ])
+  })
+})
+
+
+describe('strict 1.5 sender response style', () => {
+  const styled = (over = {}) => {
+    const built = envelope({
+      contract_version: REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION,
+      policy_version: REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION,
+      system_notices: [],
+      ...over,
+    })
+    built.window.policy_version = REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION
+    return built
+  }
+
+  it('accepts a style bound to the delivered command, and still wakes', () => {
+    const result = normalizeRemoteIngressV1(styled({
+      sender_response_styles: [{ message_id: MESSAGE, notes: ['Talk to me like a person talking aloud.'] }],
+    }), CONNECTION)
+    assert.equal(result.ok, true)
+    assert.equal(result.wake, true)
+    assert.deepEqual(result.envelope.sender_response_styles[0].notes, [
+      'Talk to me like a person talking aloud.',
+    ])
+  })
+
+  it('is optional — the ordinary case is that nobody set a preference', () => {
+    const result = normalizeRemoteIngressV1(styled(), CONNECTION)
+    assert.equal(result.ok, true)
+    assert.equal(result.wake, true)
+  })
+
+  it('rejects a style for a command this delta never delivered', () => {
+    const result = normalizeRemoteIngressV1(styled({
+      sender_response_styles: [{ message_id: ENVELOPE, notes: ['never delivered'] }],
+    }), CONNECTION)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /delivered command exactly once/)
+  })
+
+  it('rejects the same command styled twice', () => {
+    const result = normalizeRemoteIngressV1(styled({
+      sender_response_styles: [
+        { message_id: MESSAGE, notes: ['one'] },
+        { message_id: MESSAGE, notes: ['two'] },
+      ],
+    }), CONNECTION)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /delivered command exactly once/)
+  })
+
+  it('rejects a malformed style entry', () => {
+    for (const styles of [
+      [{ message_id: MESSAGE, notes: [] }],
+      [{ message_id: MESSAGE, notes: [''] }],
+      [{ message_id: 'not-a-uuid', notes: ['x'] }],
+      [{ message_id: MESSAGE, notes: ['x'], extra: true }],
+    ]) {
+      const result = normalizeRemoteIngressV1(styled({ sender_response_styles: styles }), CONNECTION)
+      assert.equal(result.ok, false, JSON.stringify(styles))
+    }
+  })
+
+  it('refuses the section on a lane that never negotiated it', () => {
+    const result = normalizeRemoteIngressV1(envelope({
+      sender_response_styles: [{ message_id: MESSAGE, notes: ['x'] }],
+    }), CONNECTION)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /exactly the canonical v1 fields/)
+  })
+})
+
+describe('strict 1.4 system notices', () => {
+  const noticed = (over = {}) => {
+    const built = envelope({
+      contract_version: REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
+      policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION,
+      system_notices: [],
+      ...over,
+    })
+    built.window.policy_version = REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION
+    return built
+  }
+
+  it('requires the array, empty on an ordinary command wake', () => {
+    assert.equal(normalizeRemoteIngressV1(noticed(), CONNECTION).ok, true)
+  })
+
+  it('rejects the 1.4 lane without the array at all', () => {
+    const missing = noticed()
+    delete missing.system_notices
+    assert.equal(normalizeRemoteIngressV1(missing, CONNECTION).ok, false)
+  })
+
+  it('refuses notices sitting alongside commands', () => {
+    const result = normalizeRemoteIngressV1(noticed({
+      system_notices: [{ version: 1, kind: 'unlinked_commit_item_review' }],
+    }), CONNECTION)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /nonempty iff wake kind is system_notice/)
   })
 })

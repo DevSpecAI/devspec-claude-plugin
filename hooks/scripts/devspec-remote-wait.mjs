@@ -652,6 +652,14 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
   for (const command of commands) {
     const scopeAware = Object.hasOwn(command, 'project_scope')
     const delegated = command.authority.kind === 'delegated'
+    // How the person who sent THIS command likes to be answered, resolved from
+    // them when they sent it and delivered with the command (item af5e3d6c).
+    // Applies to the prose of the reply to that person — including when they do
+    // not own this connection. Never work, authority or scope, and it never
+    // overrides project rules or the owner's machine rules.
+    const senderStyle = Array.isArray(ingress.sender_response_styles)
+      ? (ingress.sender_response_styles.find((style) => style.message_id === command.message_id)?.notes ?? [])
+      : []
     events.push({
       type: 'owner_message',
       session_id: sessionId,
@@ -659,6 +667,7 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
       executable: true,
       authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
       envelope_id: ingress.envelope_id,
+      ...(senderStyle.length > 0 ? { sender_response_style: senderStyle } : {}),
       message: command,
       ...(scopeAware ? { project_scope: command.project_scope } : {}),
       ...(delegated && scopeAware

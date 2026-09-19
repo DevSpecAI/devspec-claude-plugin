@@ -400,6 +400,101 @@ describe('wait-boundary revalidation and independent channels', () => {
   })
 })
 
+describe('the wake line inside the 500-character cap', () => {
+  // The host cuts a notification at 500 characters and the emitted object IS the
+  // line, so key order decides what a reader gets (item 725d18b2). These pin the
+  // budget rather than the wording, because the wording will change and the cap
+  // will not.
+  const CAP = 500
+
+  const wakeLine = (batch) =>
+    JSON.stringify(buildCanonicalCommandEvents(batch).find((event) => event.type === 'owner_message'))
+
+  const longBody = (n) => 'x'.repeat(n)
+
+  it('names the sender and their authority ahead of anything that can be cut', () => {
+    const batch = canonicalInboxBatch('named', longBody(4000))
+    const cut = wakeLine(batch).slice(0, CAP)
+    const seen = JSON.parse(`${cut.replace(/,"body":"x+$/, '')}}`)
+    assert.equal(seen.from, 'Owner')
+    assert.equal(seen.authority, 'owner')
+    assert.equal(seen.envelope_id, batch.ingress.envelope_id)
+  })
+
+  it('leaves the body far more room than the 46 characters it used to get', () => {
+    const batch = canonicalInboxBatch('budget', longBody(4000))
+    const line = wakeLine(batch)
+    const overhead = line.indexOf('"body":"') + '"body":"'.length
+    // Measured at 162 on 2026-09-19. The assertion is a ceiling, not the number,
+    // so adding one short field stays green and adding a paragraph does not.
+    assert.ok(overhead <= 200, `overhead before the body was ${overhead} characters`)
+    assert.ok(CAP - overhead >= 300, `only ${CAP - overhead} characters left for the body`)
+  })
+
+  it('tells a truncated reader that it was truncated', () => {
+    // A 500-character cap must never present as the whole message
+    // (decision 366e1beb, honest bounds). body_chars is declared before the body,
+    // so a reader whose line was cut can still compare the two.
+    const body = longBody(4000)
+    const line = wakeLine(canonicalInboxBatch('honest', body))
+    const cut = line.slice(0, CAP)
+    assert.ok(cut.includes(`"body_chars":${body.length}`))
+    assert.ok(cut.length < line.length)
+  })
+
+  it('distinguishes a delegated sender from an owner in the cut line alone', () => {
+    const delegated = canonicalInboxBatch('deleg', longBody(4000))
+    const requester = '21000000-0000-4000-8000-000000000002'
+    delegated.ingress.commands[0].requester = { user_id: requester, display_name: 'Brandon Young' }
+    delegated.ingress.commands[0].authority = {
+      kind: 'delegated', mode: 'project', requested_by_user_id: requester,
+      connection_owner_user_id: OWNER, decision_source: 'server',
+    }
+    delegated.ingress.commands[0].project_scope = {
+      kind: 'devspec_project', policy_id: 'delegated_project_v1', project_id: PROJECT,
+      instruction: DELEGATED_INSTRUCTION,
+    }
+
+    const cut = wakeLine(delegated).slice(0, CAP)
+    assert.ok(cut.includes('"from":"Brandon Young"'))
+    assert.ok(cut.includes('"authority":"delegated"'))
+    assert.ok(!cut.includes('"authority":"owner"'))
+  })
+
+  it('flags that a response style exists without spending the budget on it', () => {
+    // The style notes are ~280 characters of server prose. Putting them in the
+    // line re-created the same failure one field along on 2026-09-19: the
+    // boilerplate ate the budget and the sender's own instruction never showed.
+    const styled = canonicalInboxBatch('styled', longBody(4000))
+    const id = styled.ingress.commands[0].message_id
+    styled.ingress.sender_response_styles = [{
+      message_id: id,
+      notes: ['Response-style preference set by Brandon Young, who sent this message. '.repeat(4)],
+    }]
+
+    const line = wakeLine(styled)
+    const cut = line.slice(0, CAP)
+    assert.ok(cut.includes('"style":true'))
+    assert.ok(!cut.includes('Response-style preference set by'))
+    // The full notes are still delivered, after the canonical command.
+    assert.ok(line.indexOf('"sender_response_style"') > line.indexOf('"message"'))
+
+    const plain = wakeLine(canonicalInboxBatch('plain', longBody(4000)))
+    assert.ok(!plain.includes('"style":true'))
+  })
+
+  it('changes only what the agent is woken with, never the record', () => {
+    const body = 'the complete body, unshortened'
+    const batch = canonicalInboxBatch('record', body)
+    const event = buildCanonicalCommandEvents(batch).find((e) => e.type === 'owner_message')
+    assert.deepEqual(event.message, batch.ingress.commands[0])
+    assert.equal(event.message.content.body, body)
+    assert.equal(event.authoritative, true)
+    assert.equal(event.executable, true)
+    assert.equal(event.notification_preview.authoritative, false)
+  })
+})
+
 describe('buildCanonicalCommandEvents', () => {
   it('preserves an exact large body and makes only the canonical command executable', () => {
     const body = `begin\n${'x'.repeat(250_000)}\nend`

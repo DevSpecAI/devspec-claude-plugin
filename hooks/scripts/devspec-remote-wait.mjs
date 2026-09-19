@@ -584,6 +584,16 @@ export function parseOwnerBatches(lines, connectionId) {
  * canonical command object remains intact as the owner_message payload. Validated
  * delegated scope and its server instruction are surfaced verbatim; owner commands
  * receive no instruction injection. Summaries/previews remain non-authoritative.
+ *
+ * ## Key order is the budget
+ *
+ * The host caps a notification line at 500 characters and the emitted object is
+ * the whole line, so whatever is serialised last is what gets cut. The command
+ * event therefore opens with the four things a reader cannot work without —
+ * who sent it, under what authority, whether they have a response style, and
+ * which envelope holds the full record — then the body, then everything else.
+ * Nothing is removed: the durable inbox record is unchanged and remains the
+ * only authoritative source.
  */
 function activePlanAwarenessEvent(ingress, sessionId, carried = null) {
   const projection = ingress?.active_session_plans ?? carried
@@ -660,15 +670,44 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
     const senderStyle = Array.isArray(ingress.sender_response_styles)
       ? (ingress.sender_response_styles.find((style) => style.message_id === command.message_id)?.notes ?? [])
       : []
+    const body = typeof command.content?.body === 'string' ? command.content.body : ''
     events.push({
+      // ─── Spend the first characters on what a CUT line must still say ───
+      //
+      // The host caps a notification at 500 characters and this object is the
+      // whole line, so key order decides what survives (item 725d18b2). It used
+      // to open with a fixed contract URL, two booleans that are always true and
+      // two uuids — 454 characters of preamble, leaving ~46 for the body and
+      // putting `requester` so far down that it was cut from every command long
+      // enough to be worth reading. An agent duly answered one person as though
+      // they were another, in a shared room.
+      //
+      // `from` and `authority` are a READING convenience, not a source of truth.
+      // Authority is the server-stamped block inside `message`, which stays
+      // below intact and remains the only thing to act on.
       type: 'owner_message',
+      from: command.requester?.display_name ?? null,
+      authority: command.authority.kind,
+      // A flag, not the text. The style notes are server prose ~280 characters
+      // long and putting them here would re-create the same problem one field
+      // along — on 2026-09-19 they did exactly that, eating the whole budget so
+      // that the sender's actual instruction never appeared. This says only
+      // "there is a style you have not read"; read it from the inbox record.
+      ...(senderStyle.length > 0 ? { style: true } : {}),
+      envelope_id: ingress.envelope_id,
+      // Declared BEFORE the body so a cut line still discloses that it was cut:
+      // a shorter body than this means truncation, which is what keeps a capped
+      // preview from presenting as complete (decision 366e1beb §7).
+      body_chars: body.length,
+      body,
+      // ─── Everything below may be truncated away; none of it is load-bearing
+      //     for a reader, and all of it is in the inbox record. ───
       session_id: sessionId,
       authoritative: true,
       executable: true,
       authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
-      envelope_id: ingress.envelope_id,
-      ...(senderStyle.length > 0 ? { sender_response_style: senderStyle } : {}),
       message: command,
+      ...(senderStyle.length > 0 ? { sender_response_style: senderStyle } : {}),
       ...(scopeAware ? { project_scope: command.project_scope } : {}),
       ...(delegated && scopeAware
         ? { project_scope_instruction: command.project_scope.instruction }

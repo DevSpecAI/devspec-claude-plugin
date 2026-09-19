@@ -22,6 +22,7 @@ import {
   accumulateCanonicalCarry,
   snapshotCanonicalCarry,
   carryAfterCanonicalInbox,
+  roomAwarenessDelta,
   pollTerminalReason,
   emptyTurnBackoffMs,
   errorBackoffMs,
@@ -1381,5 +1382,90 @@ describe('connection state patches never invent a state file (item 3b88955e)', (
         'm1',
       )
     })
+  })
+})
+
+describe('roomAwarenessDelta', () => {
+  // Polls and Still to Discuss arrive on every changed poll, unchanged most of the
+  // time. Re-attaching an identical inventory to every command is the difference
+  // between a field a reader checks and one it learns to skip (item b1e26146).
+  const POLL_NOTE = 'Advisory read-awareness only. Presence does not authorize execution or mutation; manage_poll still requires a capability-authenticated caller identity and expected_revision. Votes are not commands and do not keep Working on.'
+  const DISCUSS_NOTE = 'Raised in this room, or brought into it. Advisory read-awareness. Do not add, strike, or reopen unless the human asked.'
+
+  const polls = (question = 'Ship it?') => ({
+    version: 1,
+    advisory: true,
+    authority_note: POLL_NOTE,
+    inventory: { active_returned: 1, ended_returned: 0, truncated_ended: false },
+    polls: [{
+      id: '77770000-0000-4000-8000-000000000001',
+      question,
+      status: 'active',
+      revision: 1,
+      multi_select: false,
+      allow_write_in: false,
+      recommendation: null,
+      human_voter_count: 0,
+      winning_labels: [],
+      options: [
+        { label: 'Yes', human_vote_count: 0, percent: 0, voters: [] },
+        { label: 'No', human_vote_count: 0, percent: 0, voters: [] },
+      ],
+    }],
+  })
+
+  const discuss = () => ({
+    version: 1,
+    advisory: true,
+    authority_note: DISCUSS_NOTE,
+    truncated: false,
+    rows: [{ id: '88880000-0000-4000-8000-000000000001', title: 'Toggle naming', state: 'open', preview: 'Parked.' }],
+  })
+
+  it('carries what it has never sent before', () => {
+    const delta = roomAwarenessDelta({ session_polls: polls(), still_to_discuss: discuss() })
+    assert.equal(delta.carriedSessionPolls.polls[0].question, 'Ship it?')
+    assert.equal(delta.carriedStillToDiscuss.rows[0].title, 'Toggle naming')
+  })
+
+  it('says nothing the second time when nothing moved', () => {
+    const res = { session_polls: polls(), still_to_discuss: discuss() }
+    const first = roomAwarenessDelta(res)
+    const second = roomAwarenessDelta(res, first.seen)
+    assert.equal(second.carriedSessionPolls, null)
+    assert.equal(second.carriedStillToDiscuss, null)
+    assert.deepEqual(second.seen, first.seen)
+  })
+
+  it('carries it again the moment it changes', () => {
+    const first = roomAwarenessDelta({ session_polls: polls('Ship it?') })
+    const second = roomAwarenessDelta({ session_polls: polls('Ship it on Friday?') }, first.seen)
+    assert.equal(second.carriedSessionPolls.polls[0].question, 'Ship it on Friday?')
+  })
+
+  it('moves each half independently', () => {
+    const first = roomAwarenessDelta({ session_polls: polls(), still_to_discuss: discuss() })
+    const second = roomAwarenessDelta(
+      { session_polls: polls('A different question?'), still_to_discuss: discuss() },
+      first.seen,
+    )
+    assert.ok(second.carriedSessionPolls)
+    assert.equal(second.carriedStillToDiscuss, null)
+  })
+
+  it('ignores a projection that does not validate, and keeps what it knew', () => {
+    const bent = polls()
+    bent.inventory.active_returned = 5 // does not describe the array it arrived with
+    const first = roomAwarenessDelta({ session_polls: polls() })
+    const second = roomAwarenessDelta({ session_polls: bent }, first.seen)
+    assert.equal(second.carriedSessionPolls, null)
+    assert.equal(second.seen.polls, first.seen.polls)
+  })
+
+  it('is silent on a response that carries neither', () => {
+    const delta = roomAwarenessDelta({})
+    assert.equal(delta.carriedSessionPolls, null)
+    assert.equal(delta.carriedStillToDiscuss, null)
+    assert.deepEqual(delta.seen, { polls: null, stillToDiscuss: null })
   })
 })

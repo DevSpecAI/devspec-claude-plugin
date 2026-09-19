@@ -44,6 +44,8 @@ import {
 import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
 import {
   isActiveSessionPlansProjectionV1,
+  isSessionPollsProjectionV1,
+  isStillToDiscussProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_CONTRACT_VERSION,
@@ -695,6 +697,8 @@ export function appendCanonicalInbox(
     sessionId = null,
     carriedContext = null,
     carriedActiveSessionPlans = null,
+    carriedSessionPolls = null,
+    carriedStillToDiscuss = null,
     channel = 'context',
     writeRecord = appendDurableRecord,
   } = {},
@@ -735,6 +739,12 @@ export function appendCanonicalInbox(
     ...(carriedActiveSessionPlans
       ? { carried_active_session_plans: carriedActiveSessionPlans }
       : {}),
+    // Room awareness that arrives beside the envelope rather than inside it
+    // (item b1e26146). Only attached when it CHANGED since the last record that
+    // carried it — an unchanged inventory repeated on every command trains the
+    // reader to skip the field, which is the same as not sending it.
+    ...(carriedSessionPolls ? { carried_session_polls: carriedSessionPolls } : {}),
+    ...(carriedStillToDiscuss ? { carried_still_to_discuss: carriedStillToDiscuss } : {}),
   }
   if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
   index.envelopeIds.add(ingress.envelope_id)
@@ -1056,6 +1066,30 @@ export function activePlansForCanonicalCommand(current, ingress) {
   return isActiveSessionPlansProjectionV1(ingress?.active_session_plans)
     ? ingress.active_session_plans
     : current
+}
+
+/**
+ * What changed in the room's advisory awareness since the last record carried it.
+ *
+ * `session_polls` and `still_to_discuss` ride the poll response next to `ingress`,
+ * so they are not part of the envelope and are not validated by its parser. Both
+ * are re-validated here, then compared against the last serialised copy: an
+ * unchanged inventory is dropped rather than repeated (item b1e26146).
+ *
+ * Returns the projections to attach plus the serialised forms to remember. The
+ * caller must only remember them once the record is durable, or a crash between
+ * write and state update would lose the change for good.
+ */
+export function roomAwarenessDelta(res, seen = {}) {
+  const polls = isSessionPollsProjectionV1(res?.session_polls) ? res.session_polls : null
+  const discuss = isStillToDiscussProjectionV1(res?.still_to_discuss) ? res.still_to_discuss : null
+  const pollsJson = polls ? JSON.stringify(polls) : null
+  const discussJson = discuss ? JSON.stringify(discuss) : null
+  return {
+    carriedSessionPolls: pollsJson !== null && pollsJson !== seen.polls ? polls : null,
+    carriedStillToDiscuss: discussJson !== null && discussJson !== seen.stillToDiscuss ? discuss : null,
+    seen: { polls: pollsJson ?? seen.polls ?? null, stillToDiscuss: discussJson ?? seen.stillToDiscuss ?? null },
+  }
 }
 
 /** Advance projection carry only after its canonical record is durable. */
@@ -1649,6 +1683,10 @@ async function main() {
   // Rebuild no-command/reseed plan awareness from newline-terminated durable
   // canonical_context records, so a poller restart cannot skip the projection.
   let activePlanCarry = persistedInbox.latestActiveSessionPlans
+  // Last room awareness this poller put on a record, as serialised JSON. Starts
+  // empty on boot so a reconnecting agent is told the current state once rather
+  // than never — the cost is one repeat per process, the alternative is silence.
+  let roomAwarenessSeen = { polls: null, stillToDiscuss: null }
 
   /**
    * Persist a state patch without clobbering concurrent fields. Best-effort — and
@@ -2022,13 +2060,25 @@ async function main() {
       channel = 'control'
     }
 
+    // Polls and Still to Discuss ride WITH a command, never on their own. They are
+    // room awareness, not something to wake anybody about, and a command is the
+    // moment the agent is about to act and actually needs to know (item b1e26146).
+    const awareness = channel === 'command'
+      ? roomAwarenessDelta(res, roomAwarenessSeen)
+      : { carriedSessionPolls: null, carriedStillToDiscuss: null, seen: roomAwarenessSeen }
+
     const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,
       carriedContext,
       carriedActiveSessionPlans,
+      carriedSessionPolls: awareness.carriedSessionPolls,
+      carriedStillToDiscuss: awareness.carriedStillToDiscuss,
       channel,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
+    // Only remember what we sent once the record is on disk. A crash between the
+    // write and this line replays the change; the other order loses it silently.
+    if (persisted.appended) roomAwarenessSeen = awareness.seen
     canonicalCarry = carryAfterCanonicalInbox(canonicalCarry, channel, persisted)
     activePlanCarry = activePlansAfterCanonicalInbox(activePlanCarry, ingress, channel, persisted)
     persistCanonicalCursorState(res, ingress, drainingContinuation)

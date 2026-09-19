@@ -375,6 +375,23 @@ function connectionStatePath(connectionId, dir = CONNECTIONS_DIR) {
 }
 
 /**
+ * Where the room's CURRENT advisory state lives (item 62f132c9).
+ *
+ * The inbox is a log: it says what was true when each command arrived. This file
+ * is the opposite — one small document, overwritten in place, that always says
+ * what is true NOW. An agent that has been working for an hour reads this before
+ * it writes its reply, and gets the room as it stands rather than as it was when
+ * somebody last spoke to it.
+ *
+ * Deliberately not on the wake stream. A poll cannot wait on an agent — there is
+ * no vote action on manage_poll — so nothing here is ever worth interrupting a
+ * turn for (decision 2ccf65d1). It is a file to read, not a message to receive.
+ */
+export function roomStatePath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.room.json`)
+}
+
+/**
  * Prefer per-connection state so concurrent remotes do not clobber each other,
  * saying WHICH kind of nothing it found (item 3b88955e).
  *
@@ -1092,6 +1109,35 @@ export function roomAwarenessDelta(res, seen = {}) {
   }
 }
 
+/**
+ * Overwrite the room-state file when either projection has moved.
+ *
+ * Returns the new `seen` memory so the caller can hold it, and writes nothing at
+ * all when nothing changed — a quiet room costs one comparison per poll and no
+ * disk at all. Best-effort by contract: this is awareness, and failing to write
+ * it must never cost the command that was being delivered at the time.
+ */
+export function writeRoomState(connectionId, res, seen = {}, { dir = CONNECTIONS_DIR, write = writePrivateJson } = {}) {
+  const delta = roomAwarenessDelta(res, seen)
+  if (!delta.carriedSessionPolls && !delta.carriedStillToDiscuss) return seen
+  try {
+    write(roomStatePath(connectionId, dir), {
+      updated_at: new Date().toISOString(),
+      advisory: true,
+      executable: false,
+      note:
+        'The room as it stands right now. Read this before writing a reply if the turn ' +
+        'has been long. Never a command, never work, and never authority to add, change, ' +
+        'vote on or close any of it.',
+      session_polls: delta.carriedSessionPolls ?? null,
+      still_to_discuss: delta.carriedStillToDiscuss ?? null,
+    })
+  } catch {
+    return seen
+  }
+  return delta.seen
+}
+
 /** Advance projection carry only after its canonical record is durable. */
 export function activePlansAfterCanonicalInbox(current, ingress, channel, persisted) {
   if (persisted?.ok !== true) return current
@@ -1687,6 +1733,11 @@ async function main() {
   // empty on boot so a reconnecting agent is told the current state once rather
   // than never — the cost is one repeat per process, the alternative is silence.
   let roomAwarenessSeen = { polls: null, stillToDiscuss: null }
+  // The room-state FILE keeps its own memory (item 62f132c9). It moves on every
+  // changed poll, the record carry only on a delivered command, and tying them
+  // together would mean a context-channel write silently robbing the next
+  // command of its carry.
+  let roomFileSeen = { polls: null, stillToDiscuss: null }
 
   /**
    * Persist a state patch without clobbering concurrent fields. Best-effort — and
@@ -2048,6 +2099,12 @@ async function main() {
     const ingress = normalized.envelope
     const drainingContinuation = Boolean(catchUpCursor || (needsSeed && liveCursorV2))
     carryCanonicalContext(ingress)
+
+    // Refresh the room-state file on ANY changed poll, not only on one that
+    // carries a command (item 62f132c9). This is the half that makes a long turn
+    // safe: the command told the agent how the room looked an hour ago, and this
+    // is what lets it find out how the room looks when it actually replies.
+    roomFileSeen = writeRoomState(connectionId, res, roomFileSeen)
 
     let channel = 'context'
     let carriedContext = null

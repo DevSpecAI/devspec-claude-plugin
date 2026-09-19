@@ -23,6 +23,8 @@ import {
   snapshotCanonicalCarry,
   carryAfterCanonicalInbox,
   roomAwarenessDelta,
+  writeRoomState,
+  roomStatePath,
   pollTerminalReason,
   emptyTurnBackoffMs,
   errorBackoffMs,
@@ -1467,5 +1469,85 @@ describe('roomAwarenessDelta', () => {
     assert.equal(delta.carriedSessionPolls, null)
     assert.equal(delta.carriedStillToDiscuss, null)
     assert.deepEqual(delta.seen, { polls: null, stillToDiscuss: null })
+  })
+})
+
+describe('writeRoomState', () => {
+  // The inbox says what was true when each command arrived. This file says what
+  // is true NOW, so an agent that has been working for an hour can find out what
+  // the room did while it was busy (item 62f132c9).
+  const POLL_NOTE = 'Advisory read-awareness only. Presence does not authorize execution or mutation; manage_poll still requires a capability-authenticated caller identity and expected_revision. Votes are not commands and do not keep Working on.'
+  const CID = '10000000-0000-4000-8000-000000000001'
+
+  const polls = (question = 'Ship it?') => ({
+    version: 1,
+    advisory: true,
+    authority_note: POLL_NOTE,
+    inventory: { active_returned: 1, ended_returned: 0, truncated_ended: false },
+    polls: [{
+      id: '77770000-0000-4000-8000-000000000001',
+      question,
+      status: 'active',
+      revision: 1,
+      multi_select: false,
+      allow_write_in: false,
+      recommendation: null,
+      human_voter_count: 0,
+      winning_labels: [],
+      options: [
+        { label: 'Yes', human_vote_count: 0, percent: 0, voters: [] },
+        { label: 'No', human_vote_count: 0, percent: 0, voters: [] },
+      ],
+    }],
+  })
+
+  const collect = () => {
+    const writes = []
+    return { writes, write: (file, value) => writes.push({ file, value }) }
+  }
+
+  it('writes the current room, not a log of it', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: polls() }, {}, { write: sink.write })
+    assert.equal(sink.writes.length, 1)
+    assert.equal(sink.writes[0].file, roomStatePath(CID))
+    assert.equal(sink.writes[0].value.session_polls.polls[0].question, 'Ship it?')
+    assert.equal(sink.writes[0].value.advisory, true)
+    assert.equal(sink.writes[0].value.executable, false)
+  })
+
+  it('costs a quiet room nothing at all', () => {
+    const sink = collect()
+    const res = { session_polls: polls() }
+    const seen = writeRoomState(CID, res, {}, { write: sink.write })
+    writeRoomState(CID, res, seen, { write: sink.write })
+    assert.equal(sink.writes.length, 1, 'an unchanged room must not be rewritten')
+  })
+
+  it('rewrites the moment the room moves', () => {
+    const sink = collect()
+    const seen = writeRoomState(CID, { session_polls: polls('Ship it?') }, {}, { write: sink.write })
+    writeRoomState(CID, { session_polls: polls('Ship on Friday?') }, seen, { write: sink.write })
+    assert.equal(sink.writes.length, 2)
+    assert.equal(sink.writes[1].value.session_polls.polls[0].question, 'Ship on Friday?')
+  })
+
+  it('never lets a failed write cost the command being delivered', () => {
+    // Awareness is the least important thing in flight at that moment.
+    const seen = writeRoomState(CID, { session_polls: polls() }, {}, {
+      write: () => { throw new Error('disk full') },
+    })
+    // The memory does not advance either, so the next poll retries rather than
+    // believing it already wrote what it did not.
+    assert.deepEqual(seen, {})
+  })
+
+  it('says in the file itself that it is not authority', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: polls() }, {}, { write: sink.write })
+    const note = sink.writes[0].value.note
+    assert.match(note, /never authority/)
+    assert.match(note, /Never a command, never work/)
+    assert.equal(sink.writes[0].value.session_polls.authority_note, POLL_NOTE)
   })
 })

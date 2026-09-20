@@ -1365,6 +1365,38 @@ export function installStopSignalHandlers(proc = process) {
 }
 
 /**
+ * Say goodbye on the way out, whatever the reason.
+ *
+ * Deliberately NOT part of installStopSignalHandlers: those handlers are
+ * restricted to the process object by construction so that a superseded poller
+ * can never stamp state on its way out (item b9e02835), and that guarantee is
+ * worth keeping exactly as it is. This writes no state — the poller's stdout and
+ * stderr are the poll log itself (`stdio: ['ignore', logFd, logFd]`), so one
+ * line on the way out is pure audit trail.
+ *
+ * Why it exists: on 2026-09-19 a poller was killed and its connection disabled,
+ * and the poll log simply STOPPED mid-normal-operation — no error, no shutdown
+ * line, nothing to distinguish "signalled by something" from "crashed" from
+ * "still running". An exiting process that says nothing is why that incident
+ * could not be explained (item 37d6e6e0).
+ *
+ * Must stay synchronous: 'exit' listeners cannot await, and an async write here
+ * would simply not land.
+ */
+export function installExitAudit(proc = process, write = null) {
+  const emit = write || ((line) => {
+    try {
+      proc.stderr.write(line)
+    } catch {
+      /* the log is gone; nothing useful left to do from inside exit */
+    }
+  })
+  proc.on('exit', (code) => {
+    emit(`devspec-remote-poll: exiting code=${code} pid=${proc.pid} at=${new Date().toISOString()}\n`)
+  })
+}
+
+/**
  * COMMAND gate — the authority boundary, re-checked locally.
  *
  * Classification itself now happens server-side: `poll_connection` returns commands,
@@ -1713,6 +1745,7 @@ async function main() {
     process.exit(code)
   }
   installStopSignalHandlers()
+  installExitAudit()
 
   let legacyCursor = args.cursor || state?.cursor_after_message_id || null
   let liveCursorV2 = state?.cursor_v2 || null

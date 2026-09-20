@@ -83,6 +83,40 @@ function pollerPidPath(connectionId) {
 function pollerLogPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.poll.log`)
 }
+
+/**
+ * Append one line to a connection's poll log, for things that HAPPEN TO the
+ * connection rather than things the poller did.
+ *
+ * On 2026-09-19 a live connection was disabled and its poller killed, and there
+ * was nothing anywhere to say what had asked for it: the poll log simply
+ * stopped mid-normal-operation and the state file said `local_stop`. The agent
+ * read that as a human pressing stop, because that is exactly what it looks
+ * like, and stood down (item 37d6e6e0). A disable that leaves no trace is
+ * indistinguishable from a deliberate one, which is what made the incident
+ * unfalsifiable rather than merely annoying.
+ *
+ * Never throws. An unwritable log must not stop a connection being disabled —
+ * losing the audit line is bad, refusing to honour a stop is worse.
+ */
+function appendConnectionAudit(connectionId, event, detail = {}) {
+  if (!connectionId) return
+  try {
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      event,
+      pid: process.pid,
+      ppid: process.ppid,
+      // argv[1] onwards: which script and verb asked for this. argv[0] is the
+      // node binary and says nothing useful.
+      argv: process.argv.slice(1, 6),
+      ...detail,
+    })
+    fs.appendFileSync(pollerLogPath(connectionId), `${line}\n`)
+  } catch {
+    /* an audit line is never worth failing the operation for */
+  }
+}
 const LOCAL_DIR = path.join(DEVSPEC_DIR, 'remote-control', 'local')
 
 /** Default window for stop → remote again in the same local conversation. */
@@ -413,9 +447,25 @@ export function ensurePollerForConnection(connectionId, opts = {}) {
  * --connection-id) and `disable-local` (SessionEnd, resolve connection from the
  * conversation bond). Never touches another connection's state or poller.
  */
-function disableConnectionState(connectionId, { agent = null, localId = null } = {}) {
+function disableConnectionState(
+  connectionId,
+  { agent = null, localId = null, via = 'unknown', idSource = null } = {},
+) {
   const perPath = connectionPath(connectionId)
   const prev = readJson(perPath) || readJson(LEGACY_PATH) || {}
+  // Written BEFORE the state change, so a crash between the two still leaves
+  // the attempt on record rather than a silently half-disabled connection.
+  appendConnectionAudit(connectionId, 'connection_disabled', {
+    via,
+    agent,
+    local_id: localId,
+    // How localId was resolved — an env var name, 'arg', or the SessionEnd
+    // stdin payload. This is the field that would have said whether the
+    // 2026-09-19 kill came from this conversation or somebody else's.
+    id_source: idSource,
+    was_enabled: prev.enabled === true,
+    prior_end_reason: prev.end_reason || null,
+  })
   const next = {
     ...prev,
     connection_id: connectionId,
@@ -1322,8 +1372,16 @@ if (isMain) {
       )
       process.exit(2)
     }
-    const localId = detectLocalId(args, process.env).local_id
-    const result = disableConnectionState(connectionId, { agent: args.agent, localId })
+    // Report where the id ACTUALLY came from. Saying 'arg' for an id that was
+    // read out of the environment would make the audit line lie in exactly the
+    // situation it exists for — an inherited id is the thing under suspicion.
+    const detectedForDisable = detectLocalId(args, process.env)
+    const result = disableConnectionState(connectionId, {
+      agent: args.agent,
+      localId: detectedForDisable.local_id,
+      via: 'disable',
+      idSource: detectedForDisable.source,
+    })
     process.stdout.write(JSON.stringify(result) + '\n')
     process.exit(0)
   }
@@ -1332,13 +1390,21 @@ if (isMain) {
     // SessionEnd teardown: resolve THIS conversation's bound connection (no
     // --connection-id needed) and disable it.
     const agentName = args.agent || AGENT_NAME
-    let localId = detectLocalId(args, process.env).local_id
+    const detected = detectLocalId(args, process.env)
+    let localId = detected.local_id
+    // Where the id came from, carried all the way to the audit line. The
+    // 2026-09-19 kill could not be explained precisely because nothing
+    // recorded this (item 37d6e6e0).
+    let idSource = detected.source
     // SessionEnd hook delivers the conversation id on stdin as { session_id }.
     if (!localId && !process.stdin.isTTY) {
       try {
         const raw = fs.readFileSync(0, 'utf8')
         const j = JSON.parse(raw || '{}')
-        if (typeof j.session_id === 'string') localId = sanitizeLocalId(j.session_id)
+        if (typeof j.session_id === 'string') {
+          localId = sanitizeLocalId(j.session_id)
+          if (localId) idSource = 'stdin:session_id'
+        }
       } catch {
         /* no stdin payload */
       }
@@ -1351,11 +1417,17 @@ if (isMain) {
           ok: true,
           skipped: 'no live bond for this conversation',
           local_id: localId || null,
+          id_source: idSource,
         }) + '\n',
       )
       process.exit(0)
     }
-    const result = disableConnectionState(connectionId, { agent: agentName, localId })
+    const result = disableConnectionState(connectionId, {
+      agent: agentName,
+      localId,
+      via: 'disable-local',
+      idSource,
+    })
     process.stdout.write(JSON.stringify({ ...result, local_id: localId }) + '\n')
     process.exit(0)
   }

@@ -2,6 +2,40 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.28.2 - 2026-09-20
+
+### Your agent answers as itself, not as whoever launched it
+
+One coding agent launching another is routine now, and the child inherits the
+parent's whole environment. The plugin resolved "which conversation am I?" by
+taking the first host identity variable it found there, so a plugin running
+under another agent could answer as that agent's conversation — and a bond
+matched on the conversation id alone, which meant a foreign id could reach
+another agent's live connection. It now reads only Claude Code's own variables,
+and a bond has to match the agent as well as the id.
+
+### A connection that goes offline says who asked
+
+When a connection is disabled, the reason is now recorded next to it: which
+command asked, from which process, and where the conversation id came from. A
+poller also says goodbye on the way out. Previously a connection could go from
+live to stopped leaving nothing behind, which made "something ended my agent"
+impossible to tell apart from "somebody pressed stop".
+
+### The wake line says who spoke
+
+The notification that wakes the agent now leads with who sent the message and
+what they said, instead of spending its length on boilerplate that was the same
+every time.
+
+### Also in this release
+
+- The room's polls and Still to Discuss reach the agent.
+- A current-room file, so a long turn can answer the room it is in now rather
+  than the one it started in.
+- Replies follow the response style of the person who asked.
+- The new automation_run wake envelope is accepted.
+
 ## 0.28.1 - 2026-09-14
 
 ### Remote control no longer goes deaf half an hour after connecting

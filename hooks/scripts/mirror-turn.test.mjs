@@ -70,9 +70,33 @@ describe('resolveHookConversationId', () => {
     assert.equal(resolveHookConversationId('{}', { CLAUDE_SESSION_ID: 'alt-conv' }), 'alt-conv')
   })
 
-  it('resolves a non-Claude tool env id via the shared detectLocalId', () => {
-    assert.equal(resolveHookConversationId('{}', { GROK_SESSION_ID: 'grok-conv' }), 'grok-conv')
-    assert.equal(resolveHookConversationId('{}', { CODEX_THREAD_ID: 'codex-conv' }), 'codex-conv')
+  it('does NOT resolve another host\'s env id', () => {
+    // REVERSED from "resolves a non-Claude tool env id via the shared
+    // detectLocalId" (memory f90e2ff9, superseded 2026-09-20 by Ali).
+    //
+    // That assertion came from a real regression — Claude's resolver had been
+    // hardcoded to CLAUDE_CODE_SESSION_ID and so fail-closed every other
+    // plugin's mirror — and the fix made the shared function probe every host's
+    // variable. It solved a too-narrow resolver with a too-wide one. Inside the
+    // CLAUDE CODE plugin, a Grok or Codex id is not our conversation: it is a
+    // real id for a real conversation belonging to somebody else, which arrives
+    // whenever one agent launches another and the child inherits the
+    // environment (item 75f65461).
+    //
+    // The lesson that survives is the shape, not this assertion: the function
+    // stays shared and tool-agnostic, and each host supplies its own names.
+    assert.equal(resolveHookConversationId('{}', { GROK_SESSION_ID: 'grok-conv' }), null)
+    assert.equal(resolveHookConversationId('{}', { CODEX_THREAD_ID: 'codex-conv' }), null)
+    assert.equal(resolveHookConversationId('{}', { CURSOR_CONVERSATION_ID: 'cursor-conv' }), null)
+  })
+
+  it('still reaches the hook stdin id when only a foreign env id is present', () => {
+    // The foreign id must not merely be rejected, it must not shadow the real
+    // one either — the same shape as the SHELL_SESSION_ID regression below.
+    assert.equal(
+      resolveHookConversationId('{"session_id":"stdin-conv"}', { GROK_SESSION_ID: 'grok-conv' }),
+      'stdin-conv',
+    )
   })
 
   it('falls back to hook stdin session_id when no env id', () => {

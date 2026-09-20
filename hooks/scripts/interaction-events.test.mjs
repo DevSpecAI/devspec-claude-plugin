@@ -149,7 +149,7 @@ function run(script, args, { home, input = '', localId = null } = {}) {
       env: {
         ...process.env,
         HOME: home,
-        ...(localId ? { DEVSPEC_REMOTE_LOCAL_ID: localId } : {}),
+        ...(localId ? { DEVSPEC_REMOTE_LOCAL_ID_CLAUDE_CODE: localId } : {}),
       },
     })
     let stdout = ''

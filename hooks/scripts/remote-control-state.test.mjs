@@ -54,10 +54,33 @@ describe('detectLocalId', () => {
     assert.equal(r.source, 'arg')
   })
 
-  it('prefers CODEX_THREAD_ID over other conversation env', () => {
+  it('ignores every other host\'s conversation env', () => {
+    // REVERSED from "prefers CODEX_THREAD_ID over other conversation env"
+    // (memory f90e2ff9, superseded 2026-09-20 by Ali). This is the Claude Code
+    // plugin; a Codex or Grok id in the environment belongs to whoever launched
+    // us, and answering as them is item 75f65461.
     const r = detectLocalId({}, { CODEX_THREAD_ID: 'thread-1', GROK_SESSION_ID: 'grok-1' })
-    assert.equal(r.local_id, 'thread-1')
-    assert.equal(r.source, 'env:CODEX_THREAD_ID')
+    assert.equal(r.local_id, null)
+    assert.equal(r.source, null)
+  })
+
+  it('reads OUR id even when a parent agent has exported theirs', () => {
+    const r = detectLocalId({}, {
+      CODEX_THREAD_ID: 'thread-1',
+      GROK_SESSION_ID: 'grok-1',
+      CLAUDE_CODE_SESSION_ID: 'ours-1',
+    })
+    assert.equal(r.local_id, 'ours-1')
+    assert.equal(r.source, 'env:CLAUDE_CODE_SESSION_ID')
+  })
+
+  it('takes the host-qualified override, not the bare one', () => {
+    // The bare DEVSPEC_REMOTE_LOCAL_ID is inherited by every spawned child.
+    assert.equal(detectLocalId({}, { DEVSPEC_REMOTE_LOCAL_ID: 'bare' }).local_id, null)
+    assert.equal(
+      detectLocalId({}, { DEVSPEC_REMOTE_LOCAL_ID_CLAUDE_CODE: 'ours' }).local_id,
+      'ours',
+    )
   })
 
   it('does NOT bond on SHELL_SESSION_ID / TERM_SESSION_ID (terminal, not conversation)', () => {

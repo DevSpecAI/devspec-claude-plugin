@@ -26,7 +26,7 @@ import {
   WAIT_FOR_LINK_REASONS,
   waitForFolderLink,
 } from './devspec-remote-listen.mjs'
-import { folderLinkFingerprint } from './devspec-scope.mjs'
+import { findProjectPin, folderLinkFingerprint } from './devspec-scope.mjs'
 import { renderTiers, storeTiers, takeTiersFor, tiersPath } from './instruction-tiers.mjs'
 import {
   findStartupListenerForOwner,
@@ -537,6 +537,22 @@ describe('a folder linked mid-session connects without a restart (fa9b809b)', ()
     })
     assert.equal(linked, false)
     assert.equal(lookups, 0)
+  })
+
+  it('the pin skill teaches the one shape the reader accepts', () => {
+    // Observed 2026-09-23 on Haiku 4.5: asked to "pin this folder", with nothing in
+    // context about the file, it wrote {"projectId": ...}; the listener rightly ignored
+    // it and the agent never connected. The skill exists so the model is told the shape.
+    const skill = fs.readFileSync(path.resolve(HERE, '../../skills/devspec-pin/SKILL.md'), 'utf8')
+    const example = /```json\n(\{[^\n]*\})\n```/.exec(skill)?.[1]
+    assert.ok(example, 'the skill shows the file as a json block')
+    const home = tmpDir('devspec-pin-skill-home-')
+    const folder = path.join(home, 'app')
+    fs.mkdirSync(path.join(folder, '.devspec'), { recursive: true })
+    const id = '11111111-2222-4333-8444-555555555555'
+    fs.writeFileSync(path.join(folder, '.devspec', 'project.json'), example.replace("<the project's uuid>", id))
+    assert.equal(findProjectPin(folder, { home, root: folder })?.project_id, id)
+    assert.match(skill, /name: devspec-pin/)
   })
 
   it('only the "folder names no project" answers wait; key and install problems stay dormant', () => {

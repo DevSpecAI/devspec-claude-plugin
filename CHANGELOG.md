@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.30.1 - 2026-09-23
+
+- Asking Claude to pin a folder to a DevSpec project now writes the file in the form
+  DevSpec reads. Before, a model with nothing to go on could write it in a slightly
+  different shape that nothing recognised, and the folder was never linked.
+
 ## 0.30.0 - 2026-09-23
 
 ### A new project connects as soon as its folder is linked

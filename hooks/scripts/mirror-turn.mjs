@@ -321,7 +321,10 @@ function isHarnessInjection(text) {
     t.includes('<task-notification') ||
     t.includes('[SYSTEM NOTIFICATION - NOT USER INPUT]') ||
     t.includes('This is an automated background-task event') ||
-    t.includes('<system-reminder>')
+    t.includes('<system-reminder>') ||
+    // A channel event from a DevSpec channel server (item b7ef1fe2) is owner mail the
+    // wake path already delivered, never a prompt typed at this terminal.
+    t.includes('<channel source="plugin:devspec')
   )
 }
 

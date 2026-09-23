@@ -42,12 +42,15 @@ function source(relative) {
 
 describe('Claude shared-plan policy surfaces', () => {
   const skill = source('skills/devspec-session-plan/SKILL.md')
-  const remote = source('commands/devspec.remote.md')
+  // What a remote agent is taught is the connect command plus the handling skill both
+  // wake paths share (item b7ef1fe2).
+  const handling = source('skills/devspec-remote-command/SKILL.md')
+  const remote = source('commands/devspec.remote.md') + '\n' + handling
 
   it('supports attended and remote use while routine read-only investigation never plans', () => {
     assert.match(skill, /Routine read-only investigation never warrants a plan/)
     assert.match(remote, /Routine read-only investigation never warrants a plan/)
-    assert.match(remote.match(/^allowed-tools: (.+)$/m)?.[1] ?? '', /mcp__devspec__manage_plan/)
+    assert.match(handling.match(/^allowed-tools: (.+)$/m)?.[1] ?? '', /mcp__devspec__manage_plan/)
     assert.match(skill, /describe\/use bridge/)
     assert.match(remote, /remote-control-state\.mjs" status/)
     assert.doesNotMatch(remote, /read `~\/\.devspec\/remote-control\/connections/)
@@ -93,9 +96,18 @@ describe('Claude shared-plan policy surfaces', () => {
     // or point at the served contract; do not raise the number.
     const REMOTE_COMMAND_BLOAT_CEILING_BYTES = 24_000
     const ON_DEMAND_SKILL_BLOAT_CEILING_BYTES = 6_000
+    // The handling protocol left the command for the skill both wake paths load on the
+    // first command (item b7ef1fe2) — the move this comment has always asked for. It
+    // gets its own ceiling rather than a raised one here.
+    const HANDLING_SKILL_BLOAT_CEILING_BYTES = 18_000
+    const command = source('commands/devspec.remote.md')
     assert.ok(
-      Buffer.byteLength(remote) < REMOTE_COMMAND_BLOAT_CEILING_BYTES,
-      `remote command bloated to ${Buffer.byteLength(remote)} bytes (ceiling ${REMOTE_COMMAND_BLOAT_CEILING_BYTES})`,
+      Buffer.byteLength(command) < REMOTE_COMMAND_BLOAT_CEILING_BYTES,
+      `remote command bloated to ${Buffer.byteLength(command)} bytes (ceiling ${REMOTE_COMMAND_BLOAT_CEILING_BYTES})`,
+    )
+    assert.ok(
+      Buffer.byteLength(handling) < HANDLING_SKILL_BLOAT_CEILING_BYTES,
+      `handling skill bloated to ${Buffer.byteLength(handling)} bytes (ceiling ${HANDLING_SKILL_BLOAT_CEILING_BYTES})`,
     )
     assert.ok(
       Buffer.byteLength(skill) < ON_DEMAND_SKILL_BLOAT_CEILING_BYTES,

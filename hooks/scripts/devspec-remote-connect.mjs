@@ -34,6 +34,8 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { isWaitArmed } from './devspec-remote-wait.mjs'
+import { renderTiers } from './instruction-tiers.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import {
   detectLocalId,
@@ -144,59 +146,106 @@ export function armCursorFlag({ created } = {}) {
   return created === true ? '--from-end' : '--pending'
 }
 
-/** The tier fields the server may hand back, in the order they should be read. */
-const TIER_FIELDS = [
-  ['owner_custom_instructions', 'Your chat response style'],
-  ['owner_agent_rules', 'Your personal agent rules (machine/tooling)'],
-  ['project_custom_instructions', 'Project principles (team-wide)'],
-  ['project_agent_rules', 'Project agent rules (execution mechanics)'],
-]
-
-function renderTiers(payload) {
-  if (payload?.instructions_unchanged) {
-    return '\nInstructions: unchanged since this conversation last connected — the tiers you already hold still apply.\n'
+/**
+ * A connect that could not complete. `code` is the CLI exit status; `reason` is a
+ * stable token a caller that is not a person (the startup listener) can branch on
+ * without parsing prose.
+ */
+export class ConnectError extends Error {
+  constructor(message, { code = 1, reason = 'failed' } = {}) {
+    super(message)
+    this.name = 'ConnectError'
+    this.code = code
+    this.reason = reason
   }
-  const parts = []
-  for (const [field, label] of TIER_FIELDS) {
-    const value = payload?.[field]
-    if (typeof value === 'string' && value.trim()) {
-      parts.push(`\n### ${label}\n\n${value.trim()}\n`)
-    }
-  }
-  if (!parts.length) return ''
-  return `\n## Instructions in force for this run\n${parts.join('')}`
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2))
+/**
+ * Did the server PROVE a startup registration was scoped by this folder?
+ *
+ * A registration made when Claude Code starts runs in every folder its user opens, so it
+ * must only join a project the folder identifies (item b7ef1fe2). The server honours
+ * `folder_scope_only` and echoes it back; a server predating the flag silently drops
+ * the argument and may have resolved "your only project" instead. No echo, no trust.
+ */
+export function startupScopeProven(registration) {
+  return registration?.folder_scope_only === true
+}
+
+/**
+ * The whole deterministic connect, returning a summary instead of printing one.
+ *
+ * `startup: true` is the variant the listener runs when Claude Code starts, with no
+ * model anywhere near it:
+ *   - it asks the server to resolve the project from this folder alone, and stands
+ *     down if the server cannot prove it did;
+ *   - it never echoes the known tier fingerprint, so the server always hands the full
+ *     tier texts over — they cost nothing here, because nothing reads them until the
+ *     first command arrives, and the listener stores them for exactly that moment;
+ *   - it reads no room transcript: orientation is for a model, and there is none yet.
+ *
+ * `deps` exists for tests. Production callers pass nothing.
+ */
+export async function connect(options = {}, deps = {}) {
+  const {
+    session = null,
+    new: createNew = false,
+    private: makePrivate = false,
+    name = null,
+    title = null,
+    agent = null,
+    cwd: cwdArg = null,
+    ownerPid = null,
+    localId: localIdArg = null,
+    forceNew = false,
+    tail = DEFAULT_TAIL,
+    noPoller = false,
+    startup = false,
+    env = process.env,
+  } = options
+  const {
+    callTool = mcpToolsCall,
+    writeState = writeConnectionState,
+    resolveAuth = resolveDevspecMcpAuth,
+    onRetryMessage = (message) => process.stderr.write(message),
+  } = deps
 
   const [major] = process.versions.node.split('.')
   if (Number(major) < 18) {
-    process.stderr.write(
-      `DevSpec remote control needs Node.js 18 or newer; this is ${process.version}.\n`,
+    throw new ConnectError(
+      `DevSpec remote control needs Node.js 18 or newer; this is ${process.version}.`,
+      { reason: 'node_version' },
     )
-    process.exit(1)
   }
-  if (args.private && !args.new) {
-    process.stderr.write(
-      'note: --private only applies with --new (it sets the new session private). Ignored here.\n',
-    )
+  if (startup && (createNew || session)) {
+    throw new ConnectError('A startup connect never creates or attaches a session.', {
+      code: 2,
+      reason: 'bad_args',
+    })
   }
 
-  const cwd = args.cwd ? path.resolve(args.cwd) : process.cwd()
-  const agentName = args.agent || AGENT_NAME
-  const detected = detectLocalId({ 'local-id': args.localId }, process.env)
+  const cwd = cwdArg ? path.resolve(cwdArg) : process.cwd()
+  const agentName = agent || AGENT_NAME
+  const detected = detectLocalId({ 'local-id': localIdArg }, env)
   const localId = detected.local_id
   const gitRemote = gitRemoteOrigin(cwd)
   const pin = findProjectPin(cwd)
 
-  const auth = resolveDevspecMcpAuth(cwd, { hostToken: hostTokenFromEnv(process.env) })
+  if (startup && !gitRemote && !pin) {
+    // Nothing about this folder names a project. Not an error: most folders a person
+    // opens Claude Code in are not DevSpec projects, and that is fine.
+    throw new ConnectError('This folder has no git remote and no .devspec/project.json pin.', {
+      reason: 'folder_not_linked',
+    })
+  }
+
+  const auth = resolveAuth(cwd, { hostToken: hostTokenFromEnv(env), env })
   if (!auth.ok || !auth.token) {
-    process.stderr.write(
+    throw new ConnectError(
       `DevSpec MCP auth could not be resolved: ${auth.error || 'no token found'}\n` +
-        'Fix MCP auth (DEVSPEC_MCP_TOKEN, the plugin token, .mcp.json or ~/.claude.json) and retry.\n',
+        'Fix MCP auth (DEVSPEC_MCP_TOKEN, the plugin token, .mcp.json or ~/.claude.json) and retry.',
+      { reason: 'auth' },
     )
-    process.exit(1)
   }
 
   // The bond decision for THIS conversation — never a cwd scan, never another
@@ -204,33 +253,31 @@ async function main() {
   const bond = resolveLocalAction({
     agent: agentName,
     localId,
-    forceNew: !!args.forceNew || !!args.new,
+    forceNew: !!forceNew || !!createNew,
     maxAgeMinutes: 30,
   })
 
-  const call = (name, toolArgs, options = {}) =>
+  const call = (toolName, toolArgs, callOptions = {}) =>
     withHttpRetry(
       () =>
-        mcpToolsCall({
+        callTool({
           mcpUrl: auth.mcp_url,
           token: auth.token,
-          name,
+          name: toolName,
           arguments: toolArgs,
           timeoutMs: 30_000,
-          ...options,
+          ...callOptions,
         }),
       {
         onRetry: (e) =>
-          process.stderr.write(
-            `devspec-remote-connect: ${name} failed (${e.message}) — retrying\n`,
-          ),
+          onRetryMessage(`devspec-remote-connect: ${toolName} failed (${e.message}) — retrying\n`),
       },
     )
 
   // 1. Register (idempotent on the conversation bond). Scope goes up as facts —
   //    git_remote and/or the folder pin — and the server arbitrates. No list_projects
   //    round-trip: the router resolves the project from git_remote itself.
-  const known = knownInstructionTiersFor(bond.connection_id)
+  const known = startup ? null : knownInstructionTiersFor(bond.connection_id)
   let registration
   let connectionCapability = null
   try {
@@ -241,7 +288,8 @@ async function main() {
       machine_hostname: os.hostname(),
       ...(gitRemote ? { git_remote: gitRemote } : {}),
       ...(pin ? { pinned_project_id: pin.project_id } : {}),
-      ...(args.name ? { name: args.name } : {}),
+      ...(name ? { name } : {}),
+      ...(startup ? { folder_scope_only: true } : {}),
       connection_capability_version: 1,
       ...(known ? { known_instruction_tiers_version: known.version, known_instruction_tiers_hash: known.hash } : {}),
     }, {
@@ -257,23 +305,44 @@ async function main() {
       !gitRemote && !pin
         ? '\nThis folder has no git remote and no .devspec/project.json pin, so nothing identified the project.'
         : ''
-    process.stderr.write(`register_connection failed: ${e.message}${hint}\n`)
-    process.exit(1)
+    // `unreachable` is the one failure worth trying again later: the server never gave
+    // a verdict. Anything else is an answer — an unlinked folder, a refused token.
+    throw new ConnectError(`register_connection failed: ${e.message}${hint}`, {
+      reason: isRetryableHttpFailure(e) ? 'unreachable' : 'register_refused',
+    })
   }
 
   const connectionId = registration.connection_id
   if (!connectionId) {
-    process.stderr.write(`register_connection returned no connection_id: ${JSON.stringify(registration)}\n`)
-    process.exit(1)
+    throw new ConnectError(`register_connection returned no connection_id: ${JSON.stringify(registration)}`)
   }
   const codename = registration.codename || null
+
+  if (startup && !startupScopeProven(registration)) {
+    // The server did not say it scoped this by folder, so it may have joined "your only
+    // project" from an unrelated repository. Take it straight back offline rather than
+    // leave an agent on someone's Agents page that nobody meant to put there.
+    try {
+      await call('heartbeat_connection', {
+        connection_id: connectionId,
+        status: 'offline',
+        end_reason: 'local_stop',
+      })
+    } catch {
+      /* best effort: the poller never started, so it goes stale on its own */
+    }
+    throw new ConnectError(
+      'The DevSpec server did not confirm this registration was scoped by folder; it needs updating before agents can connect themselves at startup.',
+      { reason: 'server_scope_unproven' },
+    )
+  }
 
   // 2. Session attachment, by invocation. Bare = sessionless, and that is a
   //    first-class outcome, not a degraded one.
   let sessionId = null
   let sessionAccess = null
   let status = registration.created ? 'registered' : 'already live'
-  if (args.new) {
+  if (createNew) {
     const created = await call('create_session', {
       session_type: 'agent_remote_control',
       agent_name: agentName,
@@ -282,21 +351,20 @@ async function main() {
       ...(codename ? { session_codename: codename } : {}),
       machine_hostname: os.hostname(),
       cwd,
-      ...(args.title ? { title: args.title } : {}),
+      ...(title ? { title } : {}),
       // Shared is the server default and stays that way. A terminal opening the
       // channel is not a reason to make someone's session private.
-      ...(args.private ? { access: 'private' } : {}),
+      ...(makePrivate ? { access: 'private' } : {}),
     })
     sessionId = created.session_id || created.id || null
-    sessionAccess = args.private ? 'private' : 'shared'
+    sessionAccess = makePrivate ? 'private' : 'shared'
     if (!sessionId) {
-      process.stderr.write(`create_session returned no session id: ${JSON.stringify(created)}\n`)
-      process.exit(1)
+      throw new ConnectError(`create_session returned no session id: ${JSON.stringify(created)}`)
     }
     await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
     status = 'attached'
-  } else if (args.session) {
-    sessionId = args.session
+  } else if (session) {
+    sessionId = session
     await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
     status = 'attached'
   } else if (bond.action === 'reconnect' && bond.session_id) {
@@ -307,21 +375,22 @@ async function main() {
   }
 
   // 3. State + bond + poller. One writer, shared with the `write` command.
-  const written = await writeConnectionState({
+  const written = await writeState({
     connectionId,
     sessionId,
     agent: agentName,
     cwd,
     localId,
-    ownerPid: args.ownerPid,
+    ownerPid,
     codename,
-    title: args.title,
+    title,
     instructionTiers:
       registration.instruction_tiers_hash && registration.instruction_tiers_version
         ? { hash: registration.instruction_tiers_hash, version: registration.instruction_tiers_version }
         : null,
     connectionCapability,
-    noPoller: !!args.noPoller,
+    noPoller: !!noPoller,
+    env,
   })
 
   // The session this connection is ON, which is not the same as one this
@@ -333,14 +402,15 @@ async function main() {
   const effectiveSessionId = written.session_id || null
 
   // 4. Orientation seed — bounded, and echoing the tier fingerprint we were just
-  //    handed so the same texts are not sent twice inside one connect.
+  //    handed so the same texts are not sent twice inside one connect. Never at
+  //    startup: nothing is reading yet.
   let seed = null
-  if (effectiveSessionId) {
-    const tail = Math.max(1, Number.parseInt(String(args.tail ?? DEFAULT_TAIL), 10) || DEFAULT_TAIL)
+  if (effectiveSessionId && !startup) {
+    const seedTail = Math.max(1, Number.parseInt(String(tail ?? DEFAULT_TAIL), 10) || DEFAULT_TAIL)
     try {
       seed = await call('get_session_transcript', {
         session_id: effectiveSessionId,
-        tail,
+        tail: seedTail,
         ...(registration.instruction_tiers_hash && registration.instruction_tiers_version
           ? {
               known_instruction_tiers_version: registration.instruction_tiers_version,
@@ -357,110 +427,177 @@ async function main() {
 
   // The owner-pid the writer actually resolved (win32 self-resolves it), so the arm
   // line the model runs is already correct rather than something it must assemble.
-  const ownerPid = written.owner_pid
+  const resolvedOwnerPid = written.owner_pid
   const cursorFlag = armCursorFlag({ created: registration.created })
   const armCommand =
     `node ${JSON.stringify(WAIT_SCRIPT)} --connection-id ${connectionId}` +
-    `${ownerPid ? ` --owner-pid ${ownerPid}` : ''} --stream ${cursorFlag}`
+    `${resolvedOwnerPid ? ` --owner-pid ${resolvedOwnerPid}` : ''} --stream ${cursorFlag}`
 
-  const summary = {
+  return {
     ok: true,
     status,
     agent_name: agentName,
     codename,
     connection_id: connectionId,
+    created: registration.created === true,
     session_id: effectiveSessionId,
     session_access: sessionAccess,
     local_id: localId,
     local_id_source: detected.source,
+    project_id: registration.project_id || null,
     project_scope: {
       git_remote: gitRemote,
       pinned_project_id: pin?.project_id || null,
       pin_path: pin?.path || null,
       resolved_by_server: true,
+      folder_scope_only: startup ? true : undefined,
     },
     mcp_url: written.mcp_url,
+    auth_ok: written.auth_ok,
     auth_source: written.auth_source,
+    warning: written.warning || null,
     warning_tokens: written.warning_tokens || null,
+    warning_poller: written.warning_poller || null,
+    warning_local: written.warning_local || null,
     poller: written.poller || null,
     bond_action: bond.action,
     state_path: written.path,
+    owner_pid: resolvedOwnerPid,
+    cursor_flag: cursorFlag,
     arm_command: armCommand,
+    connection_capability_present: !!connectionCapability,
     plan_access: connectionCapability ? 'manage_plan capability ready' : 'unavailable — reconnect/update required',
     orientation: seed?.transcript_window || (seed?.error ? { error: seed.error } : null),
+    // Kept for the CLI's --json and for the startup listener, which files the tier
+    // texts for the first command instead of printing them.
+    registration,
+    seed,
   }
+}
 
-  if (args.json) {
-    process.stdout.write(JSON.stringify({ ...summary, seed, registration }, null, 2) + '\n')
-    process.exit(0)
-  }
-
+/**
+ * The terminal status block for a person (or a model) who ran /devspec.remote.
+ * `listenerArmed` is whether something already holds this connection's wake — the
+ * listener Claude Code started with the session — in which case arming a second one
+ * would have two readers racing for one inbox.
+ */
+export function renderStatusBlock(summary, { listenerArmed = false, noPoller = false } = {}) {
   const lines = []
   lines.push('━━━ DevSpec Remote Control ━━━')
-  lines.push(`Agent:      ${agentName} · ${codename || short(connectionId)}`)
-  lines.push(`Connection: ${short(connectionId)}`)
+  lines.push(`Agent:      ${summary.agent_name} · ${summary.codename || short(summary.connection_id)}`)
+  lines.push(`Connection: ${short(summary.connection_id)}`)
   lines.push(
-    `Session:    ${effectiveSessionId ? `${short(effectiveSessionId)}${sessionAccess ? ` (${sessionAccess})` : ""}` : "none — available"}`,
+    `Session:    ${summary.session_id ? `${short(summary.session_id)}${summary.session_access ? ` (${summary.session_access})` : ''}` : 'none — available'}`,
   )
-  lines.push(`Status:     ${status}`)
+  lines.push(`Status:     ${summary.status}`)
   lines.push('Open:       Agents page')
   lines.push('Stop with:  /devspec.remote-stop')
   lines.push('─────────────────────────────')
 
-  const poller = written.poller
+  const poller = summary.poller
   const pollerText = poller?.skipped
     ? 'skipped (--no-poller) — this connection will NOT receive commands'
     : poller?.ok
       ? `running (pid ${poller.pid})`
-      : `NOT RUNNING — ${written.warning_poller || 'unknown'}`
-  lines.push(`poller: ${pollerText} · host: ${written.mcp_url}`)
-  lines.push(`plans: ${connectionCapability ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
-  if (!written.auth_ok) lines.push(`auth: FAILED — ${written.warning}`)
-  if (written.warning_tokens) lines.push(`warning: ${written.warning_tokens}`)
-  if (!localId) lines.push(`warning: ${written.warning_local}`)
-  if (!ownerPid && !args.noPoller) {
+      : `NOT RUNNING — ${summary.warning_poller || 'unknown'}`
+  lines.push(`poller: ${pollerText} · host: ${summary.mcp_url}`)
+  lines.push(`plans: ${summary.connection_capability_present ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
+  if (!summary.auth_ok) lines.push(`auth: FAILED — ${summary.warning}`)
+  if (summary.warning_tokens) lines.push(`warning: ${summary.warning_tokens}`)
+  if (!summary.local_id) lines.push(`warning: ${summary.warning_local}`)
+  if (!summary.owner_pid && !noPoller) {
     lines.push(
       'warning: no owner pid resolved — pass --owner-pid "$PPID". Without an owner anchor a poller' +
         ' can never be proven dead, so it is refused rather than left to zombie as a "Live" agent.',
     )
   }
-  if (!gitRemote && !pin) {
+  if (!summary.project_scope.git_remote && !summary.project_scope.pinned_project_id) {
     lines.push(
       'scope: no git remote and no .devspec/project.json pin — the server resolved this by token access alone.',
     )
   }
 
   lines.push('')
-  lines.push('ARM THE WAKE STREAM NOW (Monitor tool — never a background task):')
-  lines.push(armCommand)
-  lines.push(
-    '  (persistent: true if Monitor\'s schema offers it — one arm then lasts the session.' +
-      ' If it does not, pass the largest timeout_ms it allows and re-arm with --stream' +
-      ' --pending at each expiry; persistent is silently discarded on that schema.)',
-  )
-  if (cursorFlag === '--pending') {
+  if (listenerArmed) {
+    lines.push('wake: ALREADY ARMED — Claude Code started this connection\'s listener with the session.')
     lines.push(
-      '  (--pending, not --from-end: this connection already existed, so mail may be waiting.' +
-        ' --from-end would discard it.)',
+      '  Do NOT arm the Monitor: a second reader would race it for the same inbox. Commands' +
+        ' arrive as "DevSpec" monitor events; handle each with the devspec-remote-command skill.',
     )
+  } else {
+    lines.push('ARM THE WAKE STREAM NOW (Monitor tool — never a background task):')
+    lines.push(summary.arm_command)
+    lines.push(
+      '  (persistent: true if Monitor\'s schema offers it — one arm then lasts the session.' +
+        ' If it does not, pass the largest timeout_ms it allows and re-arm with --stream' +
+        ' --pending at each expiry; persistent is silently discarded on that schema.)',
+    )
+    if (summary.cursor_flag === '--pending') {
+      lines.push(
+        '  (--pending, not --from-end: this connection already existed, so mail may be waiting.' +
+          ' --from-end would discard it.)',
+      )
+    }
   }
 
-  if (seed?.transcript_window) {
-    const w = seed.transcript_window
+  if (summary.seed?.transcript_window) {
+    const w = summary.seed.transcript_window
     lines.push('')
     lines.push(
       `Room seeded: ${w.returned ?? '?'} of ${w.matched ?? '?'} messages` +
         `${w.has_more ? ' — MORE EXIST above this window; page with after_message_id/limit if you need them.' : ' (complete).'}`,
     )
-  } else if (seed?.error) {
+  } else if (summary.seed?.error) {
     lines.push('')
-    lines.push(`Room seed failed: ${seed.error} — pull get_session_transcript yourself if you need the room.`)
+    lines.push(`Room seed failed: ${summary.seed.error} — pull get_session_transcript yourself if you need the room.`)
   }
 
-  const tiers = renderTiers(registration)
+  const tiers = renderTiers(summary.registration)
   if (tiers) lines.push(tiers)
+  return lines.join('\n') + '\n'
+}
 
-  process.stdout.write(lines.join('\n') + '\n')
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  if (args.private && !args.new) {
+    process.stderr.write(
+      'note: --private only applies with --new (it sets the new session private). Ignored here.\n',
+    )
+  }
+  let summary
+  try {
+    summary = await connect({
+      session: args.session || null,
+      new: !!args.new,
+      private: !!args.private,
+      name: args.name || null,
+      title: args.title || null,
+      agent: args.agent || null,
+      cwd: args.cwd || null,
+      ownerPid: args.ownerPid,
+      localId: args.localId,
+      forceNew: !!args.forceNew,
+      tail: args.tail,
+      noPoller: !!args.noPoller,
+    })
+  } catch (e) {
+    if (e instanceof ConnectError) {
+      process.stderr.write(`${e.message}\n`)
+      process.exit(e.code)
+    }
+    throw e
+  }
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
+    process.exit(0)
+  }
+  process.stdout.write(
+    renderStatusBlock(summary, {
+      listenerArmed: isWaitArmed(summary.connection_id),
+      noPoller: !!args.noPoller,
+    }),
+  )
   process.exit(0)
 }
 

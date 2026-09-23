@@ -48,6 +48,7 @@
  *     → action: already_live | reconnect | register | create_and_attach
  *   node remote-control-state.mjs stop-poller --connection-id <uuid>
  *   node remote-control-state.mjs resolve-auth
+ *   node remote-control-state.mjs orient [--agent "Claude Code"] [--local-id <id>] [--connection-id <uuid>]
  */
 
 import crypto from 'node:crypto'
@@ -69,6 +70,8 @@ import {
   LOCAL_ID_OVERRIDE_ENV_VAR,
 } from './agent-identity.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { CONVERSATION_SWITCH_REASONS, startupListenerAlive } from './startup-listener.mjs'
+import { takeTiersFor } from './instruction-tiers.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -1062,6 +1065,45 @@ export async function writeConnectionState({
   return result
 }
 
+/**
+ * Move a live connection onto a new conversation of the SAME Claude Code process —
+ * what `/clear` and `/resume` do underneath a startup listener (item b7ef1fe2).
+ *
+ * The turn hooks find their connection through the conversation's bond, and a new
+ * conversation has none; without this, Stop could not report the end of a turn and the
+ * room would show the agent Working after it had answered. The old bond is left alone:
+ * it points at the same connection, and a later `/resume` back to that conversation
+ * should find it.
+ *
+ * Deliberately NOT a registration. The connection, its codename, its session and its
+ * poller are unchanged; only which conversation speaks for it moves.
+ */
+export function rebondConnectionToConversation({ agent = AGENT_NAME, connectionId, localId } = {}) {
+  const id = sanitizeLocalId(localId)
+  if (!connectionId || !id) return { ok: false, reason: 'missing_ids' }
+  const perPath = connectionPath(connectionId)
+  const state = readJson(perPath)
+  if (!state || state.enabled === false) return { ok: false, reason: 'connection_not_live' }
+  const agentName = agent || state.agent_name || AGENT_NAME
+  const bond = writeLocalBond(agentName, id, {
+    status: 'live',
+    connection_id: connectionId,
+    session_id: state.session_id ?? null,
+    session_codename: state.session_codename ?? null,
+    title: state.title ?? null,
+    cwd: state.cwd ?? null,
+    end_reason: null,
+    cursor_after_message_id: state.cursor_after_message_id || null,
+  })
+  writeJson(perPath, { ...state, local_id: id, updated_at: new Date().toISOString() })
+  appendConnectionAudit(connectionId, 'conversation_rebonded', {
+    agent: agentName,
+    from_local_id: state.local_id ?? null,
+    to_local_id: id,
+  })
+  return { ok: true, connection_id: connectionId, local_id: id, bond_path: localBondPath(agentName, id), bond }
+}
+
 /** The tier fingerprint previously retained for this conversation's connection. */
 export function knownInstructionTiersFor(connectionId) {
   if (!connectionId) return null
@@ -1386,6 +1428,41 @@ if (isMain) {
     process.exit(0)
   }
 
+  if (cmd === 'orient') {
+    // What a conversation needs before it answers its first DevSpec command, when the
+    // connection was made by the listener Claude Code started (item b7ef1fe2) and the
+    // model therefore never saw connect's status block: which connection it speaks
+    // for, which room, and the instruction tiers filed at connect. Redacted — the
+    // bearer and the hidden capability never reach stdout.
+    const agentName = args.agent || AGENT_NAME
+    const detected = detectLocalId(args, process.env)
+    const bond = detected.local_id ? readLocalBond(agentName, detected.local_id) : null
+    const connectionId = args['connection-id'] || bond?.connection_id || null
+    const state = connectionId ? readJson(connectionPath(connectionId)) : null
+    if (!connectionId || !state) {
+      process.stdout.write(
+        'This conversation is not connected to DevSpec. Nothing to orient on.\n',
+      )
+      process.exit(1)
+    }
+    const view = redactConnectionState(state)
+    const tiers = takeTiersFor(connectionId, detected.local_id)
+    const lines = [
+      `connection_id: ${connectionId}`,
+      `codename: ${view.session_codename || '—'}`,
+      `session_id: ${view.session_id || 'none (sessionless — there is no room to answer in)'}`,
+      `inbox: ${path.join(CONNECTIONS_DIR, `${connectionId}.inbox.jsonl`)}`,
+    ]
+    if (tiers.status === 'deliver') lines.push(tiers.text.trimEnd())
+    else if (tiers.status === 'unchanged') {
+      lines.push('\nInstructions: already delivered to this conversation and unchanged — keep following them.')
+    } else {
+      lines.push('\nInstructions: none filed for this connection (connected by /devspec.remote, which printed them at connect).')
+    }
+    process.stdout.write(lines.join('\n') + '\n')
+    process.exit(0)
+  }
+
   if (cmd === 'disable-local') {
     // SessionEnd teardown: resolve THIS conversation's bound connection (no
     // --connection-id needed) and disable it.
@@ -1396,12 +1473,15 @@ if (isMain) {
     // 2026-09-19 kill could not be explained precisely because nothing
     // recorded this (item 37d6e6e0).
     let idSource = detected.source
-    // SessionEnd hook delivers the conversation id on stdin as { session_id }.
-    if (!localId && !process.stdin.isTTY) {
+    // SessionEnd hook delivers { session_id, reason } on stdin. The id is only a
+    // fallback for the environment; the reason is read whenever a payload exists.
+    let endReason = null
+    if (!process.stdin.isTTY) {
       try {
         const raw = fs.readFileSync(0, 'utf8')
         const j = JSON.parse(raw || '{}')
-        if (typeof j.session_id === 'string') {
+        if (typeof j.reason === 'string') endReason = j.reason
+        if (!localId && typeof j.session_id === 'string') {
           localId = sanitizeLocalId(j.session_id)
           if (localId) idSource = 'stdin:session_id'
         }
@@ -1418,6 +1498,29 @@ if (isMain) {
           skipped: 'no live bond for this conversation',
           local_id: localId || null,
           id_source: idSource,
+        }) + '\n',
+      )
+      process.exit(0)
+    }
+    // `/clear` and `/resume` end a conversation, not the process. When the listener
+    // Claude Code started with the session is still alive it keeps serving this
+    // connection, and SessionStart hands the bond to the next conversation. Disabling
+    // here is what used to leave that listener on the Agents page, deaf (b7ef1fe2).
+    if (endReason && CONVERSATION_SWITCH_REASONS.has(endReason) && startupListenerAlive(connectionId)) {
+      appendConnectionAudit(connectionId, 'connection_kept_for_listener', {
+        via: 'disable-local',
+        agent: agentName,
+        local_id: localId,
+        id_source: idSource,
+        end_reason: endReason,
+      })
+      process.stdout.write(
+        JSON.stringify({
+          ok: true,
+          skipped: 'conversation switched; the startup listener keeps this connection',
+          connection_id: connectionId,
+          local_id: localId,
+          end_reason: endReason,
         }) + '\n',
       )
       process.exit(0)

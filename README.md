@@ -74,7 +74,13 @@ Two commands appear in Claude Code's `/` menu after install, namespaced under th
 
 This is the feature most people come for. You run a real Claude Code session on your machine, but steer it from DevSpec — the **Agents page** in your browser, or your phone. Kick off work, answer its questions, and watch it go while you're away from your desk.
 
-### Two ways to connect
+### It connects when Claude Code starts
+
+Start Claude Code in a folder that belongs to one of your DevSpec projects and it appears on the **Agents page** within a few seconds, ready for your team to send it work. You don't type anything. Waiting costs nothing: Claude only starts working when someone actually sends it a message.
+
+It only connects in folders that belong to a DevSpec project, meaning a repo your project tracks, or a folder with a `.devspec/project.json` pin (see [How it finds the right project](#how-it-finds-the-right-project)). Anywhere else it stays out of the way. To turn it off, open `/config` and switch off **Make Claude Code available on DevSpec when it starts**. You can still connect by hand whenever you like.
+
+### Connecting by hand
 
 **Register available capacity** — in Claude Code, from the repo you want Claude to work in:
 
@@ -86,7 +92,7 @@ This lists the connection on DevSpec's Agents page without inventing a chat tran
 
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
-When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Waiting for your next instruction is a lightweight background check — it does **not** spend Claude usage while idle. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
+When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
 
 ### Shared session plans
 

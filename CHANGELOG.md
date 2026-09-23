@@ -2,6 +2,38 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.29.0 - 2026-09-23
+
+### Claude Code connects to DevSpec when it starts, and waiting costs nothing
+
+Start Claude Code in a folder that belongs to one of your DevSpec projects and it
+now appears on the Agents page by itself, ready to be sent work. Nothing to type,
+and nothing loaded into the conversation until someone actually sends it a
+message.
+
+Until now an agent only became available after `/devspec:devspec.remote` had put
+its instructions and connection details into the conversation, and on the Claude
+Code versions that cap a background watch at 30 minutes, an idle agent woke itself
+every half hour just to keep listening. Both costs are gone: the listener now
+starts with Claude Code and lasts as long as the session does, and Claude only
+runs when a message arrives.
+
+It connects only in folders a DevSpec project tracks (or that carry a
+`.devspec/project.json` pin), never in an unrelated repository. To turn it off,
+switch off **Make Claude Code available on DevSpec when it starts** in `/config`.
+`/devspec:devspec.remote` still works whenever you want to connect by hand or
+attach to a particular session.
+
+### `/clear` no longer disconnects your agent
+
+Clearing or resuming a conversation used to leave the agent listed as available
+but no longer listening. It now carries its connection into the new conversation.
+
+### Also in this release
+
+- How Claude handles a message from DevSpec now lives in one skill,
+  `devspec-remote-command`, shared by both ways of connecting.
+
 ## 0.28.2 - 2026-09-20
 
 ### Your agent answers as itself, not as whoever launched it

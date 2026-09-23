@@ -1030,7 +1030,8 @@ describe('turn end', () => {
 
 describe('directed-question policy surfaces', () => {
   const skill = source('skills/devspec-directed-question/SKILL.md')
-  const remote = source('commands/devspec.remote.md')
+  // The connect command plus the handling skill both wake paths share (item b7ef1fe2).
+  const remote = source('commands/devspec.remote.md') + '\n' + source('skills/devspec-remote-command/SKILL.md')
 
   it('teaches asking one person and finishing the turn their answer opens', () => {
     assert.match(skill, /devspec-question\.mjs" describe/)

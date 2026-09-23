@@ -4,12 +4,47 @@
 **Read first:** `docs/remote-control/remote-control-overview.md` (or the DevSpec overview resource).  
 **Plugin repo:** `claude-code-devspec-autopilot` (remote may be `DevSpecAI/devspec-claude-plugin`)
 
+## Connect at startup — the default path (item `b7ef1fe2`, 0.29.0)
+
+Claude Code starts the DevSpec listener itself. `plugin.json` declares it as a **plugin monitor** (`experimental.monitors`, name `devspec-remote`), and Claude Code launches plugin monitors at session start, with no model turn, and keeps them for the lifetime of the session. `hooks/scripts/devspec-remote-listen.mjs`:
+
+1. resolves the conversation id (`CLAUDE_CODE_SESSION_ID`) and the owning Claude Code pid (`CLAUDE_PID`, trusted only if it is an ancestor; otherwise the ancestry is walked to `claude`);
+2. reads the plugin settings — from the session environment the SessionStart hook writes, or from the private `~/.devspec/remote-control/startup/<session>.json` that `remote-session-lifecycle.mjs session-start` files, whichever arrives first. Plugin monitors are not given `CLAUDE_PLUGIN_OPTION_*` by Claude Code;
+3. runs `connect({ startup: true })` — see "Startup scope" below — which registers, writes state and starts the poller;
+4. files the tier texts in `<connection>.tiers.json` for the first command (`instruction-tiers.mjs`), writes `<connection>.listener.json`, and
+5. runs `devspec-remote-wait.mjs --stream` as a child whose stdout **is** the monitor's stdout.
+
+**Stdout is the model's ear.** Every stdout line of a plugin monitor starts a turn. The listener itself never writes to stdout; its log is `~/.devspec/remote-control/listen/<conversation>.log`. When it has nothing to do (an unlinked folder, the setting switched off, the server unreachable after retries, the connection ended from the UI) it goes **dormant**: alive, silent, exiting only when Claude Code does. An ended monitor is announced to the model, so exiting would itself be a wake about nothing.
+
+**One reader per inbox.** The listener arms nothing if `<connection>.wait.pid` is already live, and `/devspec.remote` in a session whose listener holds the wake prints `wake: ALREADY ARMED` instead of the arm command. The Stop hook's deaf-turn check is unchanged: the listener's wait child owns the same pidfile.
+
+**Startup scope.** A registration nobody typed must only join a project its folder names. Connect sends `folder_scope_only: true`; the server then skips "your only accessible project" (it resolves from git remote or pin only) and echoes `folder_scope_only: true`. With no echo — a server predating the flag — the plugin heartbeats the connection offline and stands down. A folder with neither a remote nor a pin never reaches the server.
+
+**Model side.** Nothing is loaded until a command arrives. The monitor's description names the `devspec-remote-command` skill, which holds the handling protocol both wake paths share (it used to be sections 3–9 of the command). Its first step, once per conversation, is `remote-control-state.mjs orient`: the connection id, the room, and the filed tiers (then "unchanged" for the rest of that conversation).
+
+**`/clear` and `/resume`.** Measured on 2.1.280: both give the conversation a new id and run SessionEnd then SessionStart, and a plugin monitor survives both (so does `/reload-plugins`, which does not restart it). So `disable-local` keeps a connection whose startup listener is alive when SessionEnd's `reason` is `clear` or `resume`, and `remote-session-lifecycle.mjs session-start` moves the bond to the new conversation (`rebondConnectionToConversation`), so the turn hooks can still find it. A real exit disables as before.
+
+**Setting.** `connect_at_startup` (userConfig boolean, default on). Off → dormant; `/devspec.remote` still works.
+
+**Limits.** Plugin monitors run only in interactive CLI sessions (not `-p`, not the SDK) and are skipped where the Monitor tool is unavailable. They are an experimental plugin component, so the manifest schema may change. A monitor line is still capped at 500 characters, so the full body and sender style are read from the inbox record, exactly as on the manual path.
+
+## Channels (research preview) — status
+
+Claude Code channels (`https://code.claude.com/docs/en/channels-reference`) are the other way to push into a running session: a stdio MCP server declaring `capabilities.experimental['claude/channel']` emits `notifications/claude/channel`, which arrives as `<channel source=…>` with the full content (no 500-character cap) and meta attributes. A channel can also relay permission prompts to a trusted sender. What we measured on 2026-09-23 (Claude Code 2.1.280):
+
+- A channel server receives `CLAUDE_CODE_SESSION_ID` in its environment, but the MCP `initialize` handshake is **identical** with and without the channel flag: the server cannot tell whether it was registered as a channel. Claude Code drops undeliverable channel events silently.
+- **claude.ai Team and Enterprise orgs have channels off until an Owner enables them** (claude.ai → Admin settings → Claude Code → Channels, or `channelsEnabled` in managed settings). DevSpec's own org is on Team and had them off: the startup notice read "Channels are not enabled for your org". Pro/Max without an org skip this check; Console API-key auth is allowed by default.
+- Custom channels are not on the approved allowlist during the preview, so they only load with `claude --dangerously-load-development-channels plugin:devspec@devspec`, which shows a full-screen warning dialog on every launch. The allowlist is Anthropic-curated (the channel plugins in `claude-plugins-official`); the community marketplace submission form does not add a plugin to it. Routes off the dev flag: an official-marketplace listing through an Anthropic partner contact (see item `ec3da732`), or, per organisation, an admin adding `{ "marketplace": "devspec", "plugin": "devspec" }` to `allowedChannelPlugins` (Team/Enterprise), after which `--channels plugin:devspec@devspec` works without the warning.
+- Not available on Amazon Bedrock, Google Cloud's Agent Platform or Microsoft Foundry; requires claude.ai or Console authentication. A channel server that negotiates MCP protocol `2026-07-28` is not registered.
+
+Because the plugin monitor already delivers zero-turn connect and zero-cost idle to every interactive user today, with no flag, dialog or admin step, it is the default. A channel transport can feed the same listener core once channels are generally available, adding full-length delivery and permission relay.
+
 ## How a message reaches Claude
 
 1. DevSpec emits negotiated canonical ingress for this connection.
 2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope plus active-plan projection v1, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `automation_run` dispatches remain a separately validated/deduped channel; assignments do not.
 3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints active plans as advisory room awareness, typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), explicit automations, or separate non-chat host controls.
-4. Claude Code **Monitor** turns those lines into model-visible events without exiting — `persistent: true` where the host serves that schema, otherwise the largest `timeout_ms` it allows, re-armed at each expiry; notification/preview summaries are non-authoritative.
+4. Claude Code turns those lines into model-visible events without exiting — through the **plugin monitor** the listener runs under (default), or, on the manual path, through the **Monitor** tool — `persistent: true` where the host serves that schema, otherwise the largest `timeout_ms` it allows, re-armed at each expiry; notification/preview summaries are non-authoritative.
 5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
 

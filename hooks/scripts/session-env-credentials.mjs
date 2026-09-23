@@ -70,6 +70,12 @@ const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
  */
 const TOKEN_KEYS = ['CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN', 'CLAUDE_PLUGIN_OPTION_devspec_token']
 const URL_KEYS = ['CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL', 'CLAUDE_PLUGIN_OPTION_devspec_mcp_url']
+/**
+ * `connect_at_startup` (item b7ef1fe2) is read by the listener Claude Code starts as a
+ * plugin monitor, and monitors are not handed plugin settings either. Carried the same
+ * way, and only when set, so an unset option keeps its default rather than becoming "".
+ */
+const STARTUP_KEYS = ['CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP', 'CLAUDE_PLUGIN_OPTION_connect_at_startup']
 
 function firstValue(env, keys) {
   for (const key of keys) {
@@ -98,10 +104,14 @@ export function buildSessionEnvScript(env = process.env) {
   const token = firstValue(env, TOKEN_KEYS)
   if (!token) return null
   const mcpUrl = firstValue(env, URL_KEYS) || DEFAULT_PROD_URL
+  const connectAtStartup = firstValue(env, STARTUP_KEYS)
   return [
     '# DevSpec plugin: userConfig reaches hooks but not Bash tool calls (item bb97c9f6).',
     `export CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN=${shellQuote(token)}`,
     `export CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL=${shellQuote(mcpUrl)}`,
+    ...(connectAtStartup === null
+      ? []
+      : [`export CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP=${shellQuote(connectAtStartup)}`]),
     '',
   ].join('\n')
 }

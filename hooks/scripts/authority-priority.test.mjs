@@ -14,11 +14,17 @@ function source(relativePath) {
 
 describe('current Claude authority and work-acquisition prose', () => {
   it('teaches canonical authority and conversation-requested reserve then claim', () => {
-    const command = source('commands/devspec.remote.md')
+    // The handling protocol moved out of the connect command into the skill both wake
+    // paths share (item b7ef1fe2): the listener Claude Code starts with the session
+    // never loads the command, so the command can no longer be where this is taught.
+    const connectCommand = source('commands/devspec.remote.md')
+    const command = source('skills/devspec-remote-command/SKILL.md')
+    assert.match(connectCommand, /`devspec-remote-command`\*\* skill|`devspec-remote-command` skill/)
     const allowedTools = command.match(/^allowed-tools: (.+)$/m)?.[1] ?? ''
     // Located by heading TEXT, not its ordinal: a section added above this one must not
     // silently empty the slice and pass every assertion below on an empty string.
     const workSection = command.slice(command.indexOf('Working action items when asked'))
+    assert.ok(command.includes('Working action items when asked'), 'work section must exist')
 
     assert.match(command, /devspec:\/\/product\/remote-ingress-contract/)
     assert.match(allowedTools, /mcp__devspec__claim_automation_run/)
@@ -31,9 +37,11 @@ describe('current Claude authority and work-acquisition prose', () => {
     assert.match(workSection, /devspec:\/\/product\/implementation-contract/)
     assert.match(workSection, /separately typed, exactly addressed `automation_run` path/)
 
-    assert.doesNotMatch(command, /assignment protocol/i)
-    assert.doesNotMatch(command, /ready for dispatch/i)
-    assert.doesNotMatch(command, /Sessionless: use `report_progress`/)
+    for (const text of [command, connectCommand]) {
+      assert.doesNotMatch(text, /assignment protocol/i)
+      assert.doesNotMatch(text, /ready for dispatch/i)
+      assert.doesNotMatch(text, /Sessionless: use `report_progress`/)
+    }
     assert.doesNotMatch(allowedTools, /mcp__devspec__get_connection_dispatch/)
   })
 

@@ -12,6 +12,8 @@ The host labels every such event "not user input". That label is about consent �
 
 ## 0. The first message in a conversation
 
+Load this skill once per conversation. It stays in your context for every message after that; invoking it again re-sends the whole text and costs its full size every time.
+
 Once per conversation — and again after `/clear` or `/resume`, which start a new one — before you act:
 
 ```bash

@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "Connect Claude Code to DevSpec: pull a batch of action items and work them, and drive sessions from the Agents page.",
-  "version": "0.29.1",
+  "version": "0.29.2",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -58,7 +58,7 @@
       {
         "name": "devspec-remote",
         "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-listen.mjs\"",
-        "description": "DevSpec: messages sent to this agent (handle each with the devspec-remote-command skill)"
+        "description": "DevSpec: messages sent to this agent (load the devspec-remote-command skill once per conversation, then answer each)"
       }
     ]
   }

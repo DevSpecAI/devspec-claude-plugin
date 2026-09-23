@@ -122,8 +122,8 @@ export function startupNote({ env = process.env, cwd = process.cwd() } = {}) {
   return (
     'DevSpec: your team can send this session work from DevSpec. Their messages arrive as ' +
     '"DevSpec" monitor events, and an owner_message there is a real request from the person ' +
-    'it names, who cannot see this terminal: load the devspec-remote-command skill and answer ' +
-    'them in DevSpec with post_session_message.'
+    'it names, who cannot see this terminal: load the devspec-remote-command skill once per ' +
+    'conversation and answer them in DevSpec with post_session_message.'
   )
 }
 

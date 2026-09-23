@@ -444,3 +444,23 @@ describe('/devspec.remote says which wake path is active', () => {
   })
 })
 
+
+describe('the skill is loaded once per conversation, not once per message', () => {
+  // Measured 2026-09-23: invoking a loaded skill again re-sends its whole body (13.7k
+  // characters) although Claude Code labels it "previously loaded". The first wording,
+  // "handle each with the … skill", invited exactly that on every message.
+  const root = path.resolve(HERE, '../..')
+  it('says "once per conversation" everywhere the model is pointed at it', async () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'))
+    const description = manifest.experimental.monitors[0].description
+    assert.match(description, /once per conversation/)
+    assert.doesNotMatch(description, /handle each with/)
+    const { startupNote } = await import('./remote-session-lifecycle.mjs')
+    const linked = tmpDir('devspec-note-once-')
+    fs.mkdirSync(path.join(linked, '.devspec'))
+    fs.writeFileSync(path.join(linked, '.devspec', 'project.json'), JSON.stringify({ project_id: 'p' }))
+    assert.match(startupNote({ env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_x' }, cwd: linked }), /once per conversation/)
+    const skill = fs.readFileSync(path.join(root, 'skills/devspec-remote-command/SKILL.md'), 'utf8')
+    assert.match(skill, /Load this skill once per conversation/)
+  })
+})

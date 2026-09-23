@@ -78,7 +78,7 @@ This is the feature most people come for. You run a real Claude Code session on 
 
 Start Claude Code in a folder that belongs to one of your DevSpec projects and it appears on the **Agents page** within a few seconds, ready for your team to send it work. You don't type anything. Waiting costs nothing: Claude only starts working when someone actually sends it a message.
 
-It only connects in folders that belong to a DevSpec project, meaning a repo your project tracks, or a folder with a `.devspec/project.json` pin (see [How it finds the right project](#how-it-finds-the-right-project)). Anywhere else it stays out of the way. To turn it off, open `/config` and switch off **Make Claude Code available on DevSpec when it starts**. You can still connect by hand whenever you like.
+It only connects in folders that belong to a DevSpec project, meaning a repo your project tracks, or a folder with a `.devspec/project.json` pin (see [How it finds the right project](#how-it-finds-the-right-project)). Anywhere else it stays out of the way. If a folder becomes part of a project while Claude Code is open, because you or your agent add the pin or a repo your project tracks, it connects then, with no restart. To turn it off, open `/config` and switch off **Make Claude Code available on DevSpec when it starts**. You can still connect by hand whenever you like.
 
 ### Connecting by hand
 
@@ -175,7 +175,7 @@ You don't pass a project id in most cases. The plugin matches the git remote of 
 { "project_id": "<your project uuid>" }
 ```
 
-in `.devspec/project.json` at the root of that folder — agents look there and in any subdirectory beneath it, stopping at the repository root. That's useful when you're starting a project in DevSpec before the code exists — plan the work, let your agent write it, then create the repo and connect it later.
+in `.devspec/project.json` at the root of that folder — agents look there and in any subdirectory beneath it, stopping at the repository root. That's useful when you're starting a project in DevSpec before the code exists — plan the work, let your agent write it, then create the repo and connect it later. When your agent gives a pinned folder its repository, it reminds you to add that repository to the project in DevSpec (**Settings → Integrations → Repositories**), so DevSpec can read the code and connect its commits to your work.
 
 Two things worth knowing. It holds a project id and **no file paths**, so moving or renaming the folder never breaks it. And it isn't a secret, so you can commit it — then anyone who clones the repo is pointed at the right project with no setup at all.
 

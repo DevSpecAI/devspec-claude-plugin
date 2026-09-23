@@ -74,6 +74,7 @@ export function readServerFailure(status, bodyText) {
 export function isRetryableHttpFailure(err) {
   if (!err || typeof err !== 'object') return false
   if (err.code === 'owner_gone' || err.code === 'timeout') return false
+  if (err.transport === true) return true
   if (err.retryable === false) return false
   if (err.retryable === true) return true
   return RETRYABLE_HTTP_STATUSES.has(err.status)
@@ -144,7 +145,13 @@ export async function mcpRequest({
       err.code = abortCode
       throw err
     }
-    throw e
+    // fetch threw before any response: DNS, refused, reset, TLS, no network. The server
+    // never saw the request, so this is no verdict on it. Marked so a caller can tell it
+    // from a refusal — without the mark it has no status and read as final, which put an
+    // agent started on an offline laptop to sleep for the whole session (item fa9b809b).
+    const err = e instanceof Error ? e : new Error(String(e))
+    err.transport = true
+    throw err
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer)
     if (aliveTimer) clearInterval(aliveTimer)

@@ -192,6 +192,78 @@ export function mainWorkTreeFrom(cwd) {
   }
 }
 
+/** A stat signature for one path: absent, a directory, or a file's mtime and size. */
+function statKey(candidate) {
+  try {
+    const stat = fs.statSync(candidate)
+    // A directory's mtime moves whenever git writes a lock file inside `.git`, which is
+    // most commands. Only its presence can change what the folder is linked to.
+    return stat.isDirectory() ? 'd' : `f:${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return '-'
+  }
+}
+
+/**
+ * The files behind a `.git` entry that decide `origin` and the main worktree's pin.
+ * A plain repository keeps its remotes in `.git/config`. A linked worktree's `.git` is
+ * a file naming its private gitdir, whose `commondir` leads to the shared config — and
+ * `findProjectPin` also reads the main working tree's pin, which sits beside it.
+ */
+function gitIdentityPaths(gitEntry) {
+  try {
+    if (fs.statSync(gitEntry).isDirectory()) return [path.join(gitEntry, 'config')]
+    const pointer = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(gitEntry, 'utf8'))
+    if (!pointer) return []
+    const gitdir = path.resolve(path.dirname(gitEntry), pointer[1].trim())
+    let common = gitdir
+    try {
+      common = path.resolve(gitdir, fs.readFileSync(path.join(gitdir, 'commondir'), 'utf8').trim())
+    } catch {
+      /* no commondir: the gitdir is the repository itself */
+    }
+    const paths = [path.join(common, 'config')]
+    if (path.basename(common) === '.git') {
+      paths.push(path.join(path.dirname(common), '.devspec', 'project.json'))
+    }
+    return paths
+  } catch {
+    return []
+  }
+}
+
+/**
+ * A cheap signature of everything that could make `cwd` name a DevSpec project: the
+ * pin files `findProjectPin` reads and the git config that holds `origin`. Stat calls
+ * only, never a git process, because the startup listener recomputes it every few
+ * seconds while it waits in a folder that is not linked yet (item fa9b809b). When the
+ * signature changes, the caller runs the real lookups; when it doesn't, nothing that
+ * decides the folder's project can have changed.
+ *
+ * Walks the same chain as `findProjectPin`: from `cwd` up to the nearest `.git`
+ * (the repository root), never at or above the home directory.
+ */
+export function folderLinkFingerprint(cwd, { home = os.homedir() } = {}) {
+  const homeResolved = path.resolve(home)
+  const parts = []
+  let dir = path.resolve(cwd)
+  for (;;) {
+    if (atOrAboveHome(dir, homeResolved)) break
+    parts.push(statKey(path.join(dir, '.devspec', 'project.json')))
+    const gitEntry = path.join(dir, '.git')
+    const gitKey = statKey(gitEntry)
+    parts.push(gitKey)
+    if (gitKey !== '-') {
+      for (const identity of gitIdentityPaths(gitEntry)) parts.push(statKey(identity))
+      break
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return parts.join('|')
+}
+
 /**
  * The repository's `.devspec/project.json` pin: `{ "project_id": "<uuid>" }`.
  *

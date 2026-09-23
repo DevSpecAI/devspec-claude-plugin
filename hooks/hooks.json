@@ -80,6 +80,11 @@
             "type": "command",
             "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-observation.mjs\" post || true",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/repo-link-nudge.mjs\" || true",
+            "timeout": 10
           }
         ]
       }

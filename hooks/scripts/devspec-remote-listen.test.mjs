@@ -9,7 +9,7 @@
  * nothing.
  */
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -20,9 +20,13 @@ import { connect, ConnectError, renderStatusBlock, startupScopeProven } from './
 import {
   connectAtStartupEnabled,
   envWithStartupConfig,
+  LINK_WATCH_MS,
   readStartupConfig,
   resolveClaudePid,
+  WAIT_FOR_LINK_REASONS,
+  waitForFolderLink,
 } from './devspec-remote-listen.mjs'
+import { folderLinkFingerprint } from './devspec-scope.mjs'
 import { renderTiers, storeTiers, takeTiersFor, tiersPath } from './instruction-tiers.mjs'
 import {
   findStartupListenerForOwner,
@@ -462,5 +466,120 @@ describe('the skill is loaded once per conversation, not once per message', () =
     assert.match(startupNote({ env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_x' }, cwd: linked }), /once per conversation/)
     const skill = fs.readFileSync(path.join(root, 'skills/devspec-remote-command/SKILL.md'), 'utf8')
     assert.match(skill, /Load this skill once per conversation/)
+  })
+})
+
+describe('a folder linked mid-session connects without a restart (fa9b809b)', () => {
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+  const pin = (dir, id = 'p-1') => {
+    fs.mkdirSync(path.join(dir, '.devspec'), { recursive: true })
+    fs.writeFileSync(path.join(dir, '.devspec', 'project.json'), JSON.stringify({ project_id: id }))
+  }
+
+  it('the fingerprint moves when a pin or an origin appears, and for nothing else', () => {
+    const home = tmpDir('devspec-fp-home-')
+    const folder = path.join(home, 'app')
+    fs.mkdirSync(folder)
+    const fp = () => folderLinkFingerprint(folder, { home })
+    const bare = fp()
+    fs.writeFileSync(path.join(folder, 'README.md'), 'hello')
+    assert.equal(fp(), bare, 'an ordinary file changes nothing')
+    git(folder, 'init', '-q')
+    const inited = fp()
+    assert.notEqual(inited, bare, 'a repository appearing is a change worth a look')
+    git(folder, 'status', '--short')
+    assert.equal(fp(), inited, 'git writing inside .git (locks, index) is not a change')
+    git(folder, 'remote', 'add', 'origin', 'https://github.com/example/app.git')
+    const withRemote = fp()
+    assert.notEqual(withRemote, inited, 'adding origin rewrites .git/config')
+    pin(folder)
+    assert.notEqual(fp(), withRemote, 'a pin appearing is a change')
+  })
+
+  it('sees the main working tree from a linked worktree', () => {
+    const home = tmpDir('devspec-fp-wt-home-')
+    const main = path.join(home, 'main')
+    fs.mkdirSync(main)
+    git(main, 'init', '-q', '-b', 'main')
+    git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'root')
+    const worktree = path.join(home, 'wt')
+    git(main, 'worktree', 'add', '-q', worktree)
+    const fp = () => folderLinkFingerprint(worktree, { home })
+    const before = fp()
+    git(main, 'remote', 'add', 'origin', 'https://github.com/example/main.git')
+    const afterRemote = fp()
+    assert.notEqual(afterRemote, before, 'the shared config is where the worktree gets origin')
+    pin(main)
+    assert.notEqual(fp(), afterRemote, "the main tree's pin is one findProjectPin reads")
+  })
+
+  it('waits on the fingerprint and runs the real lookup only when it changes', async () => {
+    const prints = ['a', 'a', 'b', 'b', 'c']
+    let lookups = 0
+    const linked = await waitForFolderLink('/x', {
+      ownerAlive: () => true,
+      fingerprint: () => prints.shift() ?? 'c',
+      namesProject: () => ++lookups === 2,
+      sleepFn: async () => {},
+    })
+    assert.equal(linked, true)
+    assert.equal(lookups, 2, 'one lookup per change: b still named nothing, c did')
+    assert.equal(prints.length, 0)
+  })
+
+  it('gives up without a lookup when Claude Code goes', async () => {
+    let lookups = 0
+    const linked = await waitForFolderLink('/x', {
+      ownerAlive: () => false,
+      fingerprint: () => String(Math.random()),
+      namesProject: () => { lookups++; return true },
+      sleepFn: async () => {},
+    })
+    assert.equal(linked, false)
+    assert.equal(lookups, 0)
+  })
+
+  it('only the "folder names no project" answers wait; key and install problems stay dormant', () => {
+    assert.deepEqual([...WAIT_FOR_LINK_REASONS].sort(), ['folder_not_linked', 'register_refused'])
+  })
+
+  it('a real listener stays silent while it waits, notices the pin, and says nothing when it connects', async () => {
+    const home = tmpDir('devspec-listen-link-home-')
+    const folder = path.join(home, 'greenfield')
+    fs.mkdirSync(folder)
+    const child = spawn(process.execPath, [path.join(HERE, 'devspec-remote-listen.mjs')], {
+      cwd: folder,
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        USERPROFILE: home,
+        CLAUDE_CODE_SESSION_ID: 'listen-link-conv',
+        CLAUDE_PID: String(process.pid),
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_unused',
+        // Unreachable on purpose: once linked it tries to register and keeps retrying,
+        // which must be just as silent as waiting.
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'http://127.0.0.1:1/api/mcp',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    let exited = false
+    child.on('exit', () => { exited = true })
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    pin(folder)
+    await new Promise((resolve) => setTimeout(resolve, LINK_WATCH_MS + 2500))
+    const alive = !exited
+    child.kill('SIGKILL')
+    assert.equal(stdout, '', 'stdout must stay empty while waiting and while connecting')
+    assert.equal(alive, true)
+    const logDir = path.join(home, '.devspec', 'remote-control', 'listen')
+    const log = fs.readdirSync(logDir).map((f) => fs.readFileSync(path.join(logDir, f), 'utf8')).join('')
+    assert.match(log, /waiting for this folder to name a project/)
+    assert.match(log, /now names a project — connecting/)
+    // Unreachable is not a refusal: it retries on the outage schedule rather than going
+    // back to waiting for the folder to change.
+    assert.match(log, /"retry"/, 'it went on to connect, and rode out the unreachable server')
+    assert.doesNotMatch(log, /register_refused/)
   })
 })

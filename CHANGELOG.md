@@ -2,6 +2,33 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.30.0 - 2026-09-23
+
+### A new project connects as soon as its folder is linked
+
+Starting a project before its code exists usually means opening Claude Code in an
+empty folder and linking it to DevSpec part-way through, with a
+`.devspec/project.json` pin or by adding a repository your project tracks. Until now
+the agent only checked once, when Claude Code started, so it stayed off the Agents
+page until the next restart. It now notices the folder being linked and appears on
+the Agents page within a few seconds. Waiting still costs nothing: it only looks at
+a couple of files every few seconds, and a folder that is never linked is never
+reported to DevSpec.
+
+### A reminder to add a new repository to your project
+
+When your agent gives a linked folder its repository, for example with
+`git remote add origin` or `gh repo create`, and that repository is not part of the
+project yet, it reminds you to add it under the project's **Settings → Integrations →
+Repositories**. Until you do, DevSpec cannot read the code or connect its commits to
+your work. You hear it once per conversation, and never when the repository is
+already linked or DevSpec cannot be reached.
+
+### Also in this release
+
+- An agent started while your computer is offline now connects once the network is
+  back, instead of staying off the Agents page for the rest of the session.
+
 ## 0.29.2 - 2026-09-23
 
 - Claude loads the instructions for DevSpec messages once per conversation instead of

@@ -46,7 +46,7 @@ Pass `--owner-pid "$PPID"` exactly as written. Never hunt for the pid yourself (
 
 If it exits non-zero, read the message: it names the failure (auth, no project resolvable, poller). Do not improvise a different connect path.
 
-**A folder with no git remote and no pin** — a greenfield project whose code does not exist yet — is reported in the status block. Offer to write `.devspec/project.json` (`{"project_id": "<uuid>"}`) once the user names the project, at the repo root or the working directory. Never write it silently, put nothing but the id in it, and if a pin already names a **different** project, say which before replacing it.
+**A folder with no git remote and no pin** — a greenfield project whose code does not exist yet — is reported in the status block. Offer to write `.devspec/project.json` (`{"project_id": "<uuid>"}`) once the user names the project, at the repo root or the working directory. Never write it silently, put nothing but the id in it, and if a pin already names a **different** project, say which before replacing it. Then run connect again. The listener Claude Code started with this session may connect the newly pinned folder by itself within a few seconds; if the status block then says `wake: ALREADY ARMED`, it holds the wake and you arm nothing.
 
 **Never** attach to a session because it shared a repo, a cwd, or a recently-stopped agent. The bond is this conversation's alone.
 

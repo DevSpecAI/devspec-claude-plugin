@@ -30,6 +30,15 @@
  * nothing, and exits only when Claude Code does. Exiting would end the monitor, and
  * Claude Code tells the model when a monitor ends — a wake about nothing.
  *
+ * ## A folder that is not linked YET keeps watching (item fa9b809b)
+ *
+ * A greenfield folder often becomes a DevSpec folder mid-session: the agent writes the
+ * `.devspec/project.json` pin once the person names the project, or adds an `origin`
+ * that DevSpec already tracks. So when the only reason to stand down is that the
+ * folder names no project, the listener waits — silently, on a few stat calls every
+ * few seconds, never git or the network — and connects the moment that changes. Every
+ * other reason to stand down (switched off, no key, a refused key) stays dormant.
+ *
  * ## One reader per inbox
  *
  * If something already holds this connection's wake (a Monitor armed by an older
@@ -44,6 +53,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connect, ConnectError } from './devspec-remote-connect.mjs'
+import { findProjectPin, folderLinkFingerprint, gitRemoteOrigin } from './devspec-scope.mjs'
 import { isWaitArmed, EXIT_REARM, EXIT_TERMINAL } from './devspec-remote-wait.mjs'
 import { storeTiers } from './instruction-tiers.mjs'
 import { readPrivateJsonResult, STATE_OK } from './private-state.mjs'
@@ -61,8 +71,10 @@ export const UNREACHABLE_RETRY_MS = [5_000, 30_000, 120_000, 600_000]
 /** How long to wait for the SessionStart hook's startup file when env carries no key. */
 const STARTUP_FILE_WAIT_MS = 20_000
 const OWNER_POLL_MS = 5_000
+/** How often an unlinked folder is re-checked: a handful of stat calls, nothing else. */
+export const LINK_WATCH_MS = 3_000
 
-/** Failures that are answers, not outages: never retried. */
+/** Failures that are answers, not outages: never retried as they stand. */
 const TERMINAL_REASONS = new Set([
   'folder_not_linked',
   'register_refused',
@@ -71,6 +83,20 @@ const TERMINAL_REASONS = new Set([
   'bad_args',
   'node_version',
 ])
+
+/**
+ * The answers a change to the folder itself can overturn. `folder_not_linked` is "this
+ * folder names no project"; `register_refused` is the server declining the project the
+ * folder named (a remote DevSpec does not track, a pin to a project this key cannot
+ * see), which a new pin or remote can fix just as well. The rest are about the key or
+ * the install, and nothing in the folder changes them.
+ */
+export const WAIT_FOR_LINK_REASONS = new Set(['folder_not_linked', 'register_refused'])
+
+/** Does anything in this folder name a DevSpec project right now? */
+function folderNamesProject(cwd) {
+  return Boolean(findProjectPin(cwd) || gitRemoteOrigin(cwd))
+}
 
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false
@@ -170,6 +196,41 @@ async function dormant(ownerPid, log, reason, detail = {}) {
 }
 
 /**
+ * Wait, silently, until the folder could name a project it did not name before.
+ *
+ * Resolves `true` once the stat fingerprint has changed AND the real lookup (pin, or
+ * `git remote get-url origin`) finds something, so git runs only after a relevant file
+ * actually moved. Resolves `false` when the owner goes, so the caller exits. A change
+ * that still names nothing (a `git init` with no remote yet, a half-written pin) just
+ * becomes the new baseline and the watch carries on.
+ */
+export async function waitForFolderLink(
+  cwd,
+  {
+    ownerAlive,
+    fingerprint = folderLinkFingerprint,
+    namesProject = folderNamesProject,
+    sleepFn = sleep,
+    watchMs = LINK_WATCH_MS,
+    log = { write: () => {} },
+  } = {},
+) {
+  let last = fingerprint(cwd)
+  for (;;) {
+    await sleepFn(watchMs)
+    if (!ownerAlive()) return false
+    const now = fingerprint(cwd)
+    if (now === last) continue
+    last = now
+    if (namesProject(cwd)) {
+      log.write('folder changed and now names a project — connecting')
+      return true
+    }
+    log.write('folder changed but still names no project — still waiting')
+  }
+}
+
+/**
  * A signal means Claude Code (or a person) is stopping this monitor — when the session
  * ends, or when someone stops it from the task panel. It must always win.
  *
@@ -253,6 +314,16 @@ async function main() {
     } catch (e) {
       const reason = e instanceof ConnectError ? e.reason : 'unexpected'
       log.write('connect failed', { reason, error: e?.message })
+      if (WAIT_FOR_LINK_REASONS.has(reason)) {
+        log.write('waiting for this folder to name a project', { reason })
+        const linked = await waitForFolderLink(cwd, { ownerAlive: () => pidAlive(ownerPid), log })
+        if (!linked) {
+          log.write('owner gone — exiting', { owner_pid: ownerPid })
+          process.exit(0)
+        }
+        attempt = -1
+        continue
+      }
       if (TERMINAL_REASONS.has(reason)) return dormant(ownerPid, log, reason)
       const wait = UNREACHABLE_RETRY_MS[Math.min(attempt, UNREACHABLE_RETRY_MS.length - 1)]
       await sleep(wait)

@@ -2,6 +2,11 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.30.3 - 2026-09-23
+
+- If Claude writes the folder pin in a form DevSpec cannot read, it is told straight
+  away and rewrites it, so the folder links instead of silently never connecting.
+
 ## 0.30.2 - 2026-09-23
 
 - The exact form of the folder pin is now in the short description Claude always

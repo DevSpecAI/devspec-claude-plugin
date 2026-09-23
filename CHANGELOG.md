@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.29.1 - 2026-09-23
+
+- `/devspec:devspec.remote` no longer says Claude Code started the listener when an
+  earlier connect in the same conversation did. Either way it still tells Claude
+  not to start a second one.
+
 ## 0.29.0 - 2026-09-23
 
 ### Claude Code connects to DevSpec when it starts, and waiting costs nothing

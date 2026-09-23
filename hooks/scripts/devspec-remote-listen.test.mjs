@@ -16,7 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, describe, it } from 'node:test'
 
-import { connect, ConnectError, startupScopeProven } from './devspec-remote-connect.mjs'
+import { connect, ConnectError, renderStatusBlock, startupScopeProven } from './devspec-remote-connect.mjs'
 import {
   connectAtStartupEnabled,
   envWithStartupConfig,
@@ -418,3 +418,29 @@ describe('/clear keeps a connection whose startup listener survives it', () => {
     assert.equal(off.stdout, '', 'switched off: no note')
   })
 })
+
+describe('/devspec.remote says which wake path is active', () => {
+  const summary = {
+    agent_name: 'Claude Code', codename: 'Test Otter', connection_id: 'c-1', session_id: null,
+    status: 'already live', poller: { ok: true, pid: 1 }, mcp_url: 'https://x', auth_ok: true,
+    connection_capability_present: true, local_id: 'l', owner_pid: 2,
+    project_scope: { git_remote: 'git@x:y.git', pinned_project_id: null },
+    arm_command: 'node wait.mjs --connection-id c-1 --stream --pending', cursor_flag: '--pending',
+    registration: { instructions_unchanged: true },
+  }
+  it('prints the arm command when nothing is listening', () => {
+    const block = renderStatusBlock(summary, { listenerArmed: false })
+    assert.match(block, /ARM THE WAKE STREAM NOW/)
+    assert.match(block, /--stream --pending/)
+  })
+  it('names the startup listener, and never asks for a second reader', () => {
+    const block = renderStatusBlock(summary, { listenerArmed: true, startupListener: true })
+    assert.match(block, /ALREADY ARMED — Claude Code started this connection's listener/)
+    assert.doesNotMatch(block, /ARM THE WAKE STREAM NOW/)
+  })
+  it('does not claim Claude Code started a listener it did not', () => {
+    const block = renderStatusBlock(summary, { listenerArmed: true, startupListener: false })
+    assert.match(block, /ALREADY ARMED — a listener is already running/)
+  })
+})
+

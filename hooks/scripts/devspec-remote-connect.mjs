@@ -36,6 +36,7 @@ import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { isWaitArmed } from './devspec-remote-wait.mjs'
 import { renderTiers } from './instruction-tiers.mjs'
+import { startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import {
   detectLocalId,
@@ -481,7 +482,7 @@ export async function connect(options = {}, deps = {}) {
  * listener Claude Code started with the session — in which case arming a second one
  * would have two readers racing for one inbox.
  */
-export function renderStatusBlock(summary, { listenerArmed = false, noPoller = false } = {}) {
+export function renderStatusBlock(summary, { listenerArmed = false, startupListener = false, noPoller = false } = {}) {
   const lines = []
   lines.push('━━━ DevSpec Remote Control ━━━')
   lines.push(`Agent:      ${summary.agent_name} · ${summary.codename || short(summary.connection_id)}`)
@@ -519,7 +520,11 @@ export function renderStatusBlock(summary, { listenerArmed = false, noPoller = f
 
   lines.push('')
   if (listenerArmed) {
-    lines.push('wake: ALREADY ARMED — Claude Code started this connection\'s listener with the session.')
+    lines.push(
+      startupListener
+        ? 'wake: ALREADY ARMED — Claude Code started this connection\'s listener with the session.'
+        : 'wake: ALREADY ARMED — a listener is already running for this connection.',
+    )
     lines.push(
       '  Do NOT arm the Monitor: a second reader would race it for the same inbox. Commands' +
         ' arrive as "DevSpec" monitor events; handle each with the devspec-remote-command skill.',
@@ -595,6 +600,7 @@ async function main() {
   process.stdout.write(
     renderStatusBlock(summary, {
       listenerArmed: isWaitArmed(summary.connection_id),
+      startupListener: startupListenerAlive(summary.connection_id),
       noPoller: !!args.noPoller,
     }),
   )

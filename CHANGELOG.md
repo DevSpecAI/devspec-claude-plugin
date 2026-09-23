@@ -2,6 +2,11 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.30.2 - 2026-09-23
+
+- The exact form of the folder pin is now in the short description Claude always
+  sees, not only in the instructions it may or may not open.
+
 ## 0.30.1 - 2026-09-23
 
 - Asking Claude to pin a folder to a DevSpec project now writes the file in the form

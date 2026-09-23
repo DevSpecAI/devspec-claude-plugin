@@ -553,6 +553,11 @@ describe('a folder linked mid-session connects without a restart (fa9b809b)', ()
     fs.writeFileSync(path.join(folder, '.devspec', 'project.json'), example.replace("<the project's uuid>", id))
     assert.equal(findProjectPin(folder, { home, root: folder })?.project_id, id)
     assert.match(skill, /name: devspec-pin/)
+    // The description is in every session's skill list whether or not the skill is
+    // loaded, and the second observed run wrote the right shape WITHOUT loading it — so
+    // the shape itself has to be in the part that is always there.
+    const description = /^description: (.+)$/m.exec(skill)?.[1] ?? ''
+    assert.match(description, /\{"project_id": "<uuid>"\}/)
   })
 
   it('only the "folder names no project" answers wait; key and install problems stay dormant', () => {

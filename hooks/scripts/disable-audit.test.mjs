@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,7 +35,7 @@ function connectionsDir() {
   return path.join(home, '.devspec', 'remote-control', 'connections')
 }
 
-function seedLiveConnection({ localId = null, agent = 'Claude Code' } = {}) {
+function seedLiveConnection({ localId = null, agent = 'Claude Code', mcpUrl = null } = {}) {
   const dir = connectionsDir()
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(
@@ -45,6 +46,7 @@ function seedLiveConnection({ localId = null, agent = 'Claude Code' } = {}) {
       agent_name: agent,
       local_id: localId,
       token: 'dvs_test',
+      ...(mcpUrl ? { mcp_url: mcpUrl } : {}),
     }),
     { mode: 0o600 },
   )
@@ -198,5 +200,127 @@ describe('a poller says goodbye on the way out', () => {
     }
     installExitAudit(fake)
     assert.doesNotThrow(() => fake.handlers.exit(1))
+  })
+})
+
+/**
+ * A real exit ends the connection on the SERVER, not just in the local file
+ * (item 58e2a19f). Before this, SessionEnd rewrote local state and nothing
+ * else, and the poller's signal handler exits silently by design (b9e02835), so
+ * the server kept every exited connection open. A sessionless one stayed open
+ * for good, because the liveness sweep only ends attached connections.
+ */
+describe('a real exit ends the connection on the server', () => {
+  const LOCAL = '22222222-3333-4444-5555-666666666666'
+  let server
+  let calls
+
+  beforeEach(async () => {
+    calls = []
+    server = http.createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        const parsed = JSON.parse(body)
+        calls.push({ parsed, authorization: request.headers.authorization })
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: parsed.id,
+          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+        }))
+      })
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  })
+  afterEach(async () => {
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  function url() {
+    return `http://127.0.0.1:${server.address().port}/api/mcp`
+  }
+
+  function endOnExit(reason) {
+    const env = { ...process.env, HOME: home, USERPROFILE: home }
+    for (const k of ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID', 'DEVSPEC_REMOTE_LOCAL_ID_CLAUDE_CODE']) {
+      delete env[k]
+    }
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [STATE_SCRIPT, 'disable-local', '--agent', 'Claude Code'], { env })
+      let stdout = ''
+      child.stdout.on('data', (c) => { stdout += c })
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ code, out: JSON.parse(stdout.trim().split('\n').pop() || '{}') }))
+      child.stdin.end(JSON.stringify({ session_id: LOCAL, reason }))
+    })
+  }
+
+  function heartbeatCalls() {
+    return calls.filter((c) => c.parsed.method === 'tools/call' && c.parsed.params?.name === 'heartbeat_connection')
+  }
+
+  it('sends one offline heartbeat with end_reason local_stop, for a sessionless connection too', async () => {
+    // The seeded connection has no session_id: the case the sweep never reaches.
+    seedLiveConnection({ localId: LOCAL, mcpUrl: url() })
+    const { code, out } = await endOnExit('prompt_input_exit')
+
+    assert.equal(code, 0)
+    const sent = heartbeatCalls()
+    assert.equal(sent.length, 1, 'exactly one end, not a retry storm or none')
+    assert.deepEqual(sent[0].parsed.params.arguments, {
+      connection_id: CONN,
+      status: 'offline',
+      end_reason: 'local_stop',
+    })
+    assert.equal(sent[0].authorization, 'Bearer dvs_test', 'the proven key cached for this connection')
+    assert.deepEqual(out.server_end, { sent: true, end_reason: 'local_stop' })
+    assert.ok(auditLines().some((l) => l.event === 'connection_end_reported'))
+
+    const state = JSON.parse(fs.readFileSync(path.join(connectionsDir(), `${CONN}.json`), 'utf8'))
+    assert.equal(state.enabled, false, 'the local disable still happens')
+  })
+
+  for (const reason of ['clear', 'resume']) {
+    it(`sends nothing on /${reason}: the Claude Code process is still running`, async () => {
+      // No startup listener is seeded, so this is the path that DOES disable
+      // locally. It still must not end the connection on the server.
+      seedLiveConnection({ localId: LOCAL, mcpUrl: url() })
+      const { code, out } = await endOnExit(reason)
+
+      assert.equal(code, 0)
+      assert.equal(heartbeatCalls().length, 0)
+      assert.deepEqual(out.server_end, { sent: false, reason: 'conversation_switch' })
+    })
+  }
+
+  it('never guesses a server address for the key', async () => {
+    // Key without its proven address: sending it to a default would hand this
+    // key to a server it was never proven against (8bb707fd).
+    seedLiveConnection({ localId: LOCAL })
+    const { code, out } = await endOnExit('prompt_input_exit')
+
+    assert.equal(code, 0)
+    assert.equal(heartbeatCalls().length, 0)
+    assert.deepEqual(out.server_end, { sent: false, reason: 'no_credential_pair' })
+    assert.ok(auditLines().some((l) => l.event === 'connection_end_not_reported' && l.reason === 'no_credential_pair'))
+  })
+
+  it('an unreachable server does not stop the exit, and says so in the log', async () => {
+    const closedUrl = url()
+    await new Promise((resolve) => server.close(resolve))
+    server = http.createServer()
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    seedLiveConnection({ localId: LOCAL, mcpUrl: closedUrl })
+
+    const started = Date.now()
+    const { code, out } = await endOnExit('prompt_input_exit')
+
+    assert.equal(code, 0)
+    assert.ok(Date.now() - started < 10_000, 'bounded well inside the 15s hook timeout')
+    assert.equal(out.server_end.sent, false)
+    const state = JSON.parse(fs.readFileSync(path.join(connectionsDir(), `${CONN}.json`), 'utf8'))
+    assert.equal(state.enabled, false)
+    assert.ok(auditLines().some((l) => l.event === 'connection_end_not_reported'))
   })
 })

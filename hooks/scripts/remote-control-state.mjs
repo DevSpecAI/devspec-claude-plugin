@@ -508,6 +508,57 @@ function disableConnectionState(
   }
 }
 
+/**
+ * Tell the server a connection has ended because this Claude Code exited
+ * (item 58e2a19f). Best effort, bounded by `timeoutMs`, and it never throws.
+ *
+ * Why it lives here. When Claude Code exits it signals its children, and the
+ * poller's signal handlers exit silently on purpose: a superseded poller must
+ * never stamp state (b9e02835). The poller's own goodbye (`offlineAndExit`)
+ * only runs when the poll loop sees the owner die first, and on a normal exit
+ * the signal wins that race. So SessionEnd's `disable-local` is the one step
+ * that runs on every real exit. Before this it only rewrote local state, and
+ * the server kept the connection open (`ended_at` null) with nothing behind
+ * it. The liveness sweep only ends session-attached connections, so a
+ * sessionless one stayed open for good.
+ *
+ * It uses the credential pair `write` proved and cached for this connection,
+ * and only when both halves are there: the key and the server address travel
+ * together or not at all (8bb707fd). Guessing a default address would send
+ * this key to a server it was never proven against. Same call and end reason
+ * as `/devspec:devspec.remote-stop`. `local_stop` is a recoverable end, so a
+ * later reconnect from the same conversation can still pick the id back up.
+ *
+ * Every outcome is audited on the connection's poll log, so "did the server
+ * hear about this exit?" has an answer.
+ */
+export async function reportConnectionEnded(connectionId, { call = mcpToolsCall, timeoutMs = 5_000 } = {}) {
+  if (!connectionId) return { sent: false, reason: 'no_connection' }
+  const state = readJson(connectionPath(connectionId)) || {}
+  const token = typeof state.token === 'string' && state.token ? state.token : null
+  const mcpUrl = typeof state.mcp_url === 'string' && state.mcp_url ? state.mcp_url : null
+  if (!token || !mcpUrl) {
+    const outcome = { sent: false, reason: 'no_credential_pair' }
+    appendConnectionAudit(connectionId, 'connection_end_not_reported', outcome)
+    return outcome
+  }
+  try {
+    await call({
+      mcpUrl,
+      token,
+      name: 'heartbeat_connection',
+      arguments: { connection_id: connectionId, status: 'offline', end_reason: 'local_stop' },
+      timeoutMs,
+    })
+    appendConnectionAudit(connectionId, 'connection_end_reported', { end_reason: 'local_stop' })
+    return { sent: true, end_reason: 'local_stop' }
+  } catch (err) {
+    const outcome = { sent: false, reason: String(err?.message || err).slice(0, 300) }
+    appendConnectionAudit(connectionId, 'connection_end_not_reported', outcome)
+    return outcome
+  }
+}
+
 /** Owner (agent) process liveness — see devspec-remote-poll.mjs. EPERM = alive. */
 export function ownerAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false
@@ -1536,7 +1587,14 @@ if (isMain) {
       via: 'disable-local',
       idSource,
     })
-    process.stdout.write(JSON.stringify({ ...result, local_id: localId }) + '\n')
+    // A real exit ends the connection on the server too (item 58e2a19f). A
+    // conversation switch never does: the Claude Code process is still running,
+    // and a connection lives as long as its host process (8a12f116).
+    const serverEnd =
+      endReason && CONVERSATION_SWITCH_REASONS.has(endReason)
+        ? { sent: false, reason: 'conversation_switch' }
+        : await reportConnectionEnded(connectionId)
+    process.stdout.write(JSON.stringify({ ...result, local_id: localId, server_end: serverEnd }) + '\n')
     process.exit(0)
   }
 

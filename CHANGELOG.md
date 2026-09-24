@@ -2,6 +2,14 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.2 - 2026-09-24
+
+- Closing Claude Code now ends its connection in DevSpec, with the reason
+  recorded as a local stop. Before, the connection stayed open with nothing
+  behind it, and one that wasn't attached to a session never closed at all.
+  `/clear` and `/resume` still keep the connection, because Claude Code is
+  still running.
+
 ## 0.32.1 - 2026-09-24
 
 - Claude knows it can report back on its own after its turn has ended, for

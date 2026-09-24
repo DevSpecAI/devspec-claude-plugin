@@ -17,9 +17,10 @@
  *   mismatch; only a complete copy is compared with coverage, and each comparison
  *   is a bound that holds whichever side of the count a change landed on.
  *
- * Durability: the poller applies a page here only after its inbox record is
- * durable, and advances its cursor only after this store is written, so a crash
- * anywhere re-polls and re-applies the same page. Every application is idempotent
+ * Durability: the poller writes a page here BEFORE its inbox record, so the line a
+ * wake points at is on disk by the time anything is woken (item 7fe8e3d1), and
+ * advances its cursor only after both, so a crash anywhere re-polls and re-applies
+ * the same page. Every application is idempotent
  * (keyed by message id, states monotonic), which is what makes that safe. Files are
  * replaced atomically (temp file + rename) with 0600 permissions. Nothing here ever
  * writes to stdout: stdout starts a paid model turn.
@@ -42,6 +43,17 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const DEFAULT_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const STATE_RANK = { in_progress: 0, final: 1, deleted: 2 }
 const CONTEXT_BUCKETS = ['human_context', 'agent_context', 'ai_context', 'system_context']
+
+/**
+ * Where the room's CURRENT advisory state lives (item 62f132c9): one small document
+ * per connection, overwritten in place, that always says what is true NOW — polls,
+ * Still to Discuss, plans, session activity and how complete this copy is. A file
+ * to read, not a message to receive: nothing in it is worth interrupting a turn
+ * for (decision 2ccf65d1).
+ */
+export function roomStatePath(connectionId, dir = DEFAULT_DIR) {
+  return path.join(dir, `${connectionId}.room.json`)
+}
 
 export function transcriptPaths(connectionId, sessionId, dir = DEFAULT_DIR) {
   const base = path.join(dir, `${connectionId}.${sessionId}`)
@@ -123,7 +135,10 @@ function commandLine(command, described, styleNotes) {
     // live delivery is ever handled; a line like this never becomes work again.
     delivered_as_command: {
       authority: command.authority.kind,
-      ...(command.project_scope ? { project_id: command.project_scope.project_id } : {}),
+      // A delegated command's scope, with the server's instruction verbatim.
+      ...(command.project_scope
+        ? { project_scope: { project_id: command.project_scope.project_id, instruction: command.project_scope.instruction } }
+        : {}),
       ...(styleNotes?.length ? { response_style: styleNotes } : {}),
     },
   }
@@ -368,6 +383,30 @@ function sortedLines(store) {
   return [...store.rows.values()].sort((a, b) => a.seq - b.seq)
 }
 
+/** The copy holds the room's history, not only the pages since it started. */
+export function transcriptHasHistory(store) {
+  return Boolean(store?.backfill.complete && !store.backfill.draining)
+}
+
+/**
+ * How many messages came after this connection's own last post, counting only
+ * those before `beforeSeq` (a command's own line is not "since" itself). Deleted
+ * messages are not counted: there is nothing left to read. Navigation, not proof
+ * that anything before the reply was read. Null while the copy is still filling
+ * in history, because a count taken then is only the part that has arrived.
+ */
+export function messagesSinceLastReply(store, beforeSeq = Number.POSITIVE_INFINITY) {
+  if (!transcriptHasHistory(store)) return null
+  const lines = sortedLines(store).filter((line) => line.seq < beforeSeq)
+  let count = 0
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]
+    if (line.from?.you) break
+    if (line.state !== 'deleted') count += 1
+  }
+  return count
+}
+
 /**
  * How the copy stands, for the room state file. `approx_tokens` is an estimate
  * (characters ÷ 4) and says so. `since_my_last_reply` is navigation — how many
@@ -378,8 +417,7 @@ export function transcriptSummary(store, { dir = DEFAULT_DIR } = {}) {
   if (!store) return null
   const lines = sortedLines(store)
   const chars = lines.reduce((sum, line) => sum + (line.text?.length ?? 0), 0)
-  let lastMine = -1
-  lines.forEach((line, index) => { if (line.from?.you) lastMine = index })
+  const hasMyReply = lines.some((line) => line.from?.you)
   const status = store.writeFailed
     ? 'write_failed'
     : store.backfill.draining || !store.backfill.complete
@@ -398,8 +436,8 @@ export function transcriptSummary(store, { dir = DEFAULT_DIR } = {}) {
     approx_tokens_is_estimate: true,
     complete: status === 'complete',
     status,
-    since_my_last_reply: lastMine === -1 ? lines.length : lines.length - lastMine - 1,
-    has_my_reply: lastMine !== -1,
+    since_my_last_reply: messagesSinceLastReply(store),
+    has_my_reply: hasMyReply,
     last_check: store.lastCheck,
     as_of: store.updatedAt,
   }

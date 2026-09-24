@@ -26,6 +26,7 @@ import {
   createTranscriptStore,
   loadTranscriptStore,
   MAX_REPAIRS_PER_DAY,
+  messagesSinceLastReply,
   observeSessionActivity,
   persistTranscriptStore,
   sessionActivityView,
@@ -34,7 +35,8 @@ import {
   transcriptPollArguments,
   transcriptSummary,
 } from './room-transcript.mjs'
-import { appendCanonicalInbox, scanPersistedInboxRecords, writeRoomState } from './devspec-remote-poll.mjs'
+import { appendCanonicalInbox, commandWakeContext, scanPersistedInboxRecords, writeRoomState } from './devspec-remote-poll.mjs'
+import { buildCanonicalCommandEvents, parseInboxBatches } from './devspec-remote-wait.mjs'
 
 const CONN = '10000000-0000-4000-8000-000000000001'
 const OTHER_AGENT = '10000000-0000-4000-8000-000000000099'
@@ -259,43 +261,51 @@ describe("another agent's screenshot", () => {
 })
 
 describe('a crash at every write boundary', () => {
-  // The poller's order: inbox record → transcript → transcript state → cursor.
-  // The cursor only moves last, so after a crash the same page is polled again.
+  // The poller's order (item 7fe8e3d1): transcript → transcript state → inbox
+  // record → cursor. The transcript comes first because the wake points at the
+  // command's line in it; the cursor only moves last, so after a crash the same
+  // page is polled again and re-applied as a no-op.
   const inboxWrites = []
   const writeRecord = (_connection, record) => { inboxWrites.push(record); return true }
 
   function deliver({ dir, index, crashAt, ingress }) {
-    const persisted = appendCanonicalInbox(CONN, ingress, index, { sessionId: SESSION, channel: ingress.commands.length ? 'command' : 'context', writeRecord })
-    if (crashAt === 'after_inbox') return persisted
     const store = loadTranscriptStore(CONN, SESSION, { dir })
     applyIngressToStore(store, ingress, { sessionId: SESSION })
     if (crashAt === 'during_transcript') {
       persistTranscriptStore(store, { dir, writeText: () => { throw new Error('killed') } })
-      return persisted
+      return null
     }
     if (crashAt === 'between_transcript_and_state') {
       persistTranscriptStore(store, { dir, writeJson: () => { throw new Error('killed') } })
-      return persisted
+      return null
     }
     persistTranscriptStore(store, { dir })
-    return persisted
+    if (crashAt === 'before_inbox') return null
+    const channel = ingress.commands.length ? 'command' : 'context'
+    return appendCanonicalInbox(CONN, ingress, index, {
+      sessionId: SESSION,
+      channel,
+      wakeContext: channel === 'command' ? commandWakeContext(store, ingress, { connectionId: CONN, dir }) : null,
+      writeRecord,
+    })
   }
 
-  for (const crashAt of ['after_inbox', 'during_transcript', 'between_transcript_and_state', 'before_cursor']) {
-    it(`recovers from a crash ${crashAt.replaceAll('_', ' ')} without gaps, duplicates or a replayed command`, () => {
+  for (const crashAt of ['during_transcript', 'between_transcript_and_state', 'before_inbox', 'before_cursor']) {
+    it(`recovers from a crash ${crashAt.replaceAll('_', ' ')} without gaps, duplicates, a lost or a replayed command`, () => {
       const dir = tmpDir()
       inboxWrites.length = 0
       const index = scanPersistedInboxRecords('')
       const first = page({ entries: [entry(1), entry(2)], commands: [command(3)], room: { coverage: coverage(3, 3) } })
-      const firstDelivery = deliver({ dir, index, crashAt, ingress: first })
-      assert.deepEqual(firstDelivery.executeMessageIds, [id(3)])
+      deliver({ dir, index, crashAt, ingress: first })
       // Restart: the inbox index is rebuilt from what reached disk, and the same
       // rows arrive again in a new envelope because the cursor never moved.
       const restartedIndex = scanPersistedInboxRecords(inboxWrites.map((record) => JSON.stringify(record)).join('\n') + '\n')
       const again = page({ entries: [entry(1), entry(2)], commands: [command(3)], room: { coverage: coverage(3, 3) } })
-      const replay = deliver({ dir, index: restartedIndex, crashAt: null, ingress: again })
-      // The historical command is never executed twice.
-      assert.equal(replay.appended, false)
+      deliver({ dir, index: restartedIndex, crashAt: null, ingress: again })
+      // The command reaches the inbox exactly once: never lost, never executed twice.
+      const commandRecords = inboxWrites.filter((record) => record.type === 'canonical_commands')
+      assert.equal(commandRecords.length, 1)
+      assert.deepEqual(commandRecords[0].execute_message_ids, [id(3)])
       const lines = linesOnDisk(dir)
       assert.deepEqual(lines.map((line) => line.seq), [1, 2, 3])
       // The command is kept as history, never as a queue entry.
@@ -303,6 +313,42 @@ describe('a crash at every write boundary', () => {
       assert.equal(Object.hasOwn(lines[2], 'executable'), false)
     })
   }
+
+  it('has the command line on disk before the inbox record that wakes anybody', () => {
+    const dir = tmpDir()
+    let onDiskWhenWoken = null
+    const store = createTranscriptStore(CONN, SESSION)
+    const ingress = page({ entries: [entry(1)], commands: [command(2, { text: 'the full command' })] })
+    apply(store, ingress)
+    persistTranscriptStore(store, { dir })
+    appendCanonicalInbox(CONN, ingress, scanPersistedInboxRecords(''), {
+      sessionId: SESSION,
+      channel: 'command',
+      wakeContext: commandWakeContext(store, ingress, { connectionId: CONN, dir }),
+      writeRecord: (_connection, record) => {
+        onDiskWhenWoken = linesOnDisk(dir).find((line) => line.message_id === record.execute_message_ids[0])
+        return true
+      },
+    })
+    assert.equal(onDiskWhenWoken.text, 'the full command')
+  })
+
+  it('keeps that order in the real poller, not only in this simulation', () => {
+    // The loop is not exported, so its order is pinned on the source: the
+    // transcript write, then the room file, then the inbox append, then the cursor.
+    const source = fs.readFileSync(new URL('./devspec-remote-poll.mjs', import.meta.url), 'utf8')
+    const body = source.slice(source.indexOf('function consumeCanonicalIngress(res)'))
+    const at = (needle) => {
+      const index = body.indexOf(needle)
+      assert.notEqual(index, -1, `${needle} not found in consumeCanonicalIngress`)
+      return index
+    }
+    const transcript = at('persistTranscriptStore(transcriptStore)')
+    const room = at('writeRoomState(connectionId, res')
+    const inbox = at('appendCanonicalInbox(connectionId, ingress')
+    const cursor = at('persistCanonicalCursorState(res, ingress')
+    assert.ok(transcript < room && room < inbox && inbox < cursor)
+  })
 
   it('ignores a torn last line left by a crash mid-append', () => {
     const dir = tmpDir()
@@ -413,9 +459,113 @@ describe('the room state file', () => {
     assert.equal(doc.transcript.complete, false)
     assert.equal(doc.transcript.messages, 3)
     assert.equal(doc.transcript.approx_tokens_is_estimate, true)
-    // Navigation only: one message came after this connection's own last post.
-    assert.equal(doc.transcript.since_my_last_reply, 1)
+    // Still filling in history, so no count: it would only be the part that arrived.
+    assert.equal(doc.transcript.since_my_last_reply, null)
     assert.equal(doc.transcript.has_my_reply, true)
+  })
+})
+
+describe('the wake points at the transcript (item 7fe8e3d1)', () => {
+  const drained = (entries, commands = []) => {
+    const store = createTranscriptStore(CONN, SESSION)
+    beginDrain(store)
+    const ingress = page({ entries, commands })
+    apply(store, ingress, { drainPoll: true })
+    return { store, ingress }
+  }
+  const mine = (n, text = 'my reply') => entry(n, { kind: 'agent', name: `${ME_LABEL} (Ali Price)`, tool: ME_LABEL, text })
+
+  it('counts the 50 room messages after my last reply that came before the command', () => {
+    const { store, ingress } = drained([mine(1), ...range(2, 51).map((n) => entry(n))], [command(52, { text: 'what do you think?' })])
+    const wake = commandWakeContext(store, ingress, { connectionId: CONN, dir: '/tmp/d' })
+    assert.equal(wake.since_last_reply[id(52)], 50)
+    assert.equal(wake.transcript, transcriptPaths(CONN, SESSION, '/tmp/d').transcript)
+    assert.equal(wake.room_state, path.join('/tmp/d', `${CONN}.room.json`))
+  })
+
+  it('counts from the start of the room when I have never replied, and skips deleted messages', () => {
+    const { store } = drained([entry(1), entry(2), entry(3)])
+    assert.equal(messagesSinceLastReply(store, 4), 3)
+    apply(store, page({ room: { open_check: [{ message_id: id(2), state: 'deleted' }] } }))
+    assert.equal(messagesSinceLastReply(store, 4), 2)
+    assert.equal(messagesSinceLastReply(store, 2), 1, 'only what came before the command counts')
+  })
+
+  it('gives no count while the copy is still filling in history', () => {
+    const store = createTranscriptStore(CONN, SESSION)
+    const ingress = page({ entries: [entry(1)], commands: [command(2)] })
+    apply(store, ingress)
+    assert.equal(commandWakeContext(store, ingress, { connectionId: CONN }).since_last_reply[id(2)], null)
+  })
+
+  it('names no transcript for a copy that holds nothing', () => {
+    const store = createTranscriptStore(CONN, SESSION)
+    const ingress = page({ commands: [command(1)] })
+    assert.equal(commandWakeContext(store, ingress, { connectionId: CONN }).transcript, null)
+    assert.equal(commandWakeContext(null, ingress, { connectionId: CONN }).transcript, null)
+  })
+
+  it('keeps a message far longer than 12,000 characters whole', () => {
+    // The retired carry skipped any single message over 12,000 characters.
+    const long = `start ${'x'.repeat(40_000)} end`
+    const dir = tmpDir()
+    const { store } = drained([entry(1, { text: long }), entry(2)])
+    persistTranscriptStore(store, { dir })
+    assert.equal(linesOnDisk(dir)[0].text, long)
+  })
+
+  it("keeps a delegated command's scope and the server's instruction on its line", () => {
+    const delegated = command(1)
+    delegated.requester = { user_id: '21000000-0000-4000-8000-000000000002', display_name: 'Brandon Young' }
+    delegated.authority = {
+      kind: 'delegated', mode: 'project', requested_by_user_id: '21000000-0000-4000-8000-000000000002',
+      connection_owner_user_id: OWNER, decision_source: 'server',
+    }
+    delegated.project_scope = {
+      kind: 'devspec_project', policy_id: 'delegated_project_v1', project_id: '80000000-0000-4000-8000-000000000008',
+      instruction: 'Use only the server-selected DevSpec project.',
+    }
+    const dir = tmpDir()
+    const { store } = drained([], [delegated])
+    persistTranscriptStore(store, { dir })
+    assert.deepEqual(linesOnDisk(dir)[0].delivered_as_command, {
+      authority: 'delegated',
+      project_scope: { project_id: '80000000-0000-4000-8000-000000000008', instruction: 'Use only the server-selected DevSpec project.' },
+    })
+  })
+
+  it('never wakes this agent for a message addressed to another agent', () => {
+    // End to end on this side of the wire: the room says the message was for Pi,
+    // the poller files the page as context, and the wait stream finds nothing to
+    // wake on. The line is still in the transcript, as history.
+    const dir = tmpDir()
+    const forPi = page({
+      entries: [entry(1, { text: 'Pi, please redeploy staging' })],
+      described: { [id(1)]: { addressee: { kind: 'connection', connection_id: OTHER_AGENT, label: 'Pi · Racing Gecko' } } },
+    })
+    const normalized = normalizeRemoteIngressV1(forPi, CONN)
+    assert.equal(normalized.ok, true)
+    assert.equal(normalized.wake, false)
+    const records = []
+    appendCanonicalInbox(CONN, forPi, scanPersistedInboxRecords(''), {
+      sessionId: SESSION,
+      channel: normalized.wake ? 'command' : 'context',
+      writeRecord: (_connection, record) => { records.push(JSON.stringify(record)); return true },
+    })
+    assert.equal(records.length, 1)
+    const batches = parseInboxBatches(records, CONN)
+    assert.deepEqual(batches, [])
+    assert.deepEqual(batches.flatMap((batch) => buildCanonicalCommandEvents(batch)), [])
+    const store = createTranscriptStore(CONN, SESSION)
+    apply(store, forPi)
+    persistTranscriptStore(store, { dir })
+    const [line] = linesOnDisk(dir)
+    assert.equal(line.to, 'Pi · Racing Gecko')
+    assert.equal(Object.hasOwn(line, 'delivered_as_command'), false)
+    // And an envelope that tries to hand this agent another agent's command is refused.
+    const hijack = page({ commands: [command(2)] })
+    hijack.commands[0].addressee = { connection_id: OTHER_AGENT, agent_name: 'Pi', codename: 'Racing Gecko', label: 'Pi · Racing Gecko' }
+    assert.equal(normalizeRemoteIngressV1(hijack, CONN).ok, false)
   })
 })
 

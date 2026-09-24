@@ -17,12 +17,8 @@ import {
   resolveServerAttachment,
   verbForTurnTransition,
   patchConnectionState,
-  trimAdvisoryCarry,
-  createCanonicalCarryState,
-  accumulateCanonicalCarry,
-  snapshotCanonicalCarry,
-  carryAfterCanonicalInbox,
-  roomAwarenessDelta,
+  roomChangesSince,
+  commandWakeContext,
   writeRoomState,
   roomStatePath,
   pollTerminalReason,
@@ -500,243 +496,6 @@ describe('explicit automation dispatch channel', () => {
     assert.deepEqual([...index.commandMessageIds], ['msg-1'])
     assert.deepEqual([...index.controlIds], ['control-1'])
     assert.deepEqual([...index.dispatchIds], [automation.id])
-  })
-})
-
-describe('trimAdvisoryCarry', () => {
-  const msg = (id, len = 10) => ({ id, content: 'x'.repeat(len) })
-
-  it('keeps everything inside budget, oldest-first order preserved', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('a'), msg('b'), msg('c')])
-    assert.deepEqual(kept.map((m) => m.id), ['a', 'b', 'c'])
-    assert.equal(dropped, 0)
-  })
-
-  it('drops the OLDEST when over the count budget — nearest context survives', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('a'), msg('b'), msg('c')], { maxCount: 2 })
-    assert.deepEqual(kept.map((m) => m.id), ['b', 'c'])
-    assert.equal(dropped, 1)
-  })
-
-  it('drops the oldest when over the character budget', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('a', 100), msg('b', 100), msg('c', 100)], {
-      maxChars: 250,
-    })
-    assert.deepEqual(kept.map((m) => m.id), ['b', 'c'])
-    assert.equal(dropped, 1)
-  })
-
-  it('stops at the first normal row that cannot fit instead of backfilling with older rows', () => {
-    const { kept, dropped } = trimAdvisoryCarry(
-      [msg('oldest-5k', 5_000), msg('middle-8k', 8_000), msg('newest-5k', 5_000)],
-    )
-    assert.deepEqual(kept.map((entry) => entry.id), ['newest-5k'])
-    assert.equal(dropped, 2)
-  })
-
-  it('skips an individually oversized newest row and may still retain an older row', () => {
-    const { kept, dropped } = trimAdvisoryCarry(
-      [msg('older-normal', 5_000), msg('newest-oversized', 13_000)],
-    )
-    assert.deepEqual(kept.map((entry) => entry.id), ['older-normal'])
-    assert.equal(dropped, 1)
-  })
-
-  it('omits a single over-budget message so the character bound remains real', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('huge', 50_000)], { maxChars: 100 })
-    assert.deepEqual(kept, [])
-    assert.equal(dropped, 1)
-  })
-
-  it('handles empty and malformed input without throwing', () => {
-    assert.deepEqual(trimAdvisoryCarry([]), { kept: [], dropped: 0 })
-    assert.deepEqual(trimAdvisoryCarry(null), { kept: [], dropped: 0 })
-    assert.equal(trimAdvisoryCarry([{ id: 'no-content' }]).kept.length, 1)
-  })
-
-  it('THE 1-2-3 CASE: three separate arrivals still reach the command together', () => {
-    // Each untargeted message came back in its own long-poll response.
-    let carry = []
-    for (const n of ['1', '2', '3']) {
-      carry = trimAdvisoryCarry([...carry, { id: n, content: n }]).kept
-    }
-    assert.deepEqual(carry.map((m) => m.content), ['1', '2', '3'])
-  })
-})
-
-describe('canonical typed-context carry', () => {
-  const buckets = ['human_context', 'agent_context', 'ai_context', 'system_context']
-  const emptyContext = () => Object.fromEntries(buckets.map((bucket) => [bucket, []]))
-  const messageId = (sequence) =>
-    `30000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`
-  const page = (sequence, size = 600, { windowSequence = sequence, envelope = null } = {}) => {
-    const bucket = buckets[(sequence - 1) % buckets.length]
-    const order = {
-      sequence,
-      created_at: '2026-08-20T12:00:00.000Z',
-      message_id: messageId(sequence),
-    }
-    const windowOrder = {
-      sequence: windowSequence,
-      created_at: '2026-08-20T12:00:00.000Z',
-      message_id: messageId(windowSequence),
-    }
-    const context = emptyContext()
-    context[bucket].push({ message_id: order.message_id, order, content: 'x'.repeat(size) })
-    return {
-      envelope_id: envelope ?? `envelope-${sequence}`,
-      context,
-      window: { source_window: { start: windowOrder, end: windowOrder } },
-    }
-  }
-  const addRange = (state, start, end, size = 600) => {
-    for (let sequence = start; sequence <= end; sequence++) {
-      accumulateCanonicalCarry(state, page(sequence, size))
-    }
-  }
-  const rows = (snapshot) => buckets.flatMap((bucket) => snapshot.context[bucket])
-
-  it('uses one exact global budget and keeps newer live rows when older catch-up arrives later', () => {
-    const state = createCanonicalCarryState()
-    addRange(state, 101, 120)
-    addRange(state, 1, 21, 1)
-    const snapshot = snapshotCanonicalCarry(state)
-
-    assert.deepEqual(rows(snapshot).map((entry) => entry.order.sequence).sort((a, b) => a - b),
-      Array.from({ length: 20 }, (_, index) => index + 101))
-    assert.equal(rows(snapshot).length, 20)
-    assert.equal(rows(snapshot).reduce((sum, entry) => sum + entry.content.length, 0), 12_000)
-    assert.equal(snapshot.canonical_windows.length, 20)
-    assert.equal(snapshot.client_omission.window_metadata_dropped, 21)
-    assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
-      human_context: 6,
-      agent_context: 5,
-      ai_context: 5,
-      system_context: 5,
-    })
-  })
-
-  it('selects the same heterogeneous newest prefix across page grouping, arrival order, and retry', () => {
-    const pages = [page(1, 5_000), page(2, 8_000), page(3, 5_000)]
-    const together = {
-      envelope_id: 'envelope-combined',
-      context: Object.fromEntries(buckets.map((bucket) => [
-        bucket,
-        pages.flatMap((ingress) => ingress.context[bucket]),
-      ])),
-      window: {
-        source_window: {
-          start: pages[0].window.source_window.start,
-          end: pages[2].window.source_window.end,
-        },
-      },
-    }
-    const arrangements = {
-      'all together': [together],
-      'sequential 1→2→3': pages,
-      '2→3→1': [pages[1], pages[2], pages[0]],
-      '3→1→2': [pages[2], pages[0], pages[1]],
-      'older catch-up last': [pages[1], pages[2], pages[0]],
-    }
-    const outputs = []
-    for (const [name, ingresses] of Object.entries(arrangements)) {
-      const state = createCanonicalCarryState()
-      for (const ingress of ingresses) accumulateCanonicalCarry(state, ingress)
-      const beforeRetry = structuredClone(snapshotCanonicalCarry(state))
-      for (const ingress of ingresses) accumulateCanonicalCarry(state, ingress)
-      const afterRetry = snapshotCanonicalCarry(state)
-      assert.deepEqual(afterRetry, beforeRetry, `${name}: retries must not change output`)
-      outputs.push([name, afterRetry])
-    }
-
-    for (const [name, snapshot] of outputs) {
-      assert.deepEqual(rows(snapshot).map((entry) => entry.message_id), [messageId(3)], name)
-      assert.equal(rows(snapshot)[0].content.length, 5_000, name)
-      assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
-        human_context: 1,
-        agent_context: 1,
-        ai_context: 0,
-        system_context: 0,
-      }, name)
-      const retained = rows(snapshot)[0]
-      assert.ok(snapshot.canonical_windows.some(({ window: { source_window: { start, end } } }) =>
-        retained.order.sequence >= start.sequence && retained.order.sequence <= end.sequence), name)
-    }
-
-    const combined = outputs.find(([name]) => name === 'all together')[1]
-    assert.deepEqual(combined.canonical_windows.map((entry) => entry.envelope_id), ['envelope-combined'])
-    assert.equal(combined.client_omission.window_metadata_dropped, 0)
-    for (const [name, snapshot] of outputs.filter(([name]) => name !== 'all together')) {
-      assert.deepEqual(snapshot.canonical_windows.map((entry) => entry.envelope_id), ['envelope-3'], name)
-      assert.equal(snapshot.client_omission.window_metadata_dropped, 2, name)
-    }
-  })
-
-  it('omits oversized and uncovered rows with their unnecessary source windows', () => {
-    const state = createCanonicalCarryState()
-    accumulateCanonicalCarry(state, page(1, 12_001))
-    accumulateCanonicalCarry(state, page(2, 10, { windowSequence: 200 }))
-    const snapshot = snapshotCanonicalCarry(state)
-
-    assert.equal(rows(snapshot).length, 0)
-    assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
-      human_context: 1,
-      agent_context: 1,
-      ai_context: 0,
-      system_context: 0,
-    })
-    assert.equal(snapshot.client_omission.window_metadata_dropped, 2)
-    assert.deepEqual(snapshot.canonical_windows, [])
-  })
-
-  it('does not recount page identities when a command append fails and the page retries', () => {
-    const state = createCanonicalCarryState()
-    addRange(state, 101, 120)
-    const older = page(1, 1)
-    accumulateCanonicalCarry(state, older)
-    const beforeRetry = structuredClone(snapshotCanonicalCarry(state))
-    const failed = appendCanonicalInbox(
-      'connection',
-      { envelope_id: 'command-failed', commands: [{ message_id: 'command-1' }] },
-      scanPersistedInboxRecords(''),
-      { channel: 'command', carriedContext: beforeRetry, writeRecord: () => false },
-    )
-    assert.equal(failed.ok, false)
-    assert.equal(carryAfterCanonicalInbox(state, 'command', failed), state)
-
-    accumulateCanonicalCarry(state, older)
-    assert.deepEqual(snapshotCanonicalCarry(state), beforeRetry)
-    assert.equal(beforeRetry.client_omission.dropped_by_bucket.human_context, 1)
-    assert.equal(beforeRetry.client_omission.window_metadata_dropped, 1)
-  })
-
-  it('consumes carry for the same durable command under both the same and a new envelope', () => {
-    const index = scanPersistedInboxRecords('')
-    const command = { commands: [{ message_id: 'command-1' }] }
-    let state = createCanonicalCarryState()
-    accumulateCanonicalCarry(state, page(1, 10))
-    const first = appendCanonicalInbox('connection', { envelope_id: 'env-1', ...command }, index, {
-      channel: 'command',
-      carriedContext: snapshotCanonicalCarry(state),
-      writeRecord: () => true,
-    })
-    state = carryAfterCanonicalInbox(state, 'command', first)
-    assert.equal(snapshotCanonicalCarry(state), null)
-
-    accumulateCanonicalCarry(state, page(2, 10))
-    const sameEnvelope = appendCanonicalInbox('connection', { envelope_id: 'env-1', ...command }, index, {
-      channel: 'command', carriedContext: snapshotCanonicalCarry(state), writeRecord: () => true,
-    })
-    state = carryAfterCanonicalInbox(state, 'command', sameEnvelope)
-    assert.equal(snapshotCanonicalCarry(state), null)
-
-    accumulateCanonicalCarry(state, page(3, 10))
-    const newEnvelope = appendCanonicalInbox('connection', { envelope_id: 'env-2', ...command }, index, {
-      channel: 'command', carriedContext: snapshotCanonicalCarry(state), writeRecord: () => true,
-    })
-    assert.deepEqual(newEnvelope, { ok: true, appended: false })
-    state = carryAfterCanonicalInbox(state, 'command', newEnvelope)
-    assert.equal(snapshotCanonicalCarry(state), null)
   })
 })
 
@@ -1397,10 +1156,11 @@ describe('connection state patches never invent a state file (item 3b88955e)', (
   })
 })
 
-describe('roomAwarenessDelta', () => {
-  // Polls and Still to Discuss arrive on every changed poll, unchanged most of the
-  // time. Re-attaching an identical inventory to every command is the difference
-  // between a field a reader checks and one it learns to skip (item b1e26146).
+describe('roomChangesSince', () => {
+  // The room file holds polls, Still to Discuss, plans and activity; a command only
+  // says which of them moved since the last command was told (items b1e26146,
+  // 7fe8e3d1). Flagging an unchanged room on every command is the difference
+  // between a field a reader checks and one it learns to skip.
   const POLL_NOTE = 'Advisory read-awareness only. Presence does not authorize execution or mutation; manage_poll still requires a capability-authenticated caller identity and expected_revision. Votes are not commands and do not keep Working on.'
   const DISCUSS_NOTE = 'Raised in this room, or brought into it. Advisory read-awareness. Do not add, strike, or reopen unless the human asked.'
 
@@ -1434,51 +1194,46 @@ describe('roomAwarenessDelta', () => {
     rows: [{ id: '88880000-0000-4000-8000-000000000001', title: 'Toggle naming', state: 'open', preview: 'Parked.' }],
   })
 
-  it('carries what it has never sent before', () => {
-    const delta = roomAwarenessDelta({ session_polls: polls(), still_to_discuss: discuss() })
-    assert.equal(delta.carriedSessionPolls.polls[0].question, 'Ship it?')
-    assert.equal(delta.carriedStillToDiscuss.rows[0].title, 'Toggle naming')
+  it('flags what it has never announced before, and nothing that is absent', () => {
+    const { changed } = roomChangesSince({ session_polls: polls(), still_to_discuss: discuss() }, null)
+    assert.deepEqual(changed, ['session_polls', 'still_to_discuss'])
+    assert.deepEqual(roomChangesSince({}, null).changed, [])
   })
 
   it('says nothing the second time when nothing moved', () => {
     const res = { session_polls: polls(), still_to_discuss: discuss() }
-    const first = roomAwarenessDelta(res)
-    const second = roomAwarenessDelta(res, first.seen)
-    assert.equal(second.carriedSessionPolls, null)
-    assert.equal(second.carriedStillToDiscuss, null)
+    const first = roomChangesSince(res, null)
+    const second = roomChangesSince(res, null, first.seen)
+    assert.deepEqual(second.changed, [])
     assert.deepEqual(second.seen, first.seen)
   })
 
-  it('carries it again the moment it changes', () => {
-    const first = roomAwarenessDelta({ session_polls: polls('Ship it?') })
-    const second = roomAwarenessDelta({ session_polls: polls('Ship it on Friday?') }, first.seen)
-    assert.equal(second.carriedSessionPolls.polls[0].question, 'Ship it on Friday?')
+  it('flags each section independently, the moment it changes', () => {
+    const first = roomChangesSince({ session_polls: polls('Ship it?'), still_to_discuss: discuss() }, null)
+    const second = roomChangesSince({ session_polls: polls('Ship it on Friday?'), still_to_discuss: discuss() }, null, first.seen)
+    assert.deepEqual(second.changed, ['session_polls'])
   })
 
-  it('moves each half independently', () => {
-    const first = roomAwarenessDelta({ session_polls: polls(), still_to_discuss: discuss() })
-    const second = roomAwarenessDelta(
-      { session_polls: polls('A different question?'), still_to_discuss: discuss() },
-      first.seen,
-    )
-    assert.ok(second.carriedSessionPolls)
-    assert.equal(second.carriedStillToDiscuss, null)
+  it('flags a section that went away, because the room file changed too', () => {
+    const first = roomChangesSince({ session_polls: polls() }, null)
+    assert.deepEqual(roomChangesSince({}, null, first.seen).changed, ['session_polls'])
   })
 
-  it('ignores a projection that does not validate, and keeps what it knew', () => {
+  it('reads a projection that does not validate as absent, exactly as the room file does', () => {
     const bent = polls()
     bent.inventory.active_returned = 5 // does not describe the array it arrived with
-    const first = roomAwarenessDelta({ session_polls: polls() })
-    const second = roomAwarenessDelta({ session_polls: bent }, first.seen)
-    assert.equal(second.carriedSessionPolls, null)
-    assert.equal(second.seen.polls, first.seen.polls)
+    assert.deepEqual(roomChangesSince({ session_polls: bent }, null).changed, [])
   })
 
-  it('is silent on a response that carries neither', () => {
-    const delta = roomAwarenessDelta({})
-    assert.equal(delta.carriedSessionPolls, null)
-    assert.equal(delta.carriedStillToDiscuss, null)
-    assert.deepEqual(delta.seen, { polls: null, stillToDiscuss: null })
+  it('flags session activity when a new change was seen, not when it was merely re-read', () => {
+    const view = (changes) => ({ items: [{ kind: 'action_item', id: 'a', title: 'T', relation: 'produced', creator: null }], changes })
+    const first = roomChangesSince({}, view([{ event: 'listed' }]))
+    assert.deepEqual(first.changed, ['session_activity'])
+    assert.deepEqual(roomChangesSince({}, view([{ event: 'listed' }]), first.seen).changed, [])
+    assert.deepEqual(
+      roomChangesSince({}, view([{ event: 'listed' }, { event: 'status_changed' }]), first.seen).changed,
+      ['session_activity'],
+    )
   })
 })
 

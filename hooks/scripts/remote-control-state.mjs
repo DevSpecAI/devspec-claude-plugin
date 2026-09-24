@@ -13,6 +13,7 @@
  * Per-connection files (one per live connection):
  *   ~/.devspec/remote-control/connections/<connection_id>.json
  *   ~/.devspec/remote-control/connections/<connection_id>.poll.pid | .poll.log | .inbox.jsonl
+ *   ~/.devspec/remote-control/connections/<connection_id>.room.json | .<session_id>.transcript.jsonl
  *
  * Per-local-conversation bonds (create / soft-reconnect / already-live):
  *   ~/.devspec/remote-control/local/<agent-slug>/<local_id>.json
@@ -72,6 +73,7 @@ import {
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import { CONVERSATION_SWITCH_REASONS, startupListenerAlive } from './startup-listener.mjs'
 import { takeTiersFor } from './instruction-tiers.mjs'
+import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -1451,7 +1453,10 @@ if (isMain) {
       `connection_id: ${connectionId}`,
       `codename: ${view.session_codename || '—'}`,
       `session_id: ${view.session_id || 'none (sessionless — there is no room to answer in)'}`,
-      `inbox: ${path.join(CONNECTIONS_DIR, `${connectionId}.inbox.jsonl`)}`,
+      // Where the room is (item 7fe8e3d1): the full transcript, and the room file
+      // that says how complete it is and holds the current polls, plans and activity.
+      ...(view.session_id ? [`transcript: ${transcriptPaths(connectionId, view.session_id, CONNECTIONS_DIR).transcript}`] : []),
+      `room_state: ${roomStatePath(connectionId, CONNECTIONS_DIR)}`,
     ]
     if (tiers.status === 'deliver') lines.push(tiers.text.trimEnd())
     else if (tiers.status === 'unchanged') {

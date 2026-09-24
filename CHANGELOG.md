@@ -2,6 +2,25 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.0 - 2026-09-24
+
+### Claude reads the room itself, with no message limit
+
+When a command arrives, Claude is told where the room's transcript is, how many
+messages came since its last reply, and which parts of the room file changed.
+It reads as much of the room as the command needs, newest first. It no longer
+gets a fixed slice. That slice held at most 20 messages and 12,000 characters,
+and it silently skipped any single message longer than that. Connecting no
+longer fetches the last 40 messages either, because the transcript already holds
+the whole room.
+
+A command's full text, sender, response style, scope and files are on its line
+in the transcript, so Claude no longer opens the plugin's inbox to read one.
+Polls, Still to Discuss and plans are no longer repeated with every command;
+they are in the room file, and the command says when they changed. The
+transcript is written before Claude is woken, so the line a command points at
+is always there.
+
 ## 0.31.0 - 2026-09-24
 
 ### A complete copy of the room, beside the inbox

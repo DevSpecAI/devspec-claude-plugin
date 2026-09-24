@@ -23,7 +23,7 @@
  *   node devspec-remote-connect.mjs [--session <uuid> | --new] [--private]
  *       [--name "<codename>"] [--title "…"] [--agent "Claude Code"]
  *       [--cwd <path>] [--owner-pid <pid>] [--local-id <id>] [--force-new]
- *       [--tail <n>] [--no-poller] [--json]
+ *       [--no-poller] [--json]
  *
  * Exit 0 = connected. Exit 1 = connect failed (message on stderr). Exit 2 = bad args.
  */
@@ -36,6 +36,7 @@ import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { isWaitArmed } from './devspec-remote-wait.mjs'
 import { renderTiers } from './instruction-tiers.mjs'
+import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import {
@@ -86,14 +87,6 @@ export async function withHttpRetry(invoke, options = {}) {
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url))
 const WAIT_SCRIPT = path.join(THIS_DIR, 'devspec-remote-wait.mjs')
 
-/**
- * Orientation window default. Bounded because an unbounded seed re-pays the whole
- * room on every reconnect (measured: one catch-up read cost ~26k tokens). NOT a
- * silent cap — the seed always reports matched/returned/has_more, so an agent that
- * needs more knows there is more and can page for it deliberately.
- */
-const DEFAULT_TAIL = 40
-
 function parseArgs(argv) {
   const out = { _: [] }
   for (let i = 0; i < argv.length; i++) {
@@ -105,7 +98,6 @@ function parseArgs(argv) {
     else if (a === '--title') out.title = argv[++i]
     else if (a === '--local-id' || a === '--local_id') out.localId = argv[++i]
     else if (a === '--owner-pid') out.ownerPid = argv[++i]
-    else if (a === '--tail') out.tail = argv[++i]
     else if (a === '--new') out.new = true
     else if (a === '--private') out.private = true
     else if (a === '--force-new') out.forceNew = true
@@ -199,7 +191,6 @@ export async function connect(options = {}, deps = {}) {
     ownerPid = null,
     localId: localIdArg = null,
     forceNew = false,
-    tail = DEFAULT_TAIL,
     noPoller = false,
     startup = false,
     env = process.env,
@@ -402,29 +393,11 @@ export async function connect(options = {}, deps = {}) {
   // the room, i.e. answer somewhere the human cannot see.
   const effectiveSessionId = written.session_id || null
 
-  // 4. Orientation seed — bounded, and echoing the tier fingerprint we were just
-  //    handed so the same texts are not sent twice inside one connect. Never at
-  //    startup: nothing is reading yet.
-  let seed = null
-  if (effectiveSessionId && !startup) {
-    const seedTail = Math.max(1, Number.parseInt(String(tail ?? DEFAULT_TAIL), 10) || DEFAULT_TAIL)
-    try {
-      seed = await call('get_session_transcript', {
-        session_id: effectiveSessionId,
-        tail: seedTail,
-        ...(registration.instruction_tiers_hash && registration.instruction_tiers_version
-          ? {
-              known_instruction_tiers_version: registration.instruction_tiers_version,
-              known_instruction_tiers_hash: registration.instruction_tiers_hash,
-            }
-          : known
-            ? { known_instruction_tiers_version: known.version, known_instruction_tiers_hash: known.hash }
-            : {}),
-      })
-    } catch (e) {
-      seed = { error: e.message }
-    }
-  }
+  // No room seed (item 7fe8e3d1). The poller writes the whole room to a local
+  // transcript as it drains the room's history, and the agent reads as much of it
+  // as it needs; a count chosen here would decide for it. This used to fetch the
+  // last 40 messages, and the one that mattered could be the forty-first.
+  const transcript = effectiveSessionId ? transcriptPaths(connectionId, effectiveSessionId).transcript : null
 
   // The owner-pid the writer actually resolved (win32 self-resolves it), so the arm
   // line the model runs is already correct rather than something it must assemble.
@@ -468,11 +441,13 @@ export async function connect(options = {}, deps = {}) {
     arm_command: armCommand,
     connection_capability_present: !!connectionCapability,
     plan_access: connectionCapability ? 'manage_plan capability ready' : 'unavailable — reconnect/update required',
-    orientation: seed?.transcript_window || (seed?.error ? { error: seed.error } : null),
+    // Where the room is: the transcript fills in as the poller drains its history,
+    // and the room file says how complete it is.
+    transcript,
+    room_state: roomStatePath(connectionId),
     // Kept for the CLI's --json and for the startup listener, which files the tier
     // texts for the first command instead of printing them.
     registration,
-    seed,
   }
 }
 
@@ -545,16 +520,13 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
     }
   }
 
-  if (summary.seed?.transcript_window) {
-    const w = summary.seed.transcript_window
+  if (summary.transcript) {
     lines.push('')
+    lines.push(`Room transcript: ${summary.transcript}`)
     lines.push(
-      `Room seeded: ${w.returned ?? '?'} of ${w.matched ?? '?'} messages` +
-        `${w.has_more ? ' — MORE EXIST above this window; page with after_message_id/limit if you need them.' : ' (complete).'}`,
+      `  The whole room, filled in by the poller. How complete it is: ${summary.room_state}` +
+        ' (the room file). Read it when a command needs the room.',
     )
-  } else if (summary.seed?.error) {
-    lines.push('')
-    lines.push(`Room seed failed: ${summary.seed.error} — pull get_session_transcript yourself if you need the room.`)
   }
 
   const tiers = renderTiers(summary.registration)
@@ -582,7 +554,6 @@ async function main() {
       ownerPid: args.ownerPid,
       localId: args.localId,
       forceNew: !!args.forceNew,
-      tail: args.tail,
       noPoller: !!args.noPoller,
     })
   } catch (e) {

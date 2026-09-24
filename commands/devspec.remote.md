@@ -15,7 +15,7 @@ This is **DevSpec** remote control, not Claude Code's built-in `/remote-control`
 
 ## 1. Connect
 
-One command does the whole deterministic setup — preflight, git remote and folder pin, conversation bond, registration, session attach, state file, poller, and a bounded room seed:
+One command does the whole deterministic setup — preflight, git remote and folder pin, conversation bond, registration, session attach, state file and poller. The poller fills a local transcript of the whole room; the status block prints where it is:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-remote-connect.mjs" \
@@ -71,7 +71,7 @@ node ".../devspec-remote-wait.mjs" --connection-id <uuid> --owner-pid <pid> --st
 
 On the second, `persistent: true` is **accepted and silently discarded** — no error, and the arm still dies at `timeout_ms`. The schema is what tells you which arm you are holding; passing the flag never is.
 
-The stream emits actor-labelled `canonical_advisory_context`, complete canonical commands as `owner_message` objects, explicit `automation_run` dispatches, typed `canonical_control` host events, and non-executable `wake` summaries. Conversational work comes only from complete canonical owner messages; an automation event follows its explicit claim/run protocol. Claude Code cannot safely execute lifecycle controls from this script layer, so its control event is `supported:false`, never chat, and never acknowledged as executed. The stream keeps watching; there is nothing to re-arm between events.
+The stream emits complete canonical commands as `owner_message` objects (the room itself is in the local transcript, not on the stream), explicit `automation_run` dispatches, typed `canonical_control` host events, and non-executable `wake` summaries. Conversational work comes only from complete canonical owner messages; an automation event follows its explicit claim/run protocol. Claude Code cannot safely execute lifecycle controls from this script layer, so its control event is `supported:false`, never chat, and never acknowledged as executed. The stream keeps watching; there is nothing to re-arm between events.
 
 **When the stream ends,** the Monitor surfaces an exit code:
 

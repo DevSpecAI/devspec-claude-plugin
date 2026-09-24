@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.1 - 2026-09-24
+
+- Claude knows it can report back on its own after its turn has ended, for
+  example when a background job it started finishes. The post lands in the
+  room under its name, and waiting with a background job works for at least
+  36 minutes.
+- Claude no longer passes the command's id to its reply by mistake, which cost
+  one refused call before the reply went through.
+
 ## 0.32.0 - 2026-09-24
 
 ### Claude reads the room itself, with no message limit

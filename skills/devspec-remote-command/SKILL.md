@@ -97,7 +97,7 @@ Ask the driver when a decision is genuinely theirs: an unresolved choice, an aut
 
 ## 4. Answering
 
-A canonical command belongs to its canonical conversation. **Post the direct answer with `post_session_message`.** Prefer `connection_id` (the server resolves the current room) over a remembered `session_id`. Preserve the command's requester attribution; never infer authority from room context or rewrite who requested it. A sessionless connection has no conversation answer path: do not invent a room and do not substitute action-item progress for an answer.
+A canonical command belongs to its canonical conversation. **Post the direct answer with `post_session_message`.** Prefer `connection_id` (the server resolves the current room and your turn) over a remembered `session_id`. The wake's `message_id` is for finding the command's line in the transcript; it is not an argument to `post_session_message`. Preserve the command's requester attribution; never infer authority from room context or rewrite who requested it. A sessionless connection has no conversation answer path: do not invent a room and do not substitute action-item progress for an answer.
 
 Body = the answer to the latest command. Lead with it. No preamble, no thinking, no tool play-by-play, no "I'll look into…" narration, no status chrome. As short as correctness allows.
 
@@ -115,6 +115,14 @@ hour. Observed twice on 2026-09-14 (item `55d1bac8`). The hook now clears the
 marker when you pass the flag, so a wrong `complete_turn` no longer flickers —
 it shows Idle while you are still working, which is quieter but no more true.
 The flag is a statement about your turn; only you know when that ends.
+
+**Reporting back later, on your own.** When something you started finishes
+after your turn ended (a background job, a deploy you were watching), Claude
+Code wakes you for it as a new turn. Post what happened with `connection_id` as
+usual, and `complete_turn: true` when you are done. It lands in the room under
+your name as a new message. To wait, start the job with `run_in_background`: it
+wakes you when it exits, and one left without a timeout woke an agent after 36
+minutes (2026-09-24). Claude Code refuses a standalone foreground `sleep`.
 
 **Say which model you are:** pass `model: { providerID, modelID }` — for this
 host, `{ providerID: 'anthropic', modelID: '<your exact model id>' }`. The

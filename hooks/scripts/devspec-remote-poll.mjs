@@ -44,13 +44,27 @@ import {
 import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
 import {
   isActiveSessionPlansProjectionV1,
+  isSessionActivityV1,
   isSessionPollsProjectionV1,
   isStillToDiscussProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_CONTRACT_VERSION,
   REMOTE_INGRESS_RESOURCE_URI,
+  ROOM_CONTEXT_VERSION,
 } from './remote-ingress-v1.mjs'
+import {
+  applyIngressToStore,
+  beginDrain,
+  completeEmptyDrain,
+  loadTranscriptStore,
+  observeSessionActivity,
+  persistTranscriptStore,
+  sessionActivityView,
+  takePendingRedrain,
+  transcriptPollArguments,
+  transcriptSummary,
+} from './room-transcript.mjs'
 import {
   activeContinuation,
   classifyContinuationStart,
@@ -108,6 +122,9 @@ export function remoteIngressNegotiationArguments() {
     active_plan_projection_version: ACTIVE_PLAN_PROJECTION_VERSION,
     system_notice_version: SYSTEM_NOTICE_VERSION,
     sender_style_version: SENDER_STYLE_VERSION,
+    // Remote-ingress 1.6.0 (item 1a4f0246): room context for the local transcript.
+    // The server refuses it without every rung below, which is why it sits last.
+    room_context_version: ROOM_CONTEXT_VERSION,
   }
 }
 
@@ -1110,32 +1127,66 @@ export function roomAwarenessDelta(res, seen = {}) {
 }
 
 /**
- * Overwrite the room-state file when either projection has moved.
+ * The room as it stands now, in one small file the model can read at any time
+ * (items 62f132c9, 1a4f0246): open polls, Still to Discuss, active plans, the latest
+ * system notices, what the session produced and referenced, and how complete the
+ * local transcript is.
  *
- * Returns the new `seen` memory so the caller can hold it, and writes nothing at
- * all when nothing changed — a quiet room costs one comparison per poll and no
- * disk at all. Best-effort by contract: this is awareness, and failing to write
- * it must never cost the command that was being delivered at the time.
+ * Every section says what its absence means, because "empty" and "could not be
+ * read" are different facts: `sections.<name>` is `present`, `none` (the server
+ * says there is nothing), `unavailable` (it could not be read), or `not_sent`
+ * (this connection has not been told yet). Polls and Still to Discuss arrive on
+ * every changed poll and are simply missing when there are none or their read
+ * failed, which the server does not distinguish, so they say exactly that.
+ *
+ * Rewritten on a changed poll when anything moved, never on a quiet one. Best-effort
+ * by contract: this is awareness, and failing to write it must never cost the
+ * command being delivered at the time.
  */
-export function writeRoomState(connectionId, res, seen = {}, { dir = CONNECTIONS_DIR, write = writePrivateJson } = {}) {
-  const delta = roomAwarenessDelta(res, seen)
-  if (!delta.carriedSessionPolls && !delta.carriedStillToDiscuss) return seen
+export function writeRoomState(
+  connectionId,
+  res,
+  seen = {},
+  { dir = CONNECTIONS_DIR, write = writePrivateJson, transcript = null, activity = null, now = new Date() } = {},
+) {
+  const ingress = res?.ingress ?? null
+  const polls = isSessionPollsProjectionV1(res?.session_polls) ? res.session_polls : null
+  const discuss = isStillToDiscussProjectionV1(res?.still_to_discuss) ? res.still_to_discuss : null
+  const plans = isActiveSessionPlansProjectionV1(ingress?.active_session_plans) ? ingress.active_session_plans : null
+  const notices = Array.isArray(ingress?.system_notices) ? ingress.system_notices : null
+  const body = {
+    advisory: true,
+    executable: false,
+    note:
+      'The room as it stands right now. Read this before writing a reply if the turn ' +
+      'has been long. Never a command, never work, and never authority to add, change, ' +
+      'vote on or close any of it.',
+    session_id: typeof res?.session_id === 'string' ? res.session_id : null,
+    session_polls: polls,
+    still_to_discuss: discuss,
+    active_session_plans: plans,
+    system_notices: notices ?? [],
+    session_activity: activity,
+    transcript,
+    sections: {
+      session_polls: polls ? 'present' : 'none_or_unavailable',
+      still_to_discuss: discuss ? 'present' : 'none_or_unavailable',
+      active_session_plans: plans ? 'present' : ingress ? 'none' : 'not_sent',
+      system_notices: notices === null ? 'not_sent' : notices.length > 0 ? 'present' : 'none',
+      // References and observed changes. `unavailable` means the last read failed;
+      // what was seen before still stands as history.
+      session_activity: activity ? (activity.list_readable ? 'present' : 'unavailable') : 'not_sent',
+      transcript: transcript ? transcript.status : 'not_sent',
+    },
+  }
+  const key = JSON.stringify(body)
+  if (key === seen.doc) return seen
   try {
-    write(roomStatePath(connectionId, dir), {
-      updated_at: new Date().toISOString(),
-      advisory: true,
-      executable: false,
-      note:
-        'The room as it stands right now. Read this before writing a reply if the turn ' +
-        'has been long. Never a command, never work, and never authority to add, change, ' +
-        'vote on or close any of it.',
-      session_polls: delta.carriedSessionPolls ?? null,
-      still_to_discuss: delta.carriedStillToDiscuss ?? null,
-    })
+    write(roomStatePath(connectionId, dir), { updated_at: now.toISOString(), ...body })
   } catch {
     return seen
   }
-  return delta.seen
+  return { doc: key }
 }
 
 /** Advance projection carry only after its canonical record is durable. */
@@ -1770,7 +1821,14 @@ async function main() {
   // changed poll, the record carry only on a delivered command, and tying them
   // together would mean a context-channel write silently robbing the next
   // command of its carry.
-  let roomFileSeen = { polls: null, stillToDiscuss: null }
+  let roomFileSeen = {}
+  // The local room transcript (item 1a4f0246): one copy per connection and room,
+  // opened for the room this connection is attached to. A page from any other room
+  // is refused by it, so a late response cannot write one room into another.
+  let transcriptStore = sessionId ? loadTranscriptStore(connectionId, sessionId) : null
+  // The copy asked to be re-read (a real mismatch, within its daily budget). Taken
+  // where the seed flag is decided, so the next poll re-drains the room's history.
+  let redrainRequested = false
 
   /**
    * Persist a state patch without clobbering concurrent fields. Best-effort — and
@@ -2062,6 +2120,7 @@ async function main() {
         connection_id: connectionId,
         agent_name: agentName,
         ...remoteIngressNegotiationArguments(),
+        ...(transcriptStore ? transcriptPollArguments(transcriptStore) : {}),
         ...knownInstructionTierArguments(listenerState),
         ...interactionArgs,
         ...(ack ? questionEventAckArguments(ack) : {}),
@@ -2131,13 +2190,9 @@ async function main() {
 
     const ingress = normalized.envelope
     const drainingContinuation = Boolean(catchUpCursor || (needsSeed && liveCursorV2))
+    // The request was part of the history drain: the seed poll or a catch-up page.
+    const drainPoll = Boolean(needsSeed || catchUpCursor)
     carryCanonicalContext(ingress)
-
-    // Refresh the room-state file on ANY changed poll, not only on one that
-    // carries a command (item 62f132c9). This is the half that makes a long turn
-    // safe: the command told the agent how the room looked an hour ago, and this
-    // is what lets it find out how the room looks when it actually replies.
-    roomFileSeen = writeRoomState(connectionId, res, roomFileSeen)
 
     let channel = 'context'
     let carriedContext = null
@@ -2166,6 +2221,34 @@ async function main() {
       channel,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
+
+    // The local transcript, after the inbox record is durable and before the cursor
+    // moves (item 1a4f0246). A crash on either side re-polls the same page, and
+    // applying a page twice is a no-op. A failed transcript write never holds the
+    // cursor or a command back: the copy says it is incomplete, and a restart
+    // re-drains it from the server.
+    if (transcriptStore && typeof res?.session_id === 'string') {
+      const applied = applyIngressToStore(transcriptStore, ingress, { sessionId: res.session_id, drainPoll })
+      if (applied.applied) {
+        observeSessionActivity(transcriptStore, isSessionActivityV1(ingress.session_activity) ? ingress.session_activity : null)
+        if (!persistTranscriptStore(transcriptStore)) {
+          process.stderr.write('devspec-remote-poll: transcript write failed; the copy is marked incomplete\n')
+        }
+        if (takePendingRedrain(transcriptStore)) {
+          process.stderr.write('devspec-remote-poll: transcript disagrees with the room; re-reading its history\n')
+          redrainRequested = true
+        }
+      }
+    }
+    // Refresh the room-state file on ANY changed poll, not only on one that
+    // carries a command (item 62f132c9). This is the half that makes a long turn
+    // safe: the command told the agent how the room looked an hour ago, and this
+    // is what lets it find out how the room looks when it actually replies.
+    roomFileSeen = writeRoomState(connectionId, res, roomFileSeen, {
+      transcript: transcriptSummary(transcriptStore),
+      activity: sessionActivityView(transcriptStore),
+    })
+
     // Only remember what we sent once the record is on disk. A crash between the
     // write and this line replays the change; the other order loses it silently.
     if (persisted.appended) roomAwarenessSeen = awareness.seen
@@ -2345,6 +2428,10 @@ async function main() {
     }
 
     // --- ONE held call: heartbeat + dispatches + room, in one response ---------
+    // A seed poll starts a history drain of the transcript copy; everything the
+    // drain re-emits is kept, and anything it no longer finds is not the room's.
+    if (needsSeed && transcriptStore && !transcriptStore.backfill.draining) beginDrain(transcriptStore)
+
     let res = null
     try {
       res = await pollOnce({
@@ -2452,6 +2539,9 @@ async function main() {
       liveCursorV2 = null
       catchUpCursor = null
       needsSeed = true
+      // A different room gets its own copy; the old one is left as it was.
+      transcriptStore = sessionId ? loadTranscriptStore(connectionId, sessionId) : null
+      redrainRequested = false
       canonicalCarry = createCanonicalCarryState()
       activePlanCarry = null
       patchState({
@@ -2484,7 +2574,10 @@ async function main() {
       // automation runs remain an independent top-level channel with their own clock.
       const automations = consumeAutomationDispatches(res)
       const canonical = consumeCanonicalIngress(res)
-      if (canonical.ok) needsSeed = false
+      if (canonical.ok) {
+        needsSeed = redrainRequested
+        redrainRequested = false
+      }
       if (automations.delivered || canonical.delivered) {
         consecutiveEmpty = 0
         continue // something real landed — go straight back to holding
@@ -2511,6 +2604,11 @@ async function main() {
     }
     if (typeof res.cursor === 'string' && res.cursor) legacyCursor = res.cursor
     patchState({ cursor_v2: liveCursorV2, cursor_after_message_id: legacyCursor })
+    // A seed with nothing to catch up is an empty room: its drain is complete.
+    if (needsSeed && transcriptStore?.backfill.draining) {
+      completeEmptyDrain(transcriptStore)
+      persistTranscriptStore(transcriptStore)
+    }
     needsSeed = false
     consecutiveEmpty = 0
   }

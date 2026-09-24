@@ -19,6 +19,18 @@ export const REMOTE_INGRESS_POLICY_VERSION = '2026-08-21.1'
  */
 export const REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION = '1.5.0'
 export const REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION = '2026-09-18.1'
+/**
+ * 1.6 adds room context (item 1dcb75df): every emitted record's addressee,
+ * attachment references and state, a coverage point a local room copy checks
+ * itself against, and the answers to the copy's own questions (open_check,
+ * deletions). It also may carry session_activity (item d37b3343). 1.6 carries
+ * everything 1.5 does; the ladder stays nested.
+ */
+export const REMOTE_INGRESS_ROOM_CONTEXT_CONTRACT_VERSION = '1.6.0'
+export const REMOTE_INGRESS_ROOM_CONTEXT_POLICY_VERSION = '2026-09-24.1'
+export const ROOM_CONTEXT_VERSION = 1
+export const ROOM_PAGE_MAX = 500
+export const SESSION_ACTIVITY_MAX_ENTRIES = 1000
 export const REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION = '1.4.0'
 export const REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION = '2026-08-22.1'
 export const SYSTEM_NOTICE_VERSION = 1
@@ -72,6 +84,7 @@ const CONTRACT_POLICY_PAIRS = new Map([
   [REMOTE_INGRESS_CONTRACT_VERSION, REMOTE_INGRESS_POLICY_VERSION],
   [REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION, REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION],
   [REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION, REMOTE_INGRESS_SENDER_STYLE_POLICY_VERSION],
+  [REMOTE_INGRESS_ROOM_CONTEXT_CONTRACT_VERSION, REMOTE_INGRESS_ROOM_CONTEXT_POLICY_VERSION],
 ])
 // Every version from 1.2 up carries project_scope on delegated commands. 1.4 and
 // 1.5 inherit that; leaving them out rejected every command on the new lanes.
@@ -80,6 +93,7 @@ const SCOPE_AWARE_CONTRACT_VERSIONS = new Set([
   REMOTE_INGRESS_CONTRACT_VERSION,
   REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
   REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION,
+  REMOTE_INGRESS_ROOM_CONTEXT_CONTRACT_VERSION,
 ])
 const SUPPORTED_POLICY_VERSIONS = new Set(CONTRACT_POLICY_PAIRS.values())
 
@@ -614,8 +628,174 @@ export function isSenderResponseStyleV1(value) {
   return value.notes.every((note) => nonempty(note))
 }
 
+const ROOM_MESSAGE_STATES = new Set(['final', 'in_progress', 'deleted'])
+const OPEN_CHECK_STATES = new Set(['final', 'in_progress', 'deleted', 'absent'])
+const SHA256 = /^sha256:[a-f0-9]{64}$/
+
+function roomAddressee(value) {
+  if (!record(value)) return false
+  if (value.kind === 'connection') {
+    return exactKeys(value, ['kind', 'connection_id', 'label']) && uuid(value.connection_id) && nonempty(value.label)
+  }
+  return (value.kind === 'dev' || value.kind === 'room') && exactKeys(value, ['kind'])
+}
+
+function roomMessage(value) {
+  return (
+    exactKeys(value, ['message_id', 'addressee', 'attachments', 'state']) &&
+    uuid(value.message_id) &&
+    roomAddressee(value.addressee) &&
+    Array.isArray(value.attachments) &&
+    value.attachments.every(attachment) &&
+    ROOM_MESSAGE_STATES.has(value.state)
+  )
+}
+
+function uniqueUuids(list, max) {
+  return Array.isArray(list) && list.length <= max && list.every(uuid) && new Set(list).size === list.length
+}
+
+function roomCoverage(value) {
+  return (
+    exactKeys(value, ['through', 'eligible_count', 'deleted_count', 'open_message_ids']) &&
+    orderPoint(value.through) &&
+    nonnegativeInt(value.eligible_count) &&
+    nonnegativeInt(value.deleted_count) &&
+    uniqueUuids(value.open_message_ids, ROOM_PAGE_MAX) &&
+    value.deleted_count + value.open_message_ids.length <= value.eligible_count
+  )
+}
+
+function roomOpenCheck(value) {
+  if (!Array.isArray(value) || value.length > ROOM_PAGE_MAX) return false
+  const ids = new Set()
+  for (const check of value) {
+    if (!optionalExactKeys(check, ['message_id', 'state'], ['entry'])) return false
+    if (!uuid(check.message_id) || !OPEN_CHECK_STATES.has(check.state)) return false
+    const hasEntry = Object.hasOwn(check, 'entry')
+    if ((check.state === 'final') !== hasEntry) return false
+    if (hasEntry && (!contextEntry(check.entry) || check.entry.message_id !== check.message_id)) return false
+    const key = check.message_id.toLowerCase()
+    if (ids.has(key)) return false
+    ids.add(key)
+  }
+  return true
+}
+
+function deletionPoint(value) {
+  return exactKeys(value, ['deleted_at', 'message_id']) && datetime(value.deleted_at) && uuid(value.message_id)
+}
+
+export function isRoomDeletionsSeen(value) {
+  return (
+    exactKeys(value, ['through', 'total']) &&
+    nullable(value.through, deletionPoint) &&
+    nullable(value.total, nonnegativeInt)
+  )
+}
+
+function roomDeletions(value) {
+  return (
+    exactKeys(value, ['message_ids', 'truncated', 'total', 'seen']) &&
+    uniqueUuids(value.message_ids, ROOM_PAGE_MAX) &&
+    typeof value.truncated === 'boolean' &&
+    nonnegativeInt(value.total) &&
+    value.message_ids.length <= value.total &&
+    isRoomDeletionsSeen(value.seen) &&
+    (value.message_ids.length === 0 || value.seen.through !== null) &&
+    (!value.truncated || value.message_ids.length > 0) &&
+    value.seen.total === (value.truncated ? null : value.total)
+  )
+}
+
+export function isRoomContextV1(value) {
+  if (!optionalExactKeys(value, ['version', 'messages', 'coverage'], ['open_check', 'deletions'])) return false
+  if (value.version !== ROOM_CONTEXT_VERSION) return false
+  if (!Array.isArray(value.messages) || value.messages.length > ROOM_PAGE_MAX || !value.messages.every(roomMessage)) {
+    return false
+  }
+  if (!nullable(value.coverage, roomCoverage)) return false
+  if (Object.hasOwn(value, 'open_check') && !nullable(value.open_check, roomOpenCheck)) return false
+  if (Object.hasOwn(value, 'deletions') && !nullable(value.deletions, roomDeletions)) return false
+  return true
+}
+
+function activityEntry(value) {
+  return (
+    exactKeys(value, ['kind', 'id', 'title', 'status', 'relation', 'creator']) &&
+    ['action_item', 'memory', 'artifact'].includes(value.kind) &&
+    uuid(value.id) &&
+    nonempty(value.title) &&
+    nullable(value.status, nonempty) &&
+    ['produced', 'referenced'].includes(value.relation) &&
+    nullable(value.creator, (creator) =>
+      exactKeys(creator, ['kind', 'label']) &&
+      ['agent', 'person', 'platform'].includes(creator.kind) &&
+      nonempty(creator.label))
+  )
+}
+
+export function isSessionActivityV1(value) {
+  if (!exactKeys(value, ['version', 'advisory', 'status', 'as_of', 'revision', 'entries', 'truncated'])) return false
+  if (value.version !== 1 || value.advisory !== true || !datetime(value.as_of)) return false
+  if (!['available', 'unavailable'].includes(value.status) || typeof value.truncated !== 'boolean') return false
+  if (!nullable(value.revision, (revision) => typeof revision === 'string' && SHA256.test(revision))) return false
+  if (!Array.isArray(value.entries) || value.entries.length > SESSION_ACTIVITY_MAX_ENTRIES ||
+      !value.entries.every(activityEntry)) return false
+  const keys = value.entries.map((entry) => `${entry.kind}:${entry.id}`)
+  if (new Set(keys).size !== keys.length) return false
+  if (value.status === 'unavailable') {
+    return value.entries.length === 0 && value.revision === null && value.truncated === false
+  }
+  return value.revision !== null
+}
+
+/**
+ * 1.6 cross-field rules, mirrored from the served contract so a malformed page
+ * cannot poison a local room copy: room_context describes exactly the records
+ * the envelope emits, a command is always a final present message, and a
+ * coverage claim agrees with the states the page describes.
+ */
+function roomContextCrossCheck(value, allRows) {
+  const room = value.room_context
+  const emitted = new Set(allRows.map((row) => row.message_id))
+  const described = room.messages.map((message) => message.message_id)
+  if (new Set(described).size !== described.length || described.length !== emitted.size ||
+      described.some((id) => !emitted.has(id))) {
+    return 'room context must describe every emitted record exactly once'
+  }
+  const stateById = new Map(room.messages.map((message) => [message.message_id, message.state]))
+  if (value.commands.some((entry) => stateById.get(entry.message_id) !== 'final')) {
+    return 'a delivered command must be a final, present message'
+  }
+  if (room.coverage) {
+    const { through } = room.coverage
+    const end = value.window.source_window.end
+    if (end) {
+      if (through.sequence !== end.sequence || through.message_id !== end.message_id ||
+          Date.parse(through.created_at) !== Date.parse(end.created_at)) {
+        return 'coverage point must be the end of this envelope source window'
+      }
+    } else if (allRows.length > 0) {
+      return 'coverage point must be the end of this envelope source window'
+    }
+    if (room.coverage.eligible_count < allRows.length) return 'eligible_count below emitted records'
+    const open = new Set(room.coverage.open_message_ids)
+    const describedDeleted = room.messages.filter((message) => message.state === 'deleted').length
+    if (room.messages.some((message) => (message.state === 'in_progress') !== open.has(message.message_id)) ||
+        describedDeleted > room.coverage.deleted_count) {
+      return 'coverage contradicts the states this page describes'
+    }
+  }
+  if (Array.isArray(room.open_check) && room.open_check.some((check) => emitted.has(check.message_id))) {
+    return 'open_check answers rows outside this page only'
+  }
+  return null
+}
+
 function envelopeV1(value) {
-  const senderStyleLane = value?.contract_version === REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION
+  const roomContextLane = value?.contract_version === REMOTE_INGRESS_ROOM_CONTEXT_CONTRACT_VERSION
+  const senderStyleLane = roomContextLane || value?.contract_version === REMOTE_INGRESS_SENDER_STYLE_CONTRACT_VERSION
   const noticeLane = senderStyleLane ||
     value?.contract_version === REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION
   const enhanced = noticeLane || value?.contract_version === REMOTE_INGRESS_CONTRACT_VERSION
@@ -637,9 +817,11 @@ function envelopeV1(value) {
   // 1.4 always carries system_notices (possibly empty); 1.5 adds an optional
   // sender_response_styles. Both are additive sections, which is the only shape
   // this validator tolerates — a CHANGED key would fail here, by design.
-  const laneRequiredKeys = noticeLane ? [...requiredKeys, 'system_notices'] : requiredKeys
+  const laneRequiredKeys = noticeLane
+    ? [...requiredKeys, 'system_notices', ...(roomContextLane ? ['room_context'] : [])]
+    : requiredKeys
   const laneOptionalKeys = senderStyleLane
-    ? ['active_session_plans', 'sender_response_styles']
+    ? ['active_session_plans', 'sender_response_styles', ...(roomContextLane ? ['session_activity'] : [])]
     : ['active_session_plans']
   if (!(enhanced
     ? optionalExactKeys(value, laneRequiredKeys, laneOptionalKeys)
@@ -713,6 +895,10 @@ function envelopeV1(value) {
       !isActiveSessionPlansProjectionV1(value.active_session_plans)) {
     return 'invalid active_session_plans projection'
   }
+  if (roomContextLane && !isRoomContextV1(value.room_context)) return 'invalid room_context'
+  if (roomContextLane && Object.hasOwn(value, 'session_activity') && !isSessionActivityV1(value.session_activity)) {
+    return 'invalid session_activity'
+  }
 
   const listedIds = new Set(value.command_message_ids)
   const commandIds = new Set(value.commands.map((entry) => entry.message_id))
@@ -737,6 +923,10 @@ function envelopeV1(value) {
   }
   if (value.window.returned !== allRows.length || !rowsFitWindow(allRows, value.window)) {
     return 'canonical window count/range mismatch'
+  }
+  if (roomContextLane) {
+    const roomError = roomContextCrossCheck(value, allRows)
+    if (roomError) return roomError
   }
   if (value.commands.length > 0) {
     const turnIds = new Set(value.commands.map((entry) => entry.delivery.turn_id))

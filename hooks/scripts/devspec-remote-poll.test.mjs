@@ -163,7 +163,7 @@ describe('isDeliverableCommand (command gate)', () => {
 })
 
 describe('poll negotiation', () => {
-  it('requests the whole nested ingress ladder, up to sender response style', () => {
+  it('requests the whole nested ingress ladder, up to room context', () => {
     assert.equal(DELEGATED_SCOPE_VERSION, 1)
     assert.equal(ACTIVE_PLAN_PROJECTION_VERSION, 1)
     assert.deepEqual(remoteIngressNegotiationArguments(), {
@@ -172,7 +172,17 @@ describe('poll negotiation', () => {
       active_plan_projection_version: 1,
       system_notice_version: 1,
       sender_style_version: 1,
+      room_context_version: 1,
     })
+  })
+
+  it('never asks for room context without the full ladder below it, which the server refuses', () => {
+    // 1.6.0 is one lane (item 1dcb75df): room_context_version with any rung
+    // missing is an error, not a quieter page.
+    const args = remoteIngressNegotiationArguments()
+    for (const rung of ['ingress_version', 'delegated_scope_version', 'active_plan_projection_version', 'system_notice_version', 'sender_style_version']) {
+      assert.equal(args[rung], 1, rung)
+    }
   })
 
   it('echoes the instruction tiers it already holds, so the server can suppress them', () => {

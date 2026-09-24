@@ -2,6 +2,23 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.31.0 - 2026-09-24
+
+### A complete copy of the room, beside the inbox
+
+Claude Code now keeps its own copy of the room it is attached to:
+`~/.devspec/remote-control/connections/<connection>.<session>.transcript.jsonl`,
+one line per message in the room's order. Each line has who said it, who it was
+for, the full text and any file references. It is filled from the start of the
+room when Claude Code connects, and kept up to date as messages arrive, finish or
+are deleted, even in a quiet room. It checks itself against the room's own counts
+and re-reads the history if they ever disagree.
+
+The room file (`<connection>.room.json`) now also says how complete that copy is,
+and lists what the session produced and referenced as references to look up,
+with the changes seen along the way. It never claims to know how an item stands
+now. Nothing new is printed to the conversation, so none of this costs a turn.
+
 ## 0.30.3 - 2026-09-23
 
 - If Claude writes the folder pin in a form DevSpec cannot read, it is told straight

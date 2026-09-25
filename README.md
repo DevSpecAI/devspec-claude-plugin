@@ -198,7 +198,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 
 - Changes are made on an **isolated branch** — your working checkout stays clean.
 - It **never force-pushes**, and it respects the protected paths you set.
-- **Nothing is marked done on its own.** Claude does the work and records it; a human reviews and verifies in DevSpec.
+- **Claude records the work; it never signs it off.** What happens after that — whether the task's own checks settle it, or a person has to verify it — is decided by DevSpec, the same way for every tool.
 - It won't stall on a question nobody may be reading: a task too ambiguous to do safely is failed with a reason, not guessed at.
 - Commits it makes for a tracked task carry a small `[devspec:…]` tag so DevSpec can link the commit — and later the deployment — back to the task.
 

@@ -2,6 +2,20 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.3 - 2026-09-25
+
+- The plugin's own DevSpec tools now work with its hooks and its permission
+  lists. Claude Code names them `mcp__plugin_devspec_devspec__…`, but every hook
+  and allow-list named `mcp__devspec__…`. So on a plain install, claiming an item
+  never registered, commits were never linked to it automatically, replies never
+  marked the turn finished, and the remote command's tools still asked for
+  permission. Both names now match everywhere.
+- Claude can answer the Review queue from DevSpec: it may read the queue, rule on
+  flags, preview and settle conflicts, link related knowledge, read an item's
+  history and manage discussion points without asking each time.
+- When you agree to a memory that is still being discussed, Claude marks it
+  decided instead of writing a new version of the same words.
+
 ## 0.32.2 - 2026-09-24
 
 - Closing Claude Code now ends its connection in DevSpec, with the reason

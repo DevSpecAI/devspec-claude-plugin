@@ -2,6 +2,10 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.7
+
+- The remote command names where open questions about records live — the project's Review queue — and the tools to preview a ruling, link related records and read an item's history. A queued change is accepted on the Review page, under Proposed changes. Who may rule stays the served contract's decision.
+
 ## 0.32.6 - 2026-09-25
 
 - Fixed: a message DevSpec held back for a moment could stop Claude hearing

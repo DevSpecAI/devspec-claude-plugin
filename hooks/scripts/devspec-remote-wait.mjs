@@ -54,6 +54,7 @@ import {
   QUEUED,
   validateInteractionAnswerRecord,
 } from './interaction-events.mjs'
+import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -528,6 +529,7 @@ export function parseInboxBatches(lines, connectionId) {
           ...record,
           execute_message_ids: ids,
           wake_context: validWakeContext(record.wake_context, ids),
+          question_handoff: validQuestionHandoff(record.question_handoff, new Set(ids)),
         })
       } else if (record.type === 'canonical_control') {
         if (record.authoritative_source !== REMOTE_INGRESS_RESOURCE_URI) continue
@@ -620,6 +622,12 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
       ? (ingress.sender_response_styles.find((style) => style.message_id === command.message_id)?.notes ?? [])
       : []
     const body = typeof command.content?.body === 'string' ? command.content.body : ''
+    // This message took over the turn an answered question had open (item a11d27fa).
+    // Said just before it, because the answer's own wake named a reply channel that
+    // the handoff has since closed.
+    if (batch.question_handoff?.source_message_id === command.message_id) {
+      events.push(questionHandoffEvent(batch.question_handoff, { sessionId }))
+    }
     events.push({
       // ─── Spend the first characters on what a CUT line must still say ───
       //

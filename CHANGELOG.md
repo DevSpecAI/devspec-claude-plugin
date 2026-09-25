@@ -2,6 +2,14 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.5 - 2026-09-25
+
+- A message you send while Claude is still working on your answer to its
+  question now reaches it straight away. Before, it waited until Claude had
+  finished everything that answer set off, which could be half an hour. Claude
+  reads it at its next step without stopping what it was doing, and answers it
+  in the room under that message.
+
 ## 0.32.4 - 2026-09-25
 
 - The room file's session activity is now a history, not a snapshot. Beside the

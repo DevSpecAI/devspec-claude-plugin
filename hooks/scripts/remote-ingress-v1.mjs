@@ -207,6 +207,11 @@ function compareOrder(a, b) {
   return a.sequence - b.sequence
 }
 
+/** The canonical attachment shape, for sidecars that carry a command's manifest. */
+export function isRemoteIngressAttachment(value) {
+  return attachment(value)
+}
+
 function strictlyOrdered(rows) {
   return rows.every((row, index) => index === 0 || compareOrder(rows[index - 1].order, row.order) < 0)
 }

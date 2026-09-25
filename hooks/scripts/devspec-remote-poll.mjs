@@ -88,6 +88,13 @@ import {
 } from './interaction-events.mjs'
 
 import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
+import {
+  commandHandoffDecision,
+  commandHandoffKey,
+  commandOfferArguments,
+  commandOfferNegotiable,
+  parseCommandOfferResponse,
+} from './command-offer.mjs'
 
 export const DELEGATED_SCOPE_VERSION = 1
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
@@ -692,6 +699,7 @@ export function appendCanonicalInbox(
     sessionId = null,
     wakeContext = null,
     channel = 'context',
+    questionHandoff = null,
     writeRecord = appendDurableRecord,
   } = {},
 ) {
@@ -731,12 +739,17 @@ export function appendCanonicalInbox(
     // paths, each command's count since this agent's last reply, and which parts of
     // the room file moved since the last command. Pointers, never the room itself.
     ...(channel === 'command' && wakeContext ? { wake_context: wakeContext } : {}),
+    // This message took over the turn an answered question had open (item a11d27fa).
+    // The wait stream tells the model so, just before the message itself.
+    ...(channel === 'command' && questionHandoff && executeMessageIds.includes(questionHandoff.source_message_id)
+      ? { question_handoff: questionHandoff }
+      : {}),
   }
   if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
   index.envelopeIds.add(ingress.envelope_id)
   for (const id of executeMessageIds) index.commandMessageIds.add(id)
   if (channel === 'control') index.controlIds.add(ingress.control.id)
-  return { ok: true, appended: true, executeMessageIds }
+  return { ok: true, appended: true, executeMessageIds, handedOff: Object.hasOwn(record, 'question_handoff') }
 }
 
 export function appendAutomationDispatches(
@@ -1584,6 +1597,62 @@ async function main() {
   // record is on disk.
   let pendingInteractionAck = null
 
+  // --- Command handoff (item a11d27fa) ------------------------------------------
+  // The attachment the server names on every poll response. An offer must name this
+  // one, and the handoff echoes it.
+  let speechAttachmentId = null
+  // The readiness exchange to carry on the next poll, if the last offer earned one.
+  let pendingCommandHandoff = null
+  // The last exchange actually sent, with its question, until the message it names
+  // arrives or the question stops being ours. Kept past a thrown poll: the server may
+  // have handed over anyway, and the message then arrives through the ordinary path.
+  let sentCommandHandoff = null
+  // A readiness the server did not act on (its answer not yet acknowledged there, say)
+  // is retried with the ordinary backoff rather than at once.
+  let lastSentHandoffKey = null
+  // The last reason an offer was held, so the log says it once rather than every lap.
+  let lastOfferHold = null
+
+  function forgetCommandHandoff() {
+    pendingCommandHandoff = null
+    sentCommandHandoff = null
+  }
+
+  /**
+   * Read the offer sidecar and decide. Returns true when a fresh readiness should go
+   * out on an immediate poll. Offers are availability only: nothing here delivers,
+   * acknowledges or advances a cursor, and a malformed one costs only the early
+   * handoff (the message still arrives once the question's work ends).
+   */
+  function considerCommandOffer(res) {
+    let parsed
+    try {
+      parsed = parseCommandOfferResponse(res, { connectionId, sessionId, attachmentId: speechAttachmentId })
+    } catch (error) {
+      process.stderr.write(`devspec-remote-poll: ignored command offer (${error.message})\n`)
+      return false
+    }
+    if (!parsed.supported) return false
+    if (parsed.stale && sentCommandHandoff) {
+      process.stderr.write('devspec-remote-poll: command handoff was stale; waiting for a fresh offer\n')
+      sentCommandHandoff = null
+    }
+    const decision = commandHandoffDecision({
+      offer: parsed.offer,
+      continuation: interactionContinuation,
+      ackPending: pendingInteractionAck !== null,
+      inboxByteOffset: readState(connectionId)?.inbox_byte_offset ?? null,
+    })
+    const hold = decision.action === 'wait' ? `${parsed.offer.source_message_id}:${decision.reason}` : null
+    if (hold && hold !== lastOfferHold) {
+      process.stderr.write(`devspec-remote-poll: command offer held (${decision.reason})\n`)
+    }
+    lastOfferHold = hold
+    if (decision.action !== 'ready') return false
+    pendingCommandHandoff = decision.ready
+    return commandHandoffKey(decision.ready) !== lastSentHandoffKey
+  }
+
   function clearInteractionContinuation(reason) {
     if (!interactionContinuation) return
     process.stderr.write(`devspec-remote-poll: interaction continuation cleared (${reason})\n`)
@@ -1844,10 +1913,26 @@ async function main() {
     })
     const negotiatesInteraction = Object.keys(interactionArgs).length > 0
     const ack = negotiatesInteraction ? pendingInteractionAck : null
+    // Offers ride the same capability. A readiness never shares a poll with an answer's
+    // ACK: the server hands over only an answer it has already recorded as applied.
+    const offersNegotiable = commandOfferNegotiable({
+      connectionCapability,
+      sessionId,
+      attachmentId: speechAttachmentId,
+      catchUp,
+    })
+    const handoff = offersNegotiable && !ack ? pendingCommandHandoff : null
+    if (handoff) {
+      sentCommandHandoff = { ready: handoff, question_id: interactionContinuation?.question_id ?? null }
+      lastSentHandoffKey = commandHandoffKey(handoff)
+      process.stderr.write(
+        `devspec-remote-poll: ${nowStamp()} handing the question's turn to message ${handoff.source_message_id}\n`,
+      )
+    }
     const response = await mcpToolsCall({
       mcpUrl,
       token,
-      ...(negotiatesInteraction ? { connectionCapability } : {}),
+      ...(negotiatesInteraction || offersNegotiable ? { connectionCapability } : {}),
       name: 'poll_connection',
       arguments: {
         connection_id: connectionId,
@@ -1857,6 +1942,7 @@ async function main() {
         ...knownInstructionTierArguments(listenerState),
         ...interactionArgs,
         ...(ack ? questionEventAckArguments(ack) : {}),
+        ...commandOfferArguments({ negotiable: offersNegotiable, ready: handoff }),
         wait_ms: waitMs,
         ...pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed: catchUp }),
         ...(dispatchCursor ? { dispatch_cursor: dispatchCursor } : {}),
@@ -1878,6 +1964,9 @@ async function main() {
     // queued, and a lost ACK is recovered by the dedupe path on redelivery anyway —
     // at-least-once means the answer is never the thing that gets lost.
     if (ack && pendingInteractionAck === ack) pendingInteractionAck = null
+    // A readiness is one exchange. What the server made of it is read from this
+    // response (the message delivered, or stale); a fresh offer earns the next one.
+    if (handoff && pendingCommandHandoff === handoff) pendingCommandHandoff = null
     return response
   }
 
@@ -1961,6 +2050,9 @@ async function main() {
         ? commandWakeContext(transcriptStore, ingress, { connectionId, roomChanged: roomChanges.changed })
         : null,
       channel,
+      questionHandoff: sentCommandHandoff?.question_id
+        ? { question_id: sentCommandHandoff.question_id, source_message_id: sentCommandHandoff.ready.source_message_id }
+        : null,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
 
@@ -1997,6 +2089,13 @@ async function main() {
       }) + '\n')
       writeTurnMarker(connectionId)
       patchState({ last_owner_wake_at: new Date().toISOString() })
+      if (persisted.handedOff) {
+        // The server retired the question's attempt in the same transaction that opened
+        // this message, so the continuation is no longer ours to keep alive or complete.
+        // The turn marker just written carries Working on for the message instead.
+        clearInteractionContinuation('command_handoff')
+        forgetCommandHandoff()
+      }
     } else if (channel === 'control') {
       // Claude has no safe script-level implementation for these lifecycle verbs.
       // Surface a typed host-control event through Monitor, but never turn it into
@@ -2096,6 +2195,11 @@ async function main() {
       patchState({ interaction_continuation: null })
       pendingInteractionAck = null
     }
+    // A handoff belongs to the exact question attempt it names. If that attempt ended
+    // some other way (the reply was posted, or the turn ended), the held message now
+    // arrives through the ordinary path and nothing was handed over.
+    const handoffAttempt = (pendingCommandHandoff ?? sentCommandHandoff?.ready)?.attempt_id
+    if (handoffAttempt && interactionContinuation?.attempt_id !== handoffAttempt) forgetCommandHandoff()
     // NOTE: local state is read ONLY to observe a local stop (enabled === false).
     // Attachment is NOT adopted from it — the server (now the poll response's
     // session_id, read from the live markers) is the sole authority for which session
@@ -2256,6 +2360,8 @@ async function main() {
       transcriptStore = sessionId ? loadTranscriptStore(connectionId, sessionId) : null
       redrainRequested = false
       roomAnnounced = {}
+      speechAttachmentId = null
+      forgetCommandHandoff()
       patchState({
         session_id: sessionId,
         cursor_after_message_id: null,
@@ -2263,6 +2369,16 @@ async function main() {
         catch_up_cursor: null,
       })
       continue
+    }
+
+    // The attachment this connection holds now. A different one is a different
+    // attachment generation, and no offer or readiness from the old one carries over.
+    const attachmentNow = typeof res.speech_attachment_id === 'string' && res.speech_attachment_id
+      ? res.speech_attachment_id
+      : null
+    if (attachmentNow !== speechAttachmentId) {
+      speechAttachmentId = attachmentNow
+      forgetCommandHandoff()
     }
 
     if (res.changed === true) {
@@ -2290,10 +2406,14 @@ async function main() {
         needsSeed = redrainRequested
         redrainRequested = false
       }
+      // A message held behind our answered question: when the answer is settled, the
+      // next poll carries the readiness, and that is worth making at once.
+      const handOverNow = considerCommandOffer(res)
       if (automations.delivered || canonical.delivered) {
         consecutiveEmpty = 0
         continue // something real landed — go straight back to holding
       }
+      if (handOverNow) continue
       // Changed but nothing to deliver. An independent cursor keeps a persistent
       // automation marker from staying hot, and this backoff keeps ANY future marker
       // of that shape from hot-looping.

@@ -226,6 +226,26 @@ describe('wait-boundary revalidation and independent channels', () => {
     })
   })
 
+  it('says a message took over an answered question\'s turn, just before that message', () => {
+    const batch = canonicalInboxBatch('handed-over')
+    const id = batch.ingress.commands[0].message_id
+    const question = '90000000-0000-4000-8000-000000000009'
+    batch.question_handoff = { question_id: question, source_message_id: id }
+    const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
+    const events = buildCanonicalCommandEvents(record)
+    assert.deepEqual(events.map((event) => event.type), ['question_turn_handed_over', 'owner_message', 'wake'])
+    assert.equal(events[0].question_id, question)
+    assert.equal(events[0].message_id, id)
+    assert.equal(events[0].executable, false)
+
+    // A marker naming a message outside the batch is dropped; the command is not.
+    const stray = canonicalInboxBatch('stray-marker')
+    stray.question_handoff = { question_id: question, source_message_id: '40000000-0000-4000-8000-0000000000ff' }
+    const [kept] = parseInboxBatches([JSON.stringify(stray)], CONNECTION)
+    assert.equal(kept.question_handoff, null)
+    assert.deepEqual(buildCanonicalCommandEvents(kept).map((event) => event.type), ['owner_message', 'wake'])
+  })
+
   it('ignores the retired carried room fields: the room is in the transcript now', () => {
     const batch = canonicalInboxBatch('old-carry')
     batch.carried_context = { context: { human_context: [{ content: 'inject' }] } }

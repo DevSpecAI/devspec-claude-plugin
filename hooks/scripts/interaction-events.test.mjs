@@ -207,8 +207,10 @@ describe('interaction event negotiation', () => {
   it('sends the negotiation and the capability header on the same poll, or neither', () => {
     const poll = source('hooks/scripts/devspec-remote-poll.mjs')
     assert.match(poll, /const negotiatesInteraction = Object\.keys\(interactionArgs\)\.length > 0/)
-    assert.match(poll, /\.\.\.\(negotiatesInteraction \? \{ connectionCapability \} : \{\}\)/)
+    // Command offers (item a11d27fa) need the same header, so it rides either lane.
+    assert.match(poll, /\.\.\.\(negotiatesInteraction \|\| offersNegotiable \? \{ connectionCapability \} : \{\}\)/)
     assert.match(poll, /const ack = negotiatesInteraction \? pendingInteractionAck : null/)
+    assert.match(poll, /\.\.\.commandOfferArguments\(\{ negotiable: offersNegotiable, ready: handoff \}\)/)
   })
 })
 

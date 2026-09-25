@@ -42,6 +42,7 @@
  * deployment safety and host sandboxing are independent and untouched).
  */
 
+import { devspecToolVerb } from './devspec-tool-name.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -74,12 +75,11 @@ const UUID_RE = new RegExp(`^${UUID}$`, 'i')
  */
 const REFERENCE_RE = new RegExp(`\\[devspec:(${UUID})\\]`, 'i')
 
-const CLAIM_TOOL = 'mcp__devspec__claim_work_item'
-const RELEASE_TOOLS = new Set([
-  'mcp__devspec__record_implementation',
-  'mcp__devspec__fail_work_item',
-  'mcp__devspec__release_work_item',
-])
+// Verbs, not tool names: the same tool arrives as mcp__plugin_devspec_devspec__<verb>
+// from this plugin's own server and as mcp__devspec__<verb> from a hand-configured
+// one, and comparing raw names meant the plugin's own never matched (ddc40cc8).
+const CLAIM_VERB = 'claim_work_item'
+const RELEASE_VERBS = new Set(['record_implementation', 'fail_work_item', 'release_work_item'])
 
 /** Tools this hook is registered for. Edits are observed; only Bash can be denied. */
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit'])
@@ -731,8 +731,8 @@ export function handleSessionStart() {
 
 export function handlePost(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
-  const tool = input?.tool_name ?? input?.toolName
-  if (tool !== CLAIM_TOOL && !RELEASE_TOOLS.has(tool)) return null
+  const verb = devspecToolVerb(input?.tool_name ?? input?.toolName)
+  if (verb !== CLAIM_VERB && !RELEASE_VERBS.has(verb)) return null
   let scope
   try { scope = scopeFrom(input) } catch { return null }
 
@@ -740,7 +740,7 @@ export function handlePost(input, options = {}) {
   if (!itemId) return null
   const current = readClaims(scope, { env, now, platform })
   try {
-    if (tool === CLAIM_TOOL) {
+    if (verb === CLAIM_VERB) {
       writeClaims(scope, [...current, itemId], { env, now, platform })
     } else {
       writeClaims(scope, current.filter((id) => id !== itemId), { env, now, platform })

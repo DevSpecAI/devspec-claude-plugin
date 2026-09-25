@@ -70,23 +70,23 @@ const bash = (command, overrides, extra = {}) =>
 const decision = (result) => result?.hookSpecificOutput?.permissionDecision ?? null
 const updated = (result) => result?.hookSpecificOutput?.updatedInput?.command ?? null
 
-function claim(itemId = ITEM, cwd = repo) {
+function claim(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__claim_work_item') {
   return handlePost({
     session_id: SESSION,
     cwd,
     hook_event_name: 'PostToolUse',
-    tool_name: 'mcp__devspec__claim_work_item',
+    tool_name: toolName,
     tool_input: { action_item_id: itemId },
     tool_response: { content: [{ type: 'text', text: JSON.stringify({ id: itemId, claim_success: true }) }] },
   }, { env })
 }
 
-function record(itemId = ITEM, cwd = repo) {
+function record(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__record_implementation') {
   return handlePost({
     session_id: SESSION,
     cwd,
     hook_event_name: 'PostToolUse',
-    tool_name: 'mcp__devspec__record_implementation',
+    tool_name: toolName,
     tool_input: { action_item_id: itemId },
     tool_response: {
       content: [{ type: 'text', text: JSON.stringify({ id: itemId, lifecycle: 'implemented' }) }],
@@ -676,6 +676,15 @@ describe('the shapes the DevSpec server actually returns', () => {
     tool_name: 'Bash',
     tool_input: { command },
   }, { env })
+
+  it('observes a claim and its release made through the plugin\'s own server name (ddc40cc8)', () => {
+    // A plain plugin install delivers the tool as mcp__plugin_devspec_devspec__*;
+    // matching only mcp__devspec__* meant claims were never seen at all.
+    claim(ITEM, repo, 'mcp__plugin_devspec_devspec__claim_work_item')
+    assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+    record(ITEM, repo, 'mcp__plugin_devspec_devspec__record_implementation')
+    assert.deepEqual(readClaims(scope(), { env }), [])
+  })
 
   it('observes a claim from a real claim_work_item response', () => {
     handlePost(fixture('post-claim-success.json'), { env })

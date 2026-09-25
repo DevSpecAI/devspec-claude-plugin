@@ -1,7 +1,7 @@
 ---
 name: devspec-pin
 description: 'Pin this folder to a DevSpec project: write .devspec/project.json containing exactly {"project_id": "<uuid>"} (that key, nothing else). Load it when the person asks you to pin or link the folder to a DevSpec project, or after they tell you which project a folder with no repository belongs to.'
-allowed-tools: Read, Write, Bash, mcp__devspec__list_projects
+allowed-tools: Read, Write, Bash, mcp__plugin_devspec_devspec__list_projects, mcp__devspec__list_projects
 ---
 
 # Pin a folder to a DevSpec project

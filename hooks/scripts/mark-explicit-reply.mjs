@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PostToolUse hook (matcher: mcp__devspec__post_session_message) — records that
+ * PostToolUse hook (matcher: post_session_message, under either DevSpec server name) — records that
  * the agent already posted an explicit reply into the session THIS turn, so the
  * Stop hook (mirror-turn.mjs) knows to skip mirroring the turn's own end-of-turn
  * narration as a second, redundant session message (item b9fb49a9).
@@ -21,6 +21,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { devspecToolVerb } from './devspec-tool-name.mjs'
 import {
   resolveHookConversationId,
   loadState,
@@ -28,7 +29,10 @@ import {
   clearTurnMarker,
 } from './mirror-turn.mjs'
 
-const TARGET_TOOL = 'mcp__devspec__post_session_message'
+// A verb, not a tool name: this plugin's own server delivers the tool as
+// mcp__plugin_devspec_devspec__post_session_message, and matching only
+// mcp__devspec__… meant this never ran on a plugin install (ddc40cc8).
+const TARGET_VERB = 'post_session_message'
 
 function readStdin() {
   try {
@@ -65,7 +69,7 @@ export function declaresCompleteTurn(raw) {
 
 async function main() {
   const raw = readStdin()
-  if (toolNameFrom(raw) !== TARGET_TOOL) process.exit(0)
+  if (devspecToolVerb(toolNameFrom(raw)) !== TARGET_VERB) process.exit(0)
 
   const conversationId = resolveHookConversationId(raw)
   const state = loadState(conversationId)

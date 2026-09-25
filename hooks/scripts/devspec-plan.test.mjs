@@ -100,14 +100,20 @@ describe('Claude shared-plan policy surfaces', () => {
     // first command (item b7ef1fe2) — the move this comment has always asked for. It
     // gets its own ceiling rather than a raised one here.
     const HANDLING_SKILL_BLOAT_CEILING_BYTES = 18_000
-    const command = source('commands/devspec.remote.md')
+    // Measured WITHOUT the YAML frontmatter: Claude Code parses `allowed-tools` and
+    // the description itself and loads only the body into the conversation, so the
+    // frontmatter is not context. It is also where the tool list doubled when every
+    // DevSpec tool had to be named in both the forms Claude Code delivers it under
+    // (item ddc40cc8), and a permission list is not what these ceilings guard.
+    const body = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, '')
+    const command = body(source('commands/devspec.remote.md'))
     assert.ok(
       Buffer.byteLength(command) < REMOTE_COMMAND_BLOAT_CEILING_BYTES,
       `remote command bloated to ${Buffer.byteLength(command)} bytes (ceiling ${REMOTE_COMMAND_BLOAT_CEILING_BYTES})`,
     )
     assert.ok(
-      Buffer.byteLength(handling) < HANDLING_SKILL_BLOAT_CEILING_BYTES,
-      `handling skill bloated to ${Buffer.byteLength(handling)} bytes (ceiling ${HANDLING_SKILL_BLOAT_CEILING_BYTES})`,
+      Buffer.byteLength(body(handling)) < HANDLING_SKILL_BLOAT_CEILING_BYTES,
+      `handling skill bloated to ${Buffer.byteLength(body(handling))} bytes (ceiling ${HANDLING_SKILL_BLOAT_CEILING_BYTES})`,
     )
     assert.ok(
       Buffer.byteLength(skill) < ON_DEMAND_SKILL_BLOAT_CEILING_BYTES,

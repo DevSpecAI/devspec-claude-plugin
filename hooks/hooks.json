@@ -54,7 +54,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__devspec__claim_work_item|mcp__devspec__record_implementation|mcp__devspec__fail_work_item|mcp__devspec__release_work_item",
+        "matcher": "mcp__(plugin_devspec_)?devspec__(claim_work_item|record_implementation|fail_work_item|release_work_item)",
         "hooks": [
           {
             "type": "command",
@@ -64,7 +64,7 @@
         ]
       },
       {
-        "matcher": "mcp__devspec__post_session_message",
+        "matcher": "mcp__(plugin_devspec_)?devspec__post_session_message",
         "hooks": [
           {
             "type": "command",

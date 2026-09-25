@@ -13,6 +13,7 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 
 import {
+  isSessionEventsV1,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_ROOM_CONTEXT_CONTRACT_VERSION,
   REMOTE_INGRESS_ROOM_CONTEXT_POLICY_VERSION,
@@ -28,6 +29,7 @@ import {
   MAX_REPAIRS_PER_DAY,
   messagesSinceLastReply,
   observeSessionActivity,
+  observeSessionEvents,
   persistTranscriptStore,
   sessionActivityView,
   takePendingRedrain,
@@ -575,24 +577,92 @@ describe('what the session produced and referenced', () => {
     version: 1, advisory: true, status, as_of: at(1), revision: status === 'available' ? `sha256:${'a'.repeat(64)}` : null, entries: status === 'available' ? entries : [], truncated: false,
   })
 
-  it('is kept as references plus the changes this copy saw, never as a claim about now', () => {
+  it('is kept as references only, never as a claim about how anything stands now', () => {
     const dir = tmpDir()
     const store = createTranscriptStore(CONN, SESSION)
     observeSessionActivity(store, list([item('open')]), new Date(at(10)))
     observeSessionActivity(store, list([item('implemented')]), new Date(at(20)))
-    // A failed read is not evidence of anything: no event, the history stands.
+    // A failed read is not evidence of anything: the references stand.
     observeSessionActivity(store, list([], 'unavailable'), new Date(at(25)))
-    observeSessionActivity(store, list([]), new Date(at(30)))
-    const view = sessionActivityView(store)
-    assert.match(view.note, /not the current state/)
-    assert.deepEqual(view.changes.map((change) => change.event), ['listed', 'status_changed', 'unlisted'])
-    assert.deepEqual(view.changes[1], { seen_at: at(20), event: 'status_changed', kind: 'action_item', id: id(500), title: 'Detach asks first', from: 'open', to: 'implemented' })
-    // References carry no status at all.
-    observeSessionActivity(store, list([item('done')]), new Date(at(40)))
-    assert.deepEqual(Object.keys(sessionActivityView(store).items[0]).sort(), ['creator', 'id', 'kind', 'relation', 'title'])
-    // The history survives a restart.
+    let view = sessionActivityView(store)
+    assert.match(view.note, /Never how anything stands now/)
+    assert.deepEqual(view.items.map((entry) => entry.id), [id(500)])
+    assert.deepEqual(Object.keys(view.items[0]).sort(), ['creator', 'id', 'kind', 'relation', 'title'])
+    // A status that changed between reads is not turned into an event here: the
+    // server's history says when it really happened (item 744c9724).
+    assert.deepEqual(view.events, [])
+    assert.equal(JSON.stringify(view).includes('implemented'), false)
     persistTranscriptStore(store, { dir })
-    assert.equal(sessionActivityView(loadTranscriptStore(CONN, SESSION, { dir })).changes.length, 4)
+    view = sessionActivityView(loadTranscriptStore(CONN, SESSION, { dir }))
+    assert.deepEqual(view.items.map((entry) => entry.id), [id(500)])
+  })
+
+  const events = (list, status = 'available', revision = `sha256:${'e'.repeat(64)}`) => ({
+    version: 1, advisory: true, status, as_of: at(50), revision: status === 'unavailable' ? null : revision, events: status === 'available' ? list : [], truncated: false,
+  })
+  const produced = { id: `produced:action_item:${id(500)}`, at: at(10), kind: 'action_item', record_id: id(500), event: 'produced', actor: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' } }
+  const moved = { id: 'lifecycle:10000000-0000-4000-8000-000000000777', at: at(20), kind: 'action_item', record_id: id(500), event: 'lifecycle_changed', from: 'open', to: 'implemented' }
+  const done = { id: 'lifecycle:10000000-0000-4000-8000-000000000778', at: at(30), kind: 'action_item', record_id: id(500), event: 'lifecycle_changed', from: 'implemented', to: 'done' }
+
+  it('keeps the server history of what happened, append-only, with when it happened', () => {
+    const dir = tmpDir()
+    const store = createTranscriptStore(CONN, SESSION)
+    observeSessionActivity(store, list([item('open')]), new Date(at(10)))
+    // The first poll asks for the history from scratch.
+    assert.deepEqual(transcriptPollArguments(store).session_events_version, 1)
+    assert.equal(transcriptPollArguments(store).session_events_revision, null)
+    observeSessionEvents(store, events([produced, moved]), new Date(at(21)))
+    assert.equal(transcriptPollArguments(store).session_events_revision, `sha256:${'e'.repeat(64)}`)
+    // Unchanged resends nothing and keeps what is held; unavailable asserts nothing.
+    observeSessionEvents(store, events([], 'unchanged'), new Date(at(22)))
+    observeSessionEvents(store, events([], 'unavailable'), new Date(at(23)))
+    assert.equal(sessionActivityView(store).events_readable, false)
+    // A later list adds what is new, in order, and never rewrites a held event, even
+    // if the server stopped listing it.
+    observeSessionEvents(store, events([{ ...moved, to: 'dismissed' }, done], 'available', `sha256:${'f'.repeat(64)}`), new Date(at(31)))
+    const view = sessionActivityView(store)
+    assert.equal(view.events_readable, true)
+    assert.deepEqual(view.events, [produced, moved, done])
+    assert.deepEqual(view.events.map((event) => event.at), [at(10), at(20), at(30)])
+    // The history and its revision survive a restart, so an unchanged list is not resent.
+    persistTranscriptStore(store, { dir })
+    const reloaded = loadTranscriptStore(CONN, SESSION, { dir })
+    assert.deepEqual(sessionActivityView(reloaded).events, [produced, moved, done])
+    assert.equal(transcriptPollArguments(reloaded).session_events_revision, `sha256:${'f'.repeat(64)}`)
+  })
+
+  it('drops what an older copy inferred: status snapshots and the changes it noticed', () => {
+    const dir = tmpDir()
+    const store = createTranscriptStore(CONN, SESSION)
+    persistTranscriptStore(store, { dir })
+    const statePath = transcriptPaths(CONN, SESSION, dir).state
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+    // The 0.32.3 shape: seen entries with a status, and poller-noticed changes.
+    state.activity = {
+      seen: [{ ...item('open') }],
+      events: [
+        { seen_at: at(5), event: 'listed', kind: 'action_item', id: id(500), title: 'Detach asks first', relation: 'produced', status: 'open' },
+        { seen_at: at(6), event: 'status_changed', kind: 'action_item', id: id(500), title: 'Detach asks first', from: 'open', to: 'done' },
+      ],
+      read_at: at(6),
+      available: true,
+    }
+    fs.writeFileSync(statePath, JSON.stringify(state))
+    const view = sessionActivityView(loadTranscriptStore(CONN, SESSION, { dir }))
+    assert.deepEqual(view.items, [{ kind: 'action_item', id: id(500), title: 'Detach asks first', relation: 'produced', creator: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' } }])
+    assert.deepEqual(view.events, [])
+    assert.equal(JSON.stringify(view).includes('seen_at'), false)
+  })
+
+  it('validates the section it keeps, and refuses a malformed one', () => {
+    assert.equal(isSessionEventsV1(events([produced, moved, done])), true)
+    assert.equal(isSessionEventsV1(events([], 'unchanged')), true)
+    assert.equal(isSessionEventsV1(events([], 'unavailable')), true)
+    assert.equal(isSessionEventsV1(events([produced, produced])), false)
+    assert.equal(isSessionEventsV1(events([{ ...moved, kind: 'memory' }])), false)
+    assert.equal(isSessionEventsV1(events([{ ...produced, status: 'open' }])), false)
+    assert.equal(isSessionEventsV1({ ...events([], 'unchanged'), events: [produced] }), false)
+    assert.equal(isSessionEventsV1({ ...events([], 'unavailable'), revision: `sha256:${'e'.repeat(64)}` }), false)
   })
 })
 

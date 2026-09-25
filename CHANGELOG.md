@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.4 - 2026-09-25
+
+- The room file's session activity is now a history, not a snapshot. Beside the
+  list of what the room produced and mentioned, it keeps what happened to those
+  records, as DevSpec recorded it: when each was created or first mentioned, an
+  item's lifecycle moving (from, to), a memory or artifact being replaced,
+  retracted or archived, each with the time it actually happened. Before, the
+  plugin guessed changes by comparing one read with the next, stamped them with
+  when it noticed, and kept each item's status as it stood at a read, which went
+  out of date. Statuses are no longer kept at all: fetch a record for how it
+  stands now.
+
 ## 0.32.3 - 2026-09-25
 
 - The plugin's own DevSpec tools now work with its hooks and its permission

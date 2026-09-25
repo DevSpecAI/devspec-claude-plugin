@@ -45,6 +45,7 @@ import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from 
 import {
   isActiveSessionPlansProjectionV1,
   isSessionActivityV1,
+  isSessionEventsV1,
   isSessionPollsProjectionV1,
   isStillToDiscussProjectionV1,
   isRemoteCommandProjectScope,
@@ -59,6 +60,7 @@ import {
   loadTranscriptStore,
   messagesSinceLastReply,
   observeSessionActivity,
+  observeSessionEvents,
   persistTranscriptStore,
   roomStatePath,
   sessionActivityView,
@@ -847,8 +849,8 @@ export function roomChangesSince(res, activity, seen = {}) {
     session_polls: isSessionPollsProjectionV1(res?.session_polls) ? JSON.stringify(res.session_polls) : null,
     still_to_discuss: isStillToDiscussProjectionV1(res?.still_to_discuss) ? JSON.stringify(res.still_to_discuss) : null,
     active_session_plans: isActiveSessionPlansProjectionV1(plans) ? JSON.stringify(plans) : null,
-    // The references and how many changes were seen: a new event is a change.
-    session_activity: activity ? JSON.stringify({ items: activity.items, changes: activity.changes.length }) : null,
+    // The references and how many events are held: a new event is a change.
+    session_activity: activity ? JSON.stringify({ items: activity.items, events: activity.events.length }) : null,
   }
   return {
     changed: Object.keys(current).filter((section) => current[section] !== (seen[section] ?? null)),
@@ -1925,6 +1927,7 @@ async function main() {
       const applied = applyIngressToStore(transcriptStore, ingress, { sessionId: res.session_id, drainPoll })
       if (applied.applied) {
         observeSessionActivity(transcriptStore, isSessionActivityV1(ingress.session_activity) ? ingress.session_activity : null)
+        observeSessionEvents(transcriptStore, isSessionEventsV1(ingress.session_events) ? ingress.session_events : null)
         if (!persistTranscriptStore(transcriptStore)) {
           process.stderr.write('devspec-remote-poll: transcript write failed; the copy is marked incomplete\n')
         }

@@ -31,6 +31,13 @@ export const REMOTE_INGRESS_ROOM_CONTEXT_POLICY_VERSION = '2026-09-24.1'
 export const ROOM_CONTEXT_VERSION = 1
 export const ROOM_PAGE_MAX = 500
 export const SESSION_ACTIVITY_MAX_ENTRIES = 1000
+/**
+ * The room's record history (item 744c9724, server item f6a8f4f2): a section the
+ * poller negotiates with session_events_version on top of 1.6.0. What happened to
+ * the records the room produced or referenced, with the time it happened.
+ */
+export const SESSION_EVENTS_VERSION = 1
+export const SESSION_EVENTS_MAX = 2000
 export const REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION = '1.4.0'
 export const REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION = '2026-08-22.1'
 export const SYSTEM_NOTICE_VERSION = 1
@@ -750,6 +757,57 @@ export function isSessionActivityV1(value) {
   return value.revision !== null
 }
 
+function eventActor(value) {
+  return nullable(value, (actor) =>
+    exactKeys(actor, ['kind', 'label']) &&
+    ['agent', 'person', 'platform'].includes(actor.kind) &&
+    nonempty(actor.label))
+}
+
+const EVENT_BASE_KEYS = ['id', 'at', 'kind', 'record_id', 'event']
+
+function sessionEvent(value) {
+  if (!value || typeof value !== 'object') return false
+  const base =
+    typeof value.id === 'string' && value.id.length > 0 && value.id.length <= 200 &&
+    datetime(value.at) &&
+    ['action_item', 'memory', 'artifact'].includes(value.kind) &&
+    uuid(value.record_id)
+  if (!base) return false
+  switch (value.event) {
+    case 'produced':
+    case 'retracted':
+    case 'archived':
+      return exactKeys(value, [...EVENT_BASE_KEYS, 'actor']) && eventActor(value.actor)
+    case 'referenced':
+      return exactKeys(value, [...EVENT_BASE_KEYS, 'message_id']) && uuid(value.message_id)
+    case 'lifecycle_changed':
+      return exactKeys(value, [...EVENT_BASE_KEYS, 'from', 'to']) &&
+        value.kind === 'action_item' && nonempty(value.from) && nonempty(value.to)
+    case 'superseded':
+      return exactKeys(value, [...EVENT_BASE_KEYS, 'by', 'actor']) &&
+        nullable(value.by, uuid) && eventActor(value.actor)
+    default:
+      return false
+  }
+}
+
+/** The negotiated session_events section, mirrored from the served contract. */
+export function isSessionEventsV1(value) {
+  if (!exactKeys(value, ['version', 'advisory', 'status', 'as_of', 'revision', 'events', 'truncated'])) return false
+  if (value.version !== SESSION_EVENTS_VERSION || value.advisory !== true || !datetime(value.as_of)) return false
+  if (!['available', 'unchanged', 'unavailable'].includes(value.status) || typeof value.truncated !== 'boolean') return false
+  if (!nullable(value.revision, (revision) => typeof revision === 'string' && SHA256.test(revision))) return false
+  if (!Array.isArray(value.events) || value.events.length > SESSION_EVENTS_MAX || !value.events.every(sessionEvent)) return false
+  const ids = value.events.map((event) => event.id)
+  if (new Set(ids).size !== ids.length) return false
+  if (value.status === 'unavailable') {
+    return value.events.length === 0 && value.revision === null && value.truncated === false
+  }
+  if (value.status === 'unchanged' && value.events.length > 0) return false
+  return value.revision !== null
+}
+
 /**
  * 1.6 cross-field rules, mirrored from the served contract so a malformed page
  * cannot poison a local room copy: room_context describes exactly the records
@@ -821,7 +879,7 @@ function envelopeV1(value) {
     ? [...requiredKeys, 'system_notices', ...(roomContextLane ? ['room_context'] : [])]
     : requiredKeys
   const laneOptionalKeys = senderStyleLane
-    ? ['active_session_plans', 'sender_response_styles', ...(roomContextLane ? ['session_activity'] : [])]
+    ? ['active_session_plans', 'sender_response_styles', ...(roomContextLane ? ['session_activity', 'session_events'] : [])]
     : ['active_session_plans']
   if (!(enhanced
     ? optionalExactKeys(value, laneRequiredKeys, laneOptionalKeys)
@@ -898,6 +956,9 @@ function envelopeV1(value) {
   if (roomContextLane && !isRoomContextV1(value.room_context)) return 'invalid room_context'
   if (roomContextLane && Object.hasOwn(value, 'session_activity') && !isSessionActivityV1(value.session_activity)) {
     return 'invalid session_activity'
+  }
+  if (roomContextLane && Object.hasOwn(value, 'session_events') && !isSessionEventsV1(value.session_events)) {
+    return 'invalid session_events'
   }
 
   const listedIds = new Set(value.command_message_ids)

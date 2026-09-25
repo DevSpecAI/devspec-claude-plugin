@@ -1225,13 +1225,13 @@ describe('roomChangesSince', () => {
     assert.deepEqual(roomChangesSince({ session_polls: bent }, null).changed, [])
   })
 
-  it('flags session activity when a new change was seen, not when it was merely re-read', () => {
-    const view = (changes) => ({ items: [{ kind: 'action_item', id: 'a', title: 'T', relation: 'produced', creator: null }], changes })
-    const first = roomChangesSince({}, view([{ event: 'listed' }]))
+  it('flags session activity when a new event arrived, not when it was merely re-read', () => {
+    const view = (events) => ({ items: [{ kind: 'action_item', id: 'a', title: 'T', relation: 'produced', creator: null }], events })
+    const first = roomChangesSince({}, view([{ event: 'produced' }]))
     assert.deepEqual(first.changed, ['session_activity'])
-    assert.deepEqual(roomChangesSince({}, view([{ event: 'listed' }]), first.seen).changed, [])
+    assert.deepEqual(roomChangesSince({}, view([{ event: 'produced' }]), first.seen).changed, [])
     assert.deepEqual(
-      roomChangesSince({}, view([{ event: 'listed' }, { event: 'status_changed' }]), first.seen).changed,
+      roomChangesSince({}, view([{ event: 'produced' }, { event: 'lifecycle_changed' }]), first.seen).changed,
       ['session_activity'],
     )
   })

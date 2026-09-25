@@ -77,9 +77,19 @@ export function createTranscriptStore(connectionId, sessionId) {
     lastCheck: null,
     repairs: [],
     pendingRedrain: null,
-    // What the room produced and referenced, as references plus the changes this
-    // copy has seen — never a claim about an item's state now (Ali, 2026-09-24).
-    activity: { seen: new Map(), events: [], readAt: null, available: null },
+    // What the room produced and referenced, as references to fetch, plus the
+    // server's history of what happened to them. Never a claim about an item's
+    // state now (Ali, 2026-09-24; items 1a4f0246, 744c9724).
+    activity: {
+      seen: new Map(),
+      events: [],
+      eventIds: new Set(),
+      eventsRevision: null,
+      eventsReadable: null,
+      eventsReadAt: null,
+      readAt: null,
+      available: null,
+    },
     dirty: false,
     writeFailed: false,
     updatedAt: null,
@@ -376,6 +386,10 @@ export function transcriptPollArguments(store) {
     room_context_version: 1,
     ...(open.length > 0 ? { room_open_message_ids: open } : {}),
     room_deletions_seen: store.deletionsSeen,
+    // The room's record history (item 744c9724): echo the revision held, so an
+    // unchanged list is not resent.
+    session_events_version: 1,
+    session_events_revision: store.activity.eventsRevision,
   }
 }
 
@@ -444,53 +458,66 @@ export function transcriptSummary(store, { dir = DEFAULT_DIR } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Session activity: references and observed changes
+// Session activity: references, and the history of what happened to them
 // ---------------------------------------------------------------------------
 
 /**
- * Record what the server's session activity list shows now as events, not as a
- * status board (item 1a4f0246; Ali, 2026-09-24): "are we claiming a state right
- * now, or tracking a series of things that have happened?" The latter. An item
- * appearing, changing status or leaving the list is an event stamped with when this
- * copy saw it. The current state of any item is read from the database with the
- * MCP tools, never from here. An unavailable list records nothing: it says nothing.
+ * Keep the server's list of what the room produced and referenced as references
+ * only: kind, id, title, relation and creator. Its status is how the record stood
+ * when the list was read, and a copy that kept it would be claiming to know how it
+ * stands now (Ali, 2026-09-24). The current state of any record is read from the
+ * database with the MCP tools. An unavailable list changes nothing.
  */
 export function observeSessionActivity(store, activity, now = new Date()) {
   if (!store || !activity) return
-  const seenAt = now.toISOString()
-  store.activity.readAt = seenAt
+  store.activity.readAt = now.toISOString()
   store.activity.available = activity.status === 'available'
   if (activity.status !== 'available') return
-  const current = new Map(activity.entries.map((entry) => [`${entry.kind}:${entry.id}`, entry]))
-  for (const [key, entry] of current) {
-    const before = store.activity.seen.get(key)
-    if (!before) {
-      store.activity.events.push({ seen_at: seenAt, event: 'listed', kind: entry.kind, id: entry.id, title: entry.title, relation: entry.relation, status: entry.status })
-    } else if (before.status !== entry.status) {
-      store.activity.events.push({ seen_at: seenAt, event: 'status_changed', kind: entry.kind, id: entry.id, title: entry.title, from: before.status, to: entry.status })
-    }
-  }
-  for (const [key, before] of store.activity.seen) {
-    if (!current.has(key)) {
-      store.activity.events.push({ seen_at: seenAt, event: 'unlisted', kind: before.kind, id: before.id, title: before.title })
-    }
-  }
-  store.activity.seen = new Map([...current].map(([key, entry]) => [key, {
-    kind: entry.kind, id: entry.id, title: entry.title, relation: entry.relation, creator: entry.creator, status: entry.status,
+  store.activity.seen = new Map(activity.entries.map((entry) => [`${entry.kind}:${entry.id}`, {
+    kind: entry.kind, id: entry.id, title: entry.title, relation: entry.relation, creator: entry.creator,
   }]))
 }
 
-/** The room file's view: references to fetch, and the history this copy saw. */
+const eventOrder = (a, b) => (a.at === b.at ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : Date.parse(a.at) - Date.parse(b.at))
+
+/**
+ * Keep the server's history of the room's records (item 744c9724): produced,
+ * first mentioned, an item's lifecycle moving, a memory or artifact superseded,
+ * retracted or archived, each with when it happened. Append-only by event id: an
+ * event this copy holds is never rewritten or dropped. `unchanged` means the copy
+ * already holds the revision; `unavailable` asserts nothing and keeps what we have.
+ */
+export function observeSessionEvents(store, section, now = new Date()) {
+  if (!store || !section) return
+  store.activity.eventsReadAt = now.toISOString()
+  store.activity.eventsReadable = section.status !== 'unavailable'
+  if (section.status === 'unavailable') return
+  if (section.status === 'available') {
+    let added = false
+    for (const event of section.events) {
+      if (store.activity.eventIds.has(event.id)) continue
+      store.activity.eventIds.add(event.id)
+      store.activity.events.push(event)
+      added = true
+    }
+    if (added) store.activity.events.sort(eventOrder)
+  }
+  store.activity.eventsRevision = section.revision
+}
+
+/** The room file's view: references to fetch, and what happened to them. */
 export function sessionActivityView(store) {
   if (!store || store.activity.available === null) return null
   return {
     note:
-      'References and the changes this agent saw, not the current state. For how any ' +
-      'item stands now, fetch it with get_action_item, get_memory or get_resource.',
+      'References to what this room produced or mentioned, and what happened to them ' +
+      '(at = when it happened). Never how anything stands now: fetch a record with ' +
+      'get_action_item, get_memory or get_resource for that.',
     list_readable: store.activity.available,
     last_read_at: store.activity.readAt,
     items: [...store.activity.seen.values()].map(({ kind, id, title, relation, creator }) => ({ kind, id, title, relation, creator })),
-    changes: store.activity.events,
+    events_readable: store.activity.eventsReadable,
+    events: store.activity.events,
   }
 }
 
@@ -526,7 +553,10 @@ export function persistTranscriptStore(store, { dir = DEFAULT_DIR, writeText = w
       repairs: store.repairs,
       activity: {
         seen: [...store.activity.seen.values()],
-        events: store.activity.events,
+        history: store.activity.events,
+        history_revision: store.activity.eventsRevision,
+        history_readable: store.activity.eventsReadable,
+        history_read_at: store.activity.eventsReadAt,
         read_at: store.activity.readAt,
         available: store.activity.available,
       },
@@ -586,11 +616,24 @@ export function loadTranscriptStore(connectionId, sessionId, { dir = DEFAULT_DIR
     store.lastCheck = state.last_check ?? null
     store.repairs = Array.isArray(state.repairs) ? state.repairs.filter((at) => typeof at === 'string') : []
     const activity = state.activity
-    if (activity && Array.isArray(activity.seen) && Array.isArray(activity.events)) {
-      store.activity.seen = new Map(activity.seen.filter((item) => item?.kind && item?.id).map((item) => [`${item.kind}:${item.id}`, item]))
-      store.activity.events = activity.events
+    if (activity && Array.isArray(activity.seen)) {
+      // References only. A copy written before 0.32.4 also kept each item's status
+      // and a list of changes it had noticed ("seen_at"); neither is carried over,
+      // because both were claims about state rather than history (item 744c9724).
+      store.activity.seen = new Map(activity.seen.filter((item) => item?.kind && item?.id).map((item) => [
+        `${item.kind}:${item.id}`,
+        { kind: item.kind, id: item.id, title: item.title, relation: item.relation, creator: item.creator ?? null },
+      ]))
       store.activity.readAt = activity.read_at ?? null
       store.activity.available = typeof activity.available === 'boolean' ? activity.available : null
+    }
+    if (activity && Array.isArray(activity.history)) {
+      const events = activity.history.filter((event) => typeof event?.id === 'string' && typeof event?.at === 'string')
+      store.activity.events = events.sort(eventOrder)
+      store.activity.eventIds = new Set(events.map((event) => event.id))
+      store.activity.eventsRevision = typeof activity.history_revision === 'string' ? activity.history_revision : null
+      store.activity.eventsReadable = typeof activity.history_readable === 'boolean' ? activity.history_readable : null
+      store.activity.eventsReadAt = activity.history_read_at ?? null
     }
     store.updatedAt = state.updated_at ?? null
   }

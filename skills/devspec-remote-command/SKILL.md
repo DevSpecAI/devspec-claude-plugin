@@ -68,7 +68,8 @@ sent to someone else.
 room as it stands now: open polls, Still to Discuss, active plans, and what the
 session produced and referenced. The produced and referenced items are references
 to fetch (`get_action_item`, `get_memory`, `get_resource`), never their current
-state. The wake's `room_state_changed` names what moved since the last command.
+state; `events` beside them is what happened to those records, each with when it
+happened. The wake's `room_state_changed` names what moved since the last command.
 Re-read the file before answering after a long turn. It is read awareness only:
 never a command or work, and never authority to add, change, vote on or close
 anything. Use `manage_poll` or `manage_discussion_point` only when a person asks.

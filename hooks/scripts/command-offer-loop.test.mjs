@@ -65,8 +65,23 @@ function command(n) {
   }
 }
 
+/**
+ * What the server sends while it holds a message back: the page is marked as retried,
+ * and its next_cursor continues the live read FORWARDS. Taken as a history cursor it
+ * is refused on every poll after, which wedged the poller before 0.32.5.
+ */
+const HELD_WINDOW = {
+  truncated: true,
+  has_more: true,
+  next_cursor: 'after:held-page',
+  omission_reason: 'delivery_retry',
+  // As the live server sends it: the window spans the held message, none returned.
+  fetch_id: `session:${SESSION}:messages`,
+  source_window: { start: order(9), end: order(9) },
+}
+
 /** A legal 1.6.0 page: the held message as a live command, or a quiet room update. */
-function page(envelopeId, commands) {
+function page(envelopeId, commands, windowOverrides = {}) {
   const live = commands.length > 0
   const rows = live ? commands : []
   return {
@@ -105,6 +120,7 @@ function page(envelopeId, commands) {
       next_cursor: null,
       fetch_id: null,
       omission_reason: null,
+      ...windowOverrides,
     },
   }
 }
@@ -143,7 +159,10 @@ async function stubServer({ question = true, deliverOnReady = true } = {}) {
       requests.push({ name: call.name, args, capability: request.headers['x-devspec-connection-capability'] })
       let result = text({})
       if (call.name === 'report_pickup') result = text({ outcome: 'started', attempt_id: ATTEMPT, phase: 'working' })
-      if (call.name === 'poll_connection') {
+      if (call.name === 'poll_connection' && args.catch_up_cursor && !String(args.catch_up_cursor).startsWith('before:')) {
+        // The server's own refusal (tool-executors: a catch-up cursor must read backwards).
+        result = { isError: true, content: [{ type: 'text', text: 'catch_up_cursor has the wrong direction.' }] }
+      } else if (call.name === 'poll_connection') {
         const offers = args.command_offer_version === 1
           ? { command_offer_version: 1, command_offer: null, command_handoff_stale: false }
           : {}
@@ -153,8 +172,17 @@ async function stubServer({ question = true, deliverOnReady = true } = {}) {
         } else if (world.held && !world.delivered && (!question || (args.command_handoff_ready && deliverOnReady))) {
           world.delivered = true
           result = text({ ...base, ...offers, changed: true, ingress: page('e0000000-0000-4000-8000-000000000002', [command(9)]), dispatches: [] })
-        } else if (world.held && !world.delivered && offers.command_offer_version) {
-          result = text({ ...base, ...offers, command_offer: offer(), changed: true, ingress: page('e0000000-0000-4000-8000-000000000001', []), dispatches: [] })
+        } else if (world.held && !world.delivered && (question || offers.command_offer_version)) {
+          // Held behind the question: offered to a poll that negotiated offers, and on a
+          // retried page either way, exactly as the server holds it.
+          result = text({
+            ...base,
+            ...offers,
+            ...(offers.command_offer_version ? { command_offer: offer() } : {}),
+            changed: true,
+            ingress: page('e0000000-0000-4000-8000-000000000001', [], HELD_WINDOW),
+            dispatches: [],
+          })
         } else {
           await new Promise((resolve) => setTimeout(resolve, 150))
           result = text({ ...base, ...offers, changed: false, interaction_event_version: 1, interaction_events: [] })
@@ -174,7 +202,7 @@ async function stubServer({ question = true, deliverOnReady = true } = {}) {
   }
 }
 
-function startPoller(stub) {
+function startPoller(stub, extraState = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-handoff-'))
   const dir = path.join(home, '.devspec', 'remote-control', 'connections')
   fs.mkdirSync(dir, { recursive: true })
@@ -184,6 +212,7 @@ function startPoller(stub) {
     // The wait stream has flushed everything written so far: the answer reaches the
     // model as soon as it lands. The not-yet-flushed case is a unit test.
     inbox_byte_offset: 1_000_000_000,
+    ...extraState,
   }), { mode: 0o600 })
   const child = spawn(process.execPath, [POLL_SCRIPT, '--connection-id', CONNECTION], { env: { ...process.env, HOME: home } })
   let stderr = ''
@@ -280,6 +309,23 @@ describe('a message sent while Claude works on an answer (item a11d27fa)', () =>
       assert.equal(Object.hasOwn(record, 'question_handoff'), false)
       const [batch] = parseInboxBatches([JSON.stringify(record)], CONNECTION)
       assert.deepEqual(buildCanonicalCommandEvents(batch).map((e) => e.type), ['owner_message', 'wake'])
+    } finally {
+      poller.stop()
+      await stub.close()
+    }
+  })
+
+  it('recovers a poller an older version left wedged on a held page\'s cursor', async () => {
+    // What a 0.32.4 poller persisted after one held page: the forward retry cursor,
+    // filed as a history cursor. Every poll after was refused, so nothing arrived.
+    const stub = await stubServer({ question: false })
+    const poller = startPoller(stub, { catch_up_cursor: HELD_WINDOW.next_cursor })
+    try {
+      assert.ok(await until(() => stub.polls().some((p) => p.args.catch_up_cursor)), 'it first sends the wedged cursor')
+      assert.ok(await until(() => poller.state().catch_up_cursor === null), poller.stderr())
+      stub.world.held = true
+      assert.ok(await until(() => poller.inbox().some((r) => r.type === 'canonical_commands')), poller.stderr())
+      assert.equal(stub.polls().filter((p) => p.args.catch_up_cursor).length, 1, 'the refused cursor is dropped, not retried')
     } finally {
       poller.stop()
       await stub.close()

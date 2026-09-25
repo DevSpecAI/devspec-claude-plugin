@@ -33,6 +33,7 @@ import {
   materialiseContextAttachments,
   pollCursorArguments,
   advancePollCursors,
+  isCatchUpCursorRefusal,
   validateAutomationRunDispatch,
   scanPersistedInboxRecords,
   appendDurableRecord,
@@ -299,6 +300,28 @@ describe('independent poll cursors', () => {
       legacyCursor: 'legacy-new',
       catchUpCursor: 'even-older',
     })
+  })
+
+  it('never starts a history drain from a page the server is holding back', () => {
+    // The server's delivery_retry window says has_more with a FORWARD cursor. Taken as
+    // a catch-up cursor it is refused as the wrong direction on every poll after.
+    const retried = { window: { has_more: true, truncated: true, next_cursor: 'live-after-retry', omission_reason: 'delivery_retry' } }
+    assert.deepEqual(
+      advancePollCursors({ liveCursorV2: 'live', legacyCursor: null, catchUpCursor: null }, { cursor_v2: 'live-retry' }, retried),
+      { liveCursorV2: 'live-retry', legacyCursor: null, catchUpCursor: null },
+    )
+    // A drain already under way keeps its own cursor and re-reads the held page.
+    assert.deepEqual(
+      advancePollCursors({ liveCursorV2: 'live', legacyCursor: null, catchUpCursor: 'older-before' }, { cursor_v2: 'x' }, retried,
+        { drainingContinuation: true }),
+      { liveCursorV2: 'live', legacyCursor: null, catchUpCursor: 'older-before' },
+    )
+  })
+
+  it('recognises the server refusing the catch-up cursor itself', () => {
+    assert.equal(isCatchUpCursorRefusal(new Error('catch_up_cursor has the wrong direction.')), true)
+    assert.equal(isCatchUpCursorRefusal(new Error('catch_up_cursor requires catch_up: true on an attached connection.')), true)
+    assert.equal(isCatchUpCursorRefusal(new Error('rate limit exceeded')), false)
   })
 
   it('advances live v2 after durable live delivery and clears a finished continuation', () => {

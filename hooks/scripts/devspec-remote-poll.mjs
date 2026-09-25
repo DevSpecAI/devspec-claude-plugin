@@ -839,10 +839,29 @@ export function advancePollCursors(
       : current.liveCursorV2
   const legacyCursor =
     typeof response?.cursor === 'string' && response.cursor ? response.cursor : current.legacyCursor
-  const catchUpCursor = ingress?.window?.has_more === true && ingress.window.next_cursor
-    ? ingress.window.next_cursor
-    : null
+  // A page the server is holding back (`delivery_retry`: a command waiting behind an
+  // answered question, say) also says has_more, but its next_cursor continues the
+  // LIVE read from where it was, forwards. It is never a history page to drain: sent
+  // back as catch_up_cursor, the server refuses it as the wrong direction on every
+  // poll that follows, and nothing is delivered again (found live on item a11d27fa).
+  // A drain already under way keeps its own cursor; the held page is simply re-read.
+  const catchUpCursor = ingress?.window?.omission_reason === 'delivery_retry'
+    ? current.catchUpCursor ?? null
+    : ingress?.window?.has_more === true && ingress.window.next_cursor
+      ? ingress.window.next_cursor
+      : null
   return { liveCursorV2, legacyCursor, catchUpCursor }
+}
+
+/**
+ * The server refused the catch-up cursor itself. That cursor can never become valid,
+ * so retrying it only repeats the refusal; the poller drops it and re-reads the room
+ * instead. This is how a copy written by a poller that mistook a held page for a
+ * history page (before 0.32.5) recovers without anyone touching its state file.
+ */
+export function isCatchUpCursorRefusal(err) {
+  const message = err instanceof Error ? err.message : String(err ?? '')
+  return /catch_up_cursor has the wrong direction|catch_up_cursor requires catch_up/i.test(message)
 }
 
 /**
@@ -2270,6 +2289,13 @@ async function main() {
         )
         await offlineAndExit('owner_gone', 1)
         return
+      }
+      if (catchUpCursor && isCatchUpCursorRefusal(e)) {
+        process.stderr.write('devspec-remote-poll: server refused the catch-up cursor; re-reading the room\n')
+        catchUpCursor = null
+        needsSeed = true
+        patchState({ catch_up_cursor: null })
+        continue
       }
       consecutiveErrors++
       const rateLimited = /rate limit/i.test(e?.message || '')

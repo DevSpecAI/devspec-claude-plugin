@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.6 - 2026-09-25
+
+- Fixed: a message DevSpec held back for a moment could stop Claude hearing
+  anything more from the session. While Claude was still working on an answer to
+  its question, DevSpec kept the next message waiting and said so. The plugin
+  misread that as a request to page back through the session's history, and
+  DevSpec refused every check after it, so nothing more arrived until Claude
+  Code was restarted and reconnected. The plugin now keeps reading from where it
+  was. A connection already stuck this way recovers by itself on this version.
+
 ## 0.32.5 - 2026-09-25
 
 - A message you send while Claude is still working on your answer to its

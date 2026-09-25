@@ -2,6 +2,14 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.8 - 2026-09-25
+
+- Fixed: an answer you type in your own words to Claude's multiple-choice
+  question now reaches Claude when it is longer than 200 characters. DevSpec
+  accepts up to 1000, but the plugin kept its own, older copy of that limit, so
+  a longer answer was turned away here and never arrived. The plugin now leaves
+  answer limits to DevSpec, so a future change to them needs no plugin update.
+
 ## 0.32.7
 
 - The remote command names where open questions about records live — the project's Review queue — and the tools to preview a ruling, link related records and read an item's history. A queued change is accepted on the Review page, under Proposed changes. Who may rule stays the served contract's decision.

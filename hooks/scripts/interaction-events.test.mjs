@@ -245,9 +245,11 @@ describe('exact targeting', () => {
       [event({ version: 2 }), /version/],
       [event({ kind: 'devspec.owner_message' }), /kind/],
       [event({ response_kind: 'poll' }), /response_kind/],
-      [event({ answer: '   ' }), /empty|bound/],
-      [event({ answer: 'x'.repeat(201) }), /bound/],
-      [event({ response_kind: 'multi_select', answer: [] }), /bounded array/],
+      [event({ answer: '   ' }), /non-blank/],
+      [event({ answer: 42 }), /non-blank/],
+      [event({ response_kind: 'text', answer: '' }), /non-blank/],
+      [event({ response_kind: 'multi_select', answer: [] }), /non-empty array/],
+      [event({ response_kind: 'multi_select', answer: ['a', ' '] }), /blank/],
       [event({ response_kind: 'multi_select', answer: ['a', 'a'] }), /distinct/],
       [event({ answered_at: 'yesterday' }), /answered_at/],
       [event({ claim_token: 'nope' }), /claim_token/],
@@ -260,11 +262,25 @@ describe('exact targeting', () => {
       assert.equal(result.ok, false, JSON.stringify(candidate).slice(0, 60))
       assert.match(result.error, pattern)
     }
-    // A 4000-code-point text answer is the server's bound, not an error.
-    assert.equal(validateInteractionEvent(
-      event({ response_kind: 'text', answer: 'x'.repeat(4000) }),
-      { connectionId: CONNECTION, sessionId: SESSION },
-    ).ok, true)
+  })
+
+  it('leaves answer length to the server: a long typed-in answer is delivered, not refused', () => {
+    // The server allows 1000 characters typed into a multiple-choice question; this
+    // host must not keep a smaller copy of that number (items 11c7f2cd, 86cf31d7).
+    // Lengths well past any bound the server has ever had pass too, so the next
+    // change to a server limit needs no change here.
+    const target = { connectionId: CONNECTION, sessionId: SESSION }
+    const accepted = [
+      event({ response_kind: 'single_select', answer: '😀'.repeat(1000) }),
+      event({ response_kind: 'single_select', answer: 'x'.repeat(20_000) }),
+      event({ response_kind: 'multi_select', answer: ['a', 'y'.repeat(1000)] }),
+      event({ response_kind: 'multi_select', answer: Array.from({ length: 40 }, (_, i) => `choice ${i}`) }),
+      event({ response_kind: 'text', answer: 'z'.repeat(20_000) }),
+    ]
+    for (const candidate of accepted) {
+      const result = validateInteractionEvent(candidate, target)
+      assert.equal(result.ok, true, result.error)
+    }
   })
 
   it('never delivers an answer as a command, room message or authority', () => {

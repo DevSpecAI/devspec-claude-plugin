@@ -36,7 +36,7 @@ const WRONG_TOKEN_RE = /belongs to a different token/i
 export const DEFAULT_MCP_URL = DEFAULT_PROD_URL
 
 export const TOKENS_WARNING_FIX =
-  'Open You → Connections, reveal the key you want, and make the plugin key and the project .mcp.json key the same.'
+  'In DevSpec, open You → Coding agents, reveal the key you want, and make the plugin key and the project .mcp.json key the same.'
 
 function readJson(file) {
   try {

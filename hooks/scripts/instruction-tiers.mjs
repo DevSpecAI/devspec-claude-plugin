@@ -21,7 +21,7 @@ const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'c
 
 /** The tier fields the server may hand back, in the order they should be read. */
 export const TIER_FIELDS = [
-  ['owner_custom_instructions', 'Your chat response style'],
+  ['owner_custom_instructions', 'Your response style'],
   ['owner_agent_rules', 'Your personal agent rules (machine/tooling)'],
   ['project_custom_instructions', 'Project principles (team-wide)'],
   ['project_agent_rules', 'Project agent rules (execution mechanics)'],

@@ -22,7 +22,7 @@ You'll need:
 
 - **Claude Code** with plugin support (run `/plugin` to check it's available).
 - A **[DevSpec](https://devspec.ai)** account with at least one project that's connected to your git repo(s).
-- A **DevSpec API token** with `read_write` scope. Create one in DevSpec under **You → Connections** → **Connect a tool** (pick **Read & write**); it starts with `dvs_`. It's **account-wide** — one token covers all of your projects, so use the **same** token in every tool and on every machine (don't mint one per machine). Need it again? Reveal and copy it any time from **You → Connections**.
+- A **DevSpec API token** with `read_write` scope. Create one in DevSpec under **You → Coding agents** → **Connect a tool** (pick **Read & write**); it starts with `dvs_`. It's **account-wide** — one token covers all of your projects, so use the **same** token in every tool and on every machine (don't mint one per machine). Need it again? Reveal and copy it any time from **You → Coding agents**.
 - **Node.js 18+** on your `PATH` (check with `node --version`). Remote control — the headline feature — needs it, as does setting up isolated work branches. Most other commands work without it, but you'll want it installed.
 
 > **Heads up:** Claude Code's native installer sometimes ships without a system `node`. If `node --version` fails, install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH`.
@@ -209,7 +209,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 | Commands don't appear in `/` | Reinstall with `/plugin install devspec@devspec`, then `/reload-plugins` |
 | Plugin won't load, or hook errors | Update to the latest version (`git pull` for local installs) and `/reload-plugins` |
 | Never asked for a token, or need to change it | Run `/plugin` → **Installed** → **DevSpec**, press Enter, and enter/update your `dvs_…` token there (the prompt fires when you *enable* the plugin) |
-| Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Connections**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
+| Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Coding agents**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
 | Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
 | "No matching project" | Make sure the repo is tracked in DevSpec, or pass `--project-id=<id>` |
 | A batch you asked for isn't being worked | Nothing routes work — an agent only holds what it reserved. Check the Agents page: it shows which agents are connected and what each is holding, so an unheld item means nobody was asked, not that delivery failed |

@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.10 - 2026-09-26
+
+- Changed: the plugin now sends you to DevSpec's settings pages by their new
+  names. Your token lives under **You → Coding agents** (it was You →
+  Connections): the README, the token prompt when you install the plugin, and
+  the warning shown when two DevSpec keys on this machine disagree all say so.
+  The instructions Claude is given at connect now call your reply preference
+  "Your response style", as DevSpec's You → Replies & voice page does, rather
+  than "chat response style". Nothing about how the plugin behaves has changed.
+
 ## 0.32.9 - 2026-09-26
 
 - Added: a test that reads DevSpec's live tool list from a devspecv2 checkout

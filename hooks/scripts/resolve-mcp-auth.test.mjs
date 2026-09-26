@@ -224,7 +224,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     const warning = buildTokensWarning(pairs)
     assert.match(warning, /plugin userConfig/)
     assert.match(warning, /project \.mcp\.json/)
-    assert.match(warning, /You → Connections/)
+    assert.match(warning, /You → Coding agents/)
     assert.ok(warning.includes(fingerprintToken('dvs_plugin_prod')))
     assert.ok(warning.includes(fingerprintToken('dvs_project_staging')))
     assert.doesNotMatch(warning, /dvs_plugin_prod|dvs_project_staging/)
@@ -266,7 +266,7 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     assert.equal(proven.pair.token, 'dvs_project_staging')
     assert.equal(proven.pair.mcp_url, 'https://api.devspecstaging.com/api/mcp')
     assert.equal(proven.probed, true)
-    assert.match(proven.warning, /You → Connections/)
+    assert.match(proven.warning, /You → Coding agents/)
     assert.doesNotMatch(proven.warning, /dvs_plugin_prod|dvs_project_staging/)
   })
 

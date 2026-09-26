@@ -2,6 +2,17 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.11 - 2026-09-26
+
+- Fixed: the README described things that don't work. It told you to pass
+  `--project-id=<id>` when a repo is tracked by more than one project, but
+  nothing reads that flag; a `.devspec/project.json` pin naming the project is
+  what settles it, and the README now says so. It sent you to **Settings →
+  Execution** for how Claude branches, commits and merges; that page is
+  **Project Settings → Coding Agents**. And it said the start-up connect switch
+  is under `/config`; like your token, it is set under `/plugin` → Installed →
+  DevSpec. Nothing about how the plugin behaves has changed.
+
 ## 0.32.10 - 2026-09-26
 
 - Changed: the plugin now sends you to DevSpec's settings pages by their new

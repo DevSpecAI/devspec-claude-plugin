@@ -78,7 +78,7 @@ This is the feature most people come for. You run a real Claude Code session on 
 
 Start Claude Code in a folder that belongs to one of your DevSpec projects and it appears on the **Agents page** within a few seconds, ready for your team to send it work. You don't type anything. Waiting costs nothing: Claude only starts working when someone actually sends it a message.
 
-It only connects in folders that belong to a DevSpec project, meaning a repo your project tracks, or a folder with a `.devspec/project.json` pin (see [How it finds the right project](#how-it-finds-the-right-project)). Anywhere else it stays out of the way. If a folder becomes part of a project while Claude Code is open, because you or your agent add the pin or a repo your project tracks, it connects then, with no restart. To turn it off, open `/config` and switch off **Make Claude Code available on DevSpec when it starts**. You can still connect by hand whenever you like.
+It only connects in folders that belong to a DevSpec project, meaning a repo your project tracks, or a folder with a `.devspec/project.json` pin (see [How it finds the right project](#how-it-finds-the-right-project)). Anywhere else it stays out of the way. If a folder becomes part of a project while Claude Code is open, because you or your agent add the pin or a repo your project tracks, it connects then, with no restart. To turn it off, run `/plugin` → **Installed** → **DevSpec**, press Enter, and switch off **Make Claude Code available on DevSpec when it starts**, the same place your token is set. You can still connect by hand whenever you like.
 
 ### Connecting by hand
 
@@ -167,7 +167,7 @@ Both commands are in Claude Code's `/` menu after install, under the `/devspec:`
 
 ## How it finds the right project
 
-You don't pass a project id in most cases. The plugin matches the git remote of the repo you're in to the DevSpec project that tracks it. If a single repo is tracked by more than one project, add `--project-id=<id>` to point at the one you mean.
+You don't pass a project id in most cases. The plugin matches the git remote of the repo you're in to the DevSpec project that tracks it. If a single repo is tracked by more than one project, add a folder pin (below) naming the one you mean: when the remote matches several projects, the pin decides between them.
 
 **No repo yet?** A folder with no git remote can still say which project it belongs to: put
 
@@ -183,7 +183,7 @@ A real git remote always wins over the pin. So if you pin a folder and later con
 
 ## Settings that live in DevSpec
 
-How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you work one item by hand or a batch you were asked to take:
+How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Project Settings → Coding Agents**), so it stays consistent whether you work one item by hand or a batch you were asked to take:
 
 | Setting | Controls |
 |---|---|
@@ -211,7 +211,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 | Never asked for a token, or need to change it | Run `/plugin` → **Installed** → **DevSpec**, press Enter, and enter/update your `dvs_…` token there (the prompt fires when you *enable* the plugin) |
 | Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Coding agents**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
 | Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
-| "No matching project" | Make sure the repo is tracked in DevSpec, or pass `--project-id=<id>` |
+| "No matching project" | Make sure the repo is tracked in DevSpec, or add a `.devspec/project.json` pin naming the project |
 | A batch you asked for isn't being worked | Nothing routes work — an agent only holds what it reserved. Check the Agents page: it shows which agents are connected and what each is holding, so an unheld item means nobody was asked, not that delivery failed |
 | "Claim failed" in a batch | Another connection claimed that task first — this is normal; the batch continues |
 

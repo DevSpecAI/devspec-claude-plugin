@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.9 - 2026-09-26
+
+- Added: a test that reads DevSpec's live tool list from a devspecv2 checkout
+  beside this repo and fails if anything in this plugin names a DevSpec tool
+  the server does not have. A tool renamed or retired on the server is then
+  caught here, before Claude is told to call it in someone's session. With no
+  checkout beside it the test skips; `DEVSPEC_V2_ROOT` names one. Nothing about
+  how the plugin behaves has changed.
+
 ## 0.32.8 - 2026-09-25
 
 - Fixed: an answer you type in your own words to Claude's multiple-choice

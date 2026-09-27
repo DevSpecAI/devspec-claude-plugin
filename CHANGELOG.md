@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.12 - 2026-09-27
+
+### Delivery evidence stays on action items, out of project memory
+
+The knowledge-capture guidance your agent reads now draws one more line: what shipped, which commit and what passed belong on the action item, not in project memory — and a memory should hold what a future decision needs that the existing record doesn't already preserve. Shared project knowledge stays free of per-task status reports.
+
 ## 0.32.11 - 2026-09-26
 
 - Fixed: the README described things that don't work. It told you to pass

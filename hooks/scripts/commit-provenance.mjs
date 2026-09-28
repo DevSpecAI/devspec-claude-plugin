@@ -51,6 +51,7 @@ import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { devspecFolderMarker, gitRemoteOrigin } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { readConversationProject } from './conversation-project.mjs'
 import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
@@ -581,6 +582,8 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
     marker = null,
     env = process.env,
     timeoutMs = ONLINE_TIMEOUT_MS,
+    localId = null,
+    projectHome = os.homedir(),
     call = mcpToolsCall,
   } = options
 
@@ -591,6 +594,11 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
   // instead of guessing from an account-wide token. Both are best-effort: without them
   // an unresolvable project is an error, which is an allow.
   const args = { commit_message: commitMessage }
+  try {
+    const choice = readConversationProject(localId, { endpoint: auth.mcp_url, home: projectHome })
+    if (choice?.status === 'blocked') return 'indeterminate'
+    if (choice?.status === 'selected') args.project_id = choice.project.id
+  } catch { return 'indeterminate' } // uncertain scope never becomes a false not_found
   if (marker?.kind === 'pin' && typeof marker.project_id === 'string' && marker.project_id) {
     args.pinned_project_id = marker.project_id
   }
@@ -834,6 +842,7 @@ export async function handlePre(input, options = {}) {
     const outcome = await confirmReferenceOnline(commit.message, {
       cwd: scope.cwd,
       mainWorktree: scope.mainWorktree,
+      localId: scope.sessionId,
       marker,
       env,
       timeoutMs: options.timeoutMs,

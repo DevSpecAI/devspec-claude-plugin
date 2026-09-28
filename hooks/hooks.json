@@ -32,11 +32,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^mcp__(plugin_devspec_)?devspec__(register_connection|attach_connection)$",
+        "matcher": "^mcp__(plugin_devspec_)?devspec__.+$",
         "hooks": [
           {
             "type": "command",
-            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/connection-version.mjs\" || true",
+            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-tool-input.mjs\" || true",
             "timeout": 5
           }
         ]

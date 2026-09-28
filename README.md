@@ -70,7 +70,7 @@ Run the DevSpec connection check
 
 You should see confirmation that you're connected as your DevSpec user. (If you're following DevSpec's setup wizard, this step turns green once the check passes.)
 
-Two commands appear in Claude Code's `/` menu after install, namespaced under the plugin: `/devspec:devspec.remote` and `/devspec:devspec.remote-stop`. Everything else you might want is a sentence — see [Other workflows](#other-workflows).
+Three commands appear in Claude Code's `/` menu after install: `/devspec:devspec.remote`, `/devspec:devspec.remote-stop`, and `/devspec:devspec.project`. Other workflows can still be requested in a sentence — see [Other workflows](#other-workflows).
 
 ## ⭐ Drive a session from DevSpec (remote control)
 
@@ -93,6 +93,10 @@ It only connects in folders that belong to a DevSpec project, meaning a repo you
 This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped automation runs may still target the connection through their own validated claim/report path.
 
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
+
+**Choosing a project.** Normal connection stays automatic when the repository or existing pin resolves. If it is ambiguous, Claude offers accessible projects labelled with their organisations using its native question UI. Cancel leaves it unconnected. You can also specify an exact name or ID: `/devspec:devspec.remote --project "Client Website"`. Duplicate names require a choice; a partial name is not guessed.
+
+The choice belongs to this **local Claude conversation**, including resume, and is applied to normal DevSpec tools as well as Remote. Choosing does not write a folder pin. `/devspec:devspec.project remember` previews the file and asks before saving a shared folder default; `forget` previews and confirms removal. Neither changes an already-selected conversation. To switch an established conversation, use `/devspec:devspec.project choose`. Claude prepares a **fresh** native conversation and gives you a `claude --session-id …` command to run in a new terminal. Its project is selected before auto-connect, without changing the folder default or carrying old model context across organisations. `/clear` may retain a same-project remote connection; it is not a project switch. Project choice is separate from DevSpec room selection and Claude's own resume flags.
 
 When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
 
@@ -166,6 +170,7 @@ Both commands are in Claude Code's `/` menu after install, under the `/devspec:`
 |---|---|
 | `/devspec:devspec.remote` | ⭐ Connect this session to DevSpec's Agents page (see above) |
 | `/devspec:devspec.remote-stop` | Disconnect this session from the Agents page |
+| `/devspec:devspec.project` | Show the conversation project and folder default; `choose`, `remember`, or `forget` |
 
 ## How it finds the right project
 

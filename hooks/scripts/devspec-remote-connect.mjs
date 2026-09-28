@@ -39,6 +39,7 @@ import { renderTiers } from './instruction-tiers.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
+import { PROJECT_ID, projectCandidate, matchingProjects, readProjectSelection, readConversationProject, saveConversationProject, blockConversationProject } from './conversation-project.mjs'
 import {
   detectLocalId,
   resolveLocalAction,
@@ -93,6 +94,11 @@ function parseArgs(argv) {
     const a = argv[i]
     if (a === '--session' || a === '--session_id') out.session = argv[++i]
     else if (a === '--agent' || a === '--agent_name') out.agent = argv[++i]
+    else if (a === '--project') {
+      if (out.project !== undefined || !argv[i + 1]?.trim() || argv[i + 1].startsWith('--')) throw new ConnectError('Pass one project name or ID after --project.', { code: 2, reason: 'bad_args' })
+      out.project = argv[++i]
+    }
+    else if (a.startsWith('--project=')) throw new ConnectError('Use --project <name-or-id>, with a space before its value.', { code: 2, reason: 'bad_args' })
     else if (a === '--cwd') out.cwd = argv[++i]
     else if (a === '--name' || a === '--codename') out.name = argv[++i]
     else if (a === '--title') out.title = argv[++i]
@@ -105,6 +111,7 @@ function parseArgs(argv) {
     else if (a === '--json') out.json = true
     else if (a && !a.startsWith('--')) out._.push(a)
   }
+  if (out.project !== undefined && out._.length) throw new ConnectError('Quote a project name containing spaces, or use its full ID.', { code: 2, reason: 'bad_args' })
   return out
 }
 
@@ -145,11 +152,12 @@ export function armCursorFlag({ created } = {}) {
  * without parsing prose.
  */
 export class ConnectError extends Error {
-  constructor(message, { code = 1, reason = 'failed' } = {}) {
+  constructor(message, { code = 1, reason = 'failed', projectSelection = null } = {}) {
     super(message)
     this.name = 'ConnectError'
     this.code = code
     this.reason = reason
+    this.projectSelection = projectSelection
   }
 }
 
@@ -193,12 +201,14 @@ export async function connect(options = {}, deps = {}) {
     forceNew = false,
     noPoller = false,
     startup = false,
+    project: projectSelector = null,
     env = process.env,
   } = options
   const {
     callTool = mcpToolsCall,
     writeState = writeConnectionState,
     resolveAuth = resolveDevspecMcpAuth,
+    projectHome = os.homedir(),
     onRetryMessage = (message) => process.stderr.write(message),
   } = deps
 
@@ -222,8 +232,9 @@ export async function connect(options = {}, deps = {}) {
   const localId = detected.local_id
   const gitRemote = gitRemoteOrigin(cwd)
   const pin = findProjectPin(cwd)
+  const previousProject = readConversationProject(localId, { home: projectHome })
 
-  if (startup && !gitRemote && !pin) {
+  if (startup && !gitRemote && !pin && previousProject?.status !== 'selected') {
     // Nothing about this folder names a project. Not an error: most folders a person
     // opens Claude Code in are not DevSpec projects, and that is fine.
     throw new ConnectError('This folder has no git remote and no .devspec/project.json pin.', {
@@ -238,6 +249,10 @@ export async function connect(options = {}, deps = {}) {
         'Fix MCP auth (DEVSPEC_MCP_TOKEN, the plugin token, .mcp.json or ~/.claude.json) and retry.',
       { reason: 'auth' },
     )
+  }
+
+  if (previousProject && previousProject.endpoint !== auth.mcp_url) {
+    throw new ConnectError('This conversation belongs to another DevSpec endpoint. Start a fresh Claude Code conversation.', { reason: 'auth' })
   }
 
   // The bond decision for THIS conversation — never a cwd scan, never another
@@ -266,6 +281,34 @@ export async function connect(options = {}, deps = {}) {
       },
     )
 
+  let selectedProjectId = previousProject?.status === 'selected' ? previousProject.project.id : null
+  let selectedCandidate = null
+  if (projectSelector !== null) {
+    try {
+      const selector = String(projectSelector).trim()
+      if (!selector) throw new ConnectError('--project needs a project name or ID.', { code: 2, reason: 'bad_args' })
+      if (PROJECT_ID.test(selector)) selectedProjectId = selector.toLowerCase()
+      else {
+        const listing = await call('list_projects', {})
+        if (!Array.isArray(listing.projects)) throw new ConnectError('DevSpec did not return project choices. Retry.', { reason: 'register_refused' })
+        const candidates = listing.projects.map(projectCandidate)
+        if (candidates.some(candidate => !candidate)) throw new ConnectError('DevSpec returned invalid project choices. Retry without choosing a default.', { reason: 'register_refused' })
+        const matches = matchingProjects(candidates, selector)
+        if (matches.length !== 1) throw new ConnectError(matches.length ? 'More than one accessible project has that name. Choose an organisation and project ID.' : 'No accessible project has that exact name. Use a full project ID or list the projects.', {
+          reason: 'register_refused', projectSelection: { version: 1, status: 'choice_required', reason: matches.length ? 'ambiguous_name' : 'unknown_name', candidates: matches.length ? matches : candidates },
+        })
+        selectedCandidate = matches[0]
+        selectedProjectId = selectedCandidate.id
+      }
+      if (previousProject?.status === 'selected' && previousProject.project.id !== selectedProjectId) {
+        throw new ConnectError('This conversation already uses another project. Start a fresh Claude Code conversation, then run Remote with --project. The existing connection has not changed.', { reason: 'register_refused' })
+      }
+    } catch (error) {
+      blockConversationProject(localId, auth.mcp_url, 'Choose a project explicitly with Remote --project before using project-scoped DevSpec tools.', { home: projectHome })
+      throw error
+    }
+  }
+
   // 1. Register (idempotent on the conversation bond). Scope goes up as facts —
   //    git_remote and/or the folder pin — and the server arbitrates. No list_projects
   //    round-trip: the router resolves the project from git_remote itself.
@@ -281,8 +324,10 @@ export async function connect(options = {}, deps = {}) {
       ...(gitRemote ? { git_remote: gitRemote } : {}),
       ...(pin ? { pinned_project_id: pin.project_id } : {}),
       ...(name ? { name } : {}),
+      ...(selectedProjectId ? { project_id: selectedProjectId } : {}),
       ...(startup ? { folder_scope_only: true } : {}),
       connection_capability_version: 1,
+      project_selection_version: 1,
       ...(known ? { known_instruction_tiers_version: known.version, known_instruction_tiers_hash: known.hash } : {}),
     }, {
       onResultMeta: (meta) => {
@@ -299,8 +344,10 @@ export async function connect(options = {}, deps = {}) {
         : ''
     // `unreachable` is the one failure worth trying again later: the server never gave
     // a verdict. Anything else is an answer — an unlinked folder, a refused token.
+    const projectSelection = readProjectSelection(e.details)
+    if (projectSelection || projectSelector !== null) blockConversationProject(localId, auth.mcp_url, 'Choose a project explicitly with Remote --project before using project-scoped DevSpec tools.', { home: projectHome })
     throw new ConnectError(`register_connection failed: ${e.message}${hint}`, {
-      reason: isRetryableHttpFailure(e) ? 'unreachable' : 'register_refused',
+      reason: isRetryableHttpFailure(e) ? 'unreachable' : 'register_refused', projectSelection,
     })
   }
 
@@ -329,6 +376,13 @@ export async function connect(options = {}, deps = {}) {
     )
   }
 
+  const confirmedProject = projectCandidate(registration.project_selection?.project)
+    ?? projectCandidate({ id: registration.project_id, name: selectedCandidate?.name ?? registration.project_id, organization: selectedCandidate?.organization })
+  if (!confirmedProject || (selectedProjectId && confirmedProject.id !== selectedProjectId)) {
+    throw new ConnectError('DevSpec did not confirm the selected project. No local connection was adopted.', { reason: 'register_refused' })
+  }
+  const projectState = saveConversationProject(localId, auth.mcp_url, confirmedProject, registration.project_selection?.source ?? 'conversation', { home: projectHome })
+
   // 2. Session attachment, by invocation. Bare = sessionless, and that is a
   //    first-class outcome, not a degraded one.
   let sessionId = null
@@ -338,6 +392,7 @@ export async function connect(options = {}, deps = {}) {
     const created = await call('create_session', {
       session_type: 'agent_remote_control',
       agent_name: agentName,
+      project_id: confirmedProject.id,
       ...(gitRemote ? { git_remote: gitRemote } : {}),
       ...(pin ? { pinned_project_id: pin.project_id } : {}),
       ...(codename ? { session_codename: codename } : {}),
@@ -418,7 +473,8 @@ export async function connect(options = {}, deps = {}) {
     session_access: sessionAccess,
     local_id: localId,
     local_id_source: detected.source,
-    project_id: registration.project_id || null,
+    project_id: confirmedProject.id,
+    project_selection: projectState,
     project_scope: {
       git_remote: gitRemote,
       pinned_project_id: pin?.project_id || null,
@@ -462,6 +518,9 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
   lines.push('━━━ DevSpec Remote Control ━━━')
   lines.push(`Agent:      ${summary.agent_name} · ${summary.codename || short(summary.connection_id)}`)
   lines.push(`Connection: ${short(summary.connection_id)}`)
+  if (summary.project_selection) {
+    lines.push(`Project data: ${JSON.stringify({ ...summary.project_selection.project, source: summary.project_selection.source })}`)
+  }
   lines.push(
     `Session:    ${summary.session_id ? `${short(summary.session_id)}${summary.session_access ? ` (${summary.session_access})` : ''}` : 'none — available'}`,
   )
@@ -487,7 +546,7 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
         ' can never be proven dead, so it is refused rather than left to zombie as a "Live" agent.',
     )
   }
-  if (!summary.project_scope.git_remote && !summary.project_scope.pinned_project_id) {
+  if (!summary.project_scope.git_remote && !summary.project_scope.pinned_project_id && !summary.project_selection) {
     lines.push(
       'scope: no git remote and no .devspec/project.json pin — the server resolved this by token access alone.',
     )
@@ -545,6 +604,7 @@ async function main() {
   try {
     summary = await connect({
       session: args.session || null,
+      project: args.project ?? null,
       new: !!args.new,
       private: !!args.private,
       name: args.name || null,
@@ -558,6 +618,7 @@ async function main() {
     })
   } catch (e) {
     if (e instanceof ConnectError) {
+      if (e.projectSelection) process.stdout.write(JSON.stringify({ ok: false, code: 'project_choice_required', project_selection: e.projectSelection }) + '\n')
       process.stderr.write(`${e.message}\n`)
       process.exit(e.code)
     }

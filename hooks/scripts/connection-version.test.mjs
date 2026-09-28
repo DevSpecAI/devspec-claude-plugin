@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { LOADED_PLUGIN_VERSION, connectionVersionHook, versionedConnectionArguments } from './connection-version.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { prepareDevspecToolInput } from './devspec-tool-input.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '../..')
@@ -34,15 +35,15 @@ test('internal register and attach wire requests use this artifact and never a g
   } finally { globalThis.fetch = fetch }
 })
 
-test('native MCP hook updates metadata without making any permission decision', () => {
+test('unbound native MCP hook updates metadata without making any permission decision', () => {
   const hooks = JSON.parse(readFileSync(join(root, 'hooks/hooks.json'), 'utf8')).hooks.PreToolUse
-  const hook = hooks.find(entry => entry.hooks.some(value => value.command.includes('connection-version.mjs')))
+  const hook = hooks.find(entry => entry.hooks.some(value => value.command.includes('devspec-tool-input.mjs')))
   assert.ok(hook)
   for (const prefix of ['mcp__devspec__', 'mcp__plugin_devspec_devspec__']) {
     for (const name of ['register_connection', 'attach_connection']) {
       const tool_name = `${prefix}${name}`
       assert.match(tool_name, new RegExp(hook.matcher))
-      const result = connectionVersionHook({ tool_name, tool_input: { connection_id: 'c', session_id: 's', host_version: 'guess' } })
+      const result = prepareDevspecToolInput({ tool_name, tool_input: { connection_id: 'c', session_id: 's', host_version: 'guess' } })
       assert.equal(result.hookSpecificOutput.updatedInput.plugin_version, version)
       assert.equal(result.hookSpecificOutput.updatedInput.connection_id, 'c')
       assert.equal(result.hookSpecificOutput.updatedInput.host_version, undefined)

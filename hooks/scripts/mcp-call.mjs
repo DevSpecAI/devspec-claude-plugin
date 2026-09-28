@@ -197,6 +197,10 @@ export async function mcpRequest({
   return payload.result ?? payload
 }
 
+export class McpToolRefusalError extends Error {
+  constructor(message, details = null) { super(message); this.name = 'McpToolRefusalError'; this.details = details }
+}
+
 export async function mcpToolsCall({
   mcpUrl,
   token,
@@ -228,7 +232,9 @@ export async function mcpToolsCall({
       .map((c) => c.text)
     const joined = textParts.join('\n')
     if (result?.isError) {
-      throw new Error(joined || 'MCP tool error')
+      let details = result.structuredContent ?? null
+      if (!details) { try { details = JSON.parse(joined) } catch { /* older plain refusal */ } }
+      throw new McpToolRefusalError(joined || 'MCP tool error', details)
     }
     try {
       return JSON.parse(joined)

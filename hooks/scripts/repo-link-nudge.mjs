@@ -29,6 +29,7 @@ import { commitRepoDir } from './commit-observation.mjs'
 import { stateDir } from './commit-provenance.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { readConversationProject } from './conversation-project.mjs'
 import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 
 const LOOKUP_TIMEOUT_MS = 8_000
@@ -101,6 +102,10 @@ export async function handleBashPost(input, deps = {}) {
 
   const auth = (deps.resolveAuth ?? resolveDevspecMcpAuth)(repoDir, { hostToken: hostTokenFromEnv(env), env })
   if (!auth?.ok || !auth.token) return null
+  try {
+    const selected = (deps.readProject ?? readConversationProject)(sessionId, { endpoint: auth.mcp_url })
+    if (selected?.status === 'blocked' || (selected?.status === 'selected' && selected.project.id !== pin.project_id)) return null
+  } catch { return null }
 
   let listed
   try {

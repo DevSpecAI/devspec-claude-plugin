@@ -71,6 +71,7 @@ import {
   LOCAL_ID_OVERRIDE_ENV_VAR,
 } from './agent-identity.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { inheritConversationProject } from './conversation-project.mjs'
 import { CONVERSATION_SWITCH_REASONS, startupListenerAlive } from './startup-listener.mjs'
 import { takeTiersFor } from './instruction-tiers.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
@@ -1138,6 +1139,12 @@ export function rebondConnectionToConversation({ agent = AGENT_NAME, connectionI
   const state = readJson(perPath)
   if (!state || state.enabled === false) return { ok: false, reason: 'connection_not_live' }
   const agentName = agent || state.agent_name || AGENT_NAME
+  try {
+    inheritConversationProject(state.local_id, id, state.mcp_url)
+  } catch (error) {
+    disableConnectionState(connectionId, { agent: agentName, localId: state.local_id, via: 'project_scope_mismatch' })
+    return { ok: false, reason: 'project_scope_mismatch', connection_id: connectionId, message: error.message }
+  }
   const bond = writeLocalBond(agentName, id, {
     status: 'live',
     connection_id: connectionId,

@@ -22,6 +22,18 @@ Keep it that way: don't reintroduce a `package.json`/build pipeline or npm depen
 node --test hooks/scripts/*.test.mjs
 ```
 
+## Conversation project selection
+
+`conversation-project.mjs` keeps endpoint-bound selection under private per-Claude-conversation state, keyed by a hash of the local conversation ID. It contains project metadata, not credentials. This is distinct from the shared `.devspec/project.json` folder default. Corrupt state and rejected explicit selections cannot silently fall back to a different folder project.
+
+`devspec-tool-input.mjs` is the single native DevSpec PreToolUse input writer. It composes conversation scope with the existing version stamp so two hook responses cannot overwrite each other's arguments. It uses the firing hook's `session_id`, never another process's ambient ID. It never grants permissions; a contradictory project is denied, and ordinary host permission checks remain in force.
+
+Connect sends folder facts on the normal path, persists the server-confirmed project and reuses it for this conversation. Exact name/ID selection uses `--project`; ambiguity is a structured refusal consumed by the command's native question flow, not parsed from error prose. The startup listener also watches this conversation's project metadata so an explicit choice can wake it without requiring a pin.
+
+`devspec-project.mjs remember|forget` is preview-first. The confirming invocation must carry the exact preview fingerprint, and changes affect future folder-based connections only. A fresh local conversation is required to switch project context. The helper's `prepare --project` path validates an accessible choice and seeds a new UUID accepted by Claude's native `--session-id` option before startup can auto-connect to a folder default. Same-project `/clear` rebonds inherit scope; a resume into a differently scoped conversation refuses and disables the old local delivery instead of copying its connection across.
+
+Run `node tests/runtime/project-scope-runtime.mjs` for an installed-Claude smoke with isolated home and scripted loopback MCP/provider fixtures. Add `--question` to exercise native AskUserQuestion through the host's SDK stdio control protocol, or `--question --cancel` to verify cancellation creates no connection/selection. These are test-only controls, not customer launch flags. The fixtures make no paid inference requests or live DevSpec writes. The normal test suite remains `node --test hooks/scripts/*.test.mjs`.
+
 ## Validating before release
 
 ```bash

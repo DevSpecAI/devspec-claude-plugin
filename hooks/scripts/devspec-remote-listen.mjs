@@ -54,6 +54,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connect, ConnectError } from './devspec-remote-connect.mjs'
 import { findProjectPin, folderLinkFingerprint, gitRemoteOrigin } from './devspec-scope.mjs'
+import { conversationProjectFingerprint, readConversationProject } from './conversation-project.mjs'
 import { isWaitArmed, EXIT_REARM, EXIT_TERMINAL } from './devspec-remote-wait.mjs'
 import { storeTiers } from './instruction-tiers.mjs'
 import { readPrivateJsonResult, STATE_OK } from './private-state.mjs'
@@ -316,7 +317,14 @@ async function main() {
       log.write('connect failed', { reason, error: e?.message })
       if (WAIT_FOR_LINK_REASONS.has(reason)) {
         log.write('waiting for this folder to name a project', { reason })
-        const linked = await waitForFolderLink(cwd, { ownerAlive: () => pidAlive(ownerPid), log })
+        const linked = await waitForFolderLink(cwd, {
+          ownerAlive: () => pidAlive(ownerPid), log,
+          fingerprint: dir => `${folderLinkFingerprint(dir)}|${conversationProjectFingerprint(localId)}`,
+          namesProject: dir => {
+            try { return folderNamesProject(dir) || readConversationProject(localId)?.status === 'selected' }
+            catch { return false }
+          },
+        })
         if (!linked) {
           log.write('owner gone — exiting', { owner_pid: ownerPid })
           process.exit(0)

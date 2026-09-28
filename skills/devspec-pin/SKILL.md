@@ -6,8 +6,7 @@ allowed-tools: Read, Write, Bash, mcp__plugin_devspec_devspec__list_projects, mc
 
 # Pin a folder to a DevSpec project
 
-A folder with no repository, or one whose repository DevSpec does not track, says which
-project it belongs to with one small file. Agents and DevSpec read it; nothing else does.
+A folder with no repository, an untracked repository, or a repository shared by several accessible projects can keep a default in one small file. This is separate from a choice for one local conversation. Selecting a project alone is not consent to write the pin.
 
 ## The file
 
@@ -20,7 +19,7 @@ project it belongs to with one small file. Agents and DevSpec read it; nothing e
 - The key is `project_id`, spelled exactly so. Anything else (`projectId`, `id`,
   `project`) is not a pin and nothing will read it.
 - Nothing else in it: no path, hostname, user, token or timestamp. That is what makes it
-  safe to commit, so a teammate who clones the folder is pointed at the same project.
+  safe to commit. Teammates still need access; a unique remote match beats a stale pin, while a valid candidate pin can disambiguate a shared repository.
 
 ## Where it goes
 
@@ -38,6 +37,4 @@ the only place every subdirectory resolves it from.
 
 ## After
 
-Tell them it's done. When Claude Code is set to connect to DevSpec at startup, this
-session connects to the project by itself within a few seconds, with no restart and no
-command to run.
+Report the exact file and default written. The startup listener can notice a new pin for an unconnected conversation, but an already-selected conversation keeps its project. A unique remote match still wins. Use `/devspec:devspec.project` to inspect the effective default or preview forgetting it; use its prepared fresh-conversation flow when the person wants to work in another project rather than merely change a folder default.

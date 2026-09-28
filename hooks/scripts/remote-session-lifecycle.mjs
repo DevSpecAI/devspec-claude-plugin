@@ -21,7 +21,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
-import { rebondConnectionToConversation } from './remote-control-state.mjs'
+import { readConversationProject } from './conversation-project.mjs'
+import { rebondConnectionToConversation, reportConnectionEnded } from './remote-control-state.mjs'
 import {
   CONVERSATION_SWITCH_REASONS,
   findStartupListenerForOwner,
@@ -114,11 +115,13 @@ export function onSessionStart(payload, { env = process.env, ownerPid = undefine
  * about something that cannot happen. Kept to two sentences: it rides in every such
  * session, and the protocol itself loads from the skill only when a message arrives.
  */
-export function startupNote({ env = process.env, cwd = process.cwd() } = {}) {
+export function startupNote({ env = process.env, cwd = process.cwd(), localId = null } = {}) {
   const config = startupConfigFromEnv(env)
   if (!config) return null
   if (/^(false|0|no|off)$/i.test(String(config.connect_at_startup ?? '').trim())) return null
-  if (!gitRemoteOrigin(cwd) && !findProjectPin(cwd)) return null
+  let selected = false
+  try { selected = readConversationProject(localId, { endpoint: config.mcp_url })?.status === 'selected' } catch {}
+  if (!gitRemoteOrigin(cwd) && !findProjectPin(cwd) && !selected) return null
   return (
     'DevSpec: your team can send this session work from DevSpec. Their messages arrive as ' +
     '"DevSpec" monitor events, and an owner_message there is a real request from the person ' +
@@ -142,8 +145,12 @@ if (isMain) {
     const mode = process.argv[2]
     const payload = process.stdin.isTTY ? {} : readPayload()
     if (mode === 'session-start') {
-      onSessionStart(payload)
-      const note = startupNote({ cwd: typeof payload.cwd === 'string' ? payload.cwd : process.cwd() })
+      const started = onSessionStart(payload)
+      const scopeChanged = started.rebonded?.reason === 'project_scope_mismatch'
+      if (scopeChanged) await reportConnectionEnded(started.rebonded.connection_id, { timeoutMs: 3000 })
+      const note = scopeChanged
+        ? 'DevSpec did not reuse the previous remote connection because this conversation has another project. Reconnect with /devspec:devspec.remote; do not answer through the previous connection.'
+        : startupNote({ cwd: typeof payload.cwd === 'string' ? payload.cwd : process.cwd(), localId: payload.session_id })
       if (note) {
         process.stdout.write(
           JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: note } }) + '\n',

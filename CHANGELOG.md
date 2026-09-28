@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.14 - 2026-09-28
+
+Remote accepts `--project <name-or-id>` for one local Claude conversation. Ambiguous connections retain structured project-and-organisation choices for native questions; normal resolving connections still need no discovery prompt. The selected project survives resume and is stamped onto ordinary DevSpec tool calls by the same hook that reports plugin versions, without granting permissions.
+
+`/devspec:devspec.project` shows the choice and offers choose/remember/forget. Folder changes use an explicit preview and confirmation; choosing alone writes no pin. Changing projects requires fresh local context, and background connection helpers never wait for a keyboard choice. Both manifests are bumped; update/reload the plugin to replace Claude's version-keyed cached copy.
+
 ## 0.32.13 - 2026-09-28
 
 Registration and attachment now report the executing DevSpec plugin artifact's version. Both the plugin's connection scripts and native MCP tool calls are covered. The metadata hook does not approve or deny tools, and unavailable host versions stay unreported. Both versioned manifests are updated; existing Claude Code sessions continue using their cached plugin until their normal restart/update.

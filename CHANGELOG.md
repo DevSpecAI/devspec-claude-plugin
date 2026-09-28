@@ -2,6 +2,10 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.13 - 2026-09-28
+
+Registration and attachment now report the executing DevSpec plugin artifact's version. Both the plugin's connection scripts and native MCP tool calls are covered. The metadata hook does not approve or deny tools, and unavailable host versions stay unreported. Both versioned manifests are updated; existing Claude Code sessions continue using their cached plugin until their normal restart/update.
+
 ## 0.32.12 - 2026-09-27
 
 ### Delivery evidence stays on action items, out of project memory

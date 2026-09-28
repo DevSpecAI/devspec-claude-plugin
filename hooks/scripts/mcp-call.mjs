@@ -14,6 +14,8 @@
  * deliberate abort from a network failure. Omitting them keeps the original behaviour.
  */
 
+import { versionedConnectionArguments } from './connection-version.mjs'
+
 /** HTTP statuses that describe a transient condition, not a verdict on the request. */
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 502, 503, 504])
 
@@ -210,7 +212,7 @@ export async function mcpToolsCall({
     mcpUrl,
     token,
     method: 'tools/call',
-    params: { name, arguments: toolArgs || {} },
+    params: { name, arguments: versionedConnectionArguments(name, toolArgs || {}) },
     connectionCapability,
     timeoutMs,
     isAlive,

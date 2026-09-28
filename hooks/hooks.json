@@ -32,6 +32,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "^mcp__(plugin_devspec_)?devspec__(register_connection|attach_connection)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/connection-version.mjs\" || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit|NotebookEdit|Bash",
         "hooks": [
           {

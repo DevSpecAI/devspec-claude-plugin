@@ -15,7 +15,8 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { readPrivateJsonResult, STATE_OK, writePrivateJson } from './private-state.mjs'
+import { createHash } from 'node:crypto'
+import { readPrivateJsonResult, STATE_OK, writePrivateJson, writePrivateText } from './private-state.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 
@@ -35,7 +36,9 @@ export function renderTiers(payload) {
   for (const [field, label] of TIER_FIELDS) {
     const value = payload?.[field]
     if (typeof value === 'string' && value.trim()) {
-      parts.push(`\n### ${label}\n\n${value.trim()}\n`)
+      parts.push(`\n### ${label}\n\n${value}\n`)
+    } else if (Object.hasOwn(payload ?? {}, field)) {
+      parts.push(`\n### ${label}\n\nNo instruction configured (clears the previous value).\n`)
     }
   }
   if (!parts.length) return ''
@@ -46,6 +49,33 @@ export function tiersPath(connectionId, dir = CONNECTIONS_DIR) {
   return path.join(dir, `${connectionId}.tiers.json`)
 }
 
+export function hasStoredTiers(connectionId, {dir=CONNECTIONS_DIR}={}) {
+  return readPrivateJsonResult(tiersPath(connectionId,dir)).status === STATE_OK
+}
+
+/** Attach replies may clear a rule; missing fields do not erase a prior registration. */
+export function mergeInstructionTiers(previous, incoming) {
+  if (incoming?.instructions_unchanged) return previous
+  const merged={...previous}
+  for(const [field] of TIER_FIELDS) if(typeof incoming?.[field]==='string' || incoming?.[field]===null) merged[field]=incoming[field]
+  for(const field of ['instruction_tiers_version','instruction_tiers_hash']) if(incoming?.[field]!=null) merged[field]=incoming[field]
+  if(TIER_FIELDS.some(([field])=>Object.hasOwn(incoming??{},field))) delete merged.instructions_unchanged
+  return merged
+}
+
+/** Save changed server rules as an immutable, complete file for a queued command. */
+export function captureInstructionContext(connectionId, payload, {dir=CONNECTIONS_DIR}={}) {
+  if(payload?.instructions_unchanged || !TIER_FIELDS.some(([key])=>Object.hasOwn(payload??{},key))) return null
+  storeTiers(connectionId,payload,{dir})
+  const after=readPrivateJsonResult(tiersPath(connectionId,dir))
+  if(after.status!==STATE_OK) throw new Error('Instruction context could not be preserved')
+  // Response style is attributed to each command's sender, never this cached owner.
+  const text=renderTiers(Object.fromEntries(Object.entries(after.value.texts).filter(([key])=>key!=='owner_custom_instructions')))
+  const file=path.join(dir,`${connectionId}.tiers-${createHash('sha256').update(text).digest('hex')}.txt`)
+  writePrivateText(file,text)
+  return file
+}
+
 /**
  * File the tier texts a registration returned. Returns false when there was nothing to
  * file — an `instructions_unchanged` reply carries no texts, and must never overwrite
@@ -53,10 +83,11 @@ export function tiersPath(connectionId, dir = CONNECTIONS_DIR) {
  */
 export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, now = new Date() } = {}) {
   if (!connectionId || !registration || registration.instructions_unchanged) return false
-  const texts = {}
+  const prior = readPrivateJsonResult(tiersPath(connectionId, dir))
+  const texts = { ...(prior.status === STATE_OK ? prior.value?.texts : {}) }
   for (const [field] of TIER_FIELDS) {
     const value = registration[field]
-    if (typeof value === 'string' && value.trim()) texts[field] = value
+    if (typeof value === 'string' || value === null) texts[field] = value
   }
   writePrivateJson(tiersPath(connectionId, dir), {
     connection_id: connectionId,
@@ -66,7 +97,8 @@ export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, 
     stored_at: now.toISOString(),
     // Which conversation has already read these. A fresh store resets it: new texts
     // have been read by nobody.
-    delivered_to: null,
+    delivered_to: prior.status === STATE_OK && prior.value?.hash === (registration.instruction_tiers_hash ?? null)
+      && JSON.stringify(prior.value.texts) === JSON.stringify(texts) ? prior.value.delivered_to : null,
   })
   return true
 }
@@ -82,13 +114,13 @@ export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, 
  * `localId` keys the delivery: after `/clear` the conversation is new and holds none
  * of what the old one read, so it is handed the texts again.
  */
-export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR } = {}) {
+export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR, force = false } = {}) {
   const file = tiersPath(connectionId, dir)
   const read = readPrivateJsonResult(file)
   if (read.status !== STATE_OK || !read.value) return { status: 'absent' }
   const stored = read.value
   const deliveredKey = `${localId || 'unknown'}@${stored.hash || 'nohash'}`
-  if (stored.delivered_to === deliveredKey) return { status: 'unchanged' }
+  if (!force && stored.delivered_to === deliveredKey) return { status: 'unchanged' }
   const text = renderTiers(stored.texts || {})
   writePrivateJson(file, { ...stored, delivered_to: deliveredKey })
   return { status: 'deliver', text }

@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.16 - 2026-09-29
+
+Session attach/create/reconnect now retain the server's refreshed rule fields rather than discarding them. Explicit null clears the old rule; omitted fields stay unchanged. Manual connections also preserve rule text for resume/compaction, and session-start context restores it. Changed rules accompanying a validated remote command are retained in a complete immutable file named on that command, with no context-only wake or added authority.
+
+Update the installed plugin and restart existing Claude conversations to load the new cached hooks.
+
 ## 0.32.15 - 2026-09-29
 
 The selected project's complete repository inventory now reaches Claude as factual context: names, safe remote URLs, provider and tracked/default branches. Manual Remote includes it in the connection result; automatic connections deliver it through local prompt hooks or remote orientation. Session start restores the snapshot for resume/compaction, and project switches use the new conversation's inventory. Repeated unchanged prompt reads are deduplicated. An old server or failed inventory read is unavailable, never an empty project. No cloning tutorial, local readiness claim, description or vision is added.

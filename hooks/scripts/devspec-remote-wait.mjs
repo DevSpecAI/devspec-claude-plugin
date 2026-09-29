@@ -645,6 +645,7 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
       type: 'owner_message',
       from: command.requester?.display_name ?? null,
       authority: command.authority.kind,
+      ...(typeof batch.instruction_context_file === 'string' ? { instruction_context_file: batch.instruction_context_file } : {}),
       // A flag, not the text. The style notes are server prose ~280 characters
       // long and putting them here would re-create the same problem one field
       // along — on 2026-09-19 they did exactly that, eating the whole budget so

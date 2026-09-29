@@ -442,6 +442,14 @@ describe('the wake line inside the 500-character cap', () => {
 })
 
 describe('buildCanonicalCommandEvents', () => {
+  it('carries an immutable refreshed-rule pointer on the command without another wake', () => {
+    const batch={...canonicalInboxBatch('rules'),instruction_context_file:'/private/immutable-rules.txt'}
+    const recovered=parseInboxBatches([JSON.stringify(batch)],batch.connection_id)
+    assert.equal(recovered.length,1)
+    const events=buildCanonicalCommandEvents(recovered[0])
+    assert.equal(events.find(e=>e.type==='owner_message').instruction_context_file,batch.instruction_context_file)
+    assert.deepEqual(events.map(e=>e.type),['owner_message','wake'])
+  })
   it('preserves an exact large body and makes only the canonical command executable', () => {
     const body = `begin\n${'x'.repeat(250_000)}\nend`
     const events = buildCanonicalCommandEvents(canonicalInboxBatch('large', body), {

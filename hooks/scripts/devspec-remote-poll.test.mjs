@@ -396,10 +396,12 @@ describe('explicit automation dispatch channel', () => {
     let durable
     const retried = appendCanonicalInbox(connectionId, ingress, index, {
       channel: 'command',
+      instructionContextFile: '/private/immutable-rules.txt',
       writeRecord: (_connection, record) => { durable = record; return true },
     })
     assert.equal(retried.appended, true)
     assert.equal(durable.ingress.commands[0].project_scope, DELEGATED_SCOPE)
+    assert.equal(durable.instruction_context_file, '/private/immutable-rules.txt')
     assert.deepEqual(durable.execute_message_ids, ['msg-delegated'])
   })
 

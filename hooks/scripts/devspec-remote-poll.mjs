@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { captureInstructionContext } from './instruction-tiers.mjs'
 import {
   STATE_ABSENT,
   STATE_OK,
@@ -698,6 +699,7 @@ export function appendCanonicalInbox(
   {
     sessionId = null,
     wakeContext = null,
+    instructionContextFile = null,
     channel = 'context',
     questionHandoff = null,
     writeRecord = appendDurableRecord,
@@ -739,6 +741,7 @@ export function appendCanonicalInbox(
     // paths, each command's count since this agent's last reply, and which parts of
     // the room file moved since the last command. Pointers, never the room itself.
     ...(channel === 'command' && wakeContext ? { wake_context: wakeContext } : {}),
+    ...(channel === 'command' && instructionContextFile ? { instruction_context_file: instructionContextFile } : {}),
     // This message took over the turn an answered question had open (item a11d27fa).
     // The wait stream tells the model so, just before the message itself.
     ...(channel === 'command' && questionHandoff && executeMessageIds.includes(questionHandoff.source_message_id)
@@ -1989,7 +1992,7 @@ async function main() {
     return response
   }
 
-  function persistCanonicalCursorState(res, ingress, drainingContinuation) {
+  function persistCanonicalCursorState(res, ingress, drainingContinuation, instructionContextDelivered = false) {
     const next = advancePollCursors(
       { liveCursorV2, legacyCursor, catchUpCursor },
       res,
@@ -2005,6 +2008,9 @@ async function main() {
       catch_up_cursor: catchUpCursor,
       canonical_window: ingress.window,
       canonical_envelope_id: ingress.envelope_id,
+      ...(instructionContextDelivered && res.instruction_tiers_version === 1 && typeof res.instruction_tiers_hash === 'string' ? {
+        instruction_tiers_version: res.instruction_tiers_version, instruction_tiers_hash: res.instruction_tiers_hash,
+      } : {}),
     })
   }
 
@@ -2063,8 +2069,10 @@ async function main() {
     }
     const roomChanges = channel === 'command' ? roomChangesSince(res, activity, roomAnnounced) : null
 
+    const instructionContextFile = channel === 'command' ? captureInstructionContext(connectionId, res) : null
     const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,
+      instructionContextFile,
       wakeContext: roomChanges
         ? commandWakeContext(transcriptStore, ingress, { connectionId, roomChanged: roomChanges.changed })
         : null,
@@ -2078,7 +2086,7 @@ async function main() {
     // Only remember what we announced once the record is on disk. A crash between
     // the write and this line repeats the announcement; the other order loses it.
     if (persisted.appended && roomChanges) roomAnnounced = roomChanges.seen
-    persistCanonicalCursorState(res, ingress, drainingContinuation)
+    persistCanonicalCursorState(res, ingress, drainingContinuation, Boolean(persisted.appended && instructionContextFile))
 
     if (normalized.reason === 'unavailable_attachment') {
       process.stderr.write(

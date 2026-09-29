@@ -42,6 +42,17 @@ test('bare resolving connect adds no discovery call or folder write',async()=>{
  assert.equal(fs.existsSync(path.join(cwd,'.devspec','project.json')),false)
  assert.equal(readConversationProject(options().localId,{endpoint,home}).project.id,A.id)
 })
+test('session attachment carries refreshed and cleared rules into the connect result',async()=>{
+ const {deps}=backend();const call=deps.callTool
+ deps.callTool=async request=>request.name==='attach_connection'
+  ? {project_agent_rules:null,owner_agent_rules:'updated machine',instruction_tiers_version:1,instruction_tiers_hash:'attached'}
+  : {...await call(request),project_agent_rules:'old project rule',owner_agent_rules:'old machine'}
+ const result=await connect({...options(),session:'44444444-4444-4444-8444-444444444444'},deps)
+ assert.equal(result.registration.project_agent_rules,null)
+ assert.equal(result.registration.owner_agent_rules,'updated machine')
+ assert.equal(result.registration.instruction_tiers_hash,'attached')
+})
+
 test('ambiguous refusal retains org-labelled choices and blocks tool fallback without a choice',async()=>{
  const {calls,deps}=backend({ambiguous:true})
  await assert.rejects(connect(options(),deps),error=>{assert(error instanceof ConnectError);assert.deepEqual(error.projectSelection.candidates,[A,B]);return true})

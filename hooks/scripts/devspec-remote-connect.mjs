@@ -35,7 +35,7 @@ import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { isWaitArmed } from './devspec-remote-wait.mjs'
-import { renderTiers } from './instruction-tiers.mjs'
+import { renderTiers, storeTiers, hasStoredTiers, mergeInstructionTiers } from './instruction-tiers.mjs'
 import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext } from './repository-context.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { startupListenerAlive } from './startup-listener.mjs'
@@ -313,7 +313,8 @@ export async function connect(options = {}, deps = {}) {
   // 1. Register (idempotent on the conversation bond). Scope goes up as facts —
   //    git_remote and/or the folder pin — and the server arbitrates. No list_projects
   //    round-trip: the router resolves the project from git_remote itself.
-  const known = startup ? null : knownInstructionTiersFor(bond.connection_id)
+  const tierDir = path.join(projectHome, '.devspec', 'remote-control', 'connections')
+  const known = startup || !hasStoredTiers(bond.connection_id, {dir:tierDir}) ? null : knownInstructionTiersFor(bond.connection_id)
   let registration
   let connectionCapability = null
   try {
@@ -409,18 +410,19 @@ export async function connect(options = {}, deps = {}) {
     if (!sessionId) {
       throw new ConnectError(`create_session returned no session id: ${JSON.stringify(created)}`)
     }
-    await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
+    registration = mergeInstructionTiers(registration, await call('attach_connection', { connection_id: connectionId, session_id: sessionId }))
     status = 'attached'
   } else if (session) {
     sessionId = session
-    await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
+    registration = mergeInstructionTiers(registration, await call('attach_connection', { connection_id: connectionId, session_id: sessionId }))
     status = 'attached'
   } else if (bond.action === 'reconnect' && bond.session_id) {
     // Resume exactly what this conversation had — its prior session, nothing else.
     sessionId = bond.session_id
-    await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
+    registration = mergeInstructionTiers(registration, await call('attach_connection', { connection_id: connectionId, session_id: sessionId }))
     status = 'reconnected'
   }
+  storeTiers(connectionId, registration, {dir:tierDir})
 
   // 3. State + bond + poller. One writer, shared with the `write` command.
   const written = await writeState({

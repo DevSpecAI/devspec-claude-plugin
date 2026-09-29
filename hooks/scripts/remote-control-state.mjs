@@ -1520,7 +1520,7 @@ if (isMain) {
       projectId: choice?.status === 'selected' ? choice.project.id : undefined,
       force: cmd === 'context' && args.event === 'SessionStart',
     })
-    const tiers = takeTiersFor(connectionId, detected.local_id)
+    const tiers = takeTiersFor(connectionId, detected.local_id, { force: cmd === 'context' && args.event === 'SessionStart' })
     if (cmd === 'context') {
       const additionalContext = [repositories, tiers.status === 'deliver' ? tiers.text : ''].filter(Boolean).join('\n\n')
       if (additionalContext) process.stdout.write(JSON.stringify({ hookSpecificOutput: {

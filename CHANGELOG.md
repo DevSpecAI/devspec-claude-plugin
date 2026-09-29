@@ -2,6 +2,10 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.18 - 2026-09-30
+
+SessionStart now checks a generated shared launcher payload through its install, OS-registration and readiness flow. No startup package download is needed, and setup failure does not block Claude Code. Claude's own launch scheme and connection credentials remain independent. Refresh the installed plugin and start a new session to load the hook.
+
 ## 0.32.17 - 2026-09-29
 
 Rule and repository-context readers now write separate per-conversation delivery receipts, never a rewritten copy of the live snapshot. A concurrent registration/poll refresh therefore cannot be overwritten by a reader marking older context consumed. Queued rule files are rendered from their captured response rather than re-reading mutable cache state. Deterministic interleaving tests cover both caches. Update/restart to load the versioned hooks.

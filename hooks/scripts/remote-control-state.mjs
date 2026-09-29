@@ -71,7 +71,8 @@ import {
   LOCAL_ID_OVERRIDE_ENV_VAR,
 } from './agent-identity.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
-import { inheritConversationProject } from './conversation-project.mjs'
+import { inheritConversationProject, readConversationProject } from './conversation-project.mjs'
+import { takeRepositoryContext, repositoryContextProject } from './repository-context.mjs'
 import { CONVERSATION_SWITCH_REASONS, startupListenerAlive } from './startup-listener.mjs'
 import { takeTiersFor } from './instruction-tiers.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
@@ -176,6 +177,7 @@ function parseArgs(argv) {
     else if (a === '--connection-id' || a === '--connection_id' || a === '--connection') {
       out['connection-id'] = argv[++i]
     } else if (a === '--agent' || a === '--agent_name') out.agent = argv[++i]
+    else if (a === '--event') out.event = argv[++i]
     else if (a === '--cwd') out.cwd = argv[++i]
     else if (a === '--url') out.url = argv[++i]
     else if (a === '--codename' || a === '--session_codename') out.codename = argv[++i]
@@ -1488,26 +1490,46 @@ if (isMain) {
     process.exit(0)
   }
 
-  if (cmd === 'orient') {
+  if (cmd === 'orient' || cmd === 'context') {
     // What a conversation needs before it answers its first DevSpec command, when the
     // connection was made by the listener Claude Code started (item b7ef1fe2) and the
     // model therefore never saw connect's status block: which connection it speaks
     // for, which room, and the instruction tiers filed at connect. Redacted — the
     // bearer and the hidden capability never reach stdout.
     const agentName = args.agent || AGENT_NAME
-    const detected = detectLocalId(args, process.env)
+    const payload = cmd === 'context' ? JSON.parse(fs.readFileSync(0, 'utf8') || '{}') : null
+    const detected = detectLocalId(payload?.session_id ? { ...args, 'local-id': payload.session_id } : args, process.env)
     const bond = detected.local_id ? readLocalBond(agentName, detected.local_id) : null
     const connectionId = args['connection-id'] || bond?.connection_id || null
     const state = connectionId ? readJson(connectionPath(connectionId)) : null
     if (!connectionId || !state) {
+      if (cmd === 'context') process.exit(0)
       process.stdout.write(
         'This conversation is not connected to DevSpec. Nothing to orient on.\n',
       )
       process.exit(1)
     }
     const view = redactConnectionState(state)
+    const choice = readConversationProject(detected.local_id)
+    const contextProject = repositoryContextProject(connectionId)
+    if (choice?.status === 'blocked' || (choice?.status === 'selected' && contextProject && contextProject !== choice.project.id)) {
+      if (cmd === 'context') process.exit(0)
+      throw new Error('Choose a project before reading connection context.')
+    }
+    const repositories = takeRepositoryContext(connectionId, detected.local_id, {
+      projectId: choice?.status === 'selected' ? choice.project.id : undefined,
+      force: cmd === 'context' && args.event === 'SessionStart',
+    })
     const tiers = takeTiersFor(connectionId, detected.local_id)
+    if (cmd === 'context') {
+      const additionalContext = [repositories, tiers.status === 'deliver' ? tiers.text : ''].filter(Boolean).join('\n\n')
+      if (additionalContext) process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+        hookEventName: args.event === 'SessionStart' ? 'SessionStart' : 'UserPromptSubmit', additionalContext,
+      } }) + '\n')
+      process.exit(0)
+    }
     const lines = [
+      ...(repositories ? [repositories] : []),
       `connection_id: ${connectionId}`,
       `codename: ${view.session_codename || '—'}`,
       `session_id: ${view.session_id || 'none (sessionless — there is no room to answer in)'}`,

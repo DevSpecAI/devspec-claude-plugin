@@ -36,6 +36,7 @@ import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { isWaitArmed } from './devspec-remote-wait.mjs'
 import { renderTiers } from './instruction-tiers.mjs'
+import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext } from './repository-context.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
@@ -440,6 +441,10 @@ export async function connect(options = {}, deps = {}) {
     env,
   })
 
+  storeRepositoryContext(connectionId, registration, {
+    dir: path.join(projectHome, '.devspec', 'remote-control', 'connections'),
+  })
+
   // The session this connection is ON, which is not the same as one this
   // invocation happened to attach. A bare re-run of an already-attached
   // connection performs no attach, so the local `sessionId` is null while the
@@ -588,6 +593,8 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
     )
   }
 
+  const repositories = renderRepositoryContext(summary.registration)
+  if (repositories) lines.push(repositories)
   const tiers = renderTiers(summary.registration)
   if (tiers) lines.push(tiers)
   return lines.join('\n') + '\n'
@@ -627,6 +634,7 @@ async function main() {
 
   if (args.json) {
     process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
+    takeRepositoryContext(summary.connection_id, summary.local_id)
     process.exit(0)
   }
   process.stdout.write(
@@ -636,6 +644,7 @@ async function main() {
       noPoller: !!args.noPoller,
     }),
   )
+  takeRepositoryContext(summary.connection_id, summary.local_id)
   process.exit(0)
 }
 

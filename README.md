@@ -172,6 +172,14 @@ Both commands are in Claude Code's `/` menu after install, under the `/devspec:`
 | `/devspec:devspec.remote-stop` | Disconnect this session from the Agents page |
 | `/devspec:devspec.project` | Show the conversation project and folder default; `choose`, `remember`, or `forget` |
 
+### Repository context
+
+From 0.32.15, connecting also gives Claude the selected project's complete repository list, including remote URLs and tracked/default branches. These are project facts, not claims that code is cloned on this computer or that pushing is allowed. Description and vision remain available on demand.
+
+Manual connection prints the facts with its result. Automatic connection stores them privately until a local prompt or the first remote orientation reads them; session start restores them on resume/compaction. Choosing a different project uses its fresh conversation's facts. Identical subsequent reads do not repeat the list. An older server or failed read is explicitly unavailable, not an empty project.
+
+Update the installed plugin and start a new conversation after upgrading: Claude's version-keyed cache, not the repository checkout, supplies its hooks.
+
 ## How it finds the right project
 
 You don't pass a project ID in most cases. A unique accessible repository match connects automatically, and a folder pin can resolve a shared remote or a greenfield folder. If several projects still match, choose for this conversation with `/devspec:devspec.remote --project "Project name"` or the native question UI. A folder pin is optional, not the price of choosing.

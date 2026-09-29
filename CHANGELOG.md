@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.15 - 2026-09-29
+
+The selected project's complete repository inventory now reaches Claude as factual context: names, safe remote URLs, provider and tracked/default branches. Manual Remote includes it in the connection result; automatic connections deliver it through local prompt hooks or remote orientation. Session start restores the snapshot for resume/compaction, and project switches use the new conversation's inventory. Repeated unchanged prompt reads are deduplicated. An old server or failed inventory read is unavailable, never an empty project. No cloning tutorial, local readiness claim, description or vision is added.
+
+Both manifests are bumped because Claude executes version-keyed cached files. Update the installed plugin and start a new conversation to load the hooks; a repository merge alone does not update an existing Claude process.
+
 ## 0.32.14 - 2026-09-28
 
 Remote accepts `--project <name-or-id>` for one local Claude conversation. Ambiguous connections retain structured project-and-organisation choices for native questions; normal resolving connections still need no discovery prompt. The selected project survives resume and is stamped onto ordinary DevSpec tool calls by the same hook that reports plugin versions, without granting permissions.

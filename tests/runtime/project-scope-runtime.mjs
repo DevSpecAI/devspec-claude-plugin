@@ -15,7 +15,7 @@ let localId=randomUUID()
 const connectionId=randomUUID(), mcpCalls=[]
 const questionMode=process.argv.includes('--question'), cancelMode=process.argv.includes('--cancel')
 const expectedAnswer=cancelMode?'Continue without connecting':'Website — Client'
-let modelCalls=0, commandLoaded=false, statusScoped=false, questionAnswered=false, questionResultObserved=false
+let modelCalls=0, commandLoaded=false, statusScoped=false, questionAnswered=false, questionResultObserved=false, repositoryContextObserved=false
 const textResult=data=>({content:[{type:'text',text:JSON.stringify(data)}]})
 function modelResponse(res,body,block,stop) {
  const message={id:'msg_fixture_'+modelCalls,type:'message',role:'assistant',content:[block],model:body.model,stop_reason:stop,stop_sequence:null,usage:{input_tokens:10,output_tokens:10}}
@@ -39,6 +39,7 @@ const server=createServer(async(req,res)=>{
    if(!tool){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({id:'aux',type:'message',role:'assistant',content:[{type:'text',text:'fixture'}],model:body.model,stop_reason:'end_turn',usage:{input_tokens:1,output_tokens:1}}));return}
    modelCalls++
    commandLoaded ||= JSON.stringify(body.messages).includes('Project choice belongs to the firing')
+   repositoryContextObserved ||= JSON.stringify(body.messages).includes('https://example.test/project-b/repo-24.git')
    for (const message of body.messages ?? []) for (const block of Array.isArray(message.content) ? message.content : []) {
     if(block.type==='tool_result' && block.tool_use_id==='tool_fixture_1') statusScoped ||= JSON.stringify(block.content).includes(B.id)
     if(block.type==='tool_result' && block.tool_use_id==='tool_question') questionResultObserved ||= JSON.stringify(block.content).includes(expectedAnswer)
@@ -60,7 +61,7 @@ const server=createServer(async(req,res)=>{
    else if(body.method==='tools/list')result={tools:[{name:'get_project_summary',description:'Read the current project summary.',inputSchema:{type:'object',properties:{project_id:{type:'string'}}}}]}
    else if(body.method==='tools/call'){
     const {name,arguments:args={}}=body.params;mcpCalls.push({name,args})
-    if(name==='register_connection')result={...textResult({connection_id:connectionId,project_id:B.id,created:true,session_id:null,codename:'Fixture',project_selection:{version:1,status:'resolved',source:'explicit',project:B}}),_meta:{devspec:{connection_capability:{version:1,value:'dvsc_fixture_only_12345678901234567890'}}}}
+    if(name==='register_connection')result={...textResult({connection_id:connectionId,project_id:B.id,created:true,session_id:null,codename:'Fixture',repository_context:{version:1,project_id:B.id,status:'available',repositories:Array.from({length:25},(_,i)=>({id:`repo-${i}`,full_name:`project-b/repo-${i}`,provider:'github',git_url:`https://example.test/project-b/repo-${i}.git`,target_branch:'staging',default_branch:'main'}))},project_selection:{version:1,status:'resolved',source:'explicit',project:B}}),_meta:{devspec:{connection_capability:{version:1,value:'dvsc_fixture_only_12345678901234567890'}}}}
     else if(name==='list_projects')result=textResult({projects:[A,B]})
     else result=textResult({success:true,connection_id:connectionId,project_id:args.project_id??B.id})
    }
@@ -126,8 +127,9 @@ try {
  if(cancelMode){assert.equal(summaries.length,0);assert.equal(mcpCalls.some(c=>c.name==='register_connection'),false);assert.equal(readConversationProject(localId,{endpoint,home}),null)}
  else {assert.equal(summaries.length,1,'conflicting explicit project must be denied before MCP');assert.equal(summaries[0].args.project_id,B.id,'ordinary MCP call must receive the saved conversation project')}
  assert(commandLoaded,'the installed native project command must be discovered and expanded')
+ assert.equal(repositoryContextObserved,!cancelMode,'the actual model request must contain all 25 repository facts, and no cancelled-project context')
  if(questionMode){assert(questionAnswered,'the native AskUserQuestion must request an answer through the host protocol');assert(questionResultObserved,'the selected native answer must return to the workflow')}
  else {assert(statusScoped,'the Bash management helper must receive the firing host conversation identity');assert(modelCalls>=4,'status, both tool attempts and a final answer must run; the host may make an additional completion request')}
  assert.equal(JSON.parse(readFileSync(join(root,'.claude-plugin/plugin.json'),'utf8')).name,'devspec')
- console.log(JSON.stringify({result:'PASS',host:version,pluginRoot:root,configuredConversation:localId,nativeCommandDiscovered:commandLoaded,...(questionMode?{nativeQuestionAnswered:questionAnswered,answerReturnedToWorkflow:questionResultObserved}:{managementHelperScoped:statusScoped,wrongProjectDenied:true}),ordinaryToolScoped:!cancelMode,cancelLeftUnconnected:cancelMode,scriptedProviderRequests:modelCalls,paidInference:0,liveDevspecRecords:0}))
+ console.log(JSON.stringify({result:'PASS',host:version,pluginRoot:root,configuredConversation:localId,nativeCommandDiscovered:commandLoaded,repositoryContextObserved,...(questionMode?{nativeQuestionAnswered:questionAnswered,answerReturnedToWorkflow:questionResultObserved}:{managementHelperScoped:statusScoped,wrongProjectDenied:true}),ordinaryToolScoped:!cancelMode,cancelLeftUnconnected:cancelMode,scriptedProviderRequests:modelCalls,paidInference:0,liveDevspecRecords:0}))
 } finally {server.closeAllConnections();await new Promise(r=>server.close(r));rmSync(home,{recursive:true,force:true})}

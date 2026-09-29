@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { connect, ConnectError } from './devspec-remote-connect.mjs'
 import { projectStatePath, readConversationProject, saveConversationProject, conversationScopeHook, readProjectSelection, inheritConversationProject } from './conversation-project.mjs'
 import { prepareDevspecToolInput } from './devspec-tool-input.mjs'
@@ -84,7 +85,7 @@ test('hook scope and version compose in one updatedInput without permission appr
 })
 test('actual hook subprocess uses the firing session, not ambient parent identity',()=>{
  saveConversationProject('firing',endpoint,B,'explicit',{home})
- const result=spawnSync(process.execPath,[new URL('./devspec-tool-input.mjs',import.meta.url).pathname],{input:JSON.stringify({session_id:'firing',cwd,tool_name:'mcp__devspec__get_project_summary',tool_input:{}}),encoding:'utf8',env:{...process.env,HOME:home,USERPROFILE:home,DEVSPEC_MCP_TOKEN:'fixture',DEVSPEC_MCP_URL:endpoint,CLAUDE_SESSION_ID:'parent'}})
+ const result=spawnSync(process.execPath,[fileURLToPath(new URL('./devspec-tool-input.mjs',import.meta.url))],{input:JSON.stringify({session_id:'firing',cwd,tool_name:'mcp__devspec__get_project_summary',tool_input:{}}),encoding:'utf8',env:{...process.env,HOME:home,USERPROFILE:home,DEVSPEC_MCP_TOKEN:'fixture',DEVSPEC_MCP_URL:endpoint,CLAUDE_SESSION_ID:'parent'}})
  assert.equal(result.status,0,result.stderr)
  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.updatedInput.project_id,B.id)
 })

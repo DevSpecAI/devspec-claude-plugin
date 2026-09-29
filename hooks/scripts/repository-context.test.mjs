@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import fs, { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -36,6 +36,21 @@ test('snapshots are connection/conversation scoped, resumable and explicitly ref
  assert.match(takeRepositoryContext('c','two',{dir,force:true}),/repo-24/)
 }))
 
+test('consuming repository facts cannot overwrite a concurrent registration refresh',()=>temp(dir=>{
+ storeRepositoryContext('c',registration,{dir})
+ const next=structuredClone(registration);next.repository_context.repositories[0].target_branch='release'
+ let observed=false
+ takeRepositoryContext('c','reader',{dir,writeReceipt:(file,receipt)=>{
+  observed=true
+  assert.notEqual(file,path.join(dir,'c.repositories.json'))
+  storeRepositoryContext('c',next,{dir})
+  writePrivateJson(file,receipt)
+ }})
+ assert.equal(observed,true)
+ assert.match(takeRepositoryContext('c','reader',{dir}),/release/)
+ assert.match(JSON.parse(fs.readFileSync(path.join(dir,'c.repositories.json'),'utf8')).text,/release/)
+}))
+
 test('real hook CLI supplies startup and local prompt context; orient supplies remote context',()=>temp(home=>{
  const dir=path.join(home,'.devspec','remote-control','connections')
  const local='fixture-conversation',connection='fixture-connection'
@@ -56,6 +71,8 @@ test('real hook CLI supplies startup and local prompt context; orient supplies r
  storeRepositoryContext(connection,changed,{dir})
  assert.match(cli('','orient'),/release/)
  assert.equal(cli('UserPromptSubmit'),'')
+ fs.unlinkSync(path.join(dir,`${connection}.tiers.json`))
+ assert.match(JSON.parse(cli('UserPromptSubmit')).hookSpecificOutput.additionalContext,/instruction context is unavailable locally/)
  storeRepositoryContext(connection,{...registration,project_id:'another-project'},{dir})
  storeTiers(connection,{project_agent_rules:'Wrong project rules',instruction_tiers_hash:'other',instruction_tiers_version:1},{dir})
  assert.equal(cli('SessionStart'),'','a mismatched connection cannot leak either repository data or project rules')

@@ -31,10 +31,8 @@ export function storeRepositoryContext(connectionId, registration, { dir = defau
   const text = renderRepositoryContext(registration)
   if (!text) return false
   const file = statePath(connectionId, dir)
-  const previous = readPrivateJson(file)
   const hash = createHash('sha256').update(text).digest('hex')
-  writePrivateJson(file, { project_id: registration.project_id, text, hash,
-    delivered_to: previous?.hash === hash ? previous.delivered_to : null })
+  writePrivateJson(file, { project_id: registration.project_id, text, hash })
   return true
 }
 
@@ -42,14 +40,16 @@ export function repositoryContextProject(connectionId, { dir = defaultDir } = {}
   return readPrivateJson(statePath(connectionId, dir))?.project_id ?? null
 }
 
-export function takeRepositoryContext(connectionId, localId, { dir = defaultDir, projectId, force = false } = {}) {
+export function takeRepositoryContext(connectionId, localId, { dir = defaultDir, projectId, force = false, writeReceipt = writePrivateJson } = {}) {
   const file = statePath(connectionId, dir)
   const saved = readPrivateJson(file)
   if (!saved || typeof saved.text !== 'string' || !saved.hash) return ''
   // A different project selection cannot consume an old connection's data.
   if (projectId && projectId !== saved.project_id) return ''
-  const key = `${localId}@${saved.hash}`
-  if (!force && saved.delivered_to === key) return ''
-  writePrivateJson(file, { ...saved, delivered_to: key })
+  const reader = createHash('sha256').update(localId || 'unknown').digest('hex')
+  const receiptFile = path.join(dir, `${connectionId}.repositories-delivery-${reader}.json`)
+  if (!force && readPrivateJson(receiptFile)?.hash === saved.hash) return ''
+  // Do not rewrite the snapshot: registration may have published a newer one.
+  writeReceipt(receiptFile, { hash: saved.hash })
   return saved.text
 }

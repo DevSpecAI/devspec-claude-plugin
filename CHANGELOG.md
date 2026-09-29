@@ -2,6 +2,10 @@
 
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.32.17 - 2026-09-29
+
+Rule and repository-context readers now write separate per-conversation delivery receipts, never a rewritten copy of the live snapshot. A concurrent registration/poll refresh therefore cannot be overwritten by a reader marking older context consumed. Queued rule files are rendered from their captured response rather than re-reading mutable cache state. Deterministic interleaving tests cover both caches. Update/restart to load the versioned hooks.
+
 ## 0.32.16 - 2026-09-29
 
 Session attach/create/reconnect now retain the server's refreshed rule fields rather than discarding them. Explicit null clears the old rule; omitted fields stay unchanged. Manual connections also preserve rule text for resume/compaction, and session-start context restores it. Changed rules accompanying a validated remote command are retained in a complete immutable file named on that command, with no context-only wake or added authority.

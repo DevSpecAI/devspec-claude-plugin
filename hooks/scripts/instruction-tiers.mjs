@@ -9,6 +9,9 @@
  * `devspec-remote-command` skill reads them once, on the first command a conversation
  * handles. An idle agent pays nothing for them.
  *
+ * Manual connects also retain the snapshot for resume/compaction. Delivery receipts
+ * are separate per-conversation files: consuming context never rewrites producer state.
+ *
  * The file sits beside the connection's other private state and goes through the same
  * private-state boundary, so it inherits its permissions and its repair of older modes.
  */
@@ -66,40 +69,37 @@ export function mergeInstructionTiers(previous, incoming) {
 /** Save changed server rules as an immutable, complete file for a queued command. */
 export function captureInstructionContext(connectionId, payload, {dir=CONNECTIONS_DIR}={}) {
   if(payload?.instructions_unchanged || !TIER_FIELDS.some(([key])=>Object.hasOwn(payload??{},key))) return null
-  storeTiers(connectionId,payload,{dir})
-  const after=readPrivateJsonResult(tiersPath(connectionId,dir))
-  if(after.status!==STATE_OK) throw new Error('Instruction context could not be preserved')
+  const snapshot=tierSnapshot(connectionId,payload,dir,new Date())
+  // Render this response's snapshot, not a mutable cache another process can replace.
   // Response style is attributed to each command's sender, never this cached owner.
-  const text=renderTiers(Object.fromEntries(Object.entries(after.value.texts).filter(([key])=>key!=='owner_custom_instructions')))
+  const text=renderTiers(Object.fromEntries(Object.entries(snapshot.texts).filter(([key])=>key!=='owner_custom_instructions')))
   const file=path.join(dir,`${connectionId}.tiers-${createHash('sha256').update(text).digest('hex')}.txt`)
   writePrivateText(file,text)
+  writePrivateJson(tiersPath(connectionId,dir),snapshot)
   return file
 }
 
-/**
- * File the tier texts a registration returned. Returns false when there was nothing to
- * file — an `instructions_unchanged` reply carries no texts, and must never overwrite
- * texts already on disk with nothing.
- */
-export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, now = new Date() } = {}) {
-  if (!connectionId || !registration || registration.instructions_unchanged) return false
+/** Build a response-owned snapshot; absent fields retain the last known value. */
+function tierSnapshot(connectionId, registration, dir, now) {
   const prior = readPrivateJsonResult(tiersPath(connectionId, dir))
   const texts = { ...(prior.status === STATE_OK ? prior.value?.texts : {}) }
   for (const [field] of TIER_FIELDS) {
     const value = registration[field]
     if (typeof value === 'string' || value === null) texts[field] = value
   }
-  writePrivateJson(tiersPath(connectionId, dir), {
+  return {
     connection_id: connectionId,
     version: registration.instruction_tiers_version ?? null,
     hash: registration.instruction_tiers_hash ?? null,
     texts,
     stored_at: now.toISOString(),
-    // Which conversation has already read these. A fresh store resets it: new texts
-    // have been read by nobody.
-    delivered_to: prior.status === STATE_OK && prior.value?.hash === (registration.instruction_tiers_hash ?? null)
-      && JSON.stringify(prior.value.texts) === JSON.stringify(texts) ? prior.value.delivered_to : null,
-  })
+  }
+}
+
+/** Unchanged replies carry no text and never erase the stored snapshot. */
+export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, now = new Date() } = {}) {
+  if (!connectionId || !registration || registration.instructions_unchanged) return false
+  writePrivateJson(tiersPath(connectionId, dir),tierSnapshot(connectionId,registration,dir,now))
   return true
 }
 
@@ -108,20 +108,25 @@ export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, 
  *
  * Returns `{ status: 'deliver', text }` the first time a conversation asks for a given
  * set of tiers, `{ status: 'unchanged' }` when that same conversation asks again, and
- * `{ status: 'absent' }` when nothing was filed — a connection made by
- * `/devspec.remote`, which printed its tiers into the conversation at connect time.
+ * `{ status: 'absent' }` when nothing was filed, including connections made by an
+ * older plugin. Current manual and automatic connections both retain full snapshots.
  *
  * `localId` keys the delivery: after `/clear` the conversation is new and holds none
  * of what the old one read, so it is handed the texts again.
  */
-export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR, force = false } = {}) {
+export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR, force = false, writeReceipt = writePrivateJson } = {}) {
   const file = tiersPath(connectionId, dir)
   const read = readPrivateJsonResult(file)
   if (read.status !== STATE_OK || !read.value) return { status: 'absent' }
   const stored = read.value
-  const deliveredKey = `${localId || 'unknown'}@${stored.hash || 'nohash'}`
-  if (!force && stored.delivered_to === deliveredKey) return { status: 'unchanged' }
   const text = renderTiers(stored.texts || {})
-  writePrivateJson(file, { ...stored, delivered_to: deliveredKey })
+  const deliveredKey = `${stored.hash || 'nohash'}@${createHash('sha256').update(text).digest('hex')}`
+  const reader = createHash('sha256').update(localId || 'unknown').digest('hex')
+  const receiptFile = path.join(dir,`${connectionId}.tiers-delivery-${reader}.json`)
+  const receipt = readPrivateJsonResult(receiptFile)
+  if (!force && receipt.status === STATE_OK && receipt.value?.delivered_key === deliveredKey) return { status: 'unchanged' }
+  // Readers only write their receipt. Rewriting the tier cache here could overwrite
+  // a newer poll/attach snapshot published between this read and this write.
+  writeReceipt(receiptFile, {delivered_key:deliveredKey})
   return { status: 'deliver', text }
 }

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { mergeInstructionTiers, storeTiers, takeTiersFor, captureInstructionContext } from './instruction-tiers.mjs'
+import { writePrivateJson } from './private-state.mjs'
+import { mergeInstructionTiers, storeTiers, takeTiersFor, captureInstructionContext, tiersPath } from './instruction-tiers.mjs'
 
 test('attach rule replies preserve absent values and explicitly clear nulls',()=>{
  const initial={project_agent_rules:'old',owner_agent_rules:'machine',project_custom_instructions:'principles',instruction_tiers_hash:'old',repository_context:{status:'available'}}
@@ -12,6 +13,27 @@ test('attach rule replies preserve absent values and explicitly clear nulls',()=
  assert.deepEqual(next.repository_context,initial.repository_context)
  assert.equal(initial.project_agent_rules,'old')
  assert.equal(mergeInstructionTiers(initial,{instructions_unchanged:true}),initial)
+})
+
+test('a delivery receipt cannot overwrite a newer rule snapshot',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'claude-tier-race-'))
+ try {
+  storeTiers('c',{instruction_tiers_hash:'old',project_agent_rules:'old rules'},{dir})
+  let intercepted=false
+  const result=takeTiersFor('c','reader',{dir,writeReceipt:(file,receipt)=>{
+   intercepted=true
+   assert.notEqual(file,tiersPath('c',dir))
+   // Deterministic interleaving: the poller publishes after the reader captured
+   // the old snapshot but before the reader marks that snapshot consumed.
+   storeTiers('c',{instruction_tiers_hash:'new',project_agent_rules:'new rules'},{dir})
+   writePrivateJson(file,receipt)
+  }})
+  assert.equal(intercepted,true);assert.match(result.text,/old rules/)
+  assert.equal(JSON.parse(fs.readFileSync(tiersPath('c',dir),'utf8')).texts.project_agent_rules,'new rules')
+  const bytes=fs.readFileSync(tiersPath('c',dir),'utf8')
+  assert.match(takeTiersFor('c','reader',{dir}).text,/new rules/)
+  assert.equal(fs.readFileSync(tiersPath('c',dir),'utf8'),bytes,'consuming context never rewrites the tier cache')
+ } finally { fs.rmSync(dir,{recursive:true,force:true}) }
 })
 
 test('resumes restore complete rules and queued command snapshots survive retry and later updates',()=>{

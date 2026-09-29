@@ -15,7 +15,7 @@ let localId=randomUUID()
 const connectionId=randomUUID(), mcpCalls=[]
 const questionMode=process.argv.includes('--question'), cancelMode=process.argv.includes('--cancel')
 const expectedAnswer=cancelMode?'Continue without connecting':'Website — Client'
-let modelCalls=0, commandLoaded=false, statusScoped=false, questionAnswered=false, questionResultObserved=false, repositoryContextObserved=false
+let modelCalls=0, commandLoaded=false, statusScoped=false, questionAnswered=false, questionResultObserved=false, repositoryContextObserved=false, statusResult=''
 const textResult=data=>({content:[{type:'text',text:JSON.stringify(data)}]})
 function modelResponse(res,body,block,stop) {
  const message={id:'msg_fixture_'+modelCalls,type:'message',role:'assistant',content:[block],model:body.model,stop_reason:stop,stop_sequence:null,usage:{input_tokens:10,output_tokens:10}}
@@ -40,16 +40,21 @@ const server=createServer(async(req,res)=>{
    modelCalls++
    commandLoaded ||= JSON.stringify(body.messages).includes('Project choice belongs to the firing')
    repositoryContextObserved ||= JSON.stringify(body.messages).includes('https://example.test/project-b/repo-24.git')
+   const completedTools=new Set()
    for (const message of body.messages ?? []) for (const block of Array.isArray(message.content) ? message.content : []) {
-    if(block.type==='tool_result' && block.tool_use_id==='tool_fixture_1') statusScoped ||= JSON.stringify(block.content).includes(B.id)
+    if(block.type==='tool_result')completedTools.add(block.tool_use_id)
+    if(block.type==='tool_result' && block.tool_use_id==='tool_fixture_1') { statusResult=JSON.stringify(block.content);statusScoped ||= statusResult.includes(B.id) }
     if(block.type==='tool_result' && block.tool_use_id==='tool_question') questionResultObserved ||= JSON.stringify(block.content).includes(expectedAnswer)
    }
-   if(questionMode && modelCalls===1)modelResponse(res,body,{type:'tool_use',id:'tool_question',name:'AskUserQuestion',input:{questions:[{question:'Which project should this conversation use?',header:'Project',options:[{label:'Website — Agency',description:A.id},{label:'Website — Client',description:B.id},{label:'Continue without connecting',description:'Cancel this choice'}],multiSelect:false}]}},'tool_use')
+   // Request count is not workflow progress: retries/cache warming may repeat an
+   // identical request. Advance only from tool results in this request's transcript.
+   if(questionMode && !completedTools.has('tool_question'))modelResponse(res,body,{type:'tool_use',id:'tool_question',name:'AskUserQuestion',input:{questions:[{question:'Which project should this conversation use?',header:'Project',options:[{label:'Website — Agency',description:A.id},{label:'Website — Client',description:B.id},{label:'Continue without connecting',description:'Cancel this choice'}],multiSelect:false}]}},'tool_use')
    else if(questionMode && cancelMode)modelResponse(res,body,{type:'text',text:'PROJECT-HOOK-RUNTIME-PASS'},'end_turn')
-   else if(questionMode && modelCalls===2)modelResponse(res,body,{type:'tool_use',id:'tool_after_question',name:tool,input:{}},'tool_use')
+   else if(questionMode && !completedTools.has('tool_after_question'))modelResponse(res,body,{type:'tool_use',id:'tool_after_question',name:tool,input:{}},'tool_use')
    else if(questionMode)modelResponse(res,body,{type:'text',text:'PROJECT-HOOK-RUNTIME-PASS'},'end_turn')
-   else if(modelCalls===1)modelResponse(res,body,{type:'tool_use',id:'tool_fixture_1',name:'Bash',input:{command:`node ${JSON.stringify(join(root,'hooks/scripts/devspec-project.mjs'))} status`,description:'Read the selected project for this test conversation'}},'tool_use')
-   else if(modelCalls<=3)modelResponse(res,body,{type:'tool_use',id:`tool_fixture_${modelCalls}`,name:tool,input:modelCalls===2?{project_id:A.id}:{}},'tool_use')
+   else if(!completedTools.has('tool_fixture_1'))modelResponse(res,body,{type:'tool_use',id:'tool_fixture_1',name:'Bash',input:{command:`node ${JSON.stringify(join(root,'hooks/scripts/devspec-project.mjs'))} status`,description:'Read the selected project for this test conversation'}},'tool_use')
+   else if(!completedTools.has('tool_fixture_2'))modelResponse(res,body,{type:'tool_use',id:'tool_fixture_2',name:tool,input:{project_id:A.id}},'tool_use')
+   else if(!completedTools.has('tool_fixture_3'))modelResponse(res,body,{type:'tool_use',id:'tool_fixture_3',name:tool,input:{}},'tool_use')
    else modelResponse(res,body,{type:'text',text:'PROJECT-HOOK-RUNTIME-PASS'},'end_turn')
    return
   }
@@ -118,7 +123,11 @@ try {
  }
  const config=join(home,'mcp.json');writeFileSync(config,JSON.stringify({mcpServers:{devspec:{type:'http',url:endpoint,headers:{Authorization:'Bearer fixture-only-not-a-real-token'}}}}))
  const version=(await run('claude',['--version'])).out.trim()
- const common=['--plugin-dir',root,'--strict-mcp-config','--mcp-config',config,'--setting-sources','','--session-id',localId,'--model','sonnet','--allowedTools','Bash(node *)','mcp__devspec__get_project_summary']
+ // The fixture does not implement Claude's autonomous safety classifier. Use
+ // normal manual permissions with an exact read-only command grant, not bypass
+ // permissions or a broad shell allowance. Project-scope denials remain tested.
+ const statusCommand=`node ${JSON.stringify(join(root,'hooks/scripts/devspec-project.mjs'))} status`
+ const common=['--plugin-dir',root,'--strict-mcp-config','--mcp-config',config,'--setting-sources','','--session-id',localId,'--model','sonnet','--permission-mode','manual','--allowedTools',`Bash(${statusCommand})`,'mcp__devspec__get_project_summary']
  const result=questionMode
   ? await runQuestion(['-p',...common,'--input-format','stream-json','--output-format','stream-json','--verbose','--permission-prompt-tool','stdio'])
   : await run('claude',['-p','/devspec:devspec.project status',...common,'--output-format','json'])
@@ -129,7 +138,7 @@ try {
  assert(commandLoaded,'the installed native project command must be discovered and expanded')
  assert.equal(repositoryContextObserved,!cancelMode,'the actual model request must contain all 25 repository facts, and no cancelled-project context')
  if(questionMode){assert(questionAnswered,'the native AskUserQuestion must request an answer through the host protocol');assert(questionResultObserved,'the selected native answer must return to the workflow')}
- else {assert(statusScoped,'the Bash management helper must receive the firing host conversation identity');assert(modelCalls>=4,'status, both tool attempts and a final answer must run; the host may make an additional completion request')}
+ else {assert(statusScoped,'the Bash management helper must receive the firing host conversation identity: '+statusResult.slice(0,2000));assert(modelCalls>=4,'status, both tool attempts and a final answer must run; the host may make an additional completion request')}
  assert.equal(JSON.parse(readFileSync(join(root,'.claude-plugin/plugin.json'),'utf8')).name,'devspec')
  console.log(JSON.stringify({result:'PASS',host:version,pluginRoot:root,configuredConversation:localId,nativeCommandDiscovered:commandLoaded,repositoryContextObserved,...(questionMode?{nativeQuestionAnswered:questionAnswered,answerReturnedToWorkflow:questionResultObserved}:{managementHelperScoped:statusScoped,wrongProjectDenied:true}),ordinaryToolScoped:!cancelMode,cancelLeftUnconnected:cancelMode,scriptedProviderRequests:modelCalls,paidInference:0,liveDevspecRecords:0}))
 } finally {server.closeAllConnections();await new Promise(r=>server.close(r));rmSync(home,{recursive:true,force:true})}

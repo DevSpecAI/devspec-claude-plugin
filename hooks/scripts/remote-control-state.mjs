@@ -1522,7 +1522,8 @@ if (isMain) {
     })
     const tiers = takeTiersFor(connectionId, detected.local_id, { force: cmd === 'context' && args.event === 'SessionStart' })
     if (cmd === 'context') {
-      const additionalContext = [repositories, tiers.status === 'deliver' ? tiers.text : ''].filter(Boolean).join('\n\n')
+      const additionalContext = [repositories, tiers.status === 'deliver' ? tiers.text : tiers.status === 'absent'
+        ? 'DevSpec instruction context is unavailable locally. get_project_summary can retrieve current project and owner rules before project work.' : ''].filter(Boolean).join('\n\n')
       if (additionalContext) process.stdout.write(JSON.stringify({ hookSpecificOutput: {
         hookEventName: args.event === 'SessionStart' ? 'SessionStart' : 'UserPromptSubmit', additionalContext,
       } }) + '\n')
@@ -1542,7 +1543,7 @@ if (isMain) {
     else if (tiers.status === 'unchanged') {
       lines.push('\nInstructions: already delivered to this conversation and unchanged — keep following them.')
     } else {
-      lines.push('\nInstructions: none filed for this connection (connected by /devspec.remote, which printed them at connect).')
+      lines.push('\nInstruction context is unavailable locally. Use get_project_summary for current project and owner rules before project work.')
     }
     process.stdout.write(lines.join('\n') + '\n')
     process.exit(0)

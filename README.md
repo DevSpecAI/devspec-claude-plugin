@@ -94,7 +94,7 @@ This lists the connection on DevSpec's Agents page without inventing a chat tran
 
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
-**Choosing a project.** Normal connection stays automatic when the repository or existing pin resolves. If it is ambiguous, Claude offers accessible projects labelled with their organisations using its native question UI. Cancel leaves it unconnected. You can also specify an exact name or ID: `/devspec:devspec.remote --project "Client Website"`. Duplicate names require a choice; a partial name is not guessed.
+**Choosing a project (plugin 0.32.14+).** Normal connection stays automatic when the repository or existing pin resolves. If it is ambiguous, Claude offers accessible projects labelled with their organisations using its native question UI. Cancel leaves it unconnected. You can also specify an exact name or ID: `/devspec:devspec.remote --project "Client Website"`. Duplicate names require a choice; a partial name is not guessed.
 
 The choice belongs to this **local Claude conversation**, including resume, and is applied to normal DevSpec tools as well as Remote. Choosing does not write a folder pin. `/devspec:devspec.project remember` previews the file and asks before saving a shared folder default; `forget` previews and confirms removal. Neither changes an already-selected conversation. To switch an established conversation, use `/devspec:devspec.project choose`. Claude prepares a **fresh** native conversation and gives you a `claude --session-id …` command to run in a new terminal. Its project is selected before auto-connect, without changing the folder default or carrying old model context across organisations. `/clear` may retain a same-project remote connection; it is not a project switch. Project choice is separate from DevSpec room selection and Claude's own resume flags.
 
@@ -174,7 +174,7 @@ Both commands are in Claude Code's `/` menu after install, under the `/devspec:`
 
 ## How it finds the right project
 
-You don't pass a project id in most cases. The plugin matches the git remote of the repo you're in to the DevSpec project that tracks it. If a single repo is tracked by more than one project, add a folder pin (below) naming the one you mean: when the remote matches several projects, the pin decides between them.
+You don't pass a project ID in most cases. A unique accessible repository match connects automatically, and a folder pin can resolve a shared remote or a greenfield folder. If several projects still match, choose for this conversation with `/devspec:devspec.remote --project "Project name"` or the native question UI. A folder pin is optional, not the price of choosing.
 
 **No repo yet?** A folder with no git remote can still say which project it belongs to: put
 
@@ -186,7 +186,11 @@ in `.devspec/project.json` at the root of that folder — agents look there and 
 
 Two things worth knowing. It holds a project id and **no file paths**, so moving or renaming the folder never breaks it. And it isn't a secret, so you can commit it — then anyone who clones the repo is pointed at the right project with no setup at all.
 
-A real git remote always wins over the pin. So if you pin a folder and later connect its repo to a different project, the repo is believed — and a pin that arrives by copying a template quietly stops mattering instead of hijacking your folder.
+A unique accessible remote match wins over a stale pin. If the remote matches several projects, a pin naming one of those candidates breaks the tie. An inaccessible pin is ignored; an inaccessible explicit project choice is refused, never replaced by another default.
+
+For the full project ID, organisation, selection source and effective pin file, run `/devspec:devspec.project` or add `status`. You normally choose by readable names rather than hunting a UUID. Forgetting a local pin may reveal an inherited one; check the resulting details. Neither action changes existing conversations.
+
+The instructions above describe plugin 0.32.14 or later. A change on `staging` is not a release to `main`, and neither updates a running installed copy. Update through Claude Code's `/plugin`, reload plugins and start a fresh conversation as needed. An exhausted Claude allowance can prevent a command completing even when it appears in the menu; a plugin update does not reset that provider limit.
 
 ## Settings that live in DevSpec
 

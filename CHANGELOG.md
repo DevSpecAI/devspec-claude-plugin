@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.32.21
+
+- Remove the bundled DevSpec Launcher and its automatic SessionStart installation/pairing hook. Claude's normal authentication, automatic connection and room delivery remain plugin-owned and unchanged.
+- Document the launcher as a separately installed optional app; this plugin no longer registers its handler or starts its service.
+
 ## 0.32.19 - 2026-09-30
 
 Bundle launcher 0.3.1 to find npm-installed Pi from desktop services and avoid duplicate loopback error tabs. Update the installed plugin and start a new session to run the shared update check.

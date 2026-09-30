@@ -34,6 +34,10 @@ Connect sends folder facts on the normal path, persists the server-confirmed pro
 
 Run `node tests/runtime/project-scope-runtime.mjs` for an installed-Claude smoke with isolated home and scripted loopback MCP/provider fixtures. Add `--question` to exercise native AskUserQuestion through the host's SDK stdio control protocol, or `--question --cancel` to verify cancellation creates no connection/selection. These are test-only controls, not customer launch flags. The scripted provider advances from completed tool results, so retries or cache warming cannot skip a check. It uses normal manual permissions with an exact read-only status-command grant and the scoped summary tool; it does not simulate or bypass Claude's auto-mode safety classifier. Wrong-project denial remains active. The fixtures make no paid inference requests or live DevSpec writes. The normal test suite remains `node --test hooks/scripts/*.test.mjs`.
 
+## Commit-observation host conformance
+
+Run `node tests/runtime/commit-observation-runtime.mjs` to load this checkout in the installed Claude executable, using a disposable home, real Git repositories/worktree, and scripted localhost provider/MCP. It exercises direct, `cd`, and `git -C` commits plus a fast-forward merge, checks the exact reports and actual resulting refs, and uses exact-command grants under normal manual permissions. It makes no paid inference request or live DevSpec write. This proves this artifact's routing in the measured host, not a customer cache update or support for untested history operations. Hook/component coverage remains in `hooks/scripts/commit-observation*.test.mjs`.
+
 ## Validating before release
 
 ```bash

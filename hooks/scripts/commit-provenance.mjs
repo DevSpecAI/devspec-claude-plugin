@@ -243,7 +243,7 @@ function writeClaims(scope, claims, { env = process.env, now = Date.now(), platf
  * `--no-edit`) where appending text would be unsafe or would edit a message that is
  * not this commit's.
  */
-export function simpleGitCommit(command) {
+export function simpleGitCommit(command, { onInvocation } = {}) {
   if (typeof command !== 'string' || command.length === 0 || command.length > 8192) return null
 
   const segments = [[]]
@@ -332,11 +332,14 @@ export function simpleGitCommit(command) {
   if (words.length === 0) return null
   if (words[0].value !== 'git') return null
 
+  const directoryChanges = segments.length === 2 && segments[0][0]?.value === 'cd'
+    ? [segments[0][1].value] : []
   let index = 1
   while (index < words.length && words[index].value.startsWith('-')) {
     const option = words[index].value
     if (option === '-C') {
       if (!words[index + 1] || words[index + 1].value.startsWith('-')) return null
+      directoryChanges.push(words[index + 1].value)
       index += 2
       continue
     }
@@ -389,6 +392,8 @@ export function simpleGitCommit(command) {
   // reported unappendable and fall through to the recovery path instead.
   const closing = command[message.end - 1]
   const quoted = closing === '"' || closing === "'"
+  // Optional observation metadata reuses this reader; it never changes gate policy.
+  onInvocation?.({ directoryChanges, commitArgs: rest.map((entry) => entry.value) })
   return {
     message: message.value,
     insertOffset: message.end - 1,
@@ -473,7 +478,7 @@ const HEREDOC_DELIMITER = /^[A-Za-z_][A-Za-z0-9_]*$/
  * options, refused flags and duplicate messages applies here unchanged and cannot
  * drift away from it.
  */
-export function heredocGitCommit(command) {
+export function heredocGitCommit(command, options = {}) {
   if (typeof command !== 'string' || command.length === 0 || command.length > 8192) return null
   if (command.includes('`')) return null
 
@@ -531,7 +536,7 @@ export function heredocGitCommit(command) {
 
   // Every prefix, global-option, refused-flag and duplicate-message rule comes from
   // the existing reader, applied to the equivalent simple command.
-  const simple = simpleGitCommit(normalised)
+  const simple = simpleGitCommit(normalised, options)
   if (!simple || simple.message !== 'x') return null
 
   // Append to the SUBJECT line, inside the heredoc. Appending after the terminator

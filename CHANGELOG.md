@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.32.22
+
+- Commit observations no longer attribute an existing commit from a fast-forward merge, replayed output, or failed command to the current agent. Direct commits require matching pre/post observations and corroborating Git history; unsupported operations continue without interruption.
+- Reconnecting or changing accounts/repository scope during a command cannot reassign its commit observation. Reports retain an observation ID and repository context; credentials and raw commands are not copied into observation markers.
+- Both manifests are bumped for Claude's version-keyed cache. A source update alone does not refresh running sessions.
+
 ## 0.32.21
 
 - Remove the bundled DevSpec Launcher and its automatic SessionStart installation/pairing hook. Claude's normal authentication, automatic connection and room delivery remain plugin-owned and unchanged.

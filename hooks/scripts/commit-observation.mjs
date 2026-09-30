@@ -1,310 +1,238 @@
 #!/usr/bin/env node
 /**
- * Report which commits THIS agent made (item 27fab61a).
- *
- * Separate from `commit-provenance.mjs` on purpose. That module decides whether a
- * commit may proceed, and nothing here may perturb that decision — this only watches
- * and reports. It never denies, never rewrites, and every failure is silent.
- *
- * WHY IT EXISTS: `commits` carries only the git author, which is the machine's git
- * config. Every agent on one machine commits as the same person, so nothing could tell
- * two of the owner's own agents apart. Without this, an action item auto-created from
- * an unlinked commit cannot be attributed to the agent that did the work, and nothing
- * can be told that its commit produced an item.
- *
- * WHY NOT A GIT HOOK: a git hook would see the commit and have no idea which agent made
- * it. This vantage point knows both, and needs nothing installed on the machine.
- *
- * HOW: `git commit -q` prints nothing, so the output cannot be the only source. Two
- * paths, in order:
- *
- *   1. Parse `[branch shortsha]` from the command's own output and resolve it to a full
- *      sha with `git rev-parse`. Worktrees share the object store, so this resolves a
- *      commit made in a linked worktree from anywhere in the repository.
- *   2. Compare HEAD before and after. This is what covers `-q`. HEAD is read in the
- *      directory the command actually commits in — `cd <path> &&` or `git -C <path>`
- *      when the shape says so, otherwise the tool's cwd.
- *
- * Comparing HEAD is also what makes a FAILED commit safe: if nothing was created, HEAD
- * is unchanged and nothing is reported.
- *
- * The connection is chosen by the precise conversation bond only (local_id === this
- * Claude session). The agent-name fallback that `selectBoundState` offers is
- * deliberately NOT used here: it exists for hosts with no conversation id, and picking
- * the wrong connection would attribute someone else's commit to this agent — worse
- * than reporting nothing.
- *
- * JURISDICTION, the same positive test the gate uses. An agent connected to one project
- * still runs commands in other repositories — a scratch clone, an unrelated tool, a
- * throwaway. The connection names the project, so reporting every commit it happens to
- * see would file those against a project they have nothing to do with. Caught by the
- * first live end-to-end run, which cheerfully attributed a commit in a temp repo to the
- * project this agent was connected to.
+ * Best-effort direct-commit observations, never a Git gate (P4 / 3d1f5f9d).
+ * A summary line or a changed HEAD alone does not prove creation. Require a
+ * bounded readable direct invocation, its own pre/post pair, one new commit
+ * reflog entry, parent continuity, and unchanged repository/connection binding.
+ * Merge/rewrite/background/opaque commands remain ingestion/analyzer territory.
+ * This is same-user operational evidence, not hostile-process attestation.
  */
-
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { mcpToolsCall } from './mcp-call.mjs'
-import { stateDir } from './commit-provenance.mjs'
-import { devspecFolderMarker } from './devspec-scope.mjs'
-import { readPrivateJson } from './private-state.mjs'
+import { stateDir, simpleGitCommit, heredocGitCommit } from './commit-provenance.mjs'
+import { devspecFolderMarker, findProjectPin, gitRemoteOrigin, mainWorkTreeFrom } from './devspec-scope.mjs'
+import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const REPORT_TIMEOUT_MS = 2_500
+const OBSERVATION_TTL_MS = 10 * 60_000
+const MAX_PENDING = 100
 const FULL_SHA = /^[0-9a-f]{40}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
-/**
- * Verbs that create exactly one new HEAD. A rebase or an `am` can create many, so they
- * are left to the server-side analyser rather than reported as one commit.
- *
- * The test is deliberately loose: this is an observation, not a gate. A false positive
- * costs one `git rev-parse` and reports nothing (HEAD did not move); a false negative
- * costs the attribution for that commit. Loose is the cheaper mistake.
- */
-export function looksCommitProducing(command) {
-  if (typeof command !== 'string' || !command) return false
-  if (!/\bgit\b/.test(command)) return false
-  return /\b(commit|merge|revert|cherry-pick)\b/.test(command)
+function git(args, cwd) {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 3_000,
+      stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { return null }
 }
 
-/**
- * Where the commit will land. `cd <path> &&` and `git -C <path>` are the two forms the
- * contract's isolated-worktree workflow actually produces, and each names a directory
- * whose HEAD is the one that moves. Anything else uses the tool's cwd, which is right
- * for the ordinary case and wrong only for shapes nobody writes by hand.
- */
+/** Kept for the separate, advisory repository-link nudge; NOT observation proof. */
 export function commitRepoDir(command, cwd) {
   if (typeof command !== 'string') return cwd
   const viaC = /\bgit\s+(?:--\S+\s+)*-C\s+("([^"]+)"|'([^']+)'|(\S+))/.exec(command)
   if (viaC) return viaC[2] ?? viaC[3] ?? viaC[4] ?? cwd
   const viaCd = /^\s*cd\s+("([^"]+)"|'([^']+)'|(\S+))\s*&&/.exec(command)
-  if (viaCd) return viaCd[2] ?? viaCd[3] ?? viaCd[4] ?? cwd
-  return cwd
+  return viaCd ? viaCd[2] ?? viaCd[3] ?? viaCd[4] ?? cwd : cwd
 }
 
-function git(args, cwd) {
+/** Reuse the message reader rather than building a second shell classifier. */
+function directInvocation(command, cwd) {
+  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return null
+  let invocation
+  const options = { onInvocation: (value) => { invocation = value } }
+  const parsed = simpleGitCommit(command, options) ?? heredocGitCommit(command, options)
+  if (!parsed || !invocation) return null
+  // The observer's supported direct-creation subset is narrower than the gate.
+  // Unknown options, pathspec expansion, dry-run and message-reuse stay unknown.
+  const args = invocation.commitArgs
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-m' || args[i] === '--message') { i++; continue }
+    if (/^(?:-m.|--message=)/.test(args[i])) continue
+    if (!['-q', '--quiet', '-a', '--all', '--allow-empty', '--allow-empty-message'].includes(args[i])) return null
+  }
+  let dir = cwd
+  for (const change of invocation.directoryChanges) {
+    if (!change || /[\x00\r\n*?\[\]~!]/.test(change)) return null
+    dir = path.resolve(dir, change)
+  }
+  const repoDir = git(['rev-parse', '--show-toplevel'], dir)
+  if (!repoDir) return null
+  return { repoDir: fs.realpathSync(repoDir), subjectHash: digest(parsed.message.split('\n')[0].trim()) }
+}
+
+export function looksCommitProducing(command) {
+  return Boolean(simpleGitCommit(command) ?? heredocGitCommit(command))
+}
+
+/** Credential-bearing/local/unknown remotes are never persisted or transmitted. */
+function safeRemote(raw) {
+  if (!raw) return null
+  if (/^git@[A-Za-z0-9.-]+:[A-Za-z0-9_./-]+$/.test(raw)) return raw
   try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      timeout: 3_000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-  } catch {
-    return null
-  }
+    const url = new URL(raw)
+    if (!['https:', 'http:', 'ssh:'].includes(url.protocol) || url.password || url.search || url.hash) return null
+    if (url.username && !(url.protocol === 'ssh:' && url.username === 'git')) return null
+    return url.toString()
+  } catch { return null }
 }
 
-/** HEAD, or null in a repo with no commits yet (which is not an error here). */
-function headOf(dir) {
-  const sha = git(['rev-parse', 'HEAD'], dir)
-  return sha && FULL_SHA.test(sha) ? sha : null
+function repositoryBinding(repoDir) {
+  if (!inJurisdiction(repoDir)) return null
+  const rawRemote = gitRemoteOrigin(repoDir)
+  const remote = safeRemote(rawRemote)
+  if (rawRemote && !remote) return null
+  const pin = findProjectPin(repoDir)?.project_id
+  if (pin && !UUID.test(pin)) return null
+  if (!remote && !pin) return null
+  return { remote, pin: pin ?? null }
 }
 
-function markerPath(sessionId, repoDir) {
-  const digest = crypto.createHash('sha256').update(`${sessionId}\0${repoDir}`).digest('hex')
-  return path.join(stateDir(), `${digest}.prehead.json`)
+/** A hash freezes account, endpoint, project (when supplied) and hidden capability;
+ * no credential or command text is copied to an observation marker. */
+function connectionBinding(state) {
+  if (!state?.connection_id || !state?.mcp_url || !state?.token) return null
+  return digest([state.connection_id, state.mcp_url, state.token, state.project_id ?? null,
+    state.connection_capability ?? null])
 }
 
-/** Remember HEAD before the command runs. Best-effort: a failure just means no report. */
-export function rememberHead(sessionId, repoDir, sha, now = Date.now()) {
-  try {
-    fs.mkdirSync(stateDir(), { recursive: true, mode: 0o700 })
-    fs.writeFileSync(markerPath(sessionId, repoDir), JSON.stringify({ sha, at: now }), {
-      mode: 0o600,
-    })
-  } catch {
-    // no marker → the output-parsing path may still catch it
-  }
-}
-
-/**
- * Read and consume the remembered HEAD, so it can never leak into a later command.
- *
- * Returns `{ sha }` when a marker existed — `sha` may legitimately be null, which means
- * the repository had no commits yet — and `null` when there was NO marker at all.
- *
- * That distinction is load-bearing. Collapsing both into a bare null makes "we do not
- * know what HEAD was" indistinguishable from "there was no HEAD", and the comparison
- * below then reads the CURRENT HEAD as freshly created and attributes somebody else's
- * commit to this agent. Caught by the leak test rather than by inspection.
- */
-export function takeHead(sessionId, repoDir) {
-  const file = markerPath(sessionId, repoDir)
-  let raw
-  try {
-    raw = readPrivateJson(file)
-    if (!raw) return null
-  } finally {
-    try {
-      fs.rmSync(file, { force: true })
-    } catch {
-      /* a marker we cannot remove is still consumed for this command */
-    }
-  }
-  return { sha: typeof raw?.sha === 'string' ? raw.sha : null }
-}
-
-/** `[staging 5bbfddb] subject` → the short sha. Nothing else in git's output matches. */
-export function shortShaFromOutput(output) {
-  if (typeof output !== 'string') return null
-  const match = /^\[[^\]\s]+(?:\s+\(root-commit\))?\s+([0-9a-f]{7,40})\]/m.exec(output)
-  return match ? match[1] : null
-}
-
-/**
- * The sha this command created, or null.
- *
- * Output first, because it names the commit directly and is self-evidencing: a
- * `[branch shortsha]` line is only ever printed by a commit that just happened.
- *
- * The before/after comparison second, because it is the only thing that sees a `-q`
- * commit — and ONLY when `before` is a real marker. Without one we do not know where
- * HEAD was, so "HEAD is at X" says nothing about whether this command put it there,
- * and reporting it would attribute an older commit to this agent.
- *
- * Both paths resolve through `git rev-parse`, so a short sha never escapes.
- */
-export function createdSha({ output, repoDir, before }) {
-  const short = shortShaFromOutput(output)
-  if (short) {
-    const full = git(['rev-parse', `${short}^{commit}`], repoDir)
-    if (full && FULL_SHA.test(full)) return full
-  }
-  if (!before) return null
-  const headAfter = headOf(repoDir)
-  if (headAfter && headAfter !== before.sha) return headAfter
-  return null
-}
-
-/** The connection bound to THIS conversation, by local_id only. Never a guess. */
 export function boundConnection(sessionId, dir = CONNECTIONS_DIR) {
   if (!sessionId) return null
-  let names = []
   try {
-    names = fs.readdirSync(dir).filter((n) => n.endsWith('.json'))
-  } catch {
-    return null
-  }
-  const candidates = []
-  for (const name of names) {
-    try {
-      const raw = readPrivateJson(path.join(dir, name))
-      if (raw?.enabled === true && raw?.connection_id && raw?.local_id === sessionId) {
-        candidates.push({ raw, mtime: fs.statSync(path.join(dir, name)).mtimeMs })
-      }
-    } catch {
-      /* skip unreadable state */
-    }
-  }
-  return candidates.sort((a, b) => b.mtime - a.mtime)[0]?.raw ?? null
+    const candidates = fs.readdirSync(dir).filter(name => name.endsWith('.json')).map(name =>
+      readPrivateJson(path.join(dir, name))).filter(raw =>
+      raw?.enabled === true && raw?.connection_id && raw?.local_id === sessionId)
+    // A newer mtime cannot decide which of two live bonds owns this observation.
+    return candidates.length === 1 ? candidates[0] : null
+  } catch { return null }
 }
 
-function currentBranch(repoDir) {
-  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], repoDir)
-  return branch && branch !== 'HEAD' ? branch : null
-}
-
-/**
- * Is this directory one this DevSpec project has jurisdiction over?
- *
- * The same positive marker test the gate applies: without a marker, the folder is not
- * ours and its commits are not ours to report. Uncertainty (a throwing lookup) is
- * treated as "not ours", because a false report is worse than a missing one.
- */
 export function inJurisdiction(dir, env = process.env) {
-  if (!dir) return false
-  try {
-    return Boolean(
-      devspecFolderMarker(dir, { home: env.USERPROFILE || env.HOME || os.homedir() }),
-    )
-  } catch {
-    return false
+  try { return Boolean(dir && devspecFolderMarker(dir, {
+    home: env.USERPROFILE || env.HOME || os.homedir(), mainWorktree: mainWorkTreeFrom(dir),
+  })) }
+  catch { return false }
+}
+
+function markerPath(input, repoDir) {
+  const identity = input.tool_use_id || digest(input.tool_input.command)
+  return path.join(stateDir(), `${digest([input.session_id, identity, repoDir])}.observation-v1.json`)
+}
+
+function pruneMarkers(now) {
+  fs.mkdirSync(stateDir(), { recursive: true, mode: 0o700 })
+  const files = fs.readdirSync(stateDir()).filter(name => name.endsWith('.observation-v1.json'))
+    .map(name => { const file = path.join(stateDir(), name); return { file, at: fs.statSync(file).mtimeMs } })
+    .sort((a, b) => b.at - a.at)
+  for (let i = 0; i < files.length; i++) {
+    if (i >= MAX_PENDING - 1 || now - files[i].at > OBSERVATION_TTL_MS) fs.rmSync(files[i].file, { force: true })
   }
 }
 
-/** PreToolUse: remember HEAD so a `-q` commit is still detectable afterwards. */
-export function handleBashPre(input, { now = Date.now() } = {}) {
-  const command = input?.tool_input?.command
-  if (!looksCommitProducing(command)) return null
-  const sessionId = input?.session_id
-  if (!sessionId) return null
-  const repoDir = commitRepoDir(command, input?.cwd)
-  if (!repoDir) return null
-  if (!inJurisdiction(repoDir)) return null
-  const head = headOf(repoDir)
-  rememberHead(sessionId, repoDir, head, now)
+function readHead(repoDir) {
+  const sha = git(['rev-parse', '--verify', 'HEAD^{commit}'], repoDir)
+  return sha && FULL_SHA.test(sha) ? sha : null
+}
+function reflog(repoDir, count) {
+  // %gD with --date=raw gives reflog time. %ct is COMMIT time, not reflog time.
+  return git(['reflog', 'show', `-${count}`, '--date=raw', '--format=%H%x09%gD%x09%gs', 'HEAD'], repoDir)
+}
+
+export function handleBashPre(input, options = {}) {
+  try {
+    if (!input?.session_id) return null
+    const invocation = directInvocation(input?.tool_input?.command, input.cwd)
+    if (!invocation) return null
+    const { repoDir, subjectHash } = invocation
+    const file = markerPath(input, repoDir)
+    fs.rmSync(file, { force: true })
+    const binding = connectionBinding((options.boundConnection ?? boundConnection)(input.session_id))
+    const repository = repositoryBinding(repoDir)
+    if (!binding || !repository) return null
+    const now = options.now ?? Date.now()
+    const sha = readHead(repoDir)
+    const priorReflog = reflog(repoDir, 1)
+    if (sha && !priorReflog) return null
+    const branch = git(['symbolic-ref', '-q', 'HEAD'], repoDir)
+    if (!branch) return null // detached HEAD is explicitly unsupported
+    pruneMarkers(now)
+    writePrivateJson(file, { version: 1, sha, priorReflog, branch, binding, repository,
+      subjectHash, at: now, observationId: crypto.randomUUID() })
+  } catch { /* observation is never permission */ }
   return null
 }
 
-/**
- * PostToolUse: if a commit was created, tell the server which connection made it.
- *
- * Returns null always — this hook has no opinion about anything. Reporting failures
- * (offline, no credentials, server error) are swallowed: provenance is not permission,
- * and the analyser still reconciles the commit without it.
- */
-export async function handleBashPost(input, options = {}) {
-  const command = input?.tool_input?.command
-  if (!looksCommitProducing(command)) return null
-  const sessionId = input?.session_id
-  if (!sessionId) return null
-
-  const repoDir = commitRepoDir(command, input?.cwd)
-  // Jurisdiction again, not only in `pre`: a folder can gain or lose a marker between
-  // the two hooks, and this is the call that actually reports.
-  const isOurs = options.inJurisdiction ? options.inJurisdiction(repoDir) : inJurisdiction(repoDir)
-  if (!isOurs) return null
-  const before = takeHead(sessionId, repoDir)
-  const output =
-    typeof input?.tool_response === 'string'
-      ? input.tool_response
-      : [input?.tool_response?.stdout, input?.tool_response?.output, input?.tool_response?.stderr]
-          .filter((part) => typeof part === 'string')
-          .join('\n')
-
-  const sha = options.createdSha
-    ? options.createdSha({ output, repoDir, before })
-    : createdSha({ output, repoDir, before })
-  if (!sha) return null
-
-  const state = (options.boundConnection ?? boundConnection)(sessionId)
-  if (!state?.connection_id || !state?.mcp_url || !state?.token) return null
-
+function consumeMarker(file) {
+  // Rename claims one marker atomically; duplicate/concurrent posts cannot both read it.
+  const consumed = `${file}.consumed-${crypto.randomUUID()}`
   try {
+    fs.renameSync(file, consumed)
+    return readPrivateJson(consumed)
+  } catch { return null }
+  finally { try { fs.rmSync(consumed, { force: true }) } catch { /* best effort */ } }
+}
+
+function createdSha(repoDir, before, now) {
+  const head = readHead(repoDir)
+  if (!head || head === before.sha) return null
+  if (git(['symbolic-ref', '-q', 'HEAD'], repoDir) !== before.branch) return null
+  const entries = (reflog(repoDir, 2) ?? '').split('\n').filter(Boolean)
+  const [sha, selector, action] = (entries[0] ?? '').split('\t')
+  const epoch = /@\{(\d+) [+-]\d+\}$/.exec(selector ?? '')?.[1]
+  const at = Number(epoch) * 1000
+  if (sha !== head || !Number.isFinite(at) || at < before.at - 1000 || at > now + 1000) return null
+  const parents = git(['rev-list', '--parents', '-n', '1', head], repoDir)?.split(/\s+/).slice(1)
+  if (!parents) return null
+  if (before.sha) {
+    if (parents.length !== 1 || parents[0] !== before.sha || !action?.startsWith('commit: ')) return null
+    if (entries[1] !== before.priorReflog) return null
+  } else if (parents.length || entries.length !== 1 || !action?.startsWith('commit (initial): ')) return null
+  if (digest(git(['show', '-s', '--format=%s', head], repoDir)) !== before.subjectHash) return null
+  return head
+}
+
+export async function handleBashPost(input, options = {}) {
+  try {
+    if (!input?.session_id) return null
+    const invocation = directInvocation(input?.tool_input?.command, input.cwd)
+    if (!invocation) return null
+    const { repoDir } = invocation
+    const before = consumeMarker(markerPath(input, repoDir))
+    const now = options.now ?? Date.now()
+    if (!before || before.version !== 1 || !Number.isFinite(before.at) || now < before.at || now - before.at > OBSERVATION_TTL_MS) return null
+    const response = input.tool_response
+    if (input.is_error === true || response?.is_error === true || response?.interrupted === true ||
+        (typeof response?.exit_code === 'number' && response.exit_code !== 0) ||
+        (typeof response?.exitCode === 'number' && response.exitCode !== 0)) return null
+    const state = (options.boundConnection ?? boundConnection)(input.session_id)
+    if (connectionBinding(state) !== before.binding) return null
+    const repository = repositoryBinding(repoDir)
+    if (!repository || digest(repository) !== digest(before.repository)) return null
+    const sha = createdSha(repoDir, before, now)
+    if (!sha) return null
     await (options.call ?? mcpToolsCall)({
-      mcpUrl: state.mcp_url,
-      token: state.token,
+      mcpUrl: state.mcp_url, token: state.token,
+      connectionCapability: state.connection_capability ?? null,
       name: 'report_commit_provenance',
-      arguments: {
-        connection_id: state.connection_id,
-        commit_sha: sha,
-        ...(currentBranch(repoDir) ? { branch: currentBranch(repoDir) } : {}),
-      },
+      arguments: { connection_id: state.connection_id, commit_sha: sha,
+        observation_id: before.observationId, branch: before.branch.replace(/^refs\/heads\//, ''),
+        ...(repository.remote ? { git_remote: repository.remote } : { pinned_project_id: repository.pin }) },
       timeoutMs: options.timeoutMs ?? REPORT_TIMEOUT_MS,
     })
-  } catch {
-    // Provenance is not permission. A commit is already made; nothing here may matter.
-  }
+  } catch { /* no retry under a later bond; server ingestion remains the backstop */ }
   return null
 }
 
 async function main() {
-  const mode = process.argv[2]
-  let input = {}
   try {
-    const inputText = fs.readFileSync(0, 'utf8')
-    input = JSON.parse(inputText || '{}')
-  } catch {
-    return
-  }
-  if (mode === 'pre') handleBashPre(input)
-  else if (mode === 'post') await handleBashPost(input)
+    const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
+    if (process.argv[2] === 'pre') handleBashPre(input)
+    else if (process.argv[2] === 'post') await handleBashPost(input)
+  } catch { /* malformed envelopes and every observation failure fail open */ }
 }
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(() => {})
-}
+if (import.meta.url === `file://${process.argv[1]}`) main().catch(() => {})

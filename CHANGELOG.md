@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.32.19 - 2026-09-30
+
+Bundle launcher 0.3.1 to find npm-installed Pi from desktop services and avoid duplicate loopback error tabs. Update the installed plugin and start a new session to run the shared update check.
+
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
 
 ## 0.32.18 - 2026-09-30

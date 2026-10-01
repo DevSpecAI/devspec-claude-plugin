@@ -53,7 +53,7 @@ A project choice survives local resume and is applied mechanically to normal Dev
 2. **Obey the instructions it printed.** Connect prints the tiers in force at connect (your owner's machine rules, the project's principles and execution rules), or says they are unchanged since this conversation last connected. They govern the whole run. Never invent one that is absent, and never disclose another user's.
 
    **Response style is not one of them.** It belongs to whoever SENT the command you are answering, not to whoever owns this connection, and it arrives with that command as `sender_response_style` (see the `devspec-remote-command` skill). Apply it to the prose of your reply to that person. It is not an instruction about what work to do, what you may access, or whose authority you act under, and it never overrides the project's rules or your owner's machine rules. Which tier is delivered where is the served contract's decision, not this command's — read `devspec://product/remote-ingress-contract` rather than trusting this paragraph if the two ever disagree.
-3. **Arm the wake stream** — section 2. Non-optional, with one exception: when the status block says `wake: ALREADY ARMED`, the DevSpec listener Claude Code started with this session already holds it. Do not arm a second reader; it would race the first for the same inbox.
+3. **Arm the wake stream** — section 2. Non-optional, with one exception: when the status block says `wake: ALREADY ARMED`, the DevSpec listener Claude Code started with this session already holds it (it serves any connection this session makes, keeps its poller running, and stands back if the conversation is resumed in another window). Do not arm a second reader; it would race the first for the same inbox, and the wait refuses to start beside one (exit 4).
 
 If it exits non-zero, read the structured project-choice result when present; otherwise relay the failure (auth, server unavailable, poller). Do not improvise a different connect path or fall back to a different project after an explicit choice is refused.
 
@@ -89,6 +89,7 @@ The stream emits complete canonical commands as `owner_message` objects (the roo
 | Exit | Meaning | Do |
 |---|---|---|
 | **3** | **Not a failure.** The monitor was stopped, a bounded monitor hit its `timeout_ms`, or an arm that could not anchor to an owner pid hit its 24h cap. Only the last emits `listener_rollover` first — a bounded expiry arrives as the host's own notice with nothing ahead of it. Your host may call any of these "failing"; none of them is. | Arm again with `--stream --pending`. Do not re-register or stand down. |
+| **4** | **Someone else holds this connection's wake.** Another reader already holds it (this session's listener, usually), or this conversation was resumed in another window, which now owns the connection. Nothing ended. | **Do not re-arm** — a second reader would only race the one that has it. Carry on; commands still arrive. |
 | **1** | Something ended — *maybe* a human, maybe not | Check why, below. |
 | **2** | Bad args | Fix the command line. |
 | **0** | Only from the one-shot fallback | Act, then re-arm with `--pending`. |

@@ -34,11 +34,11 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
-import { isWaitArmed } from './devspec-remote-wait.mjs'
+import { waitHolderOwnerPid, waitHolderPid } from './devspec-remote-wait.mjs'
 import { renderTiers, storeTiers, hasStoredTiers, mergeInstructionTiers } from './instruction-tiers.mjs'
 import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext } from './repository-context.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
-import { startupListenerAlive } from './startup-listener.mjs'
+import { claudeProcessOf, readOwnerListenerStatus, startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import { PROJECT_ID, projectCandidate, matchingProjects, readProjectSelection, readConversationProject, saveConversationProject, blockConversationProject } from './conversation-project.mjs'
 import {
@@ -602,6 +602,48 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
   return lines.join('\n') + '\n'
 }
 
+/**
+ * The statuses after which this session's startup listener goes on to serve whatever
+ * this process connects: it follows the owner pointer connect writes.
+ */
+const LISTENER_WILL_SERVE = new Set(['connecting', 'waiting_for_link', 'watching', 'serving', 'superseded', 'ended'])
+const LISTENER_SETTLE_MS = 20_000
+
+/**
+ * Will the listener Claude Code started with this session hold this connection's wake?
+ *
+ * It picks up a connection made by hand within seconds, so this waits — bounded — for
+ * it to say so, instead of asking the model to arm a Monitor that would only race it
+ * (item 7e35d818). A listener that will not serve (none, or one that cannot) answers
+ * false at once, and the model arms as before.
+ */
+export async function listenerHoldsWake(ownerPid, connectionId, { read = readOwnerListenerStatus, waitMs = LISTENER_SETTLE_MS, sleepFn = sleep } = {}) {
+  if (!ownerPid || !connectionId) return false
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    const status = read(ownerPid)
+    if (!status || !LISTENER_WILL_SERVE.has(status.status)) return false
+    if (status.status === 'serving' && status.connection_id === connectionId) return true
+    if (Date.now() >= deadline) return false
+    await sleepFn(250)
+  }
+}
+
+/**
+ * Does a reader belonging to THIS Claude Code process hold the wake already? A reader
+ * armed by a window this conversation was resumed away from does not count: it stands
+ * itself down, and this window must then hear on its own.
+ */
+export function wakeHeldByThisProcess(connectionId, ownerPid, { holderOf = waitHolderPid, ownerOfHolder = waitHolderOwnerPid, claudeOf = claudeProcessOf } = {}) {
+  const holder = holderOf(connectionId)
+  if (holder === null) return false
+  const holderOwner = ownerOfHolder(holder)
+  if (holderOwner === null || !ownerPid) return true
+  const mine = claudeOf(Number(ownerPid))
+  const theirs = claudeOf(holderOwner)
+  return mine === null || theirs === null || mine === theirs
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.private && !args.new) {
@@ -639,10 +681,12 @@ async function main() {
     takeRepositoryContext(summary.connection_id, summary.local_id)
     process.exit(0)
   }
+  const owner = summary.owner_pid ? (claudeProcessOf(Number(summary.owner_pid)) ?? Number(summary.owner_pid)) : null
+  const listenerHolds = !args.noPoller && (await listenerHoldsWake(owner, summary.connection_id))
   process.stdout.write(
     renderStatusBlock(summary, {
-      listenerArmed: isWaitArmed(summary.connection_id),
-      startupListener: startupListenerAlive(summary.connection_id),
+      listenerArmed: listenerHolds || wakeHeldByThisProcess(summary.connection_id, owner),
+      startupListener: listenerHolds || startupListenerAlive(summary.connection_id),
       noPoller: !!args.noPoller,
     }),
   )

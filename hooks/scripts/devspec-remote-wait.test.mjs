@@ -35,7 +35,10 @@ import {
   armEndsTurn,
   clearTurnMarker,
   waitPidPath,
+  isWaitArgv,
   isWaitArmed,
+  waitHolderOwnerPid,
+  waitHolderPid,
   EXIT_WAKE,
   EXIT_TERMINAL,
   EXIT_BAD_ARGS,
@@ -888,11 +891,36 @@ describe('armed-listener proof of life', () => {
     assert.equal(waitPidPath('abc', '/tmp/x'), path.join('/tmp/x', 'abc.wait.pid'))
   })
 
-  it('reports armed for a live pid', () => {
+  it('reports armed for a live wait on this connection', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-wait-pid-'))
+    const conn = 'feedface-0000-4000-8000-00000000000a'
+    const script = path.join(dir, 'devspec-remote-wait.mjs')
+    fs.writeFileSync(script, 'setInterval(() => {}, 1000)\n')
+    const child = spawn(process.execPath, [script, '--connection-id', conn, '--owner-pid', String(process.pid), '--stream'], { stdio: 'ignore' })
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      fs.writeFileSync(waitPidPath(conn, dir), String(child.pid))
+      assert.equal(isWaitArmed(conn, dir), true)
+      assert.equal(waitHolderPid(conn, dir), child.pid)
+      if (process.platform === 'linux') assert.equal(waitHolderOwnerPid(child.pid), process.pid)
+    } finally {
+      child.kill('SIGKILL')
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports NOT armed when the pidfile names a live process that is not a wait — pid reuse', () => {
+    if (process.platform !== 'linux') return
     withWaitDir(({ dir, conn }) => {
       fs.writeFileSync(waitPidPath(conn, dir), String(process.pid))
-      assert.equal(isWaitArmed(conn, dir), true)
+      assert.equal(isWaitArmed(conn, dir), false)
     })
+  })
+
+  it("never counts another connection's wait", () => {
+    assert.equal(isWaitArgv(['node', '/x/devspec-remote-wait.mjs', '--connection-id', 'aaaa-1', '--stream'], 'aaaa-1'), true)
+    assert.equal(isWaitArgv(['node', '/x/devspec-remote-wait.mjs', '--connection-id', 'aaaa-2', '--stream'], 'aaaa-1'), false)
+    assert.equal(isWaitArgv(['/usr/bin/zsh', '-c', 'node devspec-remote-wait.mjs --connection-id aaaa-1'], 'aaaa-1'), false)
   })
 
   it('reports NOT armed for a stale pidfile — the SIGKILL case', () => {

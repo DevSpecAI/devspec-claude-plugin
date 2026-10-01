@@ -12,7 +12,7 @@ Claude Code starts the DevSpec listener itself. `plugin.json` declares it as a *
 2. reads the plugin settings — from the session environment the SessionStart hook writes, or from the private `~/.devspec/remote-control/startup/<session>.json` that `remote-session-lifecycle.mjs session-start` files, whichever arrives first. Plugin monitors are not given `CLAUDE_PLUGIN_OPTION_*` by Claude Code;
 3. runs `connect({ startup: true })` — see "Startup scope" below — which registers, writes state and starts the poller;
 4. files the tier texts in `<connection>.tiers.json` for the first command (`instruction-tiers.mjs`), writes `<connection>.listener.json`, and
-5. runs `devspec-remote-wait.mjs --stream` as a child whose stdout **is** the monitor's stdout.
+5. **serves the connection** for the rest of the session (see "A connection lasts until a person ends it" below): it runs `devspec-remote-wait.mjs --stream` as a child whose stdout **is** the monitor's stdout, and keeps that reader and the poller running.
 
 **Stdout is the model's ear.** Every stdout line of a plugin monitor starts a turn. The listener itself never writes to stdout; its log is `~/.devspec/remote-control/listen/<conversation>.log`. When it has nothing to do (the setting switched off, a refused key, the connection ended from the UI) it goes **dormant**: alive, silent, exiting only when Claude Code does. An ended monitor is announced to the model, so exiting would itself be a wake about nothing.
 
@@ -22,7 +22,25 @@ Claude Code starts the DevSpec listener itself. `plugin.json` declares it as a *
 
 **A pin written wrong is caught at the write (`pin-check.mjs`, PostToolUse on Write|Edit|MultiEdit and Bash).** Asked to pin a folder, Haiku 4.5 wrote `{"projectId": …}` three runs out of four, twice with the `devspec-pin` skill listed and unopened. Nothing reads that key, so the folder never linked. When a tool writes `.devspec/project.json` in a form `readPin` rejects (or with keys other than `project_id` and the optional `project_name`), the model is told the exact file to write instead. Both Bash hooks and this one start node only when a POSIX `case` on the hook input matches (`*project.json*`, `*remote*|*'repo create'*`), so ordinary calls cost no process.
 
-**One reader per inbox.** The listener arms nothing if `<connection>.wait.pid` is already live, and `/devspec.remote` in a session whose listener holds the wake prints `wake: ALREADY ARMED` instead of the arm command. The Stop hook's deaf-turn check is unchanged: the listener's wait child owns the same pidfile.
+**One reader per inbox.** A wait refuses to start beside another live wait for the same connection (exit 4), and the listener never arms one while something holds `<connection>.wait.pid`. "Holds" is proved by a live pid whose arguments really are a wait for that connection, so a stale pidfile whose number was reused cannot pass. `/devspec.remote` prints `wake: ALREADY ARMED` instead of the arm command when this session's listener serves the connection (it waits, bounded, for the listener to report `serving` in `~/.devspec/remote-control/listeners/<claude pid>.json`) or when a reader belonging to this same Claude Code process holds it. The Stop hook's deaf-turn check is unchanged: the listener's wait child owns the same pidfile.
+
+## A connection lasts until a person ends it (item `7e35d818`, 0.33.0)
+
+A connection ends only when a person ends it: **End** on the Agents page, `/devspec.remote-stop`, or closing the conversation (SessionEnd, or the owner process going, which the poller notices). Nothing else in the plugin may end one, stop its poller, or take it over. There is no idle cap (decision `8a12f116`).
+
+**There is no reaper.** Until 0.32.23 every connect ran `reapDeadPollers`, which judged *other* connections from the JSON files beside them. The room-transcript copy added in 0.31.0 (`<id>.<session>.transcript-state.json`: a `connection_id` and an `updated_at`, no owner) looked like a pre-July ownerless connection, so every new Claude Code window SIGTERM'd any attached poller whose room had been quiet for an hour. The terminal stayed open and deaf, and the room showed the agent as "Previously here". A poller already ends itself when its owner goes, when its state is disabled and when DevSpec ends it, so the reaper had nothing left to do but misfire. Pollers are now recognised by their exact arguments (`isPollerArgv`), never by substrings of a command line, because a substring match also matched shells and editors that mentioned the script.
+
+**The listener keeps the connection alive.** After connecting, `serve()` reconciles every `SERVE_TICK_MS` (5 s). While this process owns an enabled connection, it keeps one reader armed and checks the poller (pidfile first, a `/proc` scan only if that fails). A poller missing on two consecutive ticks is **repaired** by running this conversation's own connect again (`connect({ startup: true })`). That re-registers the same bond, resurrects a connection the server swept in place, and starts a poller. Repairs back off (`REPAIR_BACKOFF_MS`, up to 15 min) and are audited in the poll log (`poller_repair_started` / `poller_repaired` / `poller_repair_failed`). A connection ended by a person classifies as `ended` and is never repaired or re-armed.
+
+**Ownership is `owner_pid`, and only connect moves it.** `writeConnectionState` records the connecting Claude Code process and writes `~/.devspec/remote-control/listeners/<claude pid>.connection.json`, which carries the owner's start time so a reused pid never inherits it. The process's listener follows that pointer, so a connection made by hand with `/devspec.remote` is served exactly like one made at startup, even when `connect_at_startup` is off (the dormant listener watches for one). Ownership is compared as Claude Code processes (`claudeProcessOf`), so a wrapper shell on either side cannot make one session look like two, and every uncertainty answers "not elsewhere".
+
+**Resuming a conversation in another window hands the whole connection over.** `claude --resume <id>` in a new window, while the old one is still open, connects the same conversation id. The bond is keyed by that id, so it is the same connection, codename and room, and that window becomes the owner. Then:
+- the poller is restarted under the new window, because the owner changed;
+- the old window's wait sees that another live Claude Code process owns the connection (checked every 2 s) and exits 4 without writing to stdout, so the old model is not woken;
+- the old listener records `superseded` and stops arming and repairing;
+- the new listener arms its reader from the saved byte offset as soon as the old one has released it.
+
+Afterwards the old window stands back. Its turn hooks drop connections another process owns (`withoutConnectionsOwnedElsewhere`), so it neither mirrors prompts nor ends the new window's turns. Its SessionEnd keeps the connection (`connection_kept_for_owner`) instead of ending it with `local_stop`. A different conversation id can never take over, because it has its own bond. Running `/devspec.remote` in the old window takes the connection back the same way. Measured live with real windows on 2026-10-01: handover in about 5 s, the next owner message delivered once and only to the new window, closing the old window left the connection live, and closing the new one ended it.
 
 **Startup scope.** A registration nobody typed must only join a project its folder names. Connect sends `folder_scope_only: true`; the server then skips "your only accessible project" (it resolves from git remote or pin only) and echoes `folder_scope_only: true`. With no echo — a server predating the flag — the plugin heartbeats the connection offline and stands down. A folder with neither a remote nor a pin never reaches the server.
 
@@ -30,7 +48,7 @@ Claude Code starts the DevSpec listener itself. `plugin.json` declares it as a *
 
 **`/clear` and `/resume`.** Measured on 2.1.280: both give the conversation a new id and run SessionEnd then SessionStart, and a plugin monitor survives both (so does `/reload-plugins`, which does not restart it). So `disable-local` keeps a connection whose startup listener is alive when SessionEnd's `reason` is `clear` or `resume`, and `remote-session-lifecycle.mjs session-start` moves the bond to the new conversation (`rebondConnectionToConversation`), so the turn hooks can still find it. A real exit disables the connection and also ends it on the server (`heartbeat_connection` offline, `end_reason: local_stop`, with the key and address cached for that connection), because the poller's signal handler deliberately exits without a goodbye. A conversation switch never sends that end, since the process is still running.
 
-**Setting.** `connect_at_startup` (userConfig boolean, default on). Off → dormant; `/devspec.remote` still works.
+**Setting.** `connect_at_startup` (userConfig boolean, default on). Off → nothing connects at startup; `/devspec.remote` still works, and the listener keeps a connection made that way alive and heard.
 
 **Limits.** Plugin monitors run only in interactive CLI sessions (not `-p`, not the SDK) and are skipped where the Monitor tool is unavailable. They are an experimental plugin component, so the manifest schema may change. A monitor line is still capped at 500 characters, so the full body and sender style are read from the inbox record, exactly as on the manual path.
 
@@ -96,7 +114,7 @@ What the script does, in order:
 2. Resolve the conversation id and the local bond (`already_live` / `reconnect` / `register`).
 3. Resolve MCP auth, then `register_connection` **over raw JSON-RPC** (`mcp-call.mjs`), negotiating the hidden connection capability used by `manage_plan`.
 4. `attach_connection`, or `create_session` + attach for `--new`.
-5. `writeConnectionState(...)` — state file, conversation bond, dead-poller reap, poller start.
+5. `writeConnectionState(...)` — state file, conversation bond, owner pointer, poller start. It touches only this connection's poller, never another's.
 6. A **bounded** `get_session_transcript` seed when attached.
 7. Print the status block, the tier texts, and the exact wake-stream arm command.
 

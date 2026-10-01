@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.33.0 - 2026-10-01
+
+- Fixed: opening Claude Code could silently disconnect your other Claude Code windows. Each new window used to check other windows' connections, and from 0.31.0 it mistook a window that had been attached to a quiet room for over an hour for an abandoned one, and stopped it. That window stayed open but stopped receiving messages, and the room showed it as "Previously here". A window no longer touches any connection but its own.
+- Changed: a connection now lasts until you end it: **End** on the Agents page, `/devspec:devspec.remote-stop`, or closing the conversation. If its background process dies while the window is still open, Claude Code brings it back on the same connection, with the same name and the same room, within a few seconds. Nobody has to run a command.
+- Changed: resuming a conversation in a new window (`claude --resume`, or **Resume** in DevSpec) moves the whole connection there, name and room included. Messages go only to the new window. The old window stops receiving, and closing it no longer ends the connection the new window is using. Only the same conversation can move a connection, so opening an unrelated window never takes one over.
+- Changed: a connection you make with `/devspec:devspec.remote` is kept alive the same way, and that command no longer asks Claude to start a second listener when this session's own listener already holds the connection.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up. A window opened before the update keeps its old behaviour until it is restarted.
+
 ## 0.32.23 - 2026-10-01
 
 - Changed: DevSpec's personal Coding agents settings page is now **Agents**, at `/settings/agents`. The plugin now links to it instead of pointing you at "You → Coding agents", a menu path that doesn't appear until you are already in Settings. The warning shown when two DevSpec keys on this machine disagree, and the error shown when neither key owns a connection, both link the Agents page on the DevSpec you are connected to (`app.devspec.ai`, or `app.devspecstaging.com` for a plugin pointed at staging). The README and the token prompt link the production page.

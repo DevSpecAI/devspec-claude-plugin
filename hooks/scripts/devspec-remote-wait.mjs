@@ -55,6 +55,7 @@ import {
   validateInteractionAnswerRecord,
 } from './interaction-events.mjs'
 import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
+import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -77,6 +78,15 @@ export const EXIT_BAD_ARGS = 2
  * Never conflate with EXIT_TERMINAL: that conflation is item d655b2a4.
  */
 export const EXIT_REARM = 3
+/**
+ * Someone else holds this connection's wake, so this arm declined or stood down
+ * (item 7e35d818): another listener already reads the inbox, or the conversation was
+ * resumed in another window, which now owns the connection. Nothing ended and nothing
+ * needs re-arming — re-arming would only race the reader that has it.
+ */
+export const EXIT_SUPERSEDED = 4
+/** How often a running stream re-checks who owns its connection. */
+const OWNER_CHECK_MS = 2_000
 
 /**
  * When must this arm give up on the clock alone?
@@ -129,13 +139,57 @@ function pidAlive(pid) {
  * detect — something claiming the connection can hear when it cannot.
  */
 export function isWaitArmed(connectionId, dir = CONNECTIONS_DIR) {
-  if (!connectionId) return false
+  return waitHolderPid(connectionId, dir) !== null
+}
+
+/**
+ * The pid of the wait that holds this connection's wake right now, or null.
+ *
+ * Proved by a live pid and, where the arguments can be read, by that pid really being
+ * a wait for this connection: a stale pidfile's number can belong to an unrelated
+ * process by now, and "armed" must never be claimed on its behalf.
+ */
+export function waitHolderPid(connectionId, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return null
+  let pid
   try {
-    const pid = Number.parseInt(fs.readFileSync(waitPidPath(connectionId, dir), 'utf8').trim(), 10)
-    return pidAlive(pid)
+    pid = Number.parseInt(fs.readFileSync(waitPidPath(connectionId, dir), 'utf8').trim(), 10)
   } catch {
-    return false
+    return null
   }
+  if (!pidAlive(pid)) return null
+  let argv = null
+  try {
+    argv = fs.readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean)
+  } catch {
+    /* no /proc: a live pid is all there is */
+  }
+  if (argv !== null && !isWaitArgv(argv, connectionId)) return null
+  return pid
+}
+
+/**
+ * The `--owner-pid` a running wait was armed with, read from its arguments, or null
+ * when they cannot be read (no /proc) or it was armed without one.
+ */
+export function waitHolderOwnerPid(pid) {
+  try {
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean)
+    const at = argv.indexOf('--owner-pid', 2)
+    const owner = at === -1 ? NaN : Number.parseInt(argv[at + 1], 10)
+    return Number.isInteger(owner) && owner > 1 ? owner : null
+  } catch {
+    return null
+  }
+}
+
+/** `node …/devspec-remote-wait.mjs … --connection-id <id> …`, exactly. */
+export function isWaitArgv(argv, connectionId) {
+  if (!Array.isArray(argv) || argv.length < 4 || !connectionId) return false
+  if (!/^node(\.exe)?$/i.test(path.basename(String(argv[0])))) return false
+  if (path.basename(String(argv[1])) !== 'devspec-remote-wait.mjs') return false
+  const at = argv.indexOf('--connection-id', 2)
+  return at !== -1 && argv[at + 1] === connectionId
 }
 
 /**
@@ -907,6 +961,31 @@ async function main() {
   const ownerPid = resolveOwnerPid(args.ownerPid, state?.owner_pid)
   const ownerAnchor = ownerPid && ownerAlive(ownerPid) ? ownerPid : null
 
+  // One reader per inbox (item 7e35d818). Two waits on one byte cursor deliver every
+  // command twice, or half to each. A wait never displaces another one: it declines.
+  const holder = waitHolderPid(connectionId)
+  if (holder !== null && holder !== process.pid) {
+    process.stderr.write(
+      `devspec-remote-wait: another listener (pid ${holder}) already reads this connection — exit ${EXIT_SUPERSEDED}\n`,
+    )
+    process.exit(EXIT_SUPERSEDED)
+  }
+  // Who owns the connection is decided by connect, never by this process: resuming the
+  // conversation in another window moves it there. Compared as Claude Code processes,
+  // and computed once for this side, which cannot change.
+  const myClaude = ownerAnchor ? claudeProcessOf(ownerAnchor) : null
+  const ownerElsewhere = (current) =>
+    ownerAnchor !== null &&
+    ownedByAnotherProcess(current, ownerAnchor, {
+      claudeOf: (pid) => (pid === ownerAnchor ? myClaude : claudeProcessOf(pid)),
+    })
+  if (ownerElsewhere(state)) {
+    process.stderr.write(
+      `devspec-remote-wait: this conversation continues in another window (owner pid ${state.owner_pid}) — exit ${EXIT_SUPERSEDED}\n`,
+    )
+    process.exit(EXIT_SUPERSEDED)
+  }
+
   const file = inboxPath(connectionId)
   fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
   if (!fs.existsSync(file)) {
@@ -945,11 +1024,23 @@ async function main() {
 
   // Retain completed delivery accounting across a deferred suffix, including one-shot mode.
   let delivered = 0
+  let nextOwnerCheck = Date.now() + OWNER_CHECK_MS
   while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
     if (live && live.enabled === false) {
       process.stderr.write('devspec-remote-wait: disabled — exit 1\n')
       process.exit(EXIT_TERMINAL)
+    }
+    // Resumed in another window: stand down without a word on stdout. Every stdout line
+    // is a turn for the model in THIS window, and this window has nothing to do.
+    if (Date.now() >= nextOwnerCheck) {
+      nextOwnerCheck = Date.now() + OWNER_CHECK_MS
+      if (ownerElsewhere(live)) {
+        process.stderr.write(
+          `devspec-remote-wait: this conversation continues in another window (owner pid ${live.owner_pid}) — exit ${EXIT_SUPERSEDED}\n`,
+        )
+        process.exit(EXIT_SUPERSEDED)
+      }
     }
     if (ownerAnchor && !ownerAlive(ownerAnchor)) {
       process.stdout.write(

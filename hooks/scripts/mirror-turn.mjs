@@ -33,6 +33,7 @@ import {
 } from './interaction-events.mjs'
 // The bridge owns clearing a resolved continuation; Stop is its other resolver.
 import { clearStoredContinuation } from './devspec-question.mjs'
+import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -261,7 +262,19 @@ export function loadState(conversationId) {
   } catch {
     /* selection below fails closed when no readable matching state exists */
   }
-  return selectBoundState(candidates, conversationId, AGENT_NAME)
+  return selectBoundState(withoutConnectionsOwnedElsewhere(candidates), conversationId, AGENT_NAME)
+}
+
+/**
+ * Drop live connections another Claude Code process owns (item 7e35d818). When this
+ * conversation was resumed in another window, the conversation id is shared, so the
+ * window it moved away from would otherwise keep mirroring its prompts into the room,
+ * ending the new window's turns, and blocking on a listener it no longer needs.
+ * Injectable for tests; a process that cannot place itself keeps every candidate.
+ */
+export function withoutConnectionsOwnedElsewhere(candidates, { myPid = resolveClaudePid(process.env), ownedElsewhere = ownedByAnotherProcess } = {}) {
+  if (!myPid) return candidates
+  return candidates.filter(({ raw } = {}) => raw?.enabled !== true || !ownedElsewhere(raw, myPid))
 }
 
 function extractLastText(hookInput, which) {

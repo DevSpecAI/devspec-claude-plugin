@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.32.23 - 2026-10-01
+
+- Changed: DevSpec's personal Coding agents settings page is now **Agents**, at `/settings/agents`. The plugin now links to it instead of pointing you at "You → Coding agents", a menu path that doesn't appear until you are already in Settings. The warning shown when two DevSpec keys on this machine disagree, and the error shown when neither key owns a connection, both link the Agents page on the DevSpec you are connected to (`app.devspec.ai`, or `app.devspecstaging.com` for a plugin pointed at staging). The README and the token prompt link the production page.
+- Changed: the per-project page is now named **Project Settings → Agents**, and the README says "agent" where it said "coding agent" or "local agent".
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to get the new messages. Nothing about how the plugin behaves has changed.
+
 ## 0.32.22
 
 - Commit observations no longer attribute an existing commit from a fast-forward merge, replayed output, or failed command to the current agent. Direct commits require matching pre/post observations and corroborating Git history; unsupported operations continue without interruption.

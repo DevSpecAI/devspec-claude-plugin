@@ -1,6 +1,6 @@
 # DevSpec for Claude Code
 
-**No launcher required.** Once the plugin is configured, start Claude Code in your project folder and it connects to DevSpec automatically. The separate DevSpec Launcher is optional convenience for launching from the browser. This plugin does not bundle or install it, register its URL handler, or start its background service. See Coding agents settings in DevSpec for standalone availability and setup.
+**No launcher required.** Once the plugin is configured, start Claude Code in your project folder and it connects to DevSpec automatically. The separate DevSpec Launcher is optional convenience for launching from the browser. This plugin does not bundle or install it, register its URL handler, or start its background service. See the [Agents page in your DevSpec settings](https://app.devspec.ai/settings/agents) for standalone availability and setup.
 
 **Build on your team’s best thinking.**
 
@@ -26,7 +26,7 @@ You'll need:
 
 - **Claude Code** with plugin support (run `/plugin` to check it's available).
 - A **[DevSpec](https://devspec.ai)** account with at least one project that's connected to your git repo(s).
-- A **DevSpec API token** with `read_write` scope. Create one in DevSpec under **You → Coding agents** → **Connect a tool** (pick **Read & write**); it starts with `dvs_`. It's **account-wide** — one token covers all of your projects, so use the **same** token in every tool and on every machine (don't mint one per machine). Need it again? Reveal and copy it any time from **You → Coding agents**.
+- A **DevSpec API token** with `read_write` scope. Create one on the [Agents page in your DevSpec settings](https://app.devspec.ai/settings/agents): choose **Connect a tool** and pick **Read & write**; it starts with `dvs_`. It's **account-wide** — one token covers all of your projects, so use the **same** token in every tool and on every machine (don't mint one per machine). Need it again? Reveal and copy it any time from that same [Agents page](https://app.devspec.ai/settings/agents).
 - **Node.js 18+** on your `PATH` (check with `node --version`). Remote control — the headline feature — needs it, as does setting up isolated work branches. Most other commands work without it, but you'll want it installed.
 
 > **Heads up:** Claude Code's native installer sometimes ships without a system `node`. If `node --version` fails, install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH`.
@@ -94,7 +94,7 @@ It only connects in folders that belong to a DevSpec project, meaning a repo you
 
 This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped automation runs may still target the connection through their own validated claim/report path.
 
-**Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
+**Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
 **Choosing a project (plugin 0.32.14+).** Normal connection stays automatic when the repository or existing pin resolves. If it is ambiguous, Claude offers accessible projects labelled with their organisations using its native question UI. Cancel leaves it unconnected. You can also specify an exact name or ID: `/devspec:devspec.remote --project "Client Website"`. Duplicate names require a choice; a partial name is not guessed.
 
@@ -204,7 +204,7 @@ The instructions above describe plugin 0.32.14 or later. A change on `staging` i
 
 ## Settings that live in DevSpec
 
-How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Project Settings → Coding Agents**), so it stays consistent whether you work one item by hand or a batch you were asked to take:
+How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Project Settings → Agents**), so it stays consistent whether you work one item by hand or a batch you were asked to take:
 
 | Setting | Controls |
 |---|---|
@@ -230,7 +230,7 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 | Commands don't appear in `/` | Reinstall with `/plugin install devspec@devspec`, then `/reload-plugins` |
 | Plugin won't load, or hook errors | Update to the latest version (`git pull` for local installs) and `/reload-plugins` |
 | Never asked for a token, or need to change it | Run `/plugin` → **Installed** → **DevSpec**, press Enter, and enter/update your `dvs_…` token there (the prompt fires when you *enable* the plugin) |
-| Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Coding agents**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
+| Connection check fails | Confirm your token has `read_write` scope; regenerate it on the [Agents page in your DevSpec settings](https://app.devspec.ai/settings/agents), then re-enter it via `/plugin` → **Installed** → **DevSpec** |
 | Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
 | "No matching project" | Make sure the repo is tracked in DevSpec, or add a `.devspec/project.json` pin naming the project |
 | A batch you asked for isn't being worked | Nothing routes work — an agent only holds what it reserved. Check the Agents page: it shows which agents are connected and what each is holding, so an unheld item means nobody was asked, not that delivery failed |

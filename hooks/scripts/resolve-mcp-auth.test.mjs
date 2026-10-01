@@ -12,12 +12,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  agentsSettingsUrl,
   buildTokensWarning,
+  devspecAppOrigin,
   enumerateCredentialPairs,
   fingerprintToken,
   hostTokenFromEnv,
   proveCredentialPair,
   resolveDevspecMcpAuth,
+  tokensWarningFix,
 } from './resolve-mcp-auth.mjs'
 
 const PROD = 'https://api.devspec.ai/api/mcp'
@@ -224,7 +227,9 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     const warning = buildTokensWarning(pairs)
     assert.match(warning, /plugin userConfig/)
     assert.match(warning, /project \.mcp\.json/)
-    assert.match(warning, /You → Coding agents/)
+    // The host pair (plugin → production) is the default pick, so the link is production's.
+    assert.ok(warning.includes('https://app.devspec.ai/settings/agents'), warning)
+    assert.doesNotMatch(warning, /You →|Coding agents/)
     assert.ok(warning.includes(fingerprintToken('dvs_plugin_prod')))
     assert.ok(warning.includes(fingerprintToken('dvs_project_staging')))
     assert.doesNotMatch(warning, /dvs_plugin_prod|dvs_project_staging/)
@@ -266,7 +271,9 @@ describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', 
     assert.equal(proven.pair.token, 'dvs_project_staging')
     assert.equal(proven.pair.mcp_url, 'https://api.devspecstaging.com/api/mcp')
     assert.equal(proven.probed, true)
-    assert.match(proven.warning, /You → Coding agents/)
+    // The proven pair lives on staging, so the link must too — never production.
+    assert.ok(proven.warning.includes('https://app.devspecstaging.com/settings/agents'), proven.warning)
+    assert.doesNotMatch(proven.warning, /app\.devspec\.ai/)
     assert.doesNotMatch(proven.warning, /dvs_plugin_prod|dvs_project_staging/)
   })
 
@@ -370,5 +377,39 @@ describe('plugin userConfig URL (item 17f38cfa — one server, pointed once)', (
     } finally {
       fs.rmSync(withProject, { recursive: true, force: true })
     }
+  })
+})
+
+describe('links to the DevSpec app follow the MCP host in use', () => {
+  it('maps each deployment\'s api host to its app host', () => {
+    assert.equal(devspecAppOrigin(PROD), 'https://app.devspec.ai')
+    assert.equal(devspecAppOrigin('https://api.devspecstaging.com/api/mcp'), 'https://app.devspecstaging.com')
+  })
+
+  it('keeps a host that is not an api host, port included', () => {
+    assert.equal(devspecAppOrigin('http://localhost:3000/api/mcp'), 'http://localhost:3000')
+    assert.equal(devspecAppOrigin('https://app.devspecstaging.com/api/mcp'), 'https://app.devspecstaging.com')
+  })
+
+  it('falls back to production when the URL is missing or unreadable', () => {
+    assert.equal(devspecAppOrigin(undefined), 'https://app.devspec.ai')
+    assert.equal(devspecAppOrigin(null), 'https://app.devspec.ai')
+    assert.equal(devspecAppOrigin(''), 'https://app.devspec.ai')
+    assert.equal(devspecAppOrigin('not a url'), 'https://app.devspec.ai')
+    assert.equal(devspecAppOrigin('file:///etc/passwd'), 'https://app.devspec.ai')
+  })
+
+  it('builds the Agents settings link on that host', () => {
+    assert.equal(agentsSettingsUrl(PROD), 'https://app.devspec.ai/settings/agents')
+    assert.equal(
+      agentsSettingsUrl('https://api.devspecstaging.com/api/mcp'),
+      'https://app.devspecstaging.com/settings/agents',
+    )
+  })
+
+  it('the two-keys fix links the page instead of naming a breadcrumb', () => {
+    const fix = tokensWarningFix('https://api.devspecstaging.com/api/mcp')
+    assert.ok(fix.includes('https://app.devspecstaging.com/settings/agents'), fix)
+    assert.doesNotMatch(fix, /You →|Coding agents|coding agent/i)
   })
 })

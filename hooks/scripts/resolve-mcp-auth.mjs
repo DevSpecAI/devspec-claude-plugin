@@ -31,12 +31,47 @@ import os from 'node:os'
 import path from 'node:path'
 
 const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
+const DEFAULT_APP_ORIGIN = 'https://app.devspec.ai'
 const WRONG_TOKEN_RE = /belongs to a different token/i
 
 export const DEFAULT_MCP_URL = DEFAULT_PROD_URL
 
-export const TOKENS_WARNING_FIX =
-  'In DevSpec, open You → Coding agents, reveal the key you want, and make the plugin key and the project .mcp.json key the same.'
+/**
+ * The DevSpec web-app origin of the deployment an MCP URL points at.
+ *
+ * Every deployment serves MCP from its `api.` host and the app from `app.` on the
+ * same root domain (api.devspec.ai ↔ app.devspec.ai, api.devspecstaging.com ↔
+ * app.devspecstaging.com). Any other host — localhost, or a URL already on the app
+ * host — is its own app origin. Anything unreadable falls back to production, the
+ * same default the MCP URL itself has.
+ *
+ * Messages that send someone to a DevSpec page build their link from this, so a
+ * plugin pointed at staging never links to production.
+ */
+export function devspecAppOrigin(mcpUrl) {
+  let url
+  try {
+    url = new URL(String(mcpUrl ?? DEFAULT_PROD_URL))
+  } catch {
+    return DEFAULT_APP_ORIGIN
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return DEFAULT_APP_ORIGIN
+  if (url.hostname.startsWith('api.')) url.hostname = `app.${url.hostname.slice('api.'.length)}`
+  return url.origin
+}
+
+/** The personal Agents settings page (where the account's key is revealed), on that deployment. */
+export function agentsSettingsUrl(mcpUrl) {
+  return `${devspecAppOrigin(mcpUrl)}/settings/agents`
+}
+
+/** How to settle two disagreeing keys, linking the Agents page on the host in use. */
+export function tokensWarningFix(mcpUrl) {
+  return (
+    `Open DevSpec's Agents page at ${agentsSettingsUrl(mcpUrl)} to reveal the key you want, ` +
+    'then make the plugin key and the project .mcp.json key the same.'
+  )
+}
 
 function readJson(file) {
   try {
@@ -270,7 +305,11 @@ export function distinctTokenPairs(pairs) {
   return out
 }
 
-export function buildTokensWarning(pairs) {
+/**
+ * `mcpUrl` is the host the link in the fix should point at: the proven pair's when
+ * there is one, otherwise the default pick (the first pair, in precedence order).
+ */
+export function buildTokensWarning(pairs, mcpUrl) {
   const tokens = distinctTokenPairs(pairs)
   if (tokens.length < 2) return null
   const named = tokens
@@ -278,7 +317,7 @@ export function buildTokensWarning(pairs) {
     .join(', ')
   return (
     `This machine has more than one DevSpec key: ${named}. ` +
-    `Connect will use the key that owns this connection. ${TOKENS_WARNING_FIX}`
+    `Connect will use the key that owns this connection. ${tokensWarningFix(mcpUrl ?? tokens[0].mcp_url)}`
   )
 }
 
@@ -310,7 +349,8 @@ export async function proveCredentialPair(pairs, { connectionId, probe } = {}) {
   for (const pair of tokens) {
     try {
       await probe(pair, connectionId)
-      return { pair, probed: true, warning, error: null }
+      // The proven pair is the host this connection lives on; link that one.
+      return { pair, probed: true, warning: buildTokensWarning(pairs, pair.mcp_url), error: null }
     } catch (err) {
       if (isWrongTokenError(err)) continue
       continue

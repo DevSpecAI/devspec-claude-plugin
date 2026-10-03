@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.33.1 - 2026-10-03
+
+- Fixed: when your rules and your project's rules together ran past about 10,000 characters, Claude Code never actually saw them in a conversation connected to DevSpec. Claude Code shows the model only the first 2,000 characters of anything that long, and those were the list of project repositories, so none of the rules arrived. The plugin still recorded them as delivered and told Claude to "keep following them". Rules now come first. When they are too long to show in full, Claude is told to read a file that holds all of them, and the plugin only treats rules as delivered once Claude has been shown them in full. Conversations that were affected receive the rules again after the update.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.33.0 - 2026-10-01
 
 - Fixed: opening Claude Code could silently disconnect your other Claude Code windows. Each new window used to check other windows' connections, and from 0.31.0 it mistook a window that had been attached to a quiet room for over an hour for an abandoned one, and stopped it. That window stayed open but stopped receiving messages, and the room showed it as "Previously here". A window no longer touches any connection but its own.

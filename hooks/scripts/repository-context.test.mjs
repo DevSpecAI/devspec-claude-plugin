@@ -77,3 +77,54 @@ test('real hook CLI supplies startup and local prompt context; orient supplies r
  storeTiers(connection,{project_agent_rules:'Wrong project rules',instruction_tiers_hash:'other',instruction_tiers_version:1},{dir})
  assert.equal(cli('SessionStart'),'','a mismatched connection cannot leak either repository data or project rules')
 }))
+
+// Item 1dbb6d5c: Claude Code shows a hook string of up to 10,000 characters; past that the
+// model gets a 2,000-character preview. Rules first, and nothing over the cap, ever.
+test('the real hook never exceeds the hook cap, leads with the rules, and orient never claims pointed-to rules are held',()=>temp(home=>{
+ const dir=path.join(home,'.devspec','remote-control','connections'),connection='fixture-connection'
+ writePrivateJson(path.join(dir,`${connection}.json`),{connection_id:connection,session_id:null,session_codename:'Test Agent'})
+ storeRepositoryContext(connection,registration,{dir})
+ const run=(local,mode,event='UserPromptSubmit')=>{
+  writePrivateJson(path.join(home,'.devspec','remote-control','local','claude-code',`${local}.json`),{connection_id:connection})
+  saveConversationProject(local,'https://example.test/api/mcp',{id:project,name:'Project'},'explicit',{home})
+  const child=spawnSync(process.execPath,[fileURLToPath(new URL('./remote-control-state.mjs',import.meta.url)),mode,'--event',event,'--local-id',local],{env:{...process.env,HOME:home,USERPROFILE:home},input:JSON.stringify({session_id:local}),encoding:'utf8'})
+  assert.equal(child.status,0,child.stderr);return child.stdout
+ }
+ const hook=local=>JSON.parse(run(local,'context')).hookSpecificOutput.additionalContext
+ const fileIn=text=>text.match(/(\/\S+\.tiers-[0-9a-f]{64}\.txt)/)?.[1]
+
+ // Small rules: inline, and ahead of the repository data.
+ storeTiers(connection,{project_agent_rules:'Small project rule',instruction_tiers_hash:'small',instruction_tiers_version:1},{dir})
+ const small=hook('conv-small')
+ assert.ok(small.indexOf('Small project rule')<small.indexOf('<devspec-repository-data>'))
+ assert.ok(small.length<=10_000)
+
+ // Rules that fit, with repository data that would push the block over: the data yields.
+ storeTiers(connection,{project_agent_rules:'r'.repeat(8_000)+'TAIL',instruction_tiers_hash:'near',instruction_tiers_version:1},{dir})
+ const near=hook('conv-near')
+ assert.ok(near.length<=10_000,`hook block is ${near.length}`)
+ assert.match(near,/rTAIL/);assert.doesNotMatch(near,/<devspec-repository-data>/)
+ const repoFile=near.match(/(\/\S+\.repositories-[0-9a-f]{64}\.txt)/)?.[1]
+ assert.ok(repoFile);assert.match(fs.readFileSync(repoFile,'utf8'),/repo-24/)
+
+ // Today's real shape (~20k of rules): a pointer in the hook, the full rules from orient.
+ storeTiers(connection,{project_agent_rules:'rule '.repeat(4_000)+'MIDDLE-END',instruction_tiers_hash:'mid',instruction_tiers_version:1},{dir})
+ const mid=hook('conv-mid')
+ assert.ok(mid.length<=10_000);assert.doesNotMatch(mid,/MIDDLE-END/)
+ assert.match(fs.readFileSync(fileIn(mid),'utf8'),/MIDDLE-END/)
+ const orientMid=run('conv-mid','orient')
+ assert.match(orientMid,/MIDDLE-END/);assert.doesNotMatch(orientMid,/already delivered/)
+ assert.match(run('conv-mid','orient'),/already delivered/,'held once shown in full')
+
+ // Beyond what orient can show (toward the server maxima): both restate the file.
+ storeTiers(connection,{project_agent_rules:'rule '.repeat(20_000)+'BIG-END',instruction_tiers_hash:'big',instruction_tiers_version:1},{dir})
+ const big=hook('conv-big')
+ assert.ok(big.length<=10_000)
+ assert.equal(run('conv-big','context'),'','the hook does not repeat the notice every prompt')
+ const orientBig=run('conv-big','orient')
+ assert.ok(orientBig.length<=30_000,`orient output is ${orientBig.length}`)
+ assert.equal(fileIn(orientBig),fileIn(big));assert.doesNotMatch(orientBig,/already delivered/)
+ assert.match(fs.readFileSync(fileIn(big),'utf8'),/BIG-END/)
+ // After compaction (SessionStart) the notice comes back.
+ assert.equal(fileIn(JSON.parse(run('conv-big','context','SessionStart')).hookSpecificOutput.additionalContext),fileIn(big))
+}))

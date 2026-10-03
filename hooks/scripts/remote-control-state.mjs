@@ -81,7 +81,7 @@ import {
   startupListenerAlive,
   writeOwnedConnectionPointer,
 } from './startup-listener.mjs'
-import { takeTiersFor } from './instruction-tiers.mjs'
+import { takeTiersFor, CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
@@ -1474,21 +1474,26 @@ if (isMain) {
       if (cmd === 'context') process.exit(0)
       throw new Error('Choose a project before reading connection context.')
     }
+    // Rules first, then repository facts in whatever room is left: a block the host
+    // cuts short keeps its head, and the head must be the rules (item 1dbb6d5c).
+    const force = cmd === 'context' && args.event === 'SessionStart'
+    const room = (cmd === 'context' ? CHANNEL_LIMITS.hookContext : CHANNEL_LIMITS.bashResult) - CHANNEL_RESERVE
+    const tiers = takeTiersFor(connectionId, detected.local_id, { force, inlineLimit: room })
+    const tierText = tiers.status === 'deliver' || tiers.status === 'pointer' ? tiers.text : ''
     const repositories = takeRepositoryContext(connectionId, detected.local_id, {
       projectId: choice?.status === 'selected' ? choice.project.id : undefined,
-      force: cmd === 'context' && args.event === 'SessionStart',
+      force,
+      inlineLimit: room - tierText.length,
     })
-    const tiers = takeTiersFor(connectionId, detected.local_id, { force: cmd === 'context' && args.event === 'SessionStart' })
     if (cmd === 'context') {
-      const additionalContext = [repositories, tiers.status === 'deliver' ? tiers.text : tiers.status === 'absent'
-        ? 'DevSpec instruction context is unavailable locally. get_project_summary can retrieve current project and owner rules before project work.' : ''].filter(Boolean).join('\n\n')
+      const additionalContext = [tierText || (tiers.status === 'absent'
+        ? 'DevSpec instruction context is unavailable locally. get_project_summary can retrieve current project and owner rules before project work.' : ''), repositories].filter(Boolean).join('\n\n')
       if (additionalContext) process.stdout.write(JSON.stringify({ hookSpecificOutput: {
         hookEventName: args.event === 'SessionStart' ? 'SessionStart' : 'UserPromptSubmit', additionalContext,
       } }) + '\n')
       process.exit(0)
     }
     const lines = [
-      ...(repositories ? [repositories] : []),
       `connection_id: ${connectionId}`,
       `codename: ${view.session_codename || '—'}`,
       `session_id: ${view.session_id || 'none (sessionless — there is no room to answer in)'}`,
@@ -1497,12 +1502,16 @@ if (isMain) {
       ...(view.session_id ? [`transcript: ${transcriptPaths(connectionId, view.session_id, CONNECTIONS_DIR).transcript}`] : []),
       `room_state: ${roomStatePath(connectionId, CONNECTIONS_DIR)}`,
     ]
-    if (tiers.status === 'deliver') lines.push(tiers.text.trimEnd())
+    if (tierText) lines.push(tierText.trimEnd())
+    // Only rules that reached this conversation in full count as held; a pointer is
+    // restated until the rules fit a channel that can show them (item 1dbb6d5c).
+    else if (tiers.status === 'unchanged' && tiers.pointer) lines.push(tiers.pointer.trimEnd())
     else if (tiers.status === 'unchanged') {
       lines.push('\nInstructions: already delivered to this conversation and unchanged — keep following them.')
     } else {
       lines.push('\nInstruction context is unavailable locally. Use get_project_summary for current project and owner rules before project work.')
     }
+    if (repositories) lines.push('', repositories)
     process.stdout.write(lines.join('\n') + '\n')
     process.exit(0)
   }

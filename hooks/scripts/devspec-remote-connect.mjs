@@ -35,7 +35,7 @@ import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { waitHolderOwnerPid, waitHolderPid } from './devspec-remote-wait.mjs'
-import { renderTiers, storeTiers, hasStoredTiers, mergeInstructionTiers } from './instruction-tiers.mjs'
+import { renderTiers, renderTiersPointer, saveTiersText, storeTiers, hasStoredTiers, mergeInstructionTiers, CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
 import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext } from './repository-context.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { claudeProcessOf, readOwnerListenerStatus, startupListenerAlive } from './startup-listener.mjs'
@@ -520,7 +520,7 @@ export async function connect(options = {}, deps = {}) {
  * listener Claude Code started with the session — in which case arming a second one
  * would have two readers racing for one inbox.
  */
-export function renderStatusBlock(summary, { listenerArmed = false, startupListener = false, noPoller = false } = {}) {
+export function renderStatusBlock(summary, { listenerArmed = false, startupListener = false, noPoller = false, saveTiers = saveTiersText } = {}) {
   const lines = []
   lines.push('━━━ DevSpec Remote Control ━━━')
   lines.push(`Agent:      ${summary.agent_name} · ${summary.codename || short(summary.connection_id)}`)
@@ -595,10 +595,14 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
     )
   }
 
+  // This block is read as a Bash result: past ~30,000 characters the whole of it,
+  // status and all, becomes a 2,000-character preview. Rules that would push it over
+  // go to a file the model is told to read (item 1dbb6d5c).
   const repositories = renderRepositoryContext(summary.registration)
-  if (repositories) lines.push(repositories)
   const tiers = renderTiers(summary.registration)
-  if (tiers) lines.push(tiers)
+  const room = CHANNEL_LIMITS.bashResult - CHANNEL_RESERVE - lines.join('\n').length - (repositories?.length ?? 0)
+  if (tiers) lines.push(tiers.length <= room ? tiers : renderTiersPointer(saveTiers(summary.connection_id, tiers), tiers.length))
+  if (repositories) lines.push(repositories)
   return lines.join('\n') + '\n'
 }
 

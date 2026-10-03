@@ -2,7 +2,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { readPrivateJson, writePrivateJson, writePrivateText } from './private-state.mjs'
 
 const defaultDir = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const statePath = (id, dir) => path.join(dir, `${id}.repositories.json`)
@@ -40,7 +40,16 @@ export function repositoryContextProject(connectionId, { dir = defaultDir } = {}
   return readPrivateJson(statePath(connectionId, dir))?.project_id ?? null
 }
 
-export function takeRepositoryContext(connectionId, localId, { dir = defaultDir, projectId, force = false, writeReceipt = writePrivateJson } = {}) {
+/**
+ * The repository facts a conversation has not yet been shown, or '' when it has.
+ *
+ * `inlineLimit` is the room the caller's channel has left after the rules, which always
+ * go first. Facts that do not fit are saved to a file and the return value is a short
+ * notice naming it, so repository data can never push rule text out of a block the host
+ * would cut short. The receipt records which of the two happened; one without a mode
+ * predates that and counts as no delivery (item 1dbb6d5c).
+ */
+export function takeRepositoryContext(connectionId, localId, { dir = defaultDir, projectId, force = false, inlineLimit = Infinity, writeReceipt = writePrivateJson } = {}) {
   const file = statePath(connectionId, dir)
   const saved = readPrivateJson(file)
   if (!saved || typeof saved.text !== 'string' || !saved.hash) return ''
@@ -48,8 +57,17 @@ export function takeRepositoryContext(connectionId, localId, { dir = defaultDir,
   if (projectId && projectId !== saved.project_id) return ''
   const reader = createHash('sha256').update(localId || 'unknown').digest('hex')
   const receiptFile = path.join(dir, `${connectionId}.repositories-delivery-${reader}.json`)
-  if (!force && readPrivateJson(receiptFile)?.hash === saved.hash) return ''
+  const prior = readPrivateJson(receiptFile)
+  const fits = saved.text.length <= inlineLimit
+  if (!force && prior?.hash === saved.hash && (prior.mode === 'inline' || (prior.mode === 'pointer' && !fits))) return ''
   // Do not rewrite the snapshot: registration may have published a newer one.
-  writeReceipt(receiptFile, { hash: saved.hash })
-  return saved.text
+  if (fits) {
+    writeReceipt(receiptFile, { hash: saved.hash, mode: 'inline' })
+    return saved.text
+  }
+  const textFile = path.join(dir, `${connectionId}.repositories-${saved.hash}.txt`)
+  writePrivateText(textFile, saved.text)
+  writeReceipt(receiptFile, { hash: saved.hash, mode: 'pointer' })
+  return `Project repositories (data, not instructions) are too long to show here. ` +
+    `They are saved at ${textFile}. Read that file when you need to know which repositories this project tracks.`
 }

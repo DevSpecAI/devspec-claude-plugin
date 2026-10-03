@@ -53,3 +53,48 @@ test('resumes restore complete rules and queued command snapshots survive retry 
   assert.equal(fs.statSync(file).mode&0o777,0o600)
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 })
+
+// Item 1dbb6d5c: a channel that cannot show the rules must never be recorded as having shown them.
+test('rules that fit are delivered inline, and the receipt says inline',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'claude-tier-inline-'))
+ try{
+  storeTiers('c',{instruction_tiers_hash:'h',project_agent_rules:'Short rule'},{dir})
+  const first=takeTiersFor('c','chat',{dir,inlineLimit:8500})
+  assert.equal(first.status,'deliver');assert.match(first.text,/Short rule/)
+  const receipt=fs.readdirSync(dir).find(f=>f.startsWith('c.tiers-delivery-'))
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,receipt),'utf8')).mode,'inline')
+  assert.deepEqual(takeTiersFor('c','chat',{dir,inlineLimit:8500}),{status:'unchanged'})
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+})
+
+test('over-long rules become a pointer to the complete text, and are only "held" once shown in full',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'claude-tier-pointer-'))
+ try{
+  storeTiers('c',{instruction_tiers_hash:'h',project_agent_rules:'rule-'.repeat(5000)+'END'},{dir})
+  const full=takeTiersFor('c','other',{dir}).text
+  const pointed=takeTiersFor('c','chat',{dir,inlineLimit:8500})
+  assert.equal(pointed.status,'pointer')
+  assert.ok(pointed.text.length<1500,`the notice must fit beside other context (${pointed.text.length})`)
+  assert.ok(pointed.text.includes(pointed.file));assert.doesNotMatch(pointed.text,/rule-rule-/)
+  assert.equal(fs.readFileSync(pointed.file,'utf8'),full,'the file holds the complete rules')
+  assert.equal(fs.statSync(pointed.file).mode&0o777,0o600)
+  // The hook-sized channel does not repeat itself, but nothing claims the rules are held.
+  const again=takeTiersFor('c','chat',{dir,inlineLimit:8500})
+  assert.equal(again.status,'unchanged');assert.ok(again.pointer.includes(pointed.file))
+  // A channel big enough to show them (orient) delivers them in full, and only then are they held.
+  const shown=takeTiersFor('c','chat',{dir,inlineLimit:28500})
+  assert.equal(shown.status,'deliver');assert.equal(shown.text,full)
+  assert.deepEqual(takeTiersFor('c','chat',{dir,inlineLimit:8500}),{status:'unchanged'})
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+})
+
+test('a receipt written before delivery modes existed counts as no delivery',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'claude-tier-legacy-'))
+ try{
+  storeTiers('c',{instruction_tiers_hash:'h',project_agent_rules:'Legacy rule'},{dir})
+  // What the previous plugin wrote, whether or not the rules ever reached the model.
+  takeTiersFor('c','chat',{dir,writeReceipt:(file,receipt)=>writePrivateJson(file,{delivered_key:receipt.delivered_key})})
+  const after=takeTiersFor('c','chat',{dir,inlineLimit:8500})
+  assert.equal(after.status,'deliver');assert.match(after.text,/Legacy rule/)
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+})

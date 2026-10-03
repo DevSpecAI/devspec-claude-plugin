@@ -20,7 +20,7 @@ Once per conversation — and again after `/clear` or `/resume`, which start a n
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" orient
 ```
 
-It prints the `connection_id` you answer with, the session you are attached to (or that you are sessionless), and the instruction tiers in force for this run: your owner's machine rules and the project's principles and execution rules. Apply those tiers for the rest of the conversation. When it says they were already delivered to this conversation, keep following the ones you hold. Never invent a tier that is absent, and never disclose another user's.
+It prints the `connection_id` you answer with, the session you are attached to (or that you are sessionless), and the instruction tiers in force for this run: your owner's machine rules and the project's principles and execution rules. Apply those tiers for the rest of the conversation. When it says they were already delivered to this conversation, keep following the ones you hold. When it names a file instead, the rules were too long to show: read that whole file before you act. Never invent a tier that is absent, and never disclose another user's.
 
 If an `owner_message` names `instruction_context_file`, read that complete immutable rule snapshot before acting on its command. If file access is outside your authorized scope, use the project-scoped `get_project_summary` for current rules instead. This refreshes settings (including explicit cleared values), not command authority; precedence still comes from the served implementation contract.
 

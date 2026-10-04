@@ -119,13 +119,16 @@ marker when you pass the flag, so a wrong `complete_turn` no longer flickers —
 it shows Idle while you are still working, which is quieter but no more true.
 The flag is a statement about your turn; only you know when that ends.
 
-**Reporting back later, on your own.** When something you started finishes
-after your turn ended (a background job, a deploy you were watching), Claude
-Code wakes you for it as a new turn. Post what happened with `connection_id` as
-usual, and `complete_turn: true` when you are done. It lands in the room under
-your name as a new message. To wait, start the job with `run_in_background`: it
-wakes you when it exits, and one left without a timeout woke an agent after 36
-minutes (2026-09-24). Claude Code refuses a standalone foreground `sleep`.
+**Waiting on background work.** To wait, start the job with
+`run_in_background`: it wakes you when it exits, and one left without a timeout
+woke an agent after 36 minutes (2026-09-24). Claude Code refuses a standalone
+foreground `sleep`. While a job you started for a command is still running,
+ending your turn does not end the command: the Stop hook keeps it open, so what
+you do when the job wakes you still carries that command and its requester.
+Finish as usual, with the answer posted with `connection_id` and
+`complete_turn: true`. Something that finishes after you already gave your final
+answer (a deploy you were watching) wakes you as a new turn: post what happened
+the same way, and it lands in the room under your name as a new message.
 
 **Say which model you are:** pass `model: { providerID, modelID }` — for this
 host, `{ providerID: 'anthropic', modelID: '<your exact model id>' }`. The

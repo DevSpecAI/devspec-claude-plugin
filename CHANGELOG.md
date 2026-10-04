@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.33.2 - 2026-10-04
+
+- Fixed: when someone asked Claude Code to do something and Claude paused to wait for a job it had started in the background, DevSpec treated the request as finished. Anything Claude did after the job woke it was recorded with no requester and handled with the permissions of whoever owns the agent, not the person who asked. A suggestion from a Reviewed Contributor could become agreed work, and a person who had lost access could still have their request carried out. A request now stays open while Claude's own background work is still running, and closes when Claude gives its answer. So work done after the wait is recorded against the person who asked and checked against their access.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.33.1 - 2026-10-03
 
 - Fixed: when your rules and your project's rules together ran past about 10,000 characters, Claude Code never actually saw them in a conversation connected to DevSpec. Claude Code shows the model only the first 2,000 characters of anything that long, and those were the list of project repositories, so none of the rules arrived. The plugin still recorded them as delivered and told Claude to "keep following them". Rules now come first. When they are too long to show in full, Claude is told to read a file that holds all of them, and the plugin only treats rules as delivered once Claude has been shown them in full. Conversations that were affected receive the rules again after the update.

@@ -25,6 +25,8 @@ import {
   decideStopBlock,
   listenerArmedWithGrace,
   stopBondDiagnostic,
+  backgroundHoldDecision,
+  parseTranscriptPath,
 } from './mirror-turn.mjs'
 
 /** A pid above any plausible pid_max — guaranteed ESRCH, i.e. provably dead. */
@@ -600,5 +602,53 @@ describe('stopBondDiagnostic — a turn that will not end says why (item 3b88955
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('backgroundHoldDecision — a Stop that only waits on background work keeps the command open (item f4a79327)', () => {
+  const NOW = Date.parse('2026-10-04T17:30:52.000Z')
+  const startedAt = NOW - 10_000
+  const job = { toolUseId: 'toolu_A', taskId: 'bxhtqls7l', tool: 'Bash', description: 'Sleep 40 seconds' }
+
+  it('holds while a job launched during this command is still running', () => {
+    const seen = []
+    const hold = backgroundHoldDecision({
+      marker: { startedAt },
+      transcriptPath: '/t.jsonl',
+      now: NOW,
+      readOutstanding: (file, since) => { seen.push([file, since]); return [job] },
+    })
+    assert.deepEqual(hold, [job])
+    // The window is the command's own start: earlier jobs belong to earlier work.
+    assert.deepEqual(seen, [['/t.jsonl', startedAt]])
+  })
+
+  it('ends the turn when nothing is left running', () => {
+    assert.equal(backgroundHoldDecision({ marker: { startedAt }, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [] }), null)
+  })
+
+  it('never holds once the agent closed the turn itself (no marker)', () => {
+    assert.equal(backgroundHoldDecision({ marker: null, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }), null)
+  })
+
+  it('never holds a turn the poller has already let go (marker older than an hour)', () => {
+    const hold = backgroundHoldDecision({
+      marker: { startedAt: NOW - 60 * 60 * 1000 },
+      transcriptPath: '/t.jsonl',
+      now: NOW,
+      readOutstanding: () => [job],
+    })
+    assert.equal(hold, null)
+  })
+})
+
+describe('parseTranscriptPath', () => {
+  it('reads transcript_path from the hook input', () => {
+    assert.equal(parseTranscriptPath(JSON.stringify({ transcript_path: '/home/u/.claude/projects/p/s.jsonl' })), '/home/u/.claude/projects/p/s.jsonl')
+  })
+  it('returns null for missing or malformed input', () => {
+    assert.equal(parseTranscriptPath('{}'), null)
+    assert.equal(parseTranscriptPath('not json'), null)
+    assert.equal(parseTranscriptPath(''), null)
   })
 })

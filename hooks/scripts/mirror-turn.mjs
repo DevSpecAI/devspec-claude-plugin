@@ -34,10 +34,15 @@ import {
 // The bridge owns clearing a resolved continuation; Stop is its other resolver.
 import { clearStoredContinuation } from './devspec-question.mjs'
 import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
+import { outstandingBackgroundWorkFromFile } from './background-work.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
+
+// The poller stops treating a turn as live once its marker is this old
+// (devspec-remote-poll.mjs MAX_TURN_MS); a background hold never outlives it.
+const MAX_TURN_MS = 60 * 60 * 1000
 
 // Turn marker — the connected agent is the SOLE authority for the "working" state.
 // UserPromptSubmit (turn start) writes it; Stop (turn end) clears it. The long-lived
@@ -46,15 +51,69 @@ const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'c
 export function turnMarkerPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
 }
+function readTurnMarker(connectionId) {
+  if (!connectionId) return null
+  try {
+    const marker = readPrivateJson(turnMarkerPath(connectionId))
+    return typeof marker?.startedAt === 'number' ? marker : null
+  } catch {
+    return null
+  }
+}
 function writeTurnMarker(connectionId) {
   if (!connectionId) return
+  // A turn that is already live keeps its start. A held turn's start bounds which
+  // background jobs belong to it (backgroundHoldDecision), so a wake-up prompt must
+  // not move it past jobs that are still running.
+  const existing = readTurnMarker(connectionId)
+  const startedAt =
+    existing && Date.now() - existing.startedAt < MAX_TURN_MS ? existing.startedAt : Date.now()
   try {
     fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    fs.writeFileSync(turnMarkerPath(connectionId), JSON.stringify({ startedAt: Date.now() }), {
+    fs.writeFileSync(turnMarkerPath(connectionId), JSON.stringify({ startedAt }), {
       mode: 0o600,
     })
   } catch {
     /* non-fatal — the immediate busy heartbeat below still fires */
+  }
+}
+
+/**
+ * Does this Stop end the DevSpec command, or only pause it (item f4a79327)?
+ *
+ * Claude ends its turn to wait for a job it started with `run_in_background`, and is
+ * woken again when the job finishes. The command is not over: what Claude does after
+ * the wake is still the requester's work. Reporting the turn complete here closed the
+ * command server-side, so every later write lost its requester and was judged by the
+ * agent owner's role. While such a job is still running, keep the turn open; it ends
+ * when the agent posts its answer with complete_turn (which clears the marker) or at
+ * a later Stop with nothing left running.
+ *
+ * Only jobs launched since the turn's marker was written count, and only while the
+ * marker is fresh: an absent marker means the agent already closed the turn itself,
+ * and a stale one is a turn the poller has already let go.
+ *
+ * @returns {Array<object>|null} the outstanding jobs when the turn should stay open
+ */
+export function backgroundHoldDecision({
+  marker,
+  transcriptPath,
+  now = Date.now(),
+  readOutstanding = outstandingBackgroundWorkFromFile,
+}) {
+  if (!marker || typeof marker.startedAt !== 'number') return null
+  if (now - marker.startedAt >= MAX_TURN_MS) return null
+  const outstanding = readOutstanding(transcriptPath, marker.startedAt)
+  return outstanding.length > 0 ? outstanding : null
+}
+
+/** The transcript path Claude Code passes every hook on stdin. */
+export function parseTranscriptPath(raw) {
+  try {
+    const data = JSON.parse(raw || '{}')
+    return typeof data.transcript_path === 'string' && data.transcript_path ? data.transcript_path : null
+  } catch {
+    return null
   }
 }
 export function clearTurnMarker(connectionId) {
@@ -686,6 +745,22 @@ async function main() {
         })
       : null
 
+  // A Stop that only pauses the command for background work keeps the turn open
+  // (item f4a79327). Decided here, with the block, for the same reason: it is not a
+  // turn end, so busy stays on and nothing is reported complete.
+  const backgroundHold =
+    mode === 'stop' && connectionId && !blockReason
+      ? backgroundHoldDecision({
+          marker: readTurnMarker(connectionId),
+          transcriptPath: parseTranscriptPath(raw),
+        })
+      : null
+  if (backgroundHold) {
+    process.stderr.write(
+      `[devspec-remote] command kept open: ${backgroundHold.length} background job(s) still running\n`,
+    )
+  }
+
   try {
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
@@ -720,7 +795,8 @@ async function main() {
     // marker so the poller re-asserts); stop ends it (busy:false + clear marker).
     // Marker is keyed by connection_id (the poller reads it by connection_id).
     // A blocked stop keeps the turn OPEN — the agent is about to re-arm and carry on.
-    const turnActive = mode === 'user_prompt' || !!blockReason
+    // So does a stop that is waiting on the agent's own background work.
+    const turnActive = mode === 'user_prompt' || !!blockReason || !!backgroundHold
     if (turnActive) writeTurnMarker(connectionId)
     else clearTurnMarker(connectionId)
 

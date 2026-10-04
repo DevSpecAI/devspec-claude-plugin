@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.33.3 - 2026-10-04
+
+- Fixed: when you typed a request into Claude Code's own terminal, DevSpec did not record you as the person who asked. Items, memories and documents Claude created for you showed "Requester unknown". When Claude Code is connected to a DevSpec room, a prompt you type there now starts a turn that DevSpec can confirm came from your terminal, and what Claude creates during it names you as the person who asked. Requests sent from the room are unchanged and still name whoever sent them. Starting work on an existing item from the terminal does not record you yet.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.33.2 - 2026-10-04
 
 - Fixed: when someone asked Claude Code to do something and Claude paused to wait for a job it had started in the background, DevSpec treated the request as finished. Anything Claude did after the job woke it was recorded with no requester and handled with the permissions of whoever owns the agent, not the person who asked. A suggestion from a Reviewed Contributor could become agreed work, and a person who had lost access could still have their request carried out. A request now stays open while Claude's own background work is still running, and closes when Claude gives its answer. So work done after the wait is recorded against the person who asked and checked against their access.

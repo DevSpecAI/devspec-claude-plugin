@@ -22,6 +22,7 @@ import { detectLocalId } from './remote-control-state.mjs'
 import {
   STATE_OK,
   STATE_UNREADABLE,
+  patchPrivateJson,
   readPrivateJson,
   readPrivateJsonResult,
 } from './private-state.mjs'
@@ -35,6 +36,7 @@ import {
 import { clearStoredContinuation } from './devspec-question.mjs'
 import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
 import { outstandingBackgroundWorkFromFile } from './background-work.mjs'
+import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
 
 const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
@@ -48,6 +50,19 @@ const MAX_TURN_MS = 60 * 60 * 1000
 // UserPromptSubmit (turn start) writes it; Stop (turn end) clears it. The long-lived
 // poller reads it (by connection_id) to re-assert busy on heartbeats while a turn
 // runs, so long turns stay "working" and the server's busy freshness doesn't decay.
+/**
+ * Merge a patch into this connection's own state file. Only an existing file: a
+ * conversation bound through the legacy singleton has no per-connection file to
+ * extend, and a file holding nothing but the patch would be a bond with no identity.
+ * Losing a patch to a concurrent poller write is harmless here — Stop falls back to
+ * the connection-scoped completion and the next start relearns its predecessor.
+ */
+function patchOwnState(connectionId, patch) {
+  const file = path.join(CONNECTIONS_DIR, `${connectionId}.json`)
+  if (!connectionId || !fs.existsSync(file)) return false
+  return patchPrivateJson(file, { ...patch, updated_at: new Date().toISOString() })
+}
+
 export function turnMarkerPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
 }
@@ -762,6 +777,29 @@ async function main() {
   }
 
   try {
+    // A prompt typed at this terminal opens the owner's own turn, admitted with the
+    // connection capability BEFORE the model starts, so every write it makes names
+    // the owner as the person who asked (item 718825fc, local-turn.mjs). Harness
+    // wakes are not prompts: a room command carries its own requester, and a
+    // background wake continues the turn that is already open.
+    if (mode === 'user_prompt' && connectionId && sessionId && text && String(text).trim() && !skipMirror) {
+      const scope = localTurnScope(state, sessionId)
+      if (scope) {
+        const admitted = await startLocalTurn({
+          scope,
+          previousAttemptId: state.local_turn?.attempt_id ?? null,
+          call: (args) => mcpToolsCall({
+            mcpUrl,
+            token,
+            connectionCapability: state.connection_capability,
+            name: 'report_pickup',
+            arguments: args,
+          }),
+        })
+        if (admitted) patchOwnState(connectionId, { local_turn: admitted })
+      }
+    }
+
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
     // the skill must post_session_message the direct answer (prefer connection_id).
@@ -839,6 +877,9 @@ async function main() {
         // wakes the model immediately and that turn's end completes exactly — whereas
         // sealing an attempt whose answer the model never saw is unrecoverable.
         if (stopDecision.action !== 'hold') {
+          // A terminal turn this connection admitted closes exactly; anything else
+          // keeps the connection-scoped completion it always had.
+          const localAttempt = localTurnToComplete(state.local_turn, sessionId)
           try {
             await mcpToolsCall({
               mcpUrl,
@@ -854,12 +895,17 @@ async function main() {
                     reason: 'turn_end',
                     ...continuationIdentity(stopDecision.continuation),
                   }
-                : { connection_id: connectionId, reason: 'turn_end' },
+                : localAttempt
+                  ? { connection_id: connectionId, attempt_id: localAttempt, reason: 'turn_end' }
+                  : { connection_id: connectionId, reason: 'turn_end' },
             })
             if (stopDecision.action === 'complete') clearStoredContinuation(connectionId)
           } catch {
             /* non-fatal — the poller's marker-driven backstop still runs */
           }
+          // The turn is over whether or not the completion landed: never carry it
+          // into the next one.
+          if (state.local_turn) patchOwnState(connectionId, { local_turn: null })
         }
       }
     }

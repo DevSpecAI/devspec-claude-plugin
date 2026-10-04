@@ -89,6 +89,7 @@ import {
 } from './interaction-events.mjs'
 
 import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
+import { attachmentFromPoll } from './local-turn.mjs'
 import {
   commandHandoffDecision,
   commandHandoffKey,
@@ -2401,6 +2402,9 @@ async function main() {
         cursor_after_message_id: null,
         cursor_v2: null,
         catch_up_cursor: null,
+        // The old room's attachment admits no terminal turn in the new one.
+        speech_attachment_id: null,
+        attached_at: null,
       })
       continue
     }
@@ -2413,6 +2417,15 @@ async function main() {
     if (attachmentNow !== speechAttachmentId) {
       speechAttachmentId = attachmentNow
       forgetCommandHandoff()
+    }
+    // The prompt hook admits the owner's terminal turns against this exact
+    // attachment (item 718825fc, local-turn.mjs). Compared with the FILE rather than
+    // memory, so a record lost to a concurrent hook write is put back on the next poll.
+    const attachmentRecord = attachmentFromPoll(res)
+    const recorded = readState(connectionId)
+    if (recorded && ((recorded.speech_attachment_id ?? null) !== attachmentRecord.speech_attachment_id ||
+        (recorded.attached_at ?? null) !== attachmentRecord.attached_at)) {
+      patchState(attachmentRecord)
     }
 
     if (res.changed === true) {

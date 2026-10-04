@@ -1,6 +1,6 @@
 # DevSpec for Claude Code
 
-**No launcher required.** Once the plugin is configured, start Claude Code in your project folder and it connects to DevSpec automatically. The separate DevSpec Launcher is optional convenience for launching from the browser. This plugin does not bundle or install it, register its URL handler, or start its background service. See the [Agents page in your DevSpec settings](https://app.devspec.ai/settings/agents) for standalone availability and setup.
+Once the plugin is configured, start Claude Code in your project folder and it connects to DevSpec automatically.
 
 **Build on your team’s best thinking.**
 

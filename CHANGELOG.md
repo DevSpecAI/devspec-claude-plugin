@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.33.4 - 2026-10-05
+
+- Fixed: Claude's own DevSpec actions only said which connected Claude Code made them when Claude remembered to say so. So a request you typed in the terminal could still be recorded with no requester, and so could a request sent from the room if Claude forgot. The plugin now adds this conversation's connection to Claude's DevSpec calls, the same way it already adds the project, so DevSpec can tell who asked. A call that already names a connection or a room is left exactly as Claude wrote it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.33.3 - 2026-10-04
 
 - Fixed: when you typed a request into Claude Code's own terminal, DevSpec did not record you as the person who asked. Items, memories and documents Claude created for you showed "Requester unknown". When Claude Code is connected to a DevSpec room, a prompt you type there now starts a turn that DevSpec can confirm came from your terminal, and what Claude creates during it names you as the person who asked. Requests sent from the room are unchanged and still name whoever sent them. Starting work on an existing item from the terminal does not record you yet.

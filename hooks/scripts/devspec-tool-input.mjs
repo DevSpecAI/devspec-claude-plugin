@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { versionedConnectionArguments, connectionVersionHook } from './connection-version.mjs'
 import { conversationScopeHook } from './conversation-project.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { ownConnectionId, withOwnConnection } from './own-connection.mjs'
 
 export function prepareDevspecToolInput(input, { env = process.env, home } = {}) {
   const match = /^mcp__(?:plugin_devspec_)?devspec__(.+)$/.exec(input?.tool_name ?? '')
@@ -14,10 +15,13 @@ export function prepareDevspecToolInput(input, { env = process.env, home } = {})
     : resolveDevspecMcpAuth(input.cwd || process.cwd(), { env }).mcp_url
   const scoped = conversationScopeHook(input, { endpoint, home })
   if (scoped?.hookSpecificOutput?.permissionDecision === 'deny') return scoped
-  if (!scoped && match[1] !== 'register_connection' && match[1] !== 'attach_connection') return {}
+  const prepared = scoped?.hookSpecificOutput?.updatedInput ?? input.tool_input
+  // This conversation's own connection, so the write says where it came from (item 718825fc).
+  const stamped = withOwnConnection(match[1], prepared, ownConnectionId(input.session_id, { ...(home ? { home } : {}), env }))
+  if (!scoped && stamped === prepared && match[1] !== 'register_connection' && match[1] !== 'attach_connection') return {}
   return { hookSpecificOutput: {
     hookEventName: 'PreToolUse',
-    updatedInput: versionedConnectionArguments(match[1], scoped?.hookSpecificOutput?.updatedInput ?? input.tool_input),
+    updatedInput: versionedConnectionArguments(match[1], stamped),
     // No allow decision: the host's ordinary permissions and other hooks still apply.
   } }
 }

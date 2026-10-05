@@ -4,7 +4,7 @@ Once the plugin is configured, start Claude Code in your project folder and it c
 
 **Build on your team’s best thinking.**
 
-[DevSpec](https://devspec.ai) helps your team and AI agents turn ideas and experience into better software.
+[DevSpec](https://devspec.ai) is where your team, your knowledge and your agents build software together, made for AI-native development from the ground up.
 
 Bring your team's DevSpec work into Claude Code — and drive Claude from your browser or phone. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can implement the action-item work you request and report back — and so you can steer a Claude Code session running on your machine from anywhere.
 

@@ -102,6 +102,14 @@ The choice belongs to this **local Claude conversation**, including resume, and 
 
 When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
 
+**See it in the terminal (Claude Code 2.1.289+).** While Claude Code is connected, a line under the prompt shows the name it has on the Agents page, the DevSpec project, the session it is attached to and the item it is working on:
+
+```
+devspec: Cosmic Raven · DevSpec · “Fix the login redirect” · working on c6dcb524
+```
+
+A short notice appears when it connects. If someone ends it from DevSpec, the line changes to `devspec: Cosmic Raven · ended from DevSpec`, so with several terminals open you can tell which ones are still connected. Showing this never calls the model. On older Claude Code versions the line does not appear and everything else works the same.
+
 ### Shared session plans
 
 Claude keeps routine read-only investigation and quick answers plan-free. When work has material multi-phase progress that others in the room need to follow or resume, it creates one shared plan, advances it atomically at meaningful boundaries, and explicitly completes or abandons it. Reconnecting agents receive the latest revision.

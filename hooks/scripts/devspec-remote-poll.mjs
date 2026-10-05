@@ -34,6 +34,7 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { captureInstructionContext } from './instruction-tiers.mjs'
+import { readSessionTitle, sessionTitleReadDue } from './session-title.mjs'
 import {
   STATE_ABSENT,
   STATE_OK,
@@ -794,18 +795,26 @@ export function appendAutomationDispatches(
   return { ok: true, appended }
 }
 
+/**
+ * What a connection's state records when it stops. Also what the terminal's DevSpec
+ * line reads to say "ended from DevSpec" (terminal-status.mjs).
+ */
+export function disabledStatePatch(reason) {
+  return {
+    enabled: false,
+    // The server's real word for an Agents-page End is 'ui'; 'ended_from_ui' is
+    // this poller's own legacy label. Both must set the flag, or a genuine UI
+    // End would stop stamping it the moment the server started telling the
+    // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
+    ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
+    end_reason: reason,
+  }
+}
+
 /** Disable THIS connection only — never other remotes on the machine. */
 function disableLocalState({ connectionId, reason }) {
   try {
-    patchConnectionState(connectionId, {
-      enabled: false,
-      // The server's real word for an Agents-page End is 'ui'; 'ended_from_ui' is
-      // this poller's own legacy label. Both must set the flag, or a genuine UI
-      // End would stop stamping it the moment the server started telling the
-      // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
-      ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
-      end_reason: reason,
-    })
+    patchConnectionState(connectionId, disabledStatePatch(reason))
   } catch (e) {
     process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
   }
@@ -1615,6 +1624,23 @@ async function main() {
     }
   }
 
+  // --- The attached room's title, for the terminal's DevSpec line (item c6dcb524) --
+  // Read beside the poll, never inside it: a slow or failed read only delays the
+  // name, and a reattach while it is in flight discards what it brings back.
+  let titleReadAt = 0
+  let titleReadInFlight = false
+  function refreshSessionTitle(liveState) {
+    if (titleReadInFlight || !sessionTitleReadDue({ sessionId, state: liveState, lastAttemptAt: titleReadAt })) return
+    const forSession = sessionId
+    titleReadInFlight = true
+    titleReadAt = Date.now()
+    readSessionTitle({ call: mcpToolsCall, mcpUrl, token, sessionId: forSession })
+      .then((title) => {
+        if (title !== null && sessionId === forSession) patchState({ session_title: title, session_title_for: forSession })
+      })
+      .finally(() => { titleReadInFlight = false })
+  }
+
   // --- Directed-question answers (item 54b63e47) -------------------------------
   // The open continuation, if any. Held in memory for this loop's decisions and in
   // state so the Stop hook and the model-facing bridge can find the same one.
@@ -2208,6 +2234,7 @@ async function main() {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
       process.exit(1)
     }
+    refreshSessionTitle(liveState)
     // A reconnect may rotate the capability, and the Stop hook or the model-facing
     // bridge may have resolved the continuation since the last tick. Both facts live
     // in state and are owned by whoever wrote them, so re-read rather than cache.
@@ -2401,6 +2428,8 @@ async function main() {
       roomAnnounced = {}
       speechAttachmentId = null
       forgetCommandHandoff()
+      // The new room's title is read on the next tick; the old one's name goes now.
+      titleReadAt = 0
       patchState({
         session_id: sessionId,
         cursor_after_message_id: null,
@@ -2409,6 +2438,8 @@ async function main() {
         // The old room's attachment admits no terminal turn in the new one.
         speech_attachment_id: null,
         attached_at: null,
+        session_title: null,
+        session_title_for: null,
       })
       continue
     }

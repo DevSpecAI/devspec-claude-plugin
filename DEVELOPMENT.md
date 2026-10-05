@@ -12,6 +12,10 @@ Markdown skills/commands + a manifest + a handful of Node hook scripts. **There 
 
 Keep it that way: don't reintroduce a `package.json`/build pipeline or npm dependencies in the hook scripts.
 
+The one exception to "Node scripts" is `hooks/terminal-status.ts`, the terminal's DevSpec status line (item `c6dcb524`). It is a Claude Code **function-hooks** module, named under `modules` in `hooks/hooks.json` beside the command hooks. Claude Code compiles and runs it itself, in an environment with no Node, so there is still no build step. Everything it says comes from `hooks/scripts/terminal-status.mjs`, which is deliberately pure (no Node built-ins), so the module and `node --test` share one copy of the paths, the reading and the copy. The module only reads this conversation's existing state files and calls `$.ui.status` / `$.ui.toast`. It never writes state, never calls the model and never talks to DevSpec. The room title it shows is stored by the poller (`hooks/scripts/session-title.mjs`).
+
+The function-hooks API is marked early access by Anthropic and can change between Claude Code releases. Failures are contained. With the module present, the command hooks still ran on every build measured: 2.1.132, 2.1.193, 2.1.246, 2.1.278 and 2.1.289. Builds that predate the API ignore the `modules` key. 2.1.246, whose API differs, refuses the module and runs everything else. A hook that throws is skipped. In each of these cases the terminal shows nothing, which is how it was before.
+
 ## Requirements
 
 - **Node.js 18+** on your PATH (`node --version`). Required at runtime for the hooks/poller.
@@ -20,6 +24,13 @@ Keep it that way: don't reintroduce a `package.json`/build pipeline or npm depen
 
 ```bash
 node --test hooks/scripts/*.test.mjs
+```
+
+The status-line module also has tests that run under Claude Code's own engine, and the module type-checks against the declarations the engine lays in `.claude-plugin/types/`. The engine creates that folder the first time it loads the plugin from this folder, and it is git-ignored:
+
+```bash
+claude plugin test .
+tsc -p .
 ```
 
 ## Conversation project selection

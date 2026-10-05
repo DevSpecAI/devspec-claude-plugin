@@ -16,6 +16,15 @@ The one exception to "Node scripts" is `hooks/terminal-status.ts`, the terminal'
 
 The function-hooks API is marked early access by Anthropic and can change between Claude Code releases. Failures are contained. With the module present, the command hooks still ran on every build measured: 2.1.132, 2.1.193, 2.1.246, 2.1.278 and 2.1.289. Builds that predate the API ignore the `modules` key. 2.1.246, whose API differs, refuses the module and runs everything else. A hook that throws is skipped. In each of these cases the terminal shows nothing, which is how it was before.
 
+## Background work and the delegation group
+
+Claude can end its turn to wait on work it started in the background. That work is a subagent, a background command or a workflow. Two things depend on knowing what is still running, and both read the same records. The records are kept per turn in `<connection>.turn-owned.jsonl`: one append-only line per launch and per end, keyed by the turn marker's `startedAt` so a new command never inherits an earlier one's work.
+
+- **Presence and the command's lifetime** (item `beb0e005`). Stop keeps the turn open while anything this turn launched is still in Claude Code's own `background_tasks` list (`backgroundHoldDecision`).
+- **Activity** (item `d2cbd4c6`). Background subagents appear in the room's Activity as one nested "Delegated to N agents" group, posted as a `phase: trail` with a `subagent` trail event (`hooks/scripts/delegation-trail.mjs`).
+  - A trail post must carry the exact command identity, because some server refusals end the turn they match. The identity is recorded once per turn and nothing is posted without one.
+  - Measured on 2.1.289: a subagent stops every time it reports, including "my command is still running, I'll wait", and while it waits the host lists its command but not the subagent. So a subagent has finished only when neither it nor anything it started is still listed (`stillAlive`).
+
 ## Requirements
 
 - **Node.js 18+** on your PATH (`node --version`). Required at runtime for the hooks/poller.

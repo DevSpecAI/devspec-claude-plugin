@@ -41,11 +41,21 @@ import {
   ownedOutstandingWork,
   parseBackgroundTasks,
 } from './background-work.mjs'
+import {
+  DELEGATED_KINDS,
+  delegatedChildren,
+  delegationEvent,
+  delegationText,
+  ensureTrailState,
+  latestDeliveredCommand,
+  postLatest,
+  turnIdentity,
+} from './delegation-trail.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
 
 // `background_launch` is the PostToolUse hook that records a background job a turn
 // started (item beb0e005); everything else is a turn boundary.
-const MODES = new Set(['user_prompt', 'stop', 'background_launch'])
+const MODES = new Set(['user_prompt', 'stop', 'background_launch', 'subagent_stop'])
 const mode = MODES.has(process.argv[2]) ? process.argv[2] : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
@@ -125,15 +135,58 @@ export function recordOwnedLaunch(connectionId, launch, { dir = CONNECTIONS_DIR,
   if (!marker || now - marker.startedAt >= MAX_TURN_MS) return false
   try {
     fs.mkdirSync(dir, { recursive: true })
+    const line = { id: launch.id, kind: launch.kind, turn: marker.startedAt, at: new Date(now).toISOString() }
+    if (launch.label) line.label = launch.label
+    if (launch.model) line.model = launch.model
+    if (launch.parent) line.parent = launch.parent
+    fs.appendFileSync(ownedWorkPath(connectionId, dir), `${JSON.stringify(line)}\n`, { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Record that owned work ended, on the same append-only file (item d2cbd4c6).
+ * Only work the open turn launched can end in it; anything else is ignored.
+ */
+export function recordOwnedEnd(connectionId, id, { status = 'completed', dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
+  const marker = readTurnMarker(connectionId, dir)
+  if (!marker || now - marker.startedAt >= MAX_TURN_MS || typeof id !== 'string') return false
+  const lines = readOwnedLines(connectionId, marker, dir)
+  if (!lines.some((entry) => entry.id === id && typeof entry.ended !== 'string')) return false
+  if (lines.some((entry) => entry.id === id && typeof entry.ended === 'string')) return false
+  try {
     fs.appendFileSync(
       ownedWorkPath(connectionId, dir),
-      `${JSON.stringify({ id: launch.id, kind: launch.kind, turn: marker.startedAt, at: new Date(now).toISOString() })}\n`,
+      `${JSON.stringify({ id, turn: marker.startedAt, ended: new Date(now).toISOString(), status })}\n`,
       { mode: 0o600 },
     )
     return true
   } catch {
     return false
   }
+}
+
+/** Every owned-work line the turn `marker` names, launches and ends alike. */
+export function readOwnedLines(connectionId, marker, dir = CONNECTIONS_DIR) {
+  if (!connectionId || typeof marker?.startedAt !== 'number') return []
+  let text = ''
+  try {
+    text = fs.readFileSync(ownedWorkPath(connectionId, dir), 'utf8')
+  } catch {
+    return []
+  }
+  const lines = []
+  for (const line of text.split('\n')) {
+    try {
+      const entry = JSON.parse(line)
+      if (entry?.turn === marker.startedAt && typeof entry.id === 'string') lines.push(entry)
+    } catch {
+      /* a torn or foreign line is not a record */
+    }
+  }
+  return lines
 }
 
 /** The ids the turn `marker` names launched, oldest first. */
@@ -149,7 +202,7 @@ export function readOwnedIds(connectionId, marker, dir = CONNECTIONS_DIR) {
   for (const line of text.split('\n')) {
     try {
       const entry = JSON.parse(line)
-      if (entry?.turn === marker.startedAt && typeof entry.id === 'string' && !ids.includes(entry.id)) ids.push(entry.id)
+      if (entry?.turn === marker.startedAt && typeof entry.id === 'string' && typeof entry.ended !== 'string' && !ids.includes(entry.id)) ids.push(entry.id)
     } catch {
       /* a torn or foreign line is not a launch */
     }
@@ -206,11 +259,149 @@ export function recordBackgroundLaunch(raw, { load = loadState, record = recordO
   } catch {
     return false
   }
-  const launch = launchedBackgroundWork(input?.tool_name, input?.tool_response)
-  if (!launch) return false
+  const found = launchedBackgroundWork(input?.tool_name, input?.tool_response)
+  if (!found) return false
+  // Work a subagent started belongs to that subagent too: it is what the subagent is
+  // still waiting on after it stops to report (item d2cbd4c6).
+  const launch = typeof input?.agent_id === 'string' && input.agent_id ? { ...found, parent: input.agent_id } : found
   const state = load(resolveHookConversationId(raw))
   if (!state?.connection_id) return false
-  return record(state.connection_id, launch)
+  const recorded = record(state.connection_id, launch)
+  return recorded ? { state, launch } : false
+}
+
+/** The auth a hook posts with: the connection's own token and server, as main() uses. */
+function hookAuth(state) {
+  let token = state.token
+  let mcpUrl = state.mcp_url
+  if (!token) {
+    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
+    token = auth.token
+    mcpUrl = mcpUrl || auth.mcp_url
+  }
+  return token ? { token, mcpUrl: mcpUrl || 'https://api.devspec.ai/api/mcp' } : null
+}
+
+/**
+ * Bring this turn's delegation group in the room's Activity up to date (item
+ * d2cbd4c6). Posts nothing when the turn delegated nothing, when the connection is
+ * not in a room, or when the turn's command identity cannot be established.
+ * Failure is silent: Activity is a view, and the command does not depend on it.
+ */
+export async function updateDelegationTrail(state, {
+  dir = CONNECTIONS_DIR,
+  marker = readTurnMarker(state?.connection_id, dir),
+  call = mcpToolsCall,
+  auth = hookAuth(state || {}),
+} = {}) {
+  const connectionId = state?.connection_id
+  if (!connectionId || !state.session_id || !marker || !auth) return { posted: 0 }
+  const children = () => delegatedChildren(readOwnedLines(connectionId, marker, dir), marker.startedAt)
+  if (children().length === 0) return { posted: 0 }
+  const trail = ensureTrailState(connectionId, {
+    dir,
+    turn: marker.startedAt,
+    resolveIdentity: () => {
+      let inbox = ''
+      try {
+        inbox = fs.readFileSync(inboxPathFor(connectionId, dir), 'utf8')
+      } catch {
+        /* no delivered commands: only a local turn can be identified */
+      }
+      return turnIdentity({ state, marker, latestCommand: latestDeliveredCommand(inbox) })
+    },
+  })
+  if (!trail) return { posted: 0 }
+  return postLatest(connectionId, {
+    dir,
+    build: () => {
+      const lines = readOwnedLines(connectionId, marker, dir)
+      const event = delegationEvent(delegatedChildren(lines, marker.startedAt), { seq: trail.delegationSeq })
+      return event ? { event, text: delegationText(lines, marker.startedAt) } : null
+    },
+    post: async ({ event, text }) => {
+      try {
+        await call({
+          mcpUrl: auth.mcpUrl,
+          token: auth.token,
+          name: 'post_session_message',
+          arguments: {
+            connection_id: connectionId,
+            agent_name: AGENT_NAME,
+            phase: 'trail',
+            message: text,
+            trail_events: [event],
+            ...trail.identity,
+          },
+          timeoutMs: 8_000,
+        })
+        return true
+      } catch {
+        return false
+      }
+    },
+  })
+}
+
+/**
+ * SubagentStop: a subagent this turn launched has finished. Record its end and bring
+ * the delegation group up to date.
+ */
+export async function recordSubagentStop(raw, { load = loadState } = {}) {
+  let input
+  try {
+    input = JSON.parse(raw || '{}')
+  } catch {
+    return false
+  }
+  const agentId = typeof input?.agent_id === 'string' ? input.agent_id : null
+  if (!agentId) return false
+  const state = load(resolveHookConversationId(raw))
+  if (!state?.connection_id) return false
+  if (subagentStillWaiting(state.connection_id, agentId, parseBackgroundTasks(raw))) return false
+  if (!recordOwnedEnd(state.connection_id, agentId)) return false
+  await updateDelegationTrail(state)
+  return true
+}
+
+/**
+ * Is owned work `id` still alive: in the host's in-flight list itself, or through
+ * anything it started (recursively) that is?
+ *
+ * Measured 2026-10-05 on Claude Code 2.1.289: a subagent stops every time it reports,
+ * including to say "my command is still running, I'll wait". While it waits, the
+ * host lists the subagent's background command but NOT the subagent. So a subagent
+ * has finished only when neither it nor anything it started is still listed.
+ */
+export function stillAlive(id, lines, listed) {
+  const childrenOf = new Map()
+  for (const entry of lines) {
+    if (typeof entry.parent === 'string' && typeof entry.ended !== 'string') {
+      if (!childrenOf.has(entry.parent)) childrenOf.set(entry.parent, [])
+      childrenOf.get(entry.parent).push(entry.id)
+    }
+  }
+  const seen = new Set()
+  const visit = (current) => {
+    if (seen.has(current)) return false
+    seen.add(current)
+    if (listed.has(current)) return true
+    return (childrenOf.get(current) || []).some(visit)
+  }
+  return visit(id)
+}
+
+/**
+ * A subagent's stop is final unless something it started is still running. It is
+ * always listed itself at its own stop, so only its own work decides. A host that
+ * sends no list cannot tell an interim stop from the last one, so it is taken as final.
+ */
+export function subagentStillWaiting(connectionId, agentId, backgroundTasks, { dir = CONNECTIONS_DIR } = {}) {
+  if (!Array.isArray(backgroundTasks)) return false
+  const marker = readTurnMarker(connectionId, dir)
+  if (!marker) return false
+  const listed = new Set(backgroundTasks.map((task) => task?.id).filter((taskId) => taskId !== agentId))
+  return stillAlive(agentId, readOwnedLines(connectionId, marker, dir), listed)
 }
 
 /** The transcript path Claude Code passes every hook on stdin. */
@@ -227,6 +418,7 @@ export function clearTurnMarker(connectionId) {
   try {
     fs.rmSync(turnMarkerPath(connectionId), { force: true })
     fs.rmSync(ownedWorkPath(connectionId), { force: true })
+    fs.rmSync(path.join(CONNECTIONS_DIR, `${connectionId}.turn-trail.json`), { force: true })
   } catch {
     /* ignore */
   }
@@ -800,9 +992,18 @@ async function main() {
   const raw = readStdin()
   if (mode === 'background_launch') {
     try {
-      recordBackgroundLaunch(raw)
+      const recorded = recordBackgroundLaunch(raw)
+      if (recorded && DELEGATED_KINDS.has(recorded.launch.kind)) await updateDelegationTrail(recorded.state)
     } catch {
       /* a launch we could not record only means the turn may close early */
+    }
+    process.exit(0)
+  }
+  if (mode === 'subagent_stop') {
+    try {
+      await recordSubagentStop(raw)
+    } catch {
+      /* Activity is a view; the command never depends on it */
     }
     process.exit(0)
   }
@@ -876,6 +1077,21 @@ async function main() {
     process.stderr.write(
       `[devspec-remote] command kept open: ${backgroundHold.length} background job(s) still running\n`,
     )
+  }
+  // Delegated work the host no longer lists has ended; the group says so before the
+  // turn's records are cleared (item d2cbd4c6).
+  const hostList = turnMarker ? parseBackgroundTasks(raw) : null
+  if (turnMarker && Array.isArray(hostList)) {
+    try {
+      const listed = new Set(hostList.map((task) => task?.id))
+      const lines = readOwnedLines(connectionId, turnMarker)
+      for (const child of delegatedChildren(lines, turnMarker.startedAt)) {
+        if (child.status === 'running' && !stillAlive(child.id, lines, listed)) recordOwnedEnd(connectionId, child.id)
+      }
+      await updateDelegationTrail(state, { marker: turnMarker })
+    } catch {
+      /* Activity is a view; the turn's end never depends on it */
+    }
   }
 
   try {

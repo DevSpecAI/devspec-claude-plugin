@@ -152,8 +152,16 @@ describe('launchedBackgroundWork — the id a tool call left running, from its o
       { id: 'bvem1pf78', kind: 'shell' },
     )
     assert.deepEqual(
-      launchedBackgroundWork('Agent', { agentId: 'a9f2b562e4a5fba8e', status: 'async_launched', isAsync: true, description: 'sleep probe' }),
-      { id: 'a9f2b562e4a5fba8e', kind: 'subagent' },
+      launchedBackgroundWork('Agent', {
+        agentId: 'a9f2b562e4a5fba8e',
+        status: 'async_launched',
+        isAsync: true,
+        description: 'sleep probe',
+        resolvedModel: 'claude-sonnet-5-5',
+        prompt: 'Run `sleep 15` with Bash, then reply done.',
+      }),
+      // The label and model are carried for Activity (item d2cbd4c6); the prompt never is.
+      { id: 'a9f2b562e4a5fba8e', kind: 'subagent', label: 'sleep probe', model: 'claude-sonnet-5-5' },
     )
     assert.deepEqual(launchedBackgroundWork('Workflow', { taskId: 'wf_8k2j3' }), { id: 'wf_8k2j3', kind: 'workflow' })
   })

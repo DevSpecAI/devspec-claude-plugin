@@ -161,7 +161,7 @@ export function outstandingBackgroundWorkFromFile(transcriptPath, sinceMs) {
  *   - Workflow → `taskId`
  * Each id is the one the host lists the job under in `background_tasks`.
  *
- * @returns {{ id: string, kind: 'shell'|'subagent'|'workflow' } | null}
+ * @returns {{ id: string, kind: 'shell'|'subagent'|'workflow', label?: string, model?: string } | null}
  */
 export function launchedBackgroundWork(toolName, toolResponse) {
   const res = toolResponse && typeof toolResponse === 'object' ? toolResponse : null
@@ -174,7 +174,13 @@ export function launchedBackgroundWork(toolName, toolResponse) {
     }
     case 'Agent': {
       const agentId = id(res.agentId)
-      return agentId && res.status === 'async_launched' ? { id: agentId, kind: 'subagent' } : null
+      if (!agentId || res.status !== 'async_launched') return null
+      // The label Claude gave the work and the model the host resolved, for Activity
+      // (item d2cbd4c6). Never the prompt.
+      const launch = { id: agentId, kind: 'subagent' }
+      if (typeof res.description === 'string' && res.description.trim()) launch.label = res.description.trim()
+      if (typeof res.resolvedModel === 'string' && res.resolvedModel.trim()) launch.model = res.resolvedModel.trim()
+      return launch
     }
     case 'Workflow': {
       const taskId = id(res.taskId)

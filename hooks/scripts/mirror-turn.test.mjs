@@ -786,7 +786,7 @@ describe('recordOwnedLaunch / readOwnedIds — a turn owns the background work i
     const load = () => ({ connection_id: CONNECTION })
     const record = (connectionId, launch) => { recorded.push([connectionId, launch]); return true }
     const post = (tool_name, tool_response) => JSON.stringify({ session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name, tool_response })
-    assert.equal(recordBackgroundLaunch(post('Agent', { agentId: 'a9f2b562e4a5fba8e', status: 'async_launched', isAsync: true }), { load, record }), true)
+    assert.ok(recordBackgroundLaunch(post('Agent', { agentId: 'a9f2b562e4a5fba8e', status: 'async_launched', isAsync: true }), { load, record }))
     assert.equal(recordBackgroundLaunch(post('Bash', { stdout: '', stderr: '', interrupted: false }), { load, record }), false)
     assert.deepEqual(recorded, [[CONNECTION, { id: 'a9f2b562e4a5fba8e', kind: 'subagent' }]])
     // A conversation with no connection records nothing.

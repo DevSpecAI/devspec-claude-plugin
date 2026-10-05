@@ -61,7 +61,7 @@ describe('withOwnConnection', () => {
     assert.equal(withOwnConnection('post_session_message', room, MINE), room)
   })
   it('never aims a call whose subject is a connection', () => {
-    for (const tool of ['register_connection', 'attach_connection', 'detach_connection', 'control_connection',
+    for (const tool of ['register_connection', 'attach_connection', 'detach_connection',
       'heartbeat_connection', 'poll_connection', 'verify_agent_connection', 'get_connection_dispatch',
       'report_pickup', 'report_keepalive', 'report_complete']) {
       const args = {}

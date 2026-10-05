@@ -82,17 +82,15 @@ export function saveTiersText(connectionId, text, {dir=CONNECTIONS_DIR}={}) {
 }
 
 /**
- * What the model sees instead of the rules when they are too long for the channel.
- *
- * Every host channel has a ceiling, and past it the text does not arrive: Claude Code
- * turns an over-long hook string into a 2,000-character preview plus a file path it
- * never asks the model to read (item 1dbb6d5c). So the rules go to a file, and this
- * short notice — which always fits — tells the model to read all of it.
+ * The one line the model is given for its rules (decision 86111641): where the full
+ * rules are, and to read all of them. The same short notice at every size, so how the
+ * rules arrive never depends on how many there are, and nothing is ever cut: Claude
+ * Code turns an over-long hook string into a 2,000-character preview plus a file path
+ * it never asks the model to read (item 1dbb6d5c).
  */
-export function renderTiersPointer(file, chars) {
+export function renderTiersPointer(file) {
   return '\n## Instructions in force for this run\n\n' +
-    `The owner's and this project's rules for this run are ${chars.toLocaleString('en-US')} characters, too long to show here. ` +
-    `They are saved in full at:\n\n${file}\n\n` +
+    `The owner's and this project's rules for this run are saved in full at:\n\n${file}\n\n` +
     'Read that whole file now, before acting on any request, and follow it for the rest of this conversation. ' +
     'If it is shown to you in parts, keep reading to the end. A different file name later means the rules changed: read the new one.\n'
 }
@@ -146,24 +144,20 @@ export function storeTiers(connectionId, registration, { dir = CONNECTIONS_DIR, 
 /**
  * What the first command of a conversation should read.
  *
- * Returns `{ status: 'deliver', text }` the first time a conversation asks for a given
- * set of tiers, `{ status: 'unchanged' }` when that same conversation asks again, and
- * `{ status: 'absent' }` when nothing was filed, including connections made by an
- * older plugin. Current manual and automatic connections both retain full snapshots.
+ * The rules always go to a private file named by their content, and the reader gets
+ * `{ status: 'pointer', text, file }`, where `text` is the short notice to show the
+ * model (renderTiersPointer). The same conversation asking again for the same rules gets
+ * `{ status: 'unchanged', pointer }`: a hook says nothing more, and a reader that
+ * restates the rules (orient) repeats the pointer. `{ status: 'absent' }` means nothing
+ * was filed, including connections made by an older plugin.
  *
- * `inlineLimit` is how much the caller's channel can actually show the model. Tiers
- * longer than that are saved to a file and returned as `{ status: 'pointer', text,
- * file }`, where `text` is the short notice to emit instead. The receipt records which
- * of the two happened, so a later reader never says "already delivered" about rules
- * that were only pointed to: it gets `{ status: 'unchanged', pointer }` to restate, or
- * the full text when its own channel is big enough. A receipt with no mode was written
- * before this distinction existed, when over-long tiers were lost while still being
- * marked delivered (item 1dbb6d5c), so it counts as no delivery at all.
+ * The receipt records that this conversation was pointed at these exact rules. A receipt
+ * from an earlier delivery mode counts as no delivery, so it is pointed again once.
  *
  * `localId` keys the delivery: after `/clear` the conversation is new and holds none
- * of what the old one read, so it is handed the texts again.
+ * of what the old one read, so it is pointed at the rules again.
  */
-export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR, force = false, inlineLimit = Infinity, writeReceipt = writePrivateJson } = {}) {
+export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR, force = false, writeReceipt = writePrivateJson } = {}) {
   const file = tiersPath(connectionId, dir)
   const read = readPrivateJsonResult(file)
   if (read.status !== STATE_OK || !read.value) return { status: 'absent' }
@@ -173,20 +167,13 @@ export function takeTiersFor(connectionId, localId, { dir = CONNECTIONS_DIR, for
   const reader = createHash('sha256').update(localId || 'unknown').digest('hex')
   const receiptFile = path.join(dir,`${connectionId}.tiers-delivery-${reader}.json`)
   const receipt = readPrivateJsonResult(receiptFile)
-  const prior = receipt.status === STATE_OK && receipt.value?.delivered_key === deliveredKey ? receipt.value.mode : null
-  const fits = text.length <= inlineLimit
-  if (!force && prior === 'inline') return { status: 'unchanged' }
+  const pointedBefore = receipt.status === STATE_OK && receipt.value?.delivered_key === deliveredKey && receipt.value.mode === 'pointer'
   // Readers only write their receipt and the content-addressed text file. Rewriting the
   // tier cache here could overwrite a newer poll/attach snapshot published between this
   // read and this write.
-  if (!force && prior === 'pointer' && !fits) {
-    return { status: 'unchanged', pointer: renderTiersPointer(saveTiersText(connectionId, text, { dir }), text.length) }
-  }
-  if (fits) {
-    writeReceipt(receiptFile, { delivered_key: deliveredKey, mode: 'inline' })
-    return { status: 'deliver', text }
-  }
   const saved = saveTiersText(connectionId, text, { dir })
+  const pointer = renderTiersPointer(saved)
+  if (!force && pointedBefore) return { status: 'unchanged', pointer }
   writeReceipt(receiptFile, { delivered_key: deliveredKey, mode: 'pointer' })
-  return { status: 'pointer', text: renderTiersPointer(saved, text.length), file: saved }
+  return { status: 'pointer', text: pointer, file: saved }
 }

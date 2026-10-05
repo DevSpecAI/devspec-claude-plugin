@@ -64,7 +64,9 @@ test('real hook CLI supplies startup and local prompt context; orient supplies r
    assert.equal(child.status,0,child.stderr);return child.stdout
  }
  const first=JSON.parse(cli('UserPromptSubmit')).hookSpecificOutput
- assert.equal(first.hookEventName,'UserPromptSubmit');assert.match(first.additionalContext,/repo-24/);assert.match(first.additionalContext,/Project rule fixture/)
+ assert.equal(first.hookEventName,'UserPromptSubmit');assert.match(first.additionalContext,/repo-24/)
+ const tierFile=first.additionalContext.match(/(\/\S+\.tiers-[0-9a-f]{64}\.txt)/)?.[1]
+ assert.ok(tierFile,'the hook points at the rules file');assert.match(fs.readFileSync(tierFile,'utf8'),/Project rule fixture/)
  assert.equal(cli('UserPromptSubmit'),'')
  assert.match(JSON.parse(cli('SessionStart')).hookSpecificOutput.additionalContext,/repo-24/)
  const changed=structuredClone(registration);changed.repository_context.repositories[0].target_branch='release'
@@ -78,9 +80,11 @@ test('real hook CLI supplies startup and local prompt context; orient supplies r
  assert.equal(cli('SessionStart'),'','a mismatched connection cannot leak either repository data or project rules')
 }))
 
-// Item 1dbb6d5c: Claude Code shows a hook string of up to 10,000 characters; past that the
-// model gets a 2,000-character preview. Rules first, and nothing over the cap, ever.
-test('the real hook never exceeds the hook cap, leads with the rules, and orient never claims pointed-to rules are held',()=>temp(home=>{
+// Item 1dbb6d5c / decision 86111641: Claude Code shows a hook string of up to 10,000
+// characters, and past that the model gets a 2,000-character preview. The rules always
+// go to a file the hook points at, with the same line at every size, so the block leads
+// with the rules and never comes near the cap.
+test('the real hook points at the rules at every size, leads with them, and never exceeds the hook cap',()=>temp(home=>{
  const dir=path.join(home,'.devspec','remote-control','connections'),connection='fixture-connection'
  writePrivateJson(path.join(dir,`${connection}.json`),{connection_id:connection,session_id:null,session_codename:'Test Agent'})
  storeRepositoryContext(connection,registration,{dir})
@@ -92,39 +96,24 @@ test('the real hook never exceeds the hook cap, leads with the rules, and orient
  }
  const hook=local=>JSON.parse(run(local,'context')).hookSpecificOutput.additionalContext
  const fileIn=text=>text.match(/(\/\S+\.tiers-[0-9a-f]{64}\.txt)/)?.[1]
-
- // Small rules: inline, and ahead of the repository data.
- storeTiers(connection,{project_agent_rules:'Small project rule',instruction_tiers_hash:'small',instruction_tiers_version:1},{dir})
- const small=hook('conv-small')
- assert.ok(small.indexOf('Small project rule')<small.indexOf('<devspec-repository-data>'))
- assert.ok(small.length<=10_000)
-
- // Rules that fit, with repository data that would push the block over: the data yields.
- storeTiers(connection,{project_agent_rules:'r'.repeat(8_000)+'TAIL',instruction_tiers_hash:'near',instruction_tiers_version:1},{dir})
- const near=hook('conv-near')
- assert.ok(near.length<=10_000,`hook block is ${near.length}`)
- assert.match(near,/rTAIL/);assert.doesNotMatch(near,/<devspec-repository-data>/)
- const repoFile=near.match(/(\/\S+\.repositories-[0-9a-f]{64}\.txt)/)?.[1]
- assert.ok(repoFile);assert.match(fs.readFileSync(repoFile,'utf8'),/repo-24/)
-
- // Today's real shape (~20k of rules): a pointer in the hook, the full rules from orient.
- storeTiers(connection,{project_agent_rules:'rule '.repeat(4_000)+'MIDDLE-END',instruction_tiers_hash:'mid',instruction_tiers_version:1},{dir})
- const mid=hook('conv-mid')
- assert.ok(mid.length<=10_000);assert.doesNotMatch(mid,/MIDDLE-END/)
- assert.match(fs.readFileSync(fileIn(mid),'utf8'),/MIDDLE-END/)
- const orientMid=run('conv-mid','orient')
- assert.match(orientMid,/MIDDLE-END/);assert.doesNotMatch(orientMid,/already delivered/)
- assert.match(run('conv-mid','orient'),/already delivered/,'held once shown in full')
-
- // Beyond what orient can show (toward the server maxima): both restate the file.
- storeTiers(connection,{project_agent_rules:'rule '.repeat(20_000)+'BIG-END',instruction_tiers_hash:'big',instruction_tiers_version:1},{dir})
- const big=hook('conv-big')
- assert.ok(big.length<=10_000)
- assert.equal(run('conv-big','context'),'','the hook does not repeat the notice every prompt')
- const orientBig=run('conv-big','orient')
- assert.ok(orientBig.length<=30_000,`orient output is ${orientBig.length}`)
- assert.equal(fileIn(orientBig),fileIn(big));assert.doesNotMatch(orientBig,/already delivered/)
- assert.match(fs.readFileSync(fileIn(big),'utf8'),/BIG-END/)
- // After compaction (SessionStart) the notice comes back.
- assert.equal(fileIn(JSON.parse(run('conv-big','context','SessionStart')).hookSpecificOutput.additionalContext),fileIn(big))
+ const shapes=new Set()
+ for (const [hash,rules,end] of [['small','Small project rule','Small project rule'],['near','r'.repeat(8_000)+'TAIL','rTAIL'],['big','rule '.repeat(20_000)+'BIG-END','BIG-END']]) {
+  storeTiers(connection,{project_agent_rules:rules,instruction_tiers_hash:hash,instruction_tiers_version:1},{dir})
+  const local=`conv-${hash}`
+  const block=hook(local)
+  assert.ok(block.length<=10_000,`hook block is ${block.length}`)
+  const file=fileIn(block)
+  assert.ok(file,'the hook points at the rules file');assert.ok(!block.includes(end),'the rules themselves are never inline')
+  assert.match(fs.readFileSync(file,'utf8'),new RegExp(end),'the file holds the complete rules')
+  // The pointer is short, so the repository data always fits beside it, after the rules.
+  assert.ok(block.indexOf(file)<block.indexOf('<devspec-repository-data>'))
+  shapes.add(block.slice(0,block.indexOf('<devspec-repository-data>')).replace(file,'<file>'))
+  assert.equal(run(local,'context'),'','the hook does not repeat the notice every prompt')
+  // orient restates where the rules are, and never claims they were shown.
+  const orient=run(local,'orient')
+  assert.equal(fileIn(orient),file);assert.ok(!orient.includes(end))
+  // After compaction (SessionStart) the notice comes back.
+  assert.equal(fileIn(JSON.parse(run(local,'context','SessionStart')).hookSpecificOutput.additionalContext),file)
+ }
+ assert.equal(shapes.size,1,'the same notice whatever the size of the rules')
 }))

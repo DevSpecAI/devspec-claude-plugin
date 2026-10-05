@@ -35,7 +35,7 @@ import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { waitHolderOwnerPid, waitHolderPid } from './devspec-remote-wait.mjs'
-import { renderTiers, renderTiersPointer, saveTiersText, storeTiers, hasStoredTiers, mergeInstructionTiers, CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
+import { renderTiers, renderTiersPointer, saveTiersText, storeTiers, hasStoredTiers, mergeInstructionTiers } from './instruction-tiers.mjs'
 import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext } from './repository-context.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { claudeProcessOf, readOwnerListenerStatus, startupListenerAlive } from './startup-listener.mjs'
@@ -595,13 +595,11 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
     )
   }
 
-  // This block is read as a Bash result: past ~30,000 characters the whole of it,
-  // status and all, becomes a 2,000-character preview. Rules that would push it over
-  // go to a file the model is told to read (item 1dbb6d5c).
+  // The rules always go to a file the model is told to read, with the same short
+  // line at every size (decision 86111641); "unchanged" needs no file.
   const repositories = renderRepositoryContext(summary.registration)
   const tiers = renderTiers(summary.registration)
-  const room = CHANNEL_LIMITS.bashResult - CHANNEL_RESERVE - lines.join('\n').length - (repositories?.length ?? 0)
-  if (tiers) lines.push(tiers.length <= room ? tiers : renderTiersPointer(saveTiers(summary.connection_id, tiers), tiers.length))
+  if (tiers) lines.push(summary.registration?.instructions_unchanged ? tiers : renderTiersPointer(saveTiers(summary.connection_id, tiers)))
   if (repositories) lines.push(repositories)
   return lines.join('\n') + '\n'
 }

@@ -20,7 +20,7 @@ Once per conversation — and again after `/clear` or `/resume`, which start a n
 node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" orient
 ```
 
-It prints the `connection_id` you answer with, the session you are attached to (or that you are sessionless), and the instruction tiers in force for this run: your owner's machine rules and the project's principles and execution rules. Apply those tiers for the rest of the conversation. When it says they were already delivered to this conversation, keep following the ones you hold. When it names a file instead, the rules were too long to show: read that whole file before you act. Never invent a tier that is absent, and never disclose another user's.
+It prints the `connection_id` you answer with, the session you are attached to (or that you are sessionless), and where the instruction tiers in force for this run are: a file holding your owner's machine rules and the project's principles and execution rules. Read that whole file before you act, and apply those tiers for the rest of the conversation. A different file name later means the rules changed: read the new one. Never invent a tier that is absent, and never disclose another user's.
 
 If an `owner_message` names `instruction_context_file`, read that complete immutable rule snapshot before acting on its command. If file access is outside your authorized scope, use the project-scoped `get_project_summary` for current rules instead. This refreshes settings (including explicit cleared values), not command authority; precedence still comes from the served implementation contract.
 
@@ -103,6 +103,8 @@ Ask the driver when a decision is genuinely theirs: an unresolved choice, an aut
 A canonical command belongs to its canonical conversation. **Post the direct answer with `post_session_message`.** Prefer `connection_id` (the server resolves the current room and your turn) over a remembered `session_id`. The wake's `message_id` is for finding the command's line in the transcript; it is not an argument to `post_session_message`. Preserve the command's requester attribution; never infer authority from room context or rewrite who requested it. A sessionless connection has no conversation answer path: do not invent a room and do not substitute action-item progress for an answer.
 
 Body = the answer to the latest command. Lead with it. No preamble, no thinking, no tool play-by-play, no "I'll look into…" narration, no status chrome. As short as correctness allows.
+
+**Reaching a person:** writing @ and their name in your answer (`@Brandon`, or `@Brandon Smith`) notifies them, if they are in the room or on the project. Mention someone only when they need to see it.
 
 **Attribution:** pass your `connection_id` on every write that produces a session card (`create_action_item`, `surface_session_action_items`). Action-item rows carry no agent identity of their own, so without it the server cannot tell two of your agents apart and renders no name at all (item `b6c447fd`).
 

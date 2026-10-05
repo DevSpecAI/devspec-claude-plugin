@@ -1478,8 +1478,8 @@ if (isMain) {
     // cuts short keeps its head, and the head must be the rules (item 1dbb6d5c).
     const force = cmd === 'context' && args.event === 'SessionStart'
     const room = (cmd === 'context' ? CHANNEL_LIMITS.hookContext : CHANNEL_LIMITS.bashResult) - CHANNEL_RESERVE
-    const tiers = takeTiersFor(connectionId, detected.local_id, { force, inlineLimit: room })
-    const tierText = tiers.status === 'deliver' || tiers.status === 'pointer' ? tiers.text : ''
+    const tiers = takeTiersFor(connectionId, detected.local_id, { force })
+    const tierText = tiers.status === 'pointer' ? tiers.text : ''
     const repositories = takeRepositoryContext(connectionId, detected.local_id, {
       projectId: choice?.status === 'selected' ? choice.project.id : undefined,
       force,
@@ -1503,12 +1503,10 @@ if (isMain) {
       `room_state: ${roomStatePath(connectionId, CONNECTIONS_DIR)}`,
     ]
     if (tierText) lines.push(tierText.trimEnd())
-    // Only rules that reached this conversation in full count as held; a pointer is
-    // restated until the rules fit a channel that can show them (item 1dbb6d5c).
-    else if (tiers.status === 'unchanged' && tiers.pointer) lines.push(tiers.pointer.trimEnd())
-    else if (tiers.status === 'unchanged') {
-      lines.push('\nInstructions: already delivered to this conversation and unchanged — keep following them.')
-    } else {
+    // Orient restates where the rules are, so the model can always go back to them
+    // (decision 86111641); the hooks above stay quiet once a conversation was pointed.
+    else if (tiers.status === 'unchanged') lines.push(tiers.pointer.trimEnd())
+    else {
       lines.push('\nInstruction context is unavailable locally. Use get_project_summary for current project and owner rules before project work.')
     }
     if (repositories) lines.push('', repositories)

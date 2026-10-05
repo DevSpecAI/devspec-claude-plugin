@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.36.0 - 2026-10-05
+
+- Changed: your and your project's rules now always reach Claude the same way, as one short line naming the file that holds them all, which Claude is told to read in full. Before, small rule sets were pasted into the conversation and large ones went to a file, so how the rules arrived depended on how many there were. Nothing is ever cut, and a changed rule set gets a new file name so Claude knows to read it again. `orient` names the same file.
+- New: the remote-command guidance says that writing @ and a person's name in an answer notifies that person.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.35.2 - 2026-10-05
 
 - New: when Claude hands work to subagents and waits, the session's Activity now shows them, the same way it does for Pi. You'll see "Reviewing with 2 agents", one row per subagent with the name Claude gave it and its model, and each row turns finished, with how long it took, when that subagent is actually done. A subagent that stops only to say it is still waiting on its own command stays running until it really finishes.

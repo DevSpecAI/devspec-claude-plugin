@@ -179,16 +179,17 @@ describe('instruction tiers wait for the first command', () => {
     owner_agent_rules: 'Check UI work in a browser.',
   }
 
-  it('delivers once per conversation, then says unchanged', () => {
+  it('points each conversation at the rules once, then says unchanged', () => {
     const dir = tmpDir('devspec-tiers-')
     assert.equal(storeTiers('c-1', registration, { dir }), true)
     const first = takeTiersFor('c-1', 'conv-a', { dir })
-    assert.equal(first.status, 'deliver')
-    assert.match(first.text, /Commit only your own files/)
-    assert.match(first.text, /Check UI work in a browser/)
+    assert.equal(first.status, 'pointer')
+    const rules = fs.readFileSync(first.file, 'utf8')
+    assert.match(rules, /Commit only your own files/)
+    assert.match(rules, /Check UI work in a browser/)
     assert.equal(takeTiersFor('c-1', 'conv-a', { dir }).status, 'unchanged')
     // After /clear the conversation is new and holds none of it.
-    assert.equal(takeTiersFor('c-1', 'conv-b', { dir }).status, 'deliver')
+    assert.equal(takeTiersFor('c-1', 'conv-b', { dir }).status, 'pointer')
   })
 
   it('never overwrites filed texts with an instructions_unchanged reply', () => {

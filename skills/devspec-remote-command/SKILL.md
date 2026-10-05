@@ -122,9 +122,10 @@ The flag is a statement about your turn; only you know when that ends.
 **Waiting on background work.** To wait, start the job with
 `run_in_background`: it wakes you when it exits, and one left without a timeout
 woke an agent after 36 minutes (2026-09-24). Claude Code refuses a standalone
-foreground `sleep`. While a job you started for a command is still running,
-ending your turn does not end the command: the Stop hook keeps it open, so what
-you do when the job wakes you still carries that command and its requester.
+foreground `sleep`. While work you started for a command is still running in
+the background (a background command, a subagent, a workflow), ending your turn
+does not end the command: the Stop hook keeps it open, so what you do when that
+work wakes you still carries that command and its requester.
 Finish as usual, with the answer posted with `connection_id` and
 `complete_turn: true`. Something that finishes after you already gave your final
 answer (a deploy you were watching) wakes you as a new turn: post what happened

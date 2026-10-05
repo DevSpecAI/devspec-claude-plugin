@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.35.1 - 2026-10-05
+
+- Fixed: when Claude handed work to a subagent and ended its turn to wait, DevSpec showed the agent idle while the subagent was still working. The request also closed at that point, so what Claude did after the subagent reported back was not recorded against the person who asked. The plugin now asks Claude Code what is still running, and keeps the agent Working and the request open until the subagents, background commands and workflows Claude started for that request have finished and Claude has answered. DevSpec's own always-on listener never counts, and neither does work left over from an earlier request. On Claude Code versions that don't report running work, behaviour is the same as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.35.0 - 2026-10-05
 
 - Changed: DevSpec now shows Claude only the DevSpec tools it should call. The connection plumbing that the plugin's own scripts use (registering, polling, keep-alives, pickup and completion reports) no longer appears in Claude's tool list. The plugin declares the two plumbing tools Claude still calls itself, to mark the connection offline and detach it in `/devspec:devspec.remote-stop`, so those stay available. Everything else works as before.

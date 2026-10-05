@@ -27,6 +27,11 @@ import {
   stopBondDiagnostic,
   backgroundHoldDecision,
   parseTranscriptPath,
+  recordOwnedLaunch,
+  readOwnedIds,
+  recordBackgroundLaunch,
+  turnMarkerPath,
+  ownedWorkPath,
 } from './mirror-turn.mjs'
 
 /** A pid above any plausible pid_max — guaranteed ESRCH, i.e. provably dead. */
@@ -650,5 +655,141 @@ describe('parseTranscriptPath', () => {
     assert.equal(parseTranscriptPath('{}'), null)
     assert.equal(parseTranscriptPath('not json'), null)
     assert.equal(parseTranscriptPath(''), null)
+  })
+})
+
+/**
+ * Item beb0e005: the host's own in-flight list decides. Shapes are the ones Claude Code
+ * 2.1.289 sent a probe on 2026-10-05, when one run started a background command and a
+ * subagent and then ended its turn. The DevSpec listener is in the list as `shell`.
+ */
+describe('backgroundHoldDecision — Claude Code says what is still running (item beb0e005)', () => {
+  const NOW = Date.parse('2026-10-05T15:30:00.000Z')
+  const marker = { startedAt: NOW - 30_000 }
+  const LISTENER = {
+    id: 'bjc8wt84h',
+    type: 'shell',
+    status: 'running',
+    description: 'DevSpec: messages sent to this agent (load the devspec-remote-command skill once per conversation, then answer each)',
+  }
+  const SHELL = { id: 'bvem1pf78', type: 'shell', status: 'running', description: 'Background sleep probe' }
+  const SUBAGENT = { id: 'a9f2b562e4a5fba8e', type: 'subagent', status: 'running', description: 'sleep probe' }
+  const neverTranscript = () => { throw new Error('the transcript must not be read when the host sends its list') }
+
+  it('holds while a subagent this command launched is running, which the transcript reader never saw', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER, SUBAGENT],
+      ownedIds: [SUBAGENT.id],
+      readOutstanding: neverTranscript,
+    })
+    assert.deepEqual(hold, [{ id: SUBAGENT.id, kind: 'subagent', description: 'sleep probe', status: 'running' }])
+  })
+
+  it('keeps holding after one job finishes while another is still running', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER, SUBAGENT],
+      ownedIds: [SHELL.id, SUBAGENT.id],
+      readOutstanding: neverTranscript,
+    })
+    assert.deepEqual(hold.map((job) => job.id), [SUBAGENT.id])
+  })
+
+  it('never holds for the DevSpec listener, which is always running and never launched by the turn', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER],
+      ownedIds: [SHELL.id, SUBAGENT.id],
+      readOutstanding: neverTranscript,
+    })
+    assert.equal(hold, null)
+  })
+
+  it('never holds for work an earlier command started', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER, SHELL, SUBAGENT],
+      ownedIds: [],
+      readOutstanding: neverTranscript,
+    })
+    assert.equal(hold, null)
+  })
+
+  it('falls back to the transcript only when the host sends no list', () => {
+    const job = { toolUseId: 'toolu_A', taskId: 'bxhtqls7l', tool: 'Bash', description: 'Sleep 40 seconds' }
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: null,
+      ownedIds: [],
+      readOutstanding: () => [job],
+    })
+    assert.deepEqual(hold, [job])
+  })
+})
+
+describe('recordOwnedLaunch / readOwnedIds — a turn owns the background work its tool calls start (item beb0e005)', () => {
+  const CONNECTION = '11111111-2222-4333-8444-555555555555'
+  const NOW = Date.parse('2026-10-05T15:30:00.000Z')
+  function withDir(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-owned-'))
+    try {
+      return fn(dir)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const openTurn = (dir, startedAt) => fs.writeFileSync(turnMarkerPath(CONNECTION, dir), JSON.stringify({ startedAt }), { mode: 0o600 })
+
+  it('records nothing when no turn is open', () => withDir((dir) => {
+    assert.equal(recordOwnedLaunch(CONNECTION, { id: 'bx1', kind: 'shell' }, { dir, now: NOW }), false)
+    assert.equal(fs.existsSync(ownedWorkPath(CONNECTION, dir)), false)
+  }))
+
+  it('records launches against the open turn, and a new command does not inherit them', () => withDir((dir) => {
+    openTurn(dir, NOW - 5_000)
+    assert.equal(recordOwnedLaunch(CONNECTION, { id: 'bx1', kind: 'shell' }, { dir, now: NOW }), true)
+    assert.equal(recordOwnedLaunch(CONNECTION, { id: 'a1', kind: 'subagent' }, { dir, now: NOW }), true)
+    assert.deepEqual(readOwnedIds(CONNECTION, { startedAt: NOW - 5_000 }, dir), ['bx1', 'a1'])
+    // The poller picks up the next command by writing a new start.
+    openTurn(dir, NOW + 1_000)
+    assert.deepEqual(readOwnedIds(CONNECTION, { startedAt: NOW + 1_000 }, dir), [])
+  }))
+
+  it('keeps every id when launches finish together in separate processes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-owned-'))
+    try {
+      openTurn(dir, NOW - 5_000)
+      const { spawn } = await import('node:child_process')
+      const script = `import { recordOwnedLaunch } from ${JSON.stringify(new URL('./mirror-turn.mjs', import.meta.url).href)}
+        recordOwnedLaunch(process.argv[1], { id: process.argv[2], kind: 'shell' }, { dir: process.argv[3], now: ${NOW} })`
+      const ids = Array.from({ length: 12 }, (_, i) => `b${i}`)
+      await Promise.all(ids.map((id) => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['--input-type=module', '-e', script, CONNECTION, id, dir], { stdio: 'ignore' })
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))))
+      })))
+      assert.deepEqual(readOwnedIds(CONNECTION, { startedAt: NOW - 5_000 }, dir).sort(), [...ids].sort())
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('records the id from the tool result Claude Code hands PostToolUse', () => {
+    // The conversation is resolved the way every hook resolves it (resolveHookConversationId);
+    // which id that is depends on the environment the test runs in, so the stub accepts any.
+    const recorded = []
+    const load = () => ({ connection_id: CONNECTION })
+    const record = (connectionId, launch) => { recorded.push([connectionId, launch]); return true }
+    const post = (tool_name, tool_response) => JSON.stringify({ session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name, tool_response })
+    assert.equal(recordBackgroundLaunch(post('Agent', { agentId: 'a9f2b562e4a5fba8e', status: 'async_launched', isAsync: true }), { load, record }), true)
+    assert.equal(recordBackgroundLaunch(post('Bash', { stdout: '', stderr: '', interrupted: false }), { load, record }), false)
+    assert.deepEqual(recorded, [[CONNECTION, { id: 'a9f2b562e4a5fba8e', kind: 'subagent' }]])
+    // A conversation with no connection records nothing.
+    assert.equal(recordBackgroundLaunch(post('Bash', { backgroundTaskId: 'bx9' }), { load: () => null, record }), false)
   })
 })

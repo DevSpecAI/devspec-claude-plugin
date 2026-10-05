@@ -35,10 +35,18 @@ import {
 // The bridge owns clearing a resolved continuation; Stop is its other resolver.
 import { clearStoredContinuation } from './devspec-question.mjs'
 import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
-import { outstandingBackgroundWorkFromFile } from './background-work.mjs'
+import {
+  launchedBackgroundWork,
+  outstandingBackgroundWorkFromFile,
+  ownedOutstandingWork,
+  parseBackgroundTasks,
+} from './background-work.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
 
-const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
+// `background_launch` is the PostToolUse hook that records a background job a turn
+// started (item beb0e005); everything else is a turn boundary.
+const MODES = new Set(['user_prompt', 'stop', 'background_launch'])
+const mode = MODES.has(process.argv[2]) ? process.argv[2] : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 
@@ -63,13 +71,13 @@ function patchOwnState(connectionId, patch) {
   return patchPrivateJson(file, { ...patch, updated_at: new Date().toISOString() })
 }
 
-export function turnMarkerPath(connectionId) {
-  return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
+export function turnMarkerPath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.turn`)
 }
-function readTurnMarker(connectionId) {
+function readTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
   if (!connectionId) return null
   try {
-    const marker = readPrivateJson(turnMarkerPath(connectionId))
+    const marker = readPrivateJson(turnMarkerPath(connectionId, dir))
     return typeof marker?.startedAt === 'number' ? marker : null
   } catch {
     return null
@@ -94,32 +102,115 @@ function writeTurnMarker(connectionId) {
 }
 
 /**
+ * The background jobs each turn launched (item beb0e005): one JSON line per launch,
+ * `{ id, kind, turn, at }`, where `turn` is the marker's `startedAt` at the time.
+ *
+ * Appended, never rewritten: parallel tool calls finish together, and a
+ * read-modify-write of one file would drop one of their ids. A line belongs to the
+ * turn its `turn` names. When the poller picks up a new command it writes a new
+ * `startedAt`, so an earlier command's jobs stop counting without anyone having to
+ * clean them up. clearTurnMarker removes the file with the marker.
+ */
+export function ownedWorkPath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.turn-owned.jsonl`)
+}
+
+/**
+ * Record that the open turn launched `launch` ({ id, kind }). Only an open, fresh
+ * turn owns work: with no marker there is no command for the job to belong to.
+ */
+export function recordOwnedLaunch(connectionId, launch, { dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
+  if (!connectionId || !launch?.id) return false
+  const marker = readTurnMarker(connectionId, dir)
+  if (!marker || now - marker.startedAt >= MAX_TURN_MS) return false
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(
+      ownedWorkPath(connectionId, dir),
+      `${JSON.stringify({ id: launch.id, kind: launch.kind, turn: marker.startedAt, at: new Date(now).toISOString() })}\n`,
+      { mode: 0o600 },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The ids the turn `marker` names launched, oldest first. */
+export function readOwnedIds(connectionId, marker, dir = CONNECTIONS_DIR) {
+  if (!connectionId || typeof marker?.startedAt !== 'number') return []
+  let text = ''
+  try {
+    text = fs.readFileSync(ownedWorkPath(connectionId, dir), 'utf8')
+  } catch {
+    return []
+  }
+  const ids = []
+  for (const line of text.split('\n')) {
+    try {
+      const entry = JSON.parse(line)
+      if (entry?.turn === marker.startedAt && typeof entry.id === 'string' && !ids.includes(entry.id)) ids.push(entry.id)
+    } catch {
+      /* a torn or foreign line is not a launch */
+    }
+  }
+  return ids
+}
+
+/**
  * Does this Stop end the DevSpec command, or only pause it (item f4a79327)?
  *
- * Claude ends its turn to wait for a job it started with `run_in_background`, and is
- * woken again when the job finishes. The command is not over: what Claude does after
- * the wake is still the requester's work. Reporting the turn complete here closed the
- * command server-side, so every later write lost its requester and was judged by the
- * agent owner's role. While such a job is still running, keep the turn open; it ends
- * when the agent posts its answer with complete_turn (which clears the marker) or at
- * a later Stop with nothing left running.
+ * Claude ends its turn to wait for work it started in the background (a subagent, a
+ * background command, a workflow), and is woken again when that work finishes. The
+ * command is not over: what Claude does after the wake is still the requester's work.
+ * Reporting the turn complete here closed the command server-side, so every later
+ * write lost its requester and was judged by the agent owner's role. While such work
+ * is still running, keep the turn open; it ends when the agent posts its answer with
+ * complete_turn (which clears the marker) or at a later Stop with nothing left running.
  *
- * Only jobs launched since the turn's marker was written count, and only while the
- * marker is fresh: an absent marker means the agent already closed the turn itself,
- * and a stale one is a turn the poller has already let go.
+ * What is still running comes from the host itself when it says (item beb0e005):
+ * `backgroundTasks` is the Stop input's in-flight list, and `ownedIds` the jobs this
+ * turn's own tool calls launched. A host that sends no list falls back to reading the
+ * transcript, which sees only `run_in_background` launches since the turn began.
+ *
+ * Only while the marker is fresh: an absent marker means the agent already closed the
+ * turn itself, and a stale one is a turn the poller has already let go.
  *
  * @returns {Array<object>|null} the outstanding jobs when the turn should stay open
  */
 export function backgroundHoldDecision({
   marker,
   transcriptPath,
+  backgroundTasks = null,
+  ownedIds = [],
   now = Date.now(),
   readOutstanding = outstandingBackgroundWorkFromFile,
 }) {
   if (!marker || typeof marker.startedAt !== 'number') return null
   if (now - marker.startedAt >= MAX_TURN_MS) return null
-  const outstanding = readOutstanding(transcriptPath, marker.startedAt)
+  const outstanding = Array.isArray(backgroundTasks)
+    ? ownedOutstandingWork(backgroundTasks, ownedIds)
+    : readOutstanding(transcriptPath, marker.startedAt)
   return outstanding.length > 0 ? outstanding : null
+}
+
+/**
+ * PostToolUse for Bash / Agent / Workflow: if the call left work running in the
+ * background, record it against this conversation's open turn. Silent either way;
+ * the hook never blocks or changes a tool call.
+ */
+export function recordBackgroundLaunch(raw, { load = loadState, record = recordOwnedLaunch } = {}) {
+  let input
+  try {
+    input = JSON.parse(raw || '{}')
+  } catch {
+    return false
+  }
+  const launch = launchedBackgroundWork(input?.tool_name, input?.tool_response)
+  if (!launch) return false
+  const state = load(resolveHookConversationId(raw))
+  if (!state?.connection_id) return false
+  return record(state.connection_id, launch)
 }
 
 /** The transcript path Claude Code passes every hook on stdin. */
@@ -135,6 +226,7 @@ export function clearTurnMarker(connectionId) {
   if (!connectionId) return
   try {
     fs.rmSync(turnMarkerPath(connectionId), { force: true })
+    fs.rmSync(ownedWorkPath(connectionId), { force: true })
   } catch {
     /* ignore */
   }
@@ -706,6 +798,14 @@ export function prepareAgentMirrorText(text) {
 
 async function main() {
   const raw = readStdin()
+  if (mode === 'background_launch') {
+    try {
+      recordBackgroundLaunch(raw)
+    } catch {
+      /* a launch we could not record only means the turn may close early */
+    }
+    process.exit(0)
+  }
   const conversationId = resolveHookConversationId(raw)
   const state = loadState(conversationId)
   if (!state) {
@@ -763,13 +863,15 @@ async function main() {
   // A Stop that only pauses the command for background work keeps the turn open
   // (item f4a79327). Decided here, with the block, for the same reason: it is not a
   // turn end, so busy stays on and nothing is reported complete.
-  const backgroundHold =
-    mode === 'stop' && connectionId && !blockReason
-      ? backgroundHoldDecision({
-          marker: readTurnMarker(connectionId),
-          transcriptPath: parseTranscriptPath(raw),
-        })
-      : null
+  const turnMarker = mode === 'stop' && connectionId && !blockReason ? readTurnMarker(connectionId) : null
+  const backgroundHold = turnMarker
+    ? backgroundHoldDecision({
+        marker: turnMarker,
+        transcriptPath: parseTranscriptPath(raw),
+        backgroundTasks: parseBackgroundTasks(raw),
+        ownedIds: readOwnedIds(connectionId, turnMarker),
+      })
+    : null
   if (backgroundHold) {
     process.stderr.write(
       `[devspec-remote] command kept open: ${backgroundHold.length} background job(s) still running\n`,

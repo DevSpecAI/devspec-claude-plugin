@@ -12,7 +12,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
-import { outstandingBackgroundWork, outstandingBackgroundWorkFromFile } from './background-work.mjs'
+import {
+  launchedBackgroundWork,
+  outstandingBackgroundWork,
+  outstandingBackgroundWorkFromFile,
+  ownedOutstandingWork,
+  parseBackgroundTasks,
+} from './background-work.mjs'
 
 const T0 = Date.parse('2026-10-04T17:30:40.000Z')
 const at = (seconds) => new Date(T0 + seconds * 1000).toISOString()
@@ -132,5 +138,61 @@ describe('outstandingBackgroundWorkFromFile', () => {
   it('an unreadable or missing transcript holds nothing open', () => {
     assert.deepEqual(outstandingBackgroundWorkFromFile('/nonexistent/session.jsonl', T0), [])
     assert.deepEqual(outstandingBackgroundWorkFromFile(null, T0), [])
+  })
+})
+
+/**
+ * Item beb0e005. PostToolUse `tool_response` shapes and the Stop hook's
+ * `background_tasks`, as Claude Code 2.1.289 sent them to a probe on 2026-10-05.
+ */
+describe('launchedBackgroundWork — the id a tool call left running, from its own result', () => {
+  it('reads a background command, an async subagent and a workflow', () => {
+    assert.deepEqual(
+      launchedBackgroundWork('Bash', { backgroundTaskId: 'bvem1pf78', interrupted: false, isImage: false, noOutputExpected: false, stderr: '', stdout: '' }),
+      { id: 'bvem1pf78', kind: 'shell' },
+    )
+    assert.deepEqual(
+      launchedBackgroundWork('Agent', { agentId: 'a9f2b562e4a5fba8e', status: 'async_launched', isAsync: true, description: 'sleep probe' }),
+      { id: 'a9f2b562e4a5fba8e', kind: 'subagent' },
+    )
+    assert.deepEqual(launchedBackgroundWork('Workflow', { taskId: 'wf_8k2j3' }), { id: 'wf_8k2j3', kind: 'workflow' })
+  })
+
+  it('ignores calls that finished inside the call', () => {
+    assert.equal(launchedBackgroundWork('Bash', { stdout: 'ok', stderr: '', interrupted: false }), null)
+    assert.equal(launchedBackgroundWork('Agent', { agentId: 'a1', status: 'completed' }), null)
+    assert.equal(launchedBackgroundWork('Read', { backgroundTaskId: 'x' }), null)
+    assert.equal(launchedBackgroundWork('Bash', null), null)
+  })
+})
+
+describe('parseBackgroundTasks — the host list, or "unknown"', () => {
+  it('returns the list when the host sends one, even an empty one', () => {
+    assert.deepEqual(parseBackgroundTasks(JSON.stringify({ background_tasks: [] })), [])
+  })
+  it('returns null when the host sends none, so a caller falls back instead of assuming nothing runs', () => {
+    assert.equal(parseBackgroundTasks(JSON.stringify({ stop_hook_active: false })), null)
+    assert.equal(parseBackgroundTasks('not json'), null)
+  })
+})
+
+describe('ownedOutstandingWork — what this command is still waiting on', () => {
+  const listener = { id: 'bjc8wt84h', type: 'shell', status: 'running', description: 'DevSpec: messages sent to this agent' }
+  const subagent = { id: 'a9f2b562e4a5fba8e', type: 'subagent', status: 'running', description: 'sleep probe' }
+
+  it('lists only owned work, as structured rows', () => {
+    assert.deepEqual(ownedOutstandingWork([listener, subagent], ['a9f2b562e4a5fba8e']), [
+      { id: 'a9f2b562e4a5fba8e', kind: 'subagent', description: 'sleep probe', status: 'running' },
+    ])
+  })
+  it('never counts a monitor, even one the turn armed', () => {
+    assert.deepEqual(ownedOutstandingWork([{ id: 'm1', type: 'monitor', status: 'running' }], ['m1']), [])
+  })
+  it('drops work the host reports as ended, and keeps a status it has not seen before', () => {
+    const tasks = [
+      { id: 'b1', type: 'shell', status: 'completed' },
+      { id: 'b2', type: 'shell', status: 'queued_remotely' },
+    ]
+    assert.deepEqual(ownedOutstandingWork(tasks, ['b1', 'b2']).map((job) => job.id), ['b2'])
   })
 })

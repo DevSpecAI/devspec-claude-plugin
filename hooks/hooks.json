@@ -72,6 +72,16 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "^(Bash|Agent|Workflow)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 || exit 0; input=$(cat); case \"$input\" in *backgroundTaskId*|*async_launched*|*'\"taskId\"'*) printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mirror-turn.mjs\" background_launch ;; esac; exit 0",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "mcp__(plugin_devspec_)?devspec__(claim_work_item|record_implementation|fail_work_item|release_work_item)",
         "hooks": [
           {

@@ -21,6 +21,15 @@
  * Monitors are not counted: a Monitor is a standing watch, not a job with an end, and
  * the DevSpec wake stream itself is one.
  *
+ * That transcript reading is now the FALLBACK (item beb0e005). It cannot see a
+ * subagent: current Claude Code launches every subagent in the background, and the
+ * Agent call carries no `run_in_background`. Claude Code now tells the Stop hook what
+ * is still running (`background_tasks`), and the launching tool's own result names
+ * the id it runs under. So a command's background work is:
+ *   - the ids its tool calls launched (launchedBackgroundWork, recorded at launch),
+ *   - that are still in the host's in-flight list at Stop (ownedOutstandingWork).
+ * The transcript reader is used only by a host that sends no such list.
+ *
  * Imports only Node built-ins (DEVELOPMENT.md).
  */
 
@@ -140,4 +149,87 @@ export function outstandingBackgroundWorkFromFile(transcriptPath, sinceMs) {
   } catch {
     return []
   }
+}
+
+/**
+ * The background job a finished tool call started, read from its structured result
+ * (PostToolUse `tool_response`), or null. Measured on Claude Code 2.1.289:
+ *   - Bash   → `backgroundTaskId` (run_in_background, Ctrl+B, or auto-backgrounded
+ *              on timeout: every way a command keeps running after its call returns)
+ *   - Agent  → `agentId` with `status: "async_launched"` (a foreground subagent
+ *              finishes inside the call and needs no tracking)
+ *   - Workflow → `taskId`
+ * Each id is the one the host lists the job under in `background_tasks`.
+ *
+ * @returns {{ id: string, kind: 'shell'|'subagent'|'workflow' } | null}
+ */
+export function launchedBackgroundWork(toolName, toolResponse) {
+  const res = toolResponse && typeof toolResponse === 'object' ? toolResponse : null
+  if (!res) return null
+  const id = (value) => (typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : null)
+  switch (String(toolName || '')) {
+    case 'Bash': {
+      const taskId = id(res.backgroundTaskId)
+      return taskId ? { id: taskId, kind: 'shell' } : null
+    }
+    case 'Agent': {
+      const agentId = id(res.agentId)
+      return agentId && res.status === 'async_launched' ? { id: agentId, kind: 'subagent' } : null
+    }
+    case 'Workflow': {
+      const taskId = id(res.taskId)
+      return taskId ? { id: taskId, kind: 'workflow' } : null
+    }
+    default:
+      return null
+  }
+}
+
+/**
+ * The host's in-flight list from a Stop (or SubagentStop) hook's stdin, or null when
+ * this Claude Code does not send one. Null is "unknown", never "nothing running": a
+ * caller falls back rather than concluding the command is done.
+ */
+export function parseBackgroundTasks(hookInput) {
+  try {
+    const data = JSON.parse(hookInput || '{}')
+    return Array.isArray(data.background_tasks) ? data.background_tasks : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The host documents `background_tasks` as in-flight work only, so every entry counts
+ * unless it says it has ended. A status we have not seen before is still in flight:
+ * guessing "done" would close a command whose work is running.
+ */
+const ENDED_STATUSES = new Set(['completed', 'failed', 'killed', 'stopped', 'cancelled', 'canceled', 'error'])
+
+/**
+ * What this command is still waiting on: the host's in-flight jobs whose ids its own
+ * tool calls launched. One structured answer, so presence (keeping the turn open)
+ * and Activity read the same thing.
+ *
+ * A `monitor` is never work in hand: it is a standing watch with no end. The DevSpec
+ * listener is never launched by a tool call, so it is never owned either; Claude
+ * Code lists it as `type: "shell"`, which is why ownership, not type, is the filter.
+ *
+ * @param {Array<object>} backgroundTasks  the Stop input's `background_tasks`
+ * @param {Iterable<string>} ownedIds      ids this command's tool calls launched
+ * @returns {Array<{ id: string, kind: string, description: string|null, status: string }>}
+ */
+export function ownedOutstandingWork(backgroundTasks, ownedIds) {
+  const owned = new Set(ownedIds)
+  if (!Array.isArray(backgroundTasks) || owned.size === 0) return []
+  return backgroundTasks
+    .filter((task) => task && typeof task.id === 'string' && owned.has(task.id))
+    .filter((task) => task.type !== 'monitor')
+    .filter((task) => !ENDED_STATUSES.has(String(task.status || '').toLowerCase()))
+    .map((task) => ({
+      id: task.id,
+      kind: typeof task.type === 'string' ? task.type : 'unknown',
+      description: typeof task.description === 'string' ? task.description : null,
+      status: typeof task.status === 'string' ? task.status : 'running',
+    }))
 }

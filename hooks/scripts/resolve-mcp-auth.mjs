@@ -191,8 +191,8 @@ function pluginTokenFromEnv(env) {
 /**
  * The URL the plugin-declared `devspec` MCP server is actually pointed at.
  *
- * `plugin.json` declares `"url": "${user_config.devspec_mcp_url}"`, so the host talks
- * to whatever that userConfig field holds — production by default, staging for us.
+ * `plugin.json` declares `"url": "${user_config.devspec_mcp_url}?model_tools=…"`, so the
+ * host talks to whatever that userConfig field holds — production by default, staging for us.
  * Claude Code exports userConfig to subprocesses as CLAUDE_PLUGIN_OPTION_<KEY>, so the
  * poller can read the same value and stay on the SAME host as the server that ran
  * register_connection. Reading only the token and assuming production would recreate

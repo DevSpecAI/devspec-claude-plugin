@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.35.0 - 2026-10-05
+
+- Changed: DevSpec now shows Claude only the DevSpec tools it should call. The connection plumbing that the plugin's own scripts use (registering, polling, keep-alives, pickup and completion reports) no longer appears in Claude's tool list. The plugin declares the two plumbing tools Claude still calls itself, to mark the connection offline and detach it in `/devspec:devspec.remote-stop`, so those stay available. Everything else works as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.34.0 - 2026-10-05
 
 - New: the terminal now shows how this Claude Code stands with DevSpec. A line under the prompt gives the name it has on the Agents page, the DevSpec project, the session it is attached to and the item it is working on, for example `devspec: Cosmic Raven · DevSpec · “Fix the login redirect” · working on c6dcb524`. A short notice appears when it connects. When someone ends it from DevSpec, the line changes to `ended from DevSpec` and a notice says how to connect again, so with many terminals open you can see which ones are still connected. None of this calls the model. It needs Claude Code 2.1.289 or later; on older versions the line does not appear and everything else works as before.

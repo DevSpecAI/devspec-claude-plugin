@@ -71,8 +71,10 @@ Set the plugin's **DevSpec server** field to staging. That is the whole thing:
 https://api.devspecstaging.com/api/mcp
 ```
 
-`plugin.json` declares the server as `"url": "${user_config.devspec_mcp_url}"`, defaulting
-to `https://api.devspec.ai/api/mcp`. Point that field at staging and the plugin's own
+`plugin.json` declares the server as `"url": "${user_config.devspec_mcp_url}?model_tools=…"`,
+defaulting to `https://api.devspec.ai/api/mcp`. `model_tools` names the connection plumbing
+Claude itself calls (the offline heartbeat and detach in `/devspec:devspec.remote-stop`);
+DevSpec lists only model tools plus those. Keep the field itself a bare URL. Point it at staging and the plugin's own
 `devspec` server goes to staging — and so do the hooks, the commands and the poller.
 One server, one host, nothing to keep in sync. How the last part works is worth knowing,
 because it is not automatic: see **Where `userConfig` actually reaches** below.

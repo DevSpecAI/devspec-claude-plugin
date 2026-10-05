@@ -65,6 +65,14 @@ export const ACTIVE_PLAN_AUTHORITY_NOTE =
  * the data does not authorize. Drifting from them would quietly relax a boundary.
  */
 export const SESSION_POLL_PROJECTION_VERSION = 1
+/**
+ * Version 2 (item bba35976) is never missing while the session has polls: it carries
+ * the newest polls that fit the text budget, the totals, and a continuation naming
+ * where the rest are. Version 1 refused outright past 16 active polls, so a busy room
+ * arrived as no polls at all.
+ */
+export const SESSION_POLL_PROJECTION_VERSION_2 = 2
+export const SESSION_POLL_CONTINUATION = 'Call manage_poll list to read every poll in this session.'
 export const SESSION_POLL_MAX_ACTIVE = 16
 export const SESSION_POLL_MAX_ENDED = 5
 export const SESSION_POLL_MAX_OPTIONS = 30
@@ -599,12 +607,47 @@ export function isSessionPollsProjectionV1(value) {
   const active = value.polls.filter((entry) => entry.status === 'active').length
   const ended = value.polls.filter((entry) => entry.status === 'ended').length
   if (active !== value.inventory.active_returned || ended !== value.inventory.ended_returned) return false
-  const chars = value.polls.reduce((sum, entry) => sum + entry.question.length +
+  return pollTextChars(value.polls) <= SESSION_POLL_MAX_TOTAL_TEXT_CHARS
+}
+
+function pollTextChars(polls) {
+  return polls.reduce((sum, entry) => sum + entry.question.length +
     (entry.recommendation?.length ?? 0) +
     entry.winning_labels.reduce((n, label) => n + label.length, 0) +
     entry.options.reduce((n, option) => n + option.label.length +
       option.voters.reduce((v, voter) => v + voter.length, 0), 0), 0)
-  return chars <= SESSION_POLL_MAX_TOTAL_TEXT_CHARS
+}
+
+/**
+ * The v2 poll inventory (item bba35976). Its counts must tell the truth about what
+ * was left out: `truncated_*` exactly when fewer were returned than exist, and the
+ * continuation exactly when anything was truncated, so a reader is never shown a
+ * partial list that looks complete.
+ */
+export function isSessionPollsProjectionV2(value) {
+  if (!exactKeys(value, ['version', 'advisory', 'authority_note', 'inventory', 'polls']) ||
+      value.version !== SESSION_POLL_PROJECTION_VERSION_2 || value.advisory !== true ||
+      value.authority_note !== SESSION_POLL_AUTHORITY_NOTE) return false
+  const inv = value.inventory
+  if (!exactKeys(inv, ['active_total', 'active_returned', 'truncated_active', 'ended_total', 'ended_returned', 'truncated_ended', 'continuation']) ||
+      ![inv.active_total, inv.active_returned, inv.ended_total, inv.ended_returned].every(nonnegativeInt) ||
+      inv.ended_returned > SESSION_POLL_MAX_ENDED ||
+      inv.active_returned > inv.active_total || inv.ended_returned > inv.ended_total ||
+      inv.truncated_active !== (inv.active_returned < inv.active_total) ||
+      inv.truncated_ended !== (inv.ended_returned < inv.ended_total) ||
+      inv.continuation !== ((inv.truncated_active || inv.truncated_ended) ? SESSION_POLL_CONTINUATION : null) ||
+      inv.active_total + inv.ended_total === 0 ||
+      !Array.isArray(value.polls) || !value.polls.every(poll) ||
+      new Set(value.polls.map((entry) => entry.id)).size !== value.polls.length) return false
+  const active = value.polls.filter((entry) => entry.status === 'active').length
+  const ended = value.polls.filter((entry) => entry.status === 'ended').length
+  if (active !== inv.active_returned || ended !== inv.ended_returned) return false
+  return pollTextChars(value.polls) <= SESSION_POLL_MAX_TOTAL_TEXT_CHARS
+}
+
+/** Either poll inventory a server may send; v2 is what this plugin asks for. */
+export function isSessionPollsProjection(value) {
+  return isSessionPollsProjectionV1(value) || isSessionPollsProjectionV2(value)
 }
 
 function discussionPoint(value) {

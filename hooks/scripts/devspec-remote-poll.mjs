@@ -47,12 +47,13 @@ import {
   isActiveSessionPlansProjectionV1,
   isSessionActivityV1,
   isSessionEventsV1,
-  isSessionPollsProjectionV1,
+  isSessionPollsProjection,
   isStillToDiscussProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_RESOURCE_URI,
   ROOM_CONTEXT_VERSION,
+  SESSION_POLL_PROJECTION_VERSION_2,
 } from './remote-ingress-v1.mjs'
 import {
   applyIngressToStore,
@@ -139,6 +140,9 @@ export function remoteIngressNegotiationArguments() {
     // Remote-ingress 1.6.0 (item 1a4f0246): room context for the local transcript.
     // The server refuses it without every rung below, which is why it sits last.
     room_context_version: ROOM_CONTEXT_VERSION,
+    // Item bba35976: the poll inventory that is never dropped when the room has more
+    // polls than fit; it says how many there are and where to read the rest.
+    session_polls_projection_version: SESSION_POLL_PROJECTION_VERSION_2,
   }
 }
 
@@ -882,7 +886,7 @@ export function isCatchUpCursorRefusal(err) {
 export function roomChangesSince(res, activity, seen = {}) {
   const plans = res?.ingress?.active_session_plans
   const current = {
-    session_polls: isSessionPollsProjectionV1(res?.session_polls) ? JSON.stringify(res.session_polls) : null,
+    session_polls: isSessionPollsProjection(res?.session_polls) ? JSON.stringify(res.session_polls) : null,
     still_to_discuss: isStillToDiscussProjectionV1(res?.still_to_discuss) ? JSON.stringify(res.still_to_discuss) : null,
     active_session_plans: isActiveSessionPlansProjectionV1(plans) ? JSON.stringify(plans) : null,
     // The references and how many events are held: a new event is a change.
@@ -937,7 +941,7 @@ export function writeRoomState(
   { dir = CONNECTIONS_DIR, write = writePrivateJson, transcript = null, activity = null, now = new Date() } = {},
 ) {
   const ingress = res?.ingress ?? null
-  const polls = isSessionPollsProjectionV1(res?.session_polls) ? res.session_polls : null
+  const polls = isSessionPollsProjection(res?.session_polls) ? res.session_polls : null
   const discuss = isStillToDiscussProjectionV1(res?.still_to_discuss) ? res.still_to_discuss : null
   const plans = isActiveSessionPlansProjectionV1(ingress?.active_session_plans) ? ingress.active_session_plans : null
   const notices = Array.isArray(ingress?.system_notices) ? ingress.system_notices : null

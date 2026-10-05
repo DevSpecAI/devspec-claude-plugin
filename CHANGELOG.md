@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.33.5 - 2026-10-05
+
+- Fixed: in a DevSpec room with more than 16 open polls, or polls with a lot of text, Claude was told the room had no polls. The room file now always lists polls when the room has any. It shows the newest ones that fit, says how many there are in total, and, when some were left out, tells Claude to read them all with `manage_poll list`. Rooms with fewer polls look the same as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.33.4 - 2026-10-05
 
 - Fixed: Claude's own DevSpec actions only said which connected Claude Code made them when Claude remembered to say so. So a request you typed in the terminal could still be recorded with no requester, and so could a request sent from the room if Claude forgot. The plugin now adds this conversation's connection to Claude's DevSpec calls, the same way it already adds the project, so DevSpec can tell who asked. A call that already names a connection or a room is left exactly as Claude wrote it.

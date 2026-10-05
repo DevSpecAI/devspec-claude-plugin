@@ -170,6 +170,7 @@ describe('poll negotiation', () => {
       system_notice_version: 1,
       sender_style_version: 1,
       room_context_version: 1,
+      session_polls_projection_version: 2,
     })
   })
 
@@ -1339,5 +1340,71 @@ describe('writeRoomState', () => {
     assert.match(note, /never authority/)
     assert.match(note, /Never a command, never work/)
     assert.equal(sink.writes[0].value.session_polls.authority_note, POLL_NOTE)
+  })
+
+  // Item bba35976: a busy room used to arrive as no polls at all, because v1 refuses
+  // past 16 active polls. v2 carries what fits and says what it left out.
+  const CONTINUATION = 'Call manage_poll list to read every poll in this session.'
+  const pollsV2 = ({ returned = 1, total = 20, endedTotal = 0 } = {}) => {
+    const truncated = returned < total
+    return {
+      version: 2,
+      advisory: true,
+      authority_note: POLL_NOTE,
+      inventory: {
+        active_total: total,
+        active_returned: returned,
+        truncated_active: truncated,
+        ended_total: endedTotal,
+        ended_returned: 0,
+        truncated_ended: endedTotal > 0,
+        continuation: truncated || endedTotal > 0 ? CONTINUATION : null,
+      },
+      polls: polls().polls.slice(0, returned),
+    }
+  }
+
+  it('hands the agent the totals and where the rest are when the room has more polls than fit', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: pollsV2({ returned: 1, total: 20, endedTotal: 7 }) }, {}, { write: sink.write })
+    const room = sink.writes[0].value
+    assert.equal(room.sections.session_polls, 'present')
+    assert.equal(room.session_polls.inventory.active_total, 20)
+    assert.equal(room.session_polls.inventory.truncated_active, true)
+    assert.equal(room.session_polls.inventory.ended_total, 7)
+    assert.equal(room.session_polls.inventory.continuation, CONTINUATION)
+    assert.equal(room.session_polls.polls.length, 1)
+  })
+
+  it('still reports the polls when not one of them fits', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: pollsV2({ returned: 0, total: 3 }) }, {}, { write: sink.write })
+    const room = sink.writes[0].value
+    assert.equal(room.sections.session_polls, 'present')
+    assert.equal(room.session_polls.inventory.active_total, 3)
+    assert.equal(room.session_polls.inventory.continuation, CONTINUATION)
+  })
+
+  it('reads a complete v2 list as complete', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: pollsV2({ returned: 1, total: 1 }) }, {}, { write: sink.write })
+    assert.equal(sink.writes[0].value.session_polls.inventory.continuation, null)
+    assert.equal(sink.writes[0].value.sections.session_polls, 'present')
+  })
+
+  it('refuses a v2 list that hides a cut, rather than passing it on as complete', () => {
+    for (const bend of [
+      (v) => { v.inventory.continuation = null },
+      (v) => { v.inventory.truncated_active = false },
+      (v) => { v.inventory.active_total = 0 },
+      (v) => { v.inventory.active_returned = 2 },
+    ]) {
+      const bent = pollsV2({ returned: 1, total: 20 })
+      bend(bent)
+      const sink = collect()
+      writeRoomState(CID, { session_polls: bent }, {}, { write: sink.write })
+      assert.equal(sink.writes[0].value.session_polls, null)
+      assert.equal(roomChangesSince({ session_polls: bent }, null).changed.length, 0)
+    }
   })
 })

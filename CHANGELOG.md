@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.41.0 - 2026-10-06
+
+- New: DevSpec now knows which model your Claude Code is running, without Claude having to say so. The composer's agent list, the session's agent lists and the Agents page show the model, its effort level and how full the context is, the same as they do for Pi, and work Claude claims records the model that did it. The figures come from Claude Code itself at the start and end of every turn, so after switching with /model the new model shows from the next turn. A subagent's model is not reported as the agent's. Nothing is sent for a conversation that is not connected to DevSpec.
+- Needs a Claude Code version with the plugin API (the same one Stop from DevSpec needs). On older versions nothing changes.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.40.1 - 2026-10-06
 
 - Fixed: denying a permission prompt no longer leaves the room showing Claude as working. Like an interrupt, a denied prompt ends Claude's turn without the step that tells DevSpec so; the plugin now notices any turn that ended without it and tells DevSpec itself.

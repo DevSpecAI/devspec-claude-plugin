@@ -27,6 +27,8 @@ import {
   controlIsCurrent,
   parsePendingControl,
   pendingControlPath,
+  stopHookPath,
+  stopHookRanSince,
 } from './scripts/control-relay.mjs'
 
 // The main loop's turn, if one is running. A subagent's run raises no turn.start, so
@@ -46,14 +48,24 @@ export function watchTurnsForStop(on: Parameters<Register>[0]): void {
 
   on('turn.complete', async ($, e, next) => {
     if (!e.agentId && e.turnId === runningTurn) runningTurn = null
-    // An interrupted turn runs no Stop hook (measured on 2.1.291: Esc, or Stop from
-    // DevSpec), and the Stop hook is what tells DevSpec the turn ended. So DevSpec
-    // went on showing the agent as working. End it the same way the Stop hook does.
-    if (!e.agentId && e.reason === 'aborted') {
+    // Some turns end with no Stop hook, and the Stop hook is what tells DevSpec a turn
+    // ended, so DevSpec went on showing the agent as working. Measured on 2.1.291: an
+    // interrupt (Esc, Stop from DevSpec) completes as 'aborted' and a denied permission
+    // prompt as 'answer', neither running the Stop hook, while a normal turn's Stop
+    // hook runs a few milliseconds before this event. So when no Stop hook ran since
+    // this turn began, end it the same way the Stop hook does. A Stop hook that kept
+    // the turn open on purpose (re-arming, background work) did run, and is left be.
+    if (!e.agentId) {
+      const turnStartedAt = Date.now() - e.durationMs
       void (async () => {
-        const sessionId = await $.session.id()
+        const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE'))
+        const conversationId = await $.session.id()
+        const readText = (path: string) => $.fs.read(path).then((text) => String(text), () => null)
+        const connectionId = await boundConnectionId({ home, conversationId, readText })
+        if (!connectionId) return
+        if (stopHookRanSince(await readText(stopHookPath(home, connectionId)), turnStartedAt)) return
         await $.process.run(['node', `${$.plugin.root}/hooks/scripts/mirror-turn.mjs`, 'stop'], {
-          stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: sessionId, stop_hook_active: false }),
+          stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: conversationId, stop_hook_active: false }),
           timeoutMs: 30_000,
         })
       })().catch(() => undefined)

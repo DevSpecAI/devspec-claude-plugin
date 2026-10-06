@@ -126,23 +126,31 @@ test('a -p run reports nothing and carries nothing out', OPTIONS, async ($, on) 
   expect(seen.runs).toEqual([])
 })
 
-test('an interrupted turn tells DevSpec it ended, as the Stop hook would have', OPTIONS, async ($, on) => {
+const STOP_HOOK_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.stop-hook.json`
+const turnEnds = (runs: Array<readonly string[]>) =>
+  runs.filter((argv) => argv.some((arg) => arg.endsWith('/hooks/scripts/mirror-turn.mjs')))
+
+test('a turn that ends with no Stop hook, interrupted or on a denied prompt, tells DevSpec it ended', OPTIONS, async ($, on) => {
   const { seen } = harness(on, bonded())
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   await $.turn.start({ text: 'long work', turnId: 'turn-4' })
+  // Esc, or Stop from DevSpec
   await $.turn.complete({ turnId: 'turn-4', reason: 'aborted', isAborted: true, answer: '', durationMs: 9_000 })
+  await $.turn.start({ text: 'touch a file', turnId: 'turn-5' })
+  // A denied permission prompt completes as an answer, with no Stop hook either.
+  await $.turn.complete({ turnId: 'turn-5', reason: 'answer', isAborted: false, answer: '', durationMs: 4_000 })
   await new Promise<void>((resolve) => setTimeout(() => resolve(), 100))
-  const ended = seen.runs.filter((argv) => argv.some((arg) => arg.endsWith('/hooks/scripts/mirror-turn.mjs')))
-  expect(ended.map((argv) => argv.at(-1))).toEqual(['stop'])
+  expect(turnEnds(seen.runs).map((argv) => argv.at(-1))).toEqual(['stop', 'stop'])
 })
 
-test('a turn that ends normally, or a subagent run that is cut off, leaves that to the Stop hook', OPTIONS, async ($, on) => {
-  const { seen } = harness(on, bonded())
+test("a turn whose Stop hook ran is left to it, and a subagent's run never ends the turn", OPTIONS, async ($, on) => {
+  const files = bonded()
+  const { seen } = harness(on, files)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'short work', turnId: 'turn-5' })
-  await $.turn.complete({ turnId: 'turn-5', reason: 'answer', isAborted: false, answer: 'Done.', durationMs: 2_000 })
-  await $.turn.complete({ turnId: 'turn-6', reason: 'aborted', isAborted: true, answer: '', durationMs: 1_000, agentId: 'sub-1' })
+  await $.turn.start({ text: 'short work', turnId: 'turn-6' })
+  files.set(STOP_HOOK_FILE, JSON.stringify({ at: new Date().toISOString() }))
+  await $.turn.complete({ turnId: 'turn-6', reason: 'answer', isAborted: false, answer: 'Done.', durationMs: 2_000 })
+  await $.turn.complete({ turnId: 'turn-7', reason: 'aborted', isAborted: true, answer: '', durationMs: 1_000, agentId: 'sub-1' })
   await new Promise<void>((resolve) => setTimeout(() => resolve(), 100))
-  expect(seen.runs.some((argv) => argv.some((arg) => arg.endsWith('/hooks/scripts/mirror-turn.mjs')))).toBe(false)
+  expect(turnEnds(seen.runs)).toEqual([])
 })
-

@@ -25,6 +25,7 @@ import {
   patchPrivateJson,
   readPrivateJson,
   readPrivateJsonResult,
+  writePrivateJson,
 } from './private-state.mjs'
 import {
   activeContinuation,
@@ -1017,6 +1018,17 @@ async function main() {
       if (reason) process.stderr.write(`[devspec-remote] stop could not bind: ${reason}\n`)
     }
     process.exit(0)
+  }
+
+  // The module ends a turn for DevSpec itself when no Stop hook ran for it (an
+  // interrupt, a denied prompt), and this record is how it knows one did (item
+  // cbf3d758, control-relay.mjs).
+  if (mode === 'stop' && state.connection_id) {
+    try {
+      writePrivateJson(path.join(CONNECTIONS_DIR, `${state.connection_id}.stop-hook.json`), { at: new Date().toISOString() })
+    } catch {
+      /* a missing record only means the module ends this turn a second time, harmlessly */
+    }
   }
 
   let token = state.token

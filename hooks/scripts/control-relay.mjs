@@ -64,6 +64,23 @@ function parseJson(text) {
   }
 }
 
+/**
+ * When the Stop hook last ran for this connection (mirror-turn.mjs stop records it).
+ * Claude Code runs no Stop hook for a turn that is interrupted (Esc, Stop from
+ * DevSpec) or ends on a denied permission prompt, and the Stop hook is what tells
+ * DevSpec a turn ended; the module reads this to know when it has to (measured on
+ * 2.1.291: the Stop hook of a normal turn runs a few milliseconds before turn.complete).
+ */
+export function stopHookPath(home, connectionId) {
+  return `${home}/${REMOTE_DIR}/connections/${connectionId}.stop-hook.json`
+}
+
+/** Whether the Stop hook ran at or after `sinceMs`, from its record. */
+export function stopHookRanSince(text, sinceMs) {
+  const at = Date.parse(parseJson(text)?.at ?? '')
+  return Number.isFinite(at) && at >= sinceMs
+}
+
 /** The pending control file as the module reads it, or null. */
 export function parsePendingControl(text) {
   const value = parseJson(text)

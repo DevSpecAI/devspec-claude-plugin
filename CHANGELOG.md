@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.40.1 - 2026-10-06
+
+- Fixed: denying a permission prompt no longer leaves the room showing Claude as working. Like an interrupt, a denied prompt ends Claude's turn without the step that tells DevSpec so; the plugin now notices any turn that ended without it and tells DevSpec itself.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.40.0 - 2026-10-06
 
 - New: Stop works for Claude Code. When Claude is in the middle of something, Stop in DevSpec (the square button in the session's composer) stops it in its terminal straight away, exactly as pressing Esc there would. The conversation and Claude Code stay open, ready for your next message. DevSpec offers Stop only for a Claude Code that can carry it out: one running this plugin on a Claude Code version with the plugin API it needs. Others simply don't show it.

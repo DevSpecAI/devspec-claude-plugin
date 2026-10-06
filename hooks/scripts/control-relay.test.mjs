@@ -21,6 +21,7 @@ import {
   controlIsCurrent,
   parsePendingControl,
   pendingControlPath,
+  stopHookRanSince,
 } from './control-relay.mjs'
 import { ackControl } from './devspec-control.mjs'
 
@@ -96,5 +97,15 @@ describe('handing a control back to DevSpec', () => {
     const calls = []
     assert.deepEqual(await ackControl({ connectionId: CONNECTION, controlId: '../../x', home: HOME, call: async (req) => calls.push(req) }), { ok: false, reason: 'bad_id' })
     assert.equal(calls.length, 0)
+  })
+})
+
+describe('whether the Stop hook ran for a turn', () => {
+  it('counts only a run at or after the turn began', () => {
+    const at = (ms) => JSON.stringify({ at: new Date(ms).toISOString() })
+    assert.equal(stopHookRanSince(at(NOW), NOW - 5_000), true)
+    assert.equal(stopHookRanSince(at(NOW - 10_000), NOW - 5_000), false)
+    assert.equal(stopHookRanSince(null, NOW), false)
+    assert.equal(stopHookRanSince('not json', NOW), false)
   })
 })

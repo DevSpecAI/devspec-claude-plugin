@@ -59,6 +59,7 @@ import {
   turnIdentity,
 } from './delegation-trail.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
+import { readTurnActivity, turnActivityPath, turnIsLive } from './turn-liveness.mjs'
 
 // `background_launch` is the PostToolUse hook that records a background job a turn
 // started (item beb0e005); everything else is a turn boundary.
@@ -67,9 +68,9 @@ const mode = MODES.has(process.argv[2]) ? process.argv[2] : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 
-// The poller stops treating a turn as live once its marker is this old
-// (devspec-remote-poll.mjs MAX_TURN_MS); a background hold never outlives it.
-const MAX_TURN_MS = 60 * 60 * 1000
+// Whether a turn is still live is decided in one place for the hooks and the poller
+// alike (turn-liveness.mjs, item 9e8dda57): by what Claude Code shows, not by how long
+// ago the turn started.
 
 // Turn marker — the connected agent is the SOLE authority for the "working" state.
 // UserPromptSubmit (turn start) writes it; Stop (turn end) clears it. The long-lived
@@ -100,17 +101,26 @@ function readTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
     return null
   }
 }
-function writeTurnMarker(connectionId) {
+/** Is this connection's marker a live turn (turn-liveness.mjs)? */
+function markerIsLive(connectionId, marker, { dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
+  return turnIsLive(marker, { activity: readTurnActivity(connectionId, dir), now })
+}
+
+/**
+ * Open or keep the turn. `held` records a Stop that kept the command open for its own
+ * background work: the poller treats a held turn as live until the next Stop rewrites
+ * or clears the marker (item 9e8dda57), because nothing fires while Claude waits.
+ */
+function writeTurnMarker(connectionId, { held = false } = {}) {
   if (!connectionId) return
   // A turn that is already live keeps its start. A held turn's start bounds which
   // background jobs belong to it (backgroundHoldDecision), so a wake-up prompt must
   // not move it past jobs that are still running.
   const existing = readTurnMarker(connectionId)
-  const startedAt =
-    existing && Date.now() - existing.startedAt < MAX_TURN_MS ? existing.startedAt : Date.now()
+  const startedAt = markerIsLive(connectionId, existing) ? existing.startedAt : Date.now()
   try {
     fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    fs.writeFileSync(turnMarkerPath(connectionId), JSON.stringify({ startedAt }), {
+    fs.writeFileSync(turnMarkerPath(connectionId), JSON.stringify(held ? { startedAt, held: true } : { startedAt }), {
       mode: 0o600,
     })
   } catch {
@@ -139,7 +149,7 @@ export function ownedWorkPath(connectionId, dir = CONNECTIONS_DIR) {
 export function recordOwnedLaunch(connectionId, launch, { dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
   if (!connectionId || !launch?.id) return false
   const marker = readTurnMarker(connectionId, dir)
-  if (!marker || now - marker.startedAt >= MAX_TURN_MS) return false
+  if (!markerIsLive(connectionId, marker, { dir, now })) return false
   try {
     fs.mkdirSync(dir, { recursive: true })
     const line = { id: launch.id, kind: launch.kind, turn: marker.startedAt, at: new Date(now).toISOString() }
@@ -159,7 +169,7 @@ export function recordOwnedLaunch(connectionId, launch, { dir = CONNECTIONS_DIR,
  */
 export function recordOwnedEnd(connectionId, id, { status = 'completed', dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
   const marker = readTurnMarker(connectionId, dir)
-  if (!marker || now - marker.startedAt >= MAX_TURN_MS || typeof id !== 'string') return false
+  if (!markerIsLive(connectionId, marker, { dir, now }) || typeof id !== 'string') return false
   const lines = readOwnedLines(connectionId, marker, dir)
   if (!lines.some((entry) => entry.id === id && typeof entry.ended !== 'string')) return false
   if (lines.some((entry) => entry.id === id && typeof entry.ended === 'string')) return false
@@ -233,8 +243,9 @@ export function readOwnedIds(connectionId, marker, dir = CONNECTIONS_DIR) {
  * turn's own tool calls launched. A host that sends no list falls back to reading the
  * transcript, which sees only `run_in_background` launches since the turn began.
  *
- * Only while the marker is fresh: an absent marker means the agent already closed the
- * turn itself, and a stale one is a turn the poller has already let go.
+ * Only while the turn is live: an absent marker means the agent already closed the
+ * turn itself, and one with no sign of life is a turn the poller has already let go
+ * (turn-liveness.mjs).
  *
  * @returns {Array<object>|null} the outstanding jobs when the turn should stay open
  */
@@ -243,11 +254,11 @@ export function backgroundHoldDecision({
   transcriptPath,
   backgroundTasks = null,
   ownedIds = [],
+  activity = null,
   now = Date.now(),
   readOutstanding = outstandingBackgroundWorkFromFile,
 }) {
-  if (!marker || typeof marker.startedAt !== 'number') return null
-  if (now - marker.startedAt >= MAX_TURN_MS) return null
+  if (!turnIsLive(marker, { activity, now })) return null
   const outstanding = Array.isArray(backgroundTasks)
     ? ownedOutstandingWork(backgroundTasks, ownedIds)
     : readOutstanding(transcriptPath, marker.startedAt)
@@ -430,6 +441,7 @@ export function clearTurnMarker(connectionId) {
     fs.rmSync(turnMarkerPath(connectionId), { force: true })
     fs.rmSync(ownedWorkPath(connectionId), { force: true })
     fs.rmSync(path.join(CONNECTIONS_DIR, `${connectionId}.turn-trail.json`), { force: true })
+    fs.rmSync(turnActivityPath(connectionId, CONNECTIONS_DIR), { force: true })
   } catch {
     /* ignore */
   }
@@ -1099,6 +1111,7 @@ async function main() {
         transcriptPath: parseTranscriptPath(raw),
         backgroundTasks: parseBackgroundTasks(raw),
         ownedIds: readOwnedIds(connectionId, turnMarker),
+        activity: readTurnActivity(connectionId, CONNECTIONS_DIR),
       })
     : null
   if (backgroundHold) {
@@ -1176,7 +1189,7 @@ async function main() {
     // A blocked stop keeps the turn OPEN — the agent is about to re-arm and carry on.
     // So does a stop that is waiting on the agent's own background work.
     const turnActive = mode === 'user_prompt' || !!blockReason || !!backgroundHold
-    if (turnActive) writeTurnMarker(connectionId)
+    if (turnActive) writeTurnMarker(connectionId, { held: !!backgroundHold })
     else clearTurnMarker(connectionId)
 
     // Busy heartbeat — one connection-native path (attached or sessionless). The

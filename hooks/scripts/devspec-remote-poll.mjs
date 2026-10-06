@@ -92,6 +92,7 @@ import {
 
 import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
 import { attachmentFromPoll } from './local-turn.mjs'
+import { readTurnActivity, turnIsLive } from './turn-liveness.mjs'
 import {
   commandHandoffDecision,
   commandHandoffKey,
@@ -309,7 +310,6 @@ const IDLE_CADENCE = { waitMs: 30_000, tier: 'idle', checkTier: 'responsive' }
 // Client-side ceiling on a held request. fetch() has NO default timeout, so a
 // silently-dropped TCP connection would wedge the poller forever with no heartbeat.
 const POLL_HTTP_GRACE_MS = 15_000
-const MAX_TURN_MS = 60 * 60 * 1000
 
 function turnMarkerPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
@@ -1520,7 +1520,7 @@ async function main() {
       // The server has no working attempt for us, so our turn marker is stale —
       // something already completed this turn (typically the agent's own
       // complete_turn). Keep re-asserting busy and the indicator flickers between
-      // our keepalive and that completion for up to MAX_TURN_MS. Drop the marker
+      // our keepalive and that completion until the turn stops looking live. Drop the marker
       // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
       if (isNoWorkingAttemptRefusal(e)) {
         clearTurnMarker(connectionId)
@@ -2305,9 +2305,11 @@ async function main() {
       return
     }
 
-    // Agent-authoritative "working": re-assert busy while a fresh turn marker exists.
+    // Agent-authoritative "working": re-assert busy while the turn is live. Live is what
+    // Claude Code shows (held for this command's own background work, or a tool call
+    // recently), never a clock from pickup (turn-liveness.mjs, item 9e8dda57).
     const marker = readTurnMarker(connectionId)
-    const turnActive = !!marker && Date.now() - marker.startedAt < MAX_TURN_MS
+    const turnActive = turnIsLive(marker, { activity: readTurnActivity(connectionId, CONNECTIONS_DIR) })
     let busyArg = null
     if (turnActive) busyArg = true
     else if (lastBusySent === true) busyArg = false

@@ -250,13 +250,13 @@ export function clearTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
  * the poller clear the marker it had just written on delivery, drop busy, and
  * emit `report_complete` while the agent worked on for another five minutes with
  * the driver's UI showing nothing. **Turn end is owned by the Stop hook**
- * (`mirror-turn.mjs stop`), which every plugin registers, plus MAX_TURN_MS in the
- * poller as the backstop for a host whose Stop hook never fires.
+ * (`mirror-turn.mjs stop`), which every plugin registers, plus the poller's
+ * no-sign-of-life backstop (turn-liveness.mjs) for a host whose Stop hook never fires.
  *
  * A first arm (`--from-end`) genuinely is idle: the agent is connecting or
  * reconnecting and deliberately discarding the historical inbox, so a marker left
  * by a seed delivery belongs to a turn nobody will ever wake for, and must be
- * cleared or the connection shows a phantom "working" until MAX_TURN_MS elapses.
+ * cleared or the connection shows a phantom "working" until that backstop expires it.
  * That is the case the original unconditional clear was written for.
  *
  * `--pending` wins over `--from-end` if both are somehow passed, matching the

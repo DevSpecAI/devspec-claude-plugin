@@ -636,7 +636,7 @@ describe('backgroundHoldDecision — a Stop that only waits on background work k
     assert.equal(backgroundHoldDecision({ marker: null, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }), null)
   })
 
-  it('never holds a turn the poller has already let go (marker older than an hour)', () => {
+  it('never holds a turn the poller has already let go (no sign of life for an hour)', () => {
     const hold = backgroundHoldDecision({
       marker: { startedAt: NOW - 60 * 60 * 1000 },
       transcriptPath: '/t.jsonl',
@@ -644,6 +644,22 @@ describe('backgroundHoldDecision — a Stop that only waits on background work k
       readOutstanding: () => [job],
     })
     assert.equal(hold, null)
+  })
+
+  // Item 9e8dda57: on 2026-10-06 three commands were cut off at exactly 60 minutes
+  // from pickup while their own work was still running.
+  it('keeps holding a command older than an hour while it is still alive', () => {
+    const startedLongAgo = NOW - 3 * 60 * 60 * 1000
+    const recentToolCall = { turn: startedLongAgo, at: NOW - 5 * 60 * 1000 }
+    assert.deepEqual(
+      backgroundHoldDecision({ marker: { startedAt: startedLongAgo }, activity: recentToolCall, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }),
+      [job],
+    )
+    // Held by the previous Stop: nothing fires while Claude waits, and that is not death.
+    assert.deepEqual(
+      backgroundHoldDecision({ marker: { startedAt: startedLongAgo, held: true }, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }),
+      [job],
+    )
   })
 })
 

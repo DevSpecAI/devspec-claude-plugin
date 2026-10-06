@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.0 - 2026-10-06
+
+- Changed: DevSpec shows Claude as working for as long as the work actually lasts, not for at most an hour. Before, a request was treated as finished one hour after it arrived, even if Claude or its subagents were still busy on it. The open message was then closed with nothing in it ("No response"), and Claude's answer turned up later as a separate message. Now a request stays open while Claude keeps working on it, and while it waits for work it started in the background. Only a request with no activity at all for an hour is treated as finished, which covers Claude Code versions that can't report an interrupt.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.41.2 - 2026-10-06
 
 - Fixed: an empty "No response" bubble no longer appears in the room after Claude answers. When Claude had handed work to subagents, the plugin sent the room the same summary of that work again as Claude's turn ended. If Claude's answer had already closed its bubble, that repeat opened a new one with nothing in it. The summary is now sent only when it has changed since the last one DevSpec received.

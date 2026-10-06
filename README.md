@@ -108,7 +108,9 @@ When attached, canonical commands and Claude's direct answers use the DevSpec co
 devspec: Cosmic Raven · DevSpec · “Fix the login redirect” · working on c6dcb524
 ```
 
-A short notice appears when it connects. If someone ends it from DevSpec, the line changes to `devspec: Cosmic Raven · ended from DevSpec`, so with several terminals open you can tell which ones are still connected. Showing this never calls the model. On older Claude Code versions the line does not appear and everything else works the same.
+A short notice appears when it connects.
+
+**Ending it from DevSpec closes it.** When you end the agent from DevSpec (End on the Agents page or in a session), its Claude Code closes in its terminal, even if it is in the middle of something, so you don't have to hunt through your tabs for it. The conversation is kept, and you can pick it up again with `claude --resume`. Stopping it from the terminal with `/devspec:devspec.remote-stop`, detaching it from a session, or a blip on DevSpec's side never closes it. On Windows it is not closed yet: the line under the prompt changes to `devspec: Cosmic Raven · ended from DevSpec` instead. Showing this never calls the model. On older Claude Code versions the line does not appear and everything else works the same.
 
 ### Shared session plans
 

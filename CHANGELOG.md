@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.37.0 - 2026-10-06
+
+- New: ending an agent from DevSpec now closes its Claude Code in the terminal, straight away and even mid-task, so with many terminals open you no longer have to find and close the right one by hand. The conversation is kept and can be resumed with `claude --resume`. Only an End made in DevSpec does this: `/devspec:devspec.remote-stop` in the terminal, a detach, or a brief problem on DevSpec's side never closes Claude Code, and a conversation resumed in another window closes only there. Not on Windows yet, where the terminal line still says it was ended.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.36.0 - 2026-10-05
 
 - Changed: your and your project's rules now always reach Claude the same way, as one short line naming the file that holds them all, which Claude is told to read in full. Before, small rule sets were pasted into the conversation and large ones went to a file, so how the rules arrived depended on how many there were. Nothing is ever cut, and a changed rule set gets a new file name so Claude knows to read it again. `orient` names the same file.

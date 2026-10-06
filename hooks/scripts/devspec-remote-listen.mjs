@@ -66,6 +66,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connect, ConnectError } from './devspec-remote-connect.mjs'
+import { closeClaudeCodeOnEnd } from './close-on-end.mjs'
 import { findProjectPin, folderLinkFingerprint, gitRemoteOrigin } from './devspec-scope.mjs'
 import { conversationProjectFingerprint, readConversationProject } from './conversation-project.mjs'
 import { EXIT_REARM, EXIT_SUPERSEDED, waitHolderPid } from './devspec-remote-wait.mjs'
@@ -387,6 +388,11 @@ async function serve({ connectionId, ownerPid, cwd, localId, connectEnv, log, cu
   let streamFailures = 0
   let streamNotBefore = 0
   let lastStanding = null
+  // Connections this process has served live, and those whose end it already acted on.
+  // A person's End closes Claude Code only when this process watched it happen
+  // (close-on-end.mjs, item 973124bd).
+  const servedLive = new Set()
+  const endHandled = new Set()
 
   const setStanding = (standing, state) => {
     if (`${standing}:${current}` === lastStanding) return
@@ -424,6 +430,17 @@ async function serve({ connectionId, ownerPid, cwd, localId, connectEnv, log, cu
     const state = readConnectionState(current)
     const standing = classifyConnection(state, ownerPid)
     setStanding(standing, state)
+    if (standing === 'mine') servedLive.add(current)
+    if (standing === 'ended' && !endHandled.has(current)) {
+      endHandled.add(current)
+      const outcome = closeClaudeCodeOnEnd({ state, sawLive: servedLive.has(current) })
+      log.write(outcome.closed ? 'ended from DevSpec — closing Claude Code' : 'ended — Claude Code stays open', {
+        connection_id: current,
+        reason: outcome.reason,
+        claude_pid: outcome.pid,
+      })
+      if (outcome.closed) recordConnectionEvent(current, 'closed_claude_code_on_end', { claude_pid: outcome.pid })
+    }
     const pollerUp = standing === 'mine' ? pollerRunning(current) : false
     if (pollerUp) {
       pollerUpSince ??= Date.now()

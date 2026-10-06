@@ -34,6 +34,7 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { captureInstructionContext } from './instruction-tiers.mjs'
+import { carriedControls, carriedControlsPath, pendingControlPath } from './control-relay.mjs'
 import { readSessionTitle, sessionTitleReadDue } from './session-title.mjs'
 import {
   STATE_ABSENT,
@@ -1644,6 +1645,11 @@ async function main() {
   // delivery `continue`s straight back into the loop. Never sent before the inbox
   // record is on disk.
   let pendingInteractionAck = null
+  // Owner controls (item cbf3d758): what the plugin's module last said it carries
+  // out, and a control nothing here carries out, handed back on the next poll so the
+  // connection's one control slot is never held.
+  let lastCarriedControls = []
+  let pendingControlAck = null
 
   // --- Command handoff (item a11d27fa) ------------------------------------------
   // The attachment the server names on every poll response. An offer must name this
@@ -1961,6 +1967,7 @@ async function main() {
     })
     const negotiatesInteraction = Object.keys(interactionArgs).length > 0
     const ack = negotiatesInteraction ? pendingInteractionAck : null
+    const controlAck = pendingControlAck
     // Offers ride the same capability. A readiness never shares a poll with an answer's
     // ACK: the server hands over only an answer it has already recorded as applied.
     const offersNegotiable = commandOfferNegotiable({
@@ -1991,6 +1998,8 @@ async function main() {
         ...interactionArgs,
         ...(ack ? questionEventAckArguments(ack) : {}),
         ...commandOfferArguments({ negotiable: offersNegotiable, ready: handoff }),
+        control_verbs: carriedControlsNow(),
+        ...(controlAck ? { control_ack: controlAck } : {}),
         wait_ms: waitMs,
         ...pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed: catchUp }),
         ...(dispatchCursor ? { dispatch_cursor: dispatchCursor } : {}),
@@ -2012,6 +2021,7 @@ async function main() {
     // queued, and a lost ACK is recovered by the dedupe path on redelivery anyway —
     // at-least-once means the answer is never the thing that gets lost.
     if (ack && pendingInteractionAck === ack) pendingInteractionAck = null
+    if (controlAck && pendingControlAck === controlAck) pendingControlAck = null
     // A readiness is one exchange. What the server made of it is read from this
     // response (the message delivered, or stale); a fresh offer earns the next one.
     if (handoff && pendingCommandHandoff === handoff) pendingCommandHandoff = null
@@ -2038,6 +2048,38 @@ async function main() {
         instruction_tiers_version: res.instruction_tiers_version, instruction_tiers_hash: res.instruction_tiers_hash,
       } : {}),
     })
+  }
+
+  /** What the module carries out now, keeping the last answer through a write in progress. */
+  function carriedControlsNow() {
+    let text = ''
+    try {
+      text = fs.readFileSync(carriedControlsPath(os.homedir(), connectionId), 'utf8')
+    } catch {
+      /* no report: the module is not loaded here */
+    }
+    const carried = carriedControls(text, Date.now())
+    if (carried !== null) lastCarriedControls = carried
+    return lastCarriedControls
+  }
+
+  /**
+   * Give a control to the module when it carries that verb out, or hand it back on
+   * the next poll when nothing here does: an older Claude Code, a `-p` run, a module
+   * that stopped, or a verb not built yet. Either way the slot is freed.
+   */
+  function handOverControl(control) {
+    if (carriedControlsNow().includes(control.verb)) {
+      writePrivateJson(pendingControlPath(os.homedir(), connectionId), {
+        id: control.id,
+        verb: control.verb,
+        received_at: new Date().toISOString(),
+      })
+      process.stderr.write(`devspec-remote-poll: ${nowStamp()} owner control ${control.verb} handed to Claude Code\n`)
+      return
+    }
+    pendingControlAck = control.id
+    process.stderr.write(`devspec-remote-poll: ${nowStamp()} owner control ${control.verb} is not carried out here; handing it back\n`)
   }
 
   /** Canonical transcript/control channel. Legacy conversational arrays stay inert. */
@@ -2150,17 +2192,9 @@ async function main() {
         forgetCommandHandoff()
       }
     } else if (channel === 'control') {
-      // Claude has no safe script-level implementation for these lifecycle verbs.
-      // Surface a typed host-control event through Monitor, but never turn it into
-      // chat and never send control_ack merely because it was observed/persisted.
-      process.stdout.write(JSON.stringify({
-        type: 'wake',
-        reason: 'canonical_host_control',
-        control_id: ingress.control.id,
-        inbox: inboxPathForConnection(connectionId),
-        authoritative: false,
-        executable: false,
-      }) + '\n')
+      // An owner control is carried out by the plugin's module, never by the model,
+      // so it wakes nobody (item cbf3d758, control-relay.mjs).
+      handOverControl(ingress.control)
     }
     return { ok: true, delivered: true }
   }

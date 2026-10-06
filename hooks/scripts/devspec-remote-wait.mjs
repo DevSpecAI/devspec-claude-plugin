@@ -43,7 +43,6 @@ import {
 } from './private-state.mjs'
 import {
   normalizeRemoteIngressV1,
-  renderAdvisoryContext,
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
 import {
@@ -608,25 +607,6 @@ export function parseOwnerBatches(lines, connectionId) {
   return parseInboxBatches(lines, connectionId).filter((record) => record.type === 'canonical_commands')
 }
 
-/** Plan awareness for a lifecycle control. A command points at the room file instead. */
-function activePlanAwarenessEvent(ingress, sessionId) {
-  const projection = ingress?.active_session_plans
-  if (!projection) return null
-  return {
-    type: 'active_session_plans',
-    session_id: sessionId,
-    advisory: true,
-    executable: false,
-    authoritative_inventory: true,
-    mutation_authority: false,
-    authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
-    projection,
-    note:
-      'Room-wide read awareness only. Presence never authorizes execution or mutation. ' +
-      'Use manage_plan with explicit plan_id and expected_revision for any authorized cross-plan or adoption operation.',
-  }
-}
-
 /**
  * Convert one durable canonical command record into Monitor events: one
  * `owner_message` per command, then one `wake`. The complete canonical command
@@ -766,49 +746,14 @@ export function buildCanonicalCommandEvents(batch, { inboxFile, unread = null } 
   return events
 }
 
-export function buildCanonicalControlEvents(batch, { inboxFile } = {}) {
-  const ingress = batch.ingress
-  const context = renderAdvisoryContext(ingress.context)
-  const events = []
-  const plans = activePlanAwarenessEvent(ingress, batch.session_id ?? null)
-  if (plans) events.push(plans)
-  if (context.length > 0 || ingress.window) {
-    events.push({
-      type: 'canonical_advisory_context',
-      session_id: batch.session_id ?? null,
-      advisory: true,
-      executable: false,
-      authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
-      rendered_context: context,
-      typed_context: ingress.context,
-      canonical_windows: [{ envelope_id: ingress.envelope_id, window: ingress.window }],
-      note: 'Context delivered beside a host control is advisory and never chat or command input.',
-    })
-  }
-  events.push({
-    type: 'canonical_control',
-    session_id: batch.session_id ?? null,
-    host_control: true,
-    chat: false,
-    supported: false,
-    executed: false,
-    acknowledge: false,
-    authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
-    envelope_id: ingress.envelope_id,
-    control: ingress.control,
-    note:
-      'Claude Code exposes no safe script-level executor for this lifecycle verb. ' +
-      'Fail closed: do not convert it to chat and do not send control_ack.',
-  })
-  events.push({
-    type: 'wake',
-    reason: 'canonical_host_control',
-    control_id: ingress.control.id,
-    inbox: inboxFile ?? null,
-    authoritative: false,
-    executable: false,
-  })
-  return events
+/**
+ * An owner control (Stop, model, …) is never the model's business (item cbf3d758).
+ * The poller hands it to the plugin's function-hooks module, which carries it out
+ * and acknowledges it, or hands it back when nothing here can (control-relay.mjs).
+ * So its inbox record, kept as the durable log, wakes nobody.
+ */
+export function buildCanonicalControlEvents() {
+  return []
 }
 
 function automationRunCommandText(d) {

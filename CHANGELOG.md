@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.40.0 - 2026-10-06
+
+- New: Stop works for Claude Code. When Claude is in the middle of something, Stop in DevSpec (the square button in the session's composer) stops it in its terminal straight away, exactly as pressing Esc there would. The conversation and Claude Code stay open, ready for your next message. DevSpec offers Stop only for a Claude Code that can carry it out: one running this plugin on a Claude Code version with the plugin API it needs. Others simply don't show it.
+- Changed: owner controls no longer reach Claude as messages. Before, a control from DevSpec woke Claude with a note that it could not be carried out.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.39.0 - 2026-10-06
 
 - New: an agent in a DevSpec room now keeps up with the room by itself. While it works, it is told when messages it hasn't read arrive, from you, a teammate or another agent, without being interrupted. That covers messages addressed to someone else and anything said since its last reply. It is told as counts (how many, from whom, how many are addressed to it), never the messages themselves, and it reads them with one command that hands them over whole, oldest first. Joining a room counts the room so far, so asking a newly joined agent "what do you think?" no longer depends on it choosing to scroll back.

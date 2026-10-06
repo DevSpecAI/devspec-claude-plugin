@@ -14,11 +14,13 @@
  * never talks to DevSpec.
  *
  * Claude Code takes one hooks module per plugin, so this is also where the
- * terminal-wait clear for a denied prompt is registered (terminal-wait.ts). That
- * one does reach DevSpec, through scripts/terminal-wait.mjs.
+ * terminal-wait clear for a denied prompt (terminal-wait.ts) and the owner's
+ * controls from DevSpec (devspec-control.ts) are registered. Those two do reach
+ * DevSpec, through scripts/terminal-wait.mjs and scripts/devspec-control.mjs.
  */
 import type { Register } from 'claude-code'
 
+import { startDevspecControls, watchTurnsForStop } from './devspec-control'
 import { clearTerminalWaitWhenAnswered } from './terminal-wait'
 
 import {
@@ -40,6 +42,7 @@ async function sha256Hex(text: string): Promise<string> {
 
 export const register: Register = (on) => {
   clearTerminalWaitWhenAnswered(on)
+  watchTurnsForStop(on)
 
   // Items this conversation's own claims hold, oldest first, as DevSpec answered
   // them. Held by the module, so a reload of the plugin starts it empty.
@@ -73,6 +76,18 @@ export const register: Register = (on) => {
 
     await paint().catch(() => undefined)
     $.clock.every(STATUS_REFRESH_MS, () => paint().catch(() => undefined))
+    startDevspecControls({
+      home,
+      pluginRoot: $.plugin.root,
+      conversationId: () => $.session.id(),
+      readText,
+      writeText: (path, text) => $.fs.write(path, text),
+      abortTurn: (turnId) => $.turn.abort({ turnId }),
+      run: (argv) => $.process.run(argv, { timeoutMs: 15_000 }),
+      every: (ms, fn) => {
+        $.clock.every(ms, fn)
+      },
+    })
     return next(e)
   })
 

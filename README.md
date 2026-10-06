@@ -112,6 +112,8 @@ A short notice appears when it connects.
 
 **Waiting for you shows in DevSpec.** If Claude Code stops on something only you can answer in its terminal, such as a permission prompt or a connected tool asking a question, DevSpec shows the agent as waiting for you, says what for ("Approve Bash"), and notifies you. Only the tool's name is sent, never what it was going to run. You still answer it in the terminal.
 
+**Stop works from DevSpec.** While Claude is working, the square Stop button in the session's composer stops it in its terminal, just as pressing Esc there would. Claude Code and the conversation stay open for your next message. DevSpec shows Stop only when this Claude Code can carry it out (Stop needs a recent Claude Code), so it never shows a button that does nothing. Switching model, thinking and compacting from DevSpec are not available for Claude Code yet.
+
 **Ending it from DevSpec closes it.** When you end the agent from DevSpec (End on the Agents page or in a session), its Claude Code closes in its terminal, even if it is in the middle of something, so you don't have to hunt through your tabs for it. The conversation is kept, and you can pick it up again with `claude --resume`. Stopping it from the terminal with `/devspec:devspec.remote-stop`, detaching it from a session, or a blip on DevSpec's side never closes it. On Windows it is not closed yet: the line under the prompt changes to `devspec: Cosmic Raven · ended from DevSpec` instead. Showing this never calls the model. On older Claude Code versions the line does not appear and everything else works the same.
 
 ### Shared session plans

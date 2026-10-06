@@ -254,16 +254,10 @@ describe('wait-boundary revalidation and independent channels', () => {
     assert.deepEqual(buildCanonicalCommandEvents(record).map((event) => event.type), ['owner_message', 'wake'])
   })
 
-  it('accepts a typed control separately and never acknowledges unsupported execution', () => {
+  it('reads a typed control record but wakes nobody: the plugin module carries it out (item cbf3d758)', () => {
     const records = parseInboxBatches([JSON.stringify(canonicalControlBatch())], CONNECTION)
     assert.equal(records.length, 1)
-    const events = buildCanonicalControlEvents(records[0], { inboxFile: '/tmp/inbox' })
-    const control = events.find((event) => event.type === 'canonical_control')
-    assert.equal(control.chat, false)
-    assert.equal(control.supported, false)
-    assert.equal(control.executed, false)
-    assert.equal(control.acknowledge, false)
-    assert.equal(events.some((event) => event.type === 'owner_message'), false)
+    assert.deepEqual(buildCanonicalControlEvents(records[0], { inboxFile: '/tmp/inbox' }), [])
   })
 
   it('accepts explicit automation runs but rejects assignment-shaped dispatches', () => {
@@ -1445,7 +1439,8 @@ it('fully emits command batches, control, answer and automation once before a de
     await awaitReader(() => count('automation_run') === 1)
     await new Promise(resolve => setTimeout(resolve, 180))
     assert.equal(count('owner_message'), 3, 'entire two-command record remains one emission unit')
-    assert.equal(count('canonical_control'), 1)
+    // A control in the same inbox is carried out by the module and emits nothing (item cbf3d758).
+    assert.equal(count('canonical_control'), 0)
     assert.equal(count('question_answer'), 1)
     assert.equal(count('automation_run'), 1)
     assert.equal(count('question_dismissal'), 0)
@@ -1453,7 +1448,7 @@ it('fully emits command batches, control, answer and automation once before a de
     await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === run.prefixBytes)
     const events = run.events()
     const commandIndices = events.map((event, index) => event.type === 'owner_message' ? index : -1).filter(index => index >= 0)
-    assert.ok(commandIndices[2] < events.findIndex(event => event.type === 'canonical_control'))
+    assert.ok(commandIndices[2] < events.findIndex(event => event.type === 'question_answer'))
     assert.equal(count('owner_message'), 3)
   } finally { await run.cleanup() }
 })

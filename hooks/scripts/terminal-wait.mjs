@@ -22,11 +22,13 @@
  *   The tool name comes from the `request` record.
  * - There is no hook for "the prompt was answered". Approving runs the tool and fires
  *   `PostToolUse` when it finishes. Mode `clear` runs on `PostToolUse`, the next
- *   prompt, `Stop` and `SessionEnd`, and does nothing unless a wait was reported. A
- *   denial or a failed tool is cleared by whichever of those comes next. So an approved
- *   command that runs for minutes shows as waiting until it finishes. (The newer
- *   `PermissionDenied` and `PostToolUseFailure` events are left out so older Claude Code
- *   builds, which may not know them, still load every hook.)
+ *   prompt, `Stop` and `SessionEnd`, and does nothing unless a wait was reported. So an
+ *   approved command that runs for minutes shows as waiting until it finishes.
+ * - A denial fires no command hook at all: no PostToolUse, PostToolUseFailure,
+ *   PermissionDenied or Stop, and no idle Notification within 75 s (measured on
+ *   2.1.291). The plugin's function-hooks module (hooks/terminal-wait.ts) sees the
+ *   denied `tool.call` settle and runs mode `clear`. On a build without that API, a
+ *   denial clears at the next prompt.
  *
  * Every mode exits 0 whatever happens: a hook must never block the agent, and a lost
  * report only means DevSpec misses one wait.

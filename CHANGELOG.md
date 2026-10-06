@@ -2,7 +2,7 @@
 
 ## 0.38.0 - 2026-10-06
 
-- New: when Claude Code stops on something only you can answer in its terminal, such as a permission prompt or a connected tool asking a question, DevSpec now shows the agent as waiting for you, says what for ("Approve Bash"), and notifies you. It is reported once Claude Code raises its own alert (a few seconds after the prompt appears), so answering straight away at the terminal never sends you a notification. Only the tool's name is sent, never its command, SQL or other input. The waiting state clears when the tool runs or the turn moves on, so a command you approved shows as waiting until it finishes. Needs the DevSpec server change that adds this (shown on the Agents page and in the room).
+- New: when Claude Code stops on something only you can answer in its terminal, such as a permission prompt or a connected tool asking a question, DevSpec now shows the agent as waiting for you, says what for ("Approve Bash"), and notifies you. It is reported once Claude Code raises its own alert (a few seconds after the prompt appears), so answering straight away at the terminal never sends you a notification. Only the tool's name is sent, never its command, SQL or other input. The waiting state clears when you answer: a command you approve clears when it finishes running, and one you deny clears straight away. Needs the DevSpec server change that adds this (shown on the Agents page and in the room).
 - Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
 
 ## 0.37.0 - 2026-10-06

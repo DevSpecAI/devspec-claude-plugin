@@ -40,6 +40,20 @@ export function connectionStatePath(home, connectionId) {
   return `${home}/${REMOTE_DIR}/connections/${connectionId}.json`
 }
 
+/** Where terminal-wait.mjs remembers a terminal wait (its waitStatePath), for the module. */
+export function terminalWaitPath(home, connectionId) {
+  return `${home}/${REMOTE_DIR}/connections/${connectionId}.terminal-wait.json`
+}
+
+/** The connection a conversation is bound to, from its bond file, or null. Node-free. */
+export async function boundConnectionId({ home, conversationId, readText }) {
+  if (typeof home !== 'string' || !home || typeof conversationId !== 'string' || !SAFE_ID_RE.test(conversationId)) {
+    return null
+  }
+  const connectionId = parseJson(await readText(bondPath(home, conversationId)))?.connection_id
+  return typeof connectionId === 'string' && UUID_RE.test(connectionId) ? connectionId : null
+}
+
 /** conversation-project.mjs keys this file by sha256(conversation id), in hex. */
 export function conversationProjectPath(home, conversationDigestHex) {
   return `${home}/${REMOTE_DIR}/local/${AGENT_DIR}/projects/${conversationDigestHex}.json`

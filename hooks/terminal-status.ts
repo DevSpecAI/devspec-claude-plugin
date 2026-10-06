@@ -12,8 +12,14 @@
  * Display only. It reads the conversation's own DevSpec state (see
  * scripts/terminal-status.mjs) and never writes it, never calls the model, and
  * never talks to DevSpec.
+ *
+ * Claude Code takes one hooks module per plugin, so this is also where the
+ * terminal-wait clear for a denied prompt is registered (terminal-wait.ts). That
+ * one does reach DevSpec, through scripts/terminal-wait.mjs.
  */
 import type { Register } from 'claude-code'
+
+import { clearTerminalWaitWhenAnswered } from './terminal-wait'
 
 import {
   STATUS_REFRESH_MS,
@@ -33,6 +39,8 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 export const register: Register = (on) => {
+  clearTerminalWaitWhenAnswered(on)
+
   // Items this conversation's own claims hold, oldest first, as DevSpec answered
   // them. Held by the module, so a reload of the plugin starts it empty.
   let work: string[] = []

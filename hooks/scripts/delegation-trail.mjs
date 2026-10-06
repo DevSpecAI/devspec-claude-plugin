@@ -231,6 +231,41 @@ export function ensureTrailState(connectionId, { dir, turn, resolveIdentity }) {
 }
 
 /**
+ * The picture the server last accepted for this turn, as `pictureKey` wrote it, or
+ * null. Item 8ea07be1: a trail post exists to change what the room shows, so the
+ * same picture is never sent twice. Measured 2026-10-06 (room 114a70b5): the Stop
+ * after an answer re-sent the unchanged group, and because that answer had not
+ * completed the turn the server opened a NEW Working bubble for it, which the turn's
+ * end closed a second later with nothing in it ("No response").
+ */
+export function deliveredPicture(connectionId, { dir, turn }) {
+  try {
+    const current = JSON.parse(fs.readFileSync(trailStatePath(connectionId, dir), 'utf8'))
+    return current?.turn === turn && typeof current.delivered === 'string' ? current.delivered : null
+  } catch {
+    return null
+  }
+}
+
+/** Record that the server accepted this picture for this turn. Only after it did. */
+export function recordDeliveredPicture(connectionId, { dir, turn, key }) {
+  const file = trailStatePath(connectionId, dir)
+  try {
+    const current = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (current?.turn !== turn) return false
+    fs.writeFileSync(file, JSON.stringify({ ...current, delivered: key }), { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** What a picture is compared by: everything a post would send, built deterministically. */
+export function pictureKey(payload) {
+  return JSON.stringify(payload)
+}
+
+/**
  * Post the newest picture, at most one post in flight per connection.
  *
  * Several hooks can fire together (parallel launches, a SubagentStop beside a Stop).
@@ -239,12 +274,24 @@ export function ensureTrailState(connectionId, { dir, turn, resolveIdentity }) {
  * reflects the last change. The holder keeps going while changes keep arriving; the
  * hook's own timeout is what bounds it.
  *
+ * A picture the room already has (`isDelivered`) is not sent again; one the server
+ * accepts is passed to `onDelivered`. Both run under the lock, so two hooks never
+ * judge against a stale record. A failed post is not recorded, so the next change
+ * sends the whole current picture.
+ *
  * A lock older than the hook timeout (hooks.json gives these hooks 10 s) belongs to a
  * holder Claude Code has already killed, so it is taken over.
  */
 const LOCK_STALE_MS = 15_000
 
-export async function postLatest(connectionId, { dir, build, post, now = () => Date.now() }) {
+export async function postLatest(connectionId, {
+  dir,
+  build,
+  post,
+  isDelivered = () => false,
+  onDelivered = () => {},
+  now = () => Date.now(),
+}) {
   const lock = path.join(dir, `${connectionId}.turn-trail.lock`)
   const dirty = path.join(dir, `${connectionId}.turn-trail.dirty`)
   try {
@@ -274,9 +321,10 @@ export async function postLatest(connectionId, { dir, build, post, now = () => D
     for (;;) {
       fs.rmSync(dirty, { force: true })
       const payload = build()
-      if (payload) {
+      if (payload && !isDelivered(payload)) {
         const ok = await post(payload)
         if (!ok) break
+        onDelivered(payload)
         posted++
       }
       if (!fs.existsSync(dirty)) break

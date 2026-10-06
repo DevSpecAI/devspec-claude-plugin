@@ -50,9 +50,12 @@ import {
   delegatedChildren,
   delegationEvent,
   delegationText,
+  deliveredPicture,
   ensureTrailState,
   latestDeliveredCommand,
+  pictureKey,
   postLatest,
+  recordDeliveredPicture,
   turnIdentity,
 } from './delegation-trail.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
@@ -323,6 +326,10 @@ export async function updateDelegationTrail(state, {
       const event = delegationEvent(delegatedChildren(lines, marker.startedAt), { seq: trail.delegationSeq })
       return event ? { event, text: delegationText(lines, marker.startedAt) } : null
     },
+    // Unchanged pictures are not re-sent (item 8ea07be1): after an answer, a repeat
+    // can only open an empty bubble.
+    isDelivered: (payload) => deliveredPicture(connectionId, { dir, turn: marker.startedAt }) === pictureKey(payload),
+    onDelivered: (payload) => recordDeliveredPicture(connectionId, { dir, turn: marker.startedAt, key: pictureKey(payload) }),
     post: async ({ event, text }) => {
       try {
         await call({

@@ -16,9 +16,11 @@ import {
   delegatedChildren,
   delegationEvent,
   delegationText,
+  deliveredPicture,
   ensureTrailState,
   latestDeliveredCommand,
   postLatest,
+  recordDeliveredPicture,
   turnIdentity,
 } from './delegation-trail.mjs'
 import { recordOwnedEnd, recordOwnedLaunch, stillAlive, subagentStillWaiting, turnMarkerPath, updateDelegationTrail } from './mirror-turn.mjs'
@@ -179,6 +181,96 @@ describe('updateDelegationTrail — what reaches post_session_message', () => {
     assert.equal(calls[1].arguments.trail_events[0].children[0].status, 'completed')
     assert.equal(calls[1].arguments.trail_events[0].children[0].durationMs, 45_000)
     assert.equal(calls[0].arguments.trail_events[0].seq, calls[1].arguments.trail_events[0].seq)
+  })
+
+  // Item 8ea07be1, measured 2026-10-06 in room 114a70b5: SubagentStop posted the
+  // finished group, the agent answered with it attached (turn not completed), and
+  // the Stop re-sent the identical group. The server opened a new Working bubble for
+  // it and the turn's end closed it empty: "No response".
+  it('never re-sends a picture the room already has, so a Stop after the answer posts nothing', async () => {
+    const dir = tempDir()
+    const startedAt = T0 + 300
+    fs.writeFileSync(turnMarkerPath(CONNECTION, dir), JSON.stringify({ startedAt }))
+    fs.writeFileSync(path.join(dir, `${CONNECTION}.inbox.jsonl`), canonicalCommands(T0) + '\n')
+    const state = { connection_id: CONNECTION, session_id: SESSION }
+    const calls = []
+    const call = async (request) => { calls.push(request); return { delivery: { status: 'stored' } } }
+    const auth = { token: 'dvs_test', mcpUrl: 'https://api.devspec.example/api/mcp' }
+    const marker = { startedAt }
+
+    recordOwnedLaunch(CONNECTION, { id: 'a5d2', kind: 'subagent', label: 'Plan four memory types' }, { dir, now: startedAt + 1_000 })
+    await updateDelegationTrail(state, { dir, marker, call, auth }) // PostToolUse: launch
+    await updateDelegationTrail(state, { dir, marker, call, auth }) // held Stop: still running
+    assert.equal(calls.length, 1)
+
+    recordOwnedEnd(CONNECTION, 'a5d2', { dir, now: startedAt + 627_000 })
+    await updateDelegationTrail(state, { dir, marker, call, auth }) // SubagentStop: finished
+    assert.equal(calls.length, 2)
+
+    // The agent answers here. Then its Stop finds nothing new.
+    assert.deepEqual(await updateDelegationTrail(state, { dir, marker, call, auth }), { posted: 0, deferred: false })
+    assert.equal(calls.length, 2)
+  })
+
+  it('a change first noticed at Stop is still posted', async () => {
+    const dir = tempDir()
+    const startedAt = T0 + 300
+    fs.writeFileSync(turnMarkerPath(CONNECTION, dir), JSON.stringify({ startedAt }))
+    fs.writeFileSync(path.join(dir, `${CONNECTION}.inbox.jsonl`), canonicalCommands(T0) + '\n')
+    const state = { connection_id: CONNECTION, session_id: SESSION }
+    const calls = []
+    const call = async (request) => { calls.push(request); return {} }
+    const auth = { token: 't', mcpUrl: 'u' }
+    const marker = { startedAt }
+
+    recordOwnedLaunch(CONNECTION, { id: 'a1', kind: 'subagent', label: 'review' }, { dir, now: startedAt + 1_000 })
+    await updateDelegationTrail(state, { dir, marker, call, auth })
+    // The host stopped listing it without a final SubagentStop; Stop records the end.
+    recordOwnedEnd(CONNECTION, 'a1', { dir, now: startedAt + 9_000 })
+    await updateDelegationTrail(state, { dir, marker, call, auth })
+
+    assert.equal(calls.length, 2)
+    assert.equal(calls[1].arguments.trail_events[0].children[0].status, 'completed')
+  })
+
+  it('a post the server refused is not remembered, so the same picture is sent again', async () => {
+    const dir = tempDir()
+    const startedAt = T0 + 300
+    fs.writeFileSync(turnMarkerPath(CONNECTION, dir), JSON.stringify({ startedAt }))
+    fs.writeFileSync(path.join(dir, `${CONNECTION}.inbox.jsonl`), canonicalCommands(T0) + '\n')
+    const state = { connection_id: CONNECTION, session_id: SESSION }
+    let refuse = true
+    const calls = []
+    const call = async (request) => {
+      calls.push(request)
+      if (refuse) throw new Error('refused')
+      return {}
+    }
+    const auth = { token: 't', mcpUrl: 'u' }
+    const marker = { startedAt }
+
+    recordOwnedLaunch(CONNECTION, { id: 'a1', kind: 'subagent', label: 'review' }, { dir, now: startedAt + 1_000 })
+    assert.equal((await updateDelegationTrail(state, { dir, marker, call, auth })).posted, 0)
+    refuse = false
+    assert.equal((await updateDelegationTrail(state, { dir, marker, call, auth })).posted, 1)
+    assert.equal((await updateDelegationTrail(state, { dir, marker, call, auth })).posted, 0)
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls[0].arguments, calls[1].arguments)
+  })
+
+  it('a new command starts from nothing delivered', async () => {
+    const dir = tempDir()
+    const first = T0 + 300
+    fs.writeFileSync(path.join(dir, `${CONNECTION}.inbox.jsonl`), canonicalCommands(T0) + '\n')
+    recordOwnedLaunch(CONNECTION, { id: 'a1', kind: 'subagent', label: 'review' }, { dir, now: first + 1_000 })
+    assert.equal(ensureTrailState(CONNECTION, { dir, turn: first, resolveIdentity: () => ({ command_turn_id: TURN_ID }) }).turn, first)
+    assert.equal(recordDeliveredPicture(CONNECTION, { dir, turn: first, key: 'k' }), true)
+    assert.equal(deliveredPicture(CONNECTION, { dir, turn: first }), 'k')
+
+    const second = first + 3_600_000
+    ensureTrailState(CONNECTION, { dir, turn: second, resolveIdentity: () => ({ command_turn_id: TURN_ID }) })
+    assert.equal(deliveredPicture(CONNECTION, { dir, turn: second }), null)
+    assert.equal(recordDeliveredPicture(CONNECTION, { dir, turn: first, key: 'stale' }), false)
   })
 
   it('posts nothing when the command identity cannot be established', async () => {

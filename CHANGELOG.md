@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.41.2 - 2026-10-06
+
+- Fixed: an empty "No response" bubble no longer appears in the room after Claude answers. When Claude had handed work to subagents, the plugin sent the room the same summary of that work again as Claude's turn ended. If Claude's answer had already closed its bubble, that repeat opened a new one with nothing in it. The summary is now sent only when it has changed since the last one DevSpec received.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.41.1 - 2026-10-06
 
 - Fixed: a scheduled prompt no longer appears in the room as your message. When a `/loop`, a routine or a reminder Claude scheduled for itself fired, the room showed its text as if you had just typed it. Now only prompts a person sent are shown as yours: ones typed in this terminal, sent through Claude Code's Remote Control, or given to `claude -p`. Background-task notices and messages from other sessions are not shown either. The plugin goes by where Claude Code says each prompt came from, not by what the prompt says.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.41.1 - 2026-10-06
+
+- Fixed: a scheduled prompt no longer appears in the room as your message. When a `/loop`, a routine or a reminder Claude scheduled for itself fired, the room showed its text as if you had just typed it. Now only prompts a person sent are shown as yours: ones typed in this terminal, sent through Claude Code's Remote Control, or given to `claude -p`. Background-task notices and messages from other sessions are not shown either. The plugin goes by where Claude Code says each prompt came from, not by what the prompt says.
+- Showing a typed prompt in the room now needs Claude Code 2.1.289 or later, like the terminal status line and Stop. On older versions, prompts typed in the terminal no longer appear in the room. Everything else works as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.41.0 - 2026-10-06
 
 - New: DevSpec now knows which model your Claude Code is running, without Claude having to say so. The composer's agent list, the session's agent lists and the Agents page show the model, its effort level and how full the context is, the same as they do for Pi, and work Claude claims records the model that did it. The figures come from Claude Code itself at the start and end of every turn, so after switching with /model the new model shows from the next turn. A subagent's model is not reported as the agent's. Nothing is sent for a conversation that is not connected to DevSpec.

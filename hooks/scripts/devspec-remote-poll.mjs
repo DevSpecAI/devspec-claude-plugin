@@ -1267,8 +1267,8 @@ export function isDeliverableCommand(msg, connectionId) {
  *
  * Honest pickup: writing the turn marker (and the caller's immediate busy
  * heartbeat) flips UI pending → working the moment the command lands here —
- * not when/if a UserPromptSubmit hook fires. Remote phone/web wakes never go
- * through that hook; this is the one reliable pickup signal.
+ * not when/if a prompt hook fires. Remote phone/web wakes never go through
+ * that hook; this is the one reliable pickup signal.
  */
 function deliverOwnerMessages(connectionId, ownerMsgs, nextCursor, ownerUserId, sessionId, context = null) {
   // Attachments are decoded to disk HERE, before anything is written down (item

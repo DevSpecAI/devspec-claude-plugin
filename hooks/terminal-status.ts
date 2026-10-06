@@ -15,15 +15,17 @@
  *
  * Claude Code takes one hooks module per plugin, so this is also where the
  * terminal-wait clear for a denied prompt (terminal-wait.ts), the owner's controls
- * from DevSpec (devspec-control.ts) and the runtime report of which model is running
- * (devspec-telemetry.ts) are registered. Those three do reach DevSpec, through
- * scripts/terminal-wait.mjs, scripts/devspec-control.mjs and
- * scripts/devspec-telemetry.mjs.
+ * from DevSpec (devspec-control.ts), the runtime report of which model is running
+ * (devspec-telemetry.ts) and the room's copy of a prompt typed here (local-prompt.ts)
+ * are registered. Those four do reach DevSpec, through scripts/terminal-wait.mjs,
+ * scripts/devspec-control.mjs, scripts/devspec-telemetry.mjs and
+ * scripts/mirror-turn.mjs.
  */
 import type { Register } from 'claude-code'
 
 import { startDevspecControls, watchTurnsForStop } from './devspec-control'
 import { watchTurnsForTelemetry } from './devspec-telemetry'
+import { mirrorPromptsToTheRoom } from './local-prompt'
 import { clearTerminalWaitWhenAnswered } from './terminal-wait'
 
 import {
@@ -47,6 +49,7 @@ export const register: Register = (on) => {
   clearTerminalWaitWhenAnswered(on)
   watchTurnsForStop(on)
   watchTurnsForTelemetry(on)
+  mirrorPromptsToTheRoom(on)
 
   // Items this conversation's own claims hold, oldest first, as DevSpec answered
   // them. Held by the module, so a reload of the plugin starts it empty.

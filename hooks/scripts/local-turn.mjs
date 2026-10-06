@@ -10,8 +10,9 @@
  * model can make those itself, so they never name anyone. Pi admits its terminal
  * turns the same way.
  *
- * The UserPromptSubmit hook admits the turn before the model starts, so it exists
- * before the first write. The poller's busy heartbeats keep its working lease alive
+ * The prompt hook (hooks/local-prompt.ts, through mirror-turn.mjs) admits the turn
+ * before the model starts, so it exists before the first write, and admits it only
+ * for a prompt Claude Code stamps as a person's (item dd1a8325). The poller's busy heartbeats keep its working lease alive
  * while the turn marker stands, background holds included. The Stop hook that
  * really ends the turn completes exactly this attempt.
  */

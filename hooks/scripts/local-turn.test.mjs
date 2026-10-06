@@ -98,6 +98,8 @@ describe('localTurnToComplete', () => {
 describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)', () => {
   const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mirror-turn.mjs')
   const CONVERSATION = 'conversation-718825fc'
+  // Claude Code's stamp on a prompt typed at the terminal, as hooks/local-prompt.ts passes it.
+  const TYPED = { kind: 'composer' }
   let server
   let url
   let calls = []
@@ -152,7 +154,7 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
 
   it('a typed prompt admits the turn with the capability, before anything else, and Stop closes exactly it', async () => {
     seed()
-    await run('user_prompt', { prompt: 'file an item for the flaky test' })
+    await run('user_prompt', { prompt: 'file an item for the flaky test', origin: TYPED })
     const pickup = calls.find(call => call.name === 'report_pickup')
     assert.ok(pickup, 'report_pickup was called')
     assert.equal(calls[0].name, 'report_pickup')
@@ -173,14 +175,38 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
 
   it('a harness wake is not a prompt: it admits nothing and keeps the open turn', async () => {
     seed({ local_turn: { attempt_id: OLDER, session_id: ROOM } })
-    await run('user_prompt', { prompt: '<task-notification>background job finished</task-notification>' })
+    await run('user_prompt', { prompt: '<task-notification>background job finished</task-notification>', origin: { kind: 'task-notification' } })
     assert.equal(calls.some(call => call.name === 'report_pickup'), false)
     assert.deepEqual(stored().local_turn, { attempt_id: OLDER, session_id: ROOM })
   })
 
+  // Measured on 2.1.291: a /loop firing carries exactly the text typed to start the
+  // loop, so only the engine's stamp tells them apart (item dd1a8325).
+  it('a scheduled firing of a prompt the owner once typed is not the owner speaking now', async () => {
+    seed()
+    const loop = '/loop check CI and merge when green'
+    await run('user_prompt', { prompt: loop, origin: { kind: 'scheduled-trigger' } })
+    assert.deepEqual(calls.map(call => call.name), ['heartbeat_connection'])
+    assert.equal(calls[0].args.busy, true)
+    assert.equal(stored().local_turn ?? null, null)
+
+    calls = []
+    await run('user_prompt', { prompt: loop, origin: TYPED })
+    assert.deepEqual(calls.map(call => call.name), ['report_pickup', 'post_session_message', 'heartbeat_connection'])
+    assert.deepEqual(calls[1].args, { message: loop, agent_name: 'Claude Code', turn_kind: 'local_prompt', connection_id: CONNECTION })
+  })
+
+  it('a prompt whose origin is unknown or missing is not shown as the owner\'s', async () => {
+    for (const origin of [{ kind: 'unclassified' }, { kind: 'a-kind-added-later' }, undefined]) {
+      seed()
+      await run('user_prompt', { prompt: 'Continue: when CI is green, merge it', origin })
+      assert.deepEqual(calls.map(call => call.name), ['heartbeat_connection'], JSON.stringify(origin))
+    }
+  })
+
   it('without a recorded attachment the turn is left as before, and Stop keeps the connection-scoped completion', async () => {
     seed({ speech_attachment_id: null, attached_at: null })
-    await run('user_prompt', { prompt: 'file an item' })
+    await run('user_prompt', { prompt: 'file an item', origin: TYPED })
     assert.equal(calls.some(call => call.name === 'report_pickup'), false)
     calls = []
     await run('stop', { last_assistant_message: 'Done.' })

@@ -107,7 +107,7 @@ Body = the answer to the latest command. Lead with it. No preamble, no thinking,
 
 **Attribution:** pass your `connection_id` on every write that produces a session card (`create_action_item`, `surface_session_action_items`). Action-item rows carry no agent identity of their own, so without it the server cannot tell two of your agents apart and renders no name at all (item `b6c447fd`).
 
-Hooks are mechanical only: `UserPromptSubmit` may mirror a prompt bubble; **Stop does not post your answer**. You do.
+Hooks are mechanical only: a prompt typed in this terminal may be mirrored as a bubble; **Stop does not post your answer**. You do.
 
 **`complete_turn: true` means the turn is OVER — only pass it on your final
 answer.** A mid-turn post (progress on a long brief, an answer to one question

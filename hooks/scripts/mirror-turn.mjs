@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * DevSpec remote-control mirror hook (Stop / UserPromptSubmit) — CONNECTION-NATIVE.
+ * DevSpec remote-control mirror hook (Stop / a prompt) — CONNECTION-NATIVE.
  * Resolves ONLY the connection bound to THIS local conversation — never a
  * machine-global "latest" pointer. Posts mechanically — no LLM tokens.
  *
- * user_prompt → optional local_prompt bubble when attached (literal owner text)
+ * user_prompt → busy/heartbeat + turn marker; and, for a prompt a person submitted,
+ *               the owner's own turn plus a local_prompt bubble when attached
+ *               (literal owner text). Run by the hooks module (hooks/local-prompt.ts)
+ *               with Claude Code's origin for the prompt.
  * stop        → busy/heartbeat + turn marker only (NO assistant text)
  *
  * Answers are agent-canonical: skills call post_session_message({ connection_id }).
@@ -682,22 +685,28 @@ function extractLastText(hookInput, which) {
 }
 
 /**
- * Claude Code re-invokes the model after a background task by injecting a synthetic
- * user prompt (a <task-notification> block, a [SYSTEM NOTIFICATION …] banner, or a
- * <system-reminder>). Those are harness plumbing, never owner-typed input, and must
- * not be mirrored as local_prompt bubbles.
+ * The origins, in Claude Code's own closed set (`prompt.submit`'s `e.origin.kind`),
+ * of a prompt the person running this Claude Code submitted: typed at the terminal
+ * (`composer`), sent through Claude Code's Remote Control from a phone or the web
+ * (`bridge`), or the turn of an SDK host such as `claude -p` (`sdk`).
+ *
+ * Nothing else is the owner's words, and the room must never show it as if it were
+ * (item dd1a8325): a scheduled or /loop firing (`scheduled-trigger`), a background
+ * task's notification, which is how DevSpec's own wake stream arrives
+ * (`task-notification`), another session, a channel, an unclassified turn, and any
+ * kind added after this list was written. The stamp is the engine's, never read from
+ * the text: a /loop firing carries exactly the text that was typed to start it.
  */
-function isHarnessInjection(text) {
-  const t = String(text)
-  return (
-    t.includes('<task-notification') ||
-    t.includes('[SYSTEM NOTIFICATION - NOT USER INPUT]') ||
-    t.includes('This is an automated background-task event') ||
-    t.includes('<system-reminder>') ||
-    // A channel event from a DevSpec channel server (item b7ef1fe2) is owner mail the
-    // wake path already delivered, never a prompt typed at this terminal.
-    t.includes('<channel source="plugin:devspec')
-  )
+const PROMPT_ORIGINS_OF_A_PERSON = new Set(['composer', 'bridge', 'sdk'])
+
+/** True only when the hooks module passed an origin that names a person (above). */
+export function promptCameFromAPerson(hookInput) {
+  try {
+    const kind = JSON.parse(hookInput || '{}')?.origin?.kind
+    return typeof kind === 'string' && PROMPT_ORIGINS_OF_A_PERSON.has(kind)
+  } catch {
+    return false
+  }
 }
 
 const REMOTE_STATUS_BANNER = '━━━ DevSpec Remote Control ━━━'
@@ -1048,7 +1057,7 @@ async function main() {
   const localId = state.local_id || null
 
   const text = extractLastText(raw, mode)
-  const skipMirror = mode === 'user_prompt' && !!text && isHarnessInjection(text)
+  const fromAPerson = mode === 'user_prompt' && promptCameFromAPerson(raw)
 
   // Consume any explicit-reply marker so it cannot bleed into a later turn.
   // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full
@@ -1109,10 +1118,11 @@ async function main() {
   try {
     // A prompt typed at this terminal opens the owner's own turn, admitted with the
     // connection capability BEFORE the model starts, so every write it makes names
-    // the owner as the person who asked (item 718825fc, local-turn.mjs). Harness
-    // wakes are not prompts: a room command carries its own requester, and a
-    // background wake continues the turn that is already open.
-    if (mode === 'user_prompt' && connectionId && sessionId && text && String(text).trim() && !skipMirror) {
+    // the owner as the person who asked (item 718825fc, local-turn.mjs). Nothing
+    // else does: a room command carries its own requester, a background wake
+    // continues the turn that is already open, and a scheduled firing was asked for
+    // by nobody at this moment.
+    if (fromAPerson && connectionId && sessionId && text && String(text).trim()) {
       const scope = localTurnScope(state, sessionId)
       if (scope) {
         const admitted = await startLocalTurn({
@@ -1133,13 +1143,7 @@ async function main() {
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
     // the skill must post_session_message the direct answer (prefer connection_id).
-    if (
-      mode === 'user_prompt' &&
-      sessionId &&
-      text &&
-      String(text).trim() &&
-      !skipMirror
-    ) {
+    if (fromAPerson && sessionId && text && String(text).trim()) {
       const cleaned = String(text).trim().slice(0, 12000)
       if (cleaned) {
         const postArgs = {

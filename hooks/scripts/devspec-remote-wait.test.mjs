@@ -212,11 +212,9 @@ describe('wait-boundary revalidation and independent channels', () => {
 
   it('drops a malformed wake pointer on its own, never the command it rode in on', () => {
     const batch = canonicalInboxBatch('bent-pointer')
-    const id = batch.ingress.commands[0].message_id
     batch.wake_context = {
       transcript: '../../etc/passwd',
       room_state: '/home/x/.devspec/remote-control/connections/c.room.json',
-      since_last_reply: { [id]: -3, other: 5 },
       room_state_changed: ['session_polls', 'shell_commands', 'session_polls'],
     }
     const [record] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
@@ -224,7 +222,6 @@ describe('wait-boundary revalidation and independent channels', () => {
     assert.deepEqual(record.wake_context, {
       transcript: null,
       room_state: '/home/x/.devspec/remote-control/connections/c.room.json',
-      since_last_reply: { [id]: null },
       room_state_changed: ['session_polls'],
     })
   })
@@ -300,10 +297,7 @@ describe('the command wake points at the room and never carries it (item 7fe8e3d
   const TRANSCRIPT = '/home/x/.devspec/remote-control/connections/c.s.transcript.jsonl'
   const ROOM = '/home/x/.devspec/remote-control/connections/c.room.json'
   const pointing = (batch, extra = {}) => {
-    const id = batch.ingress.commands[0].message_id
-    batch.wake_context = {
-      transcript: TRANSCRIPT, room_state: ROOM, since_last_reply: { [id]: 50 }, room_state_changed: [], ...extra,
-    }
+    batch.wake_context = { transcript: TRANSCRIPT, room_state: ROOM, room_state_changed: [], ...extra }
     const [parsed] = parseInboxBatches([JSON.stringify(batch)], CONNECTION)
     return parsed
   }
@@ -328,14 +322,23 @@ describe('the command wake points at the room and never carries it (item 7fe8e3d
     assert.equal(wake.executable, false)
   })
 
-  it('reports the count since the last reply on the command itself', () => {
-    const [command] = buildCanonicalCommandEvents(pointing(canonicalInboxBatch('count')))
-    assert.equal(command.since_last_reply, 50)
+  it('tells what is unread as counts: a total on the command, the breakdown on its own line (item 55feedd7)', () => {
+    const unread = { unread: 3, updated: 1, to_you: 1, oldest_at: '2026-10-06T13:00:00Z', by: { Ali: 3, 'Pi · Keen Puma': 1 }, read_with: 'node r.mjs read --connection-id c' }
+    const events = buildCanonicalCommandEvents(pointing(canonicalInboxBatch('count')), { unread })
+    assert.deepEqual(events.map((event) => event.type), ['owner_message', 'room_unread', 'wake'])
+    assert.equal(events[0].unread, 4)
+    const line = events[1]
+    assert.equal(line.executable, false)
+    assert.deepEqual({ ...line, type: undefined, session_id: undefined, advisory: undefined, executable: undefined }, { ...unread, type: undefined, session_id: undefined, advisory: undefined, executable: undefined })
+    // The wake keeps its paths inside the 500-character cap: the notice is not on it.
+    assert.ok(JSON.stringify(events[2]).slice(0, 500).includes(TRANSCRIPT))
   })
 
-  it('is honest when the poller could not say: no pointer, no count', () => {
-    const [command, wake] = buildCanonicalCommandEvents(canonicalInboxBatch('bare'))
-    assert.equal(command.since_last_reply, null)
+  it('is honest when nothing could be counted: no copy, no count, no breakdown line', () => {
+    const [command, wake, extra] = buildCanonicalCommandEvents(canonicalInboxBatch('bare'))
+    assert.equal(command.unread, null)
+    assert.equal(wake.type, 'wake')
+    assert.equal(extra, undefined)
     assert.equal(wake.transcript, null)
     assert.deepEqual(wake.room_state_changed, [])
   })
@@ -365,9 +368,9 @@ describe('the wake line inside the 500-character cap', () => {
     const seen = JSON.parse(`${cut.replace(/,"body":"x+$/, '')}}`)
     assert.equal(seen.from, 'Owner')
     assert.equal(seen.authority, 'owner')
-    // The command's transcript line, and how much came before it since the last reply.
+    // The command's transcript line, and how much of the room is unread.
     assert.equal(seen.message_id, batch.ingress.commands[0].message_id)
-    assert.ok(Object.hasOwn(seen, 'since_last_reply'))
+    assert.ok(Object.hasOwn(seen, 'unread'))
   })
 
   it('leaves the body far more room than the 46 characters it used to get', () => {

@@ -477,10 +477,12 @@ describe('the wake points at the transcript (item 7fe8e3d1)', () => {
   }
   const mine = (n, text = 'my reply') => entry(n, { kind: 'agent', name: `${ME_LABEL} (Ali Price)`, tool: ME_LABEL, text })
 
-  it('counts the 50 room messages after my last reply that came before the command', () => {
+  it('names the transcript and the room file, and leaves counting what is unread to the reader (item 55feedd7)', () => {
     const { store, ingress } = drained([mine(1), ...range(2, 51).map((n) => entry(n))], [command(52, { text: 'what do you think?' })])
     const wake = commandWakeContext(store, ingress, { connectionId: CONN, dir: '/tmp/d' })
-    assert.equal(wake.since_last_reply[id(52)], 50)
+    // "Since my last reply" is not "since I last read" (decision c4c6190f), so the
+    // poller no longer counts it; room-unread.mjs counts from what was handed over.
+    assert.equal(Object.hasOwn(wake, 'since_last_reply'), false)
     assert.equal(wake.transcript, transcriptPaths(CONN, SESSION, '/tmp/d').transcript)
     assert.equal(wake.room_state, path.join('/tmp/d', `${CONN}.room.json`))
   })
@@ -491,13 +493,6 @@ describe('the wake points at the transcript (item 7fe8e3d1)', () => {
     apply(store, page({ room: { open_check: [{ message_id: id(2), state: 'deleted' }] } }))
     assert.equal(messagesSinceLastReply(store, 4), 2)
     assert.equal(messagesSinceLastReply(store, 2), 1, 'only what came before the command counts')
-  })
-
-  it('gives no count while the copy is still filling in history', () => {
-    const store = createTranscriptStore(CONN, SESSION)
-    const ingress = page({ entries: [entry(1)], commands: [command(2)] })
-    apply(store, ingress)
-    assert.equal(commandWakeContext(store, ingress, { connectionId: CONN }).since_last_reply[id(2)], null)
   })
 
   it('names no transcript for a copy that holds nothing', () => {

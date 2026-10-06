@@ -61,7 +61,6 @@ import {
   beginDrain,
   completeEmptyDrain,
   loadTranscriptStore,
-  messagesSinceLastReply,
   observeSessionActivity,
   observeSessionEvents,
   persistTranscriptStore,
@@ -908,20 +907,16 @@ export function roomChangesSince(res, activity, seen = {}) {
 }
 
 /**
- * The pointers a command's wake carries (item 7fe8e3d1). `since_last_reply` is per
- * command and counted before that command's own line; it is null while the copy is
- * still filling in history. No transcript path is given for a copy that holds
- * nothing (a lane without room context never fills one).
+ * The pointers a command's wake carries (item 7fe8e3d1). No transcript path is given
+ * for a copy that holds nothing (a lane without room context never fills one). What
+ * the agent has not read is counted by the wait script as it emits the wake, from
+ * the reader's own record (room-unread.mjs, item 55feedd7), not here.
  */
 export function commandWakeContext(store, ingress, { connectionId, roomChanged = [], dir = CONNECTIONS_DIR } = {}) {
   const hasCopy = Boolean(store && (store.rows.size > 0 || transcriptHasHistory(store)))
   return {
     transcript: hasCopy ? transcriptPaths(store.connectionId, store.sessionId, dir).transcript : null,
     room_state: roomStatePath(connectionId, dir),
-    since_last_reply: Object.fromEntries(ingress.commands.map((command) => [
-      command.message_id,
-      hasCopy ? messagesSinceLastReply(store, command.order.sequence) : null,
-    ])),
     room_state_changed: roomChanged,
   }
 }

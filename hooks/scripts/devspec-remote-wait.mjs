@@ -56,6 +56,7 @@ import {
 } from './interaction-events.mjs'
 import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
+import { wakeNotice } from './room-unread.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -509,17 +510,12 @@ const ROOM_STATE_SECTIONS = new Set(['session_polls', 'still_to_discuss', 'activ
  * than trusted: they are read back from a file. Each field that is malformed is
  * dropped on its own. None of it is authority and none of it is worth the command.
  */
-function validWakeContext(value, commandIds) {
+function validWakeContext(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const pathOrNull = (candidate) => (typeof candidate === 'string' && path.isAbsolute(candidate) ? candidate : null)
-  const counts = value.since_last_reply && typeof value.since_last_reply === 'object' ? value.since_last_reply : {}
   return {
     transcript: pathOrNull(value.transcript),
     room_state: pathOrNull(value.room_state),
-    since_last_reply: Object.fromEntries([...commandIds].map((id) => {
-      const count = counts[id]
-      return [id, Number.isSafeInteger(count) && count >= 0 ? count : null]
-    })),
     room_state_changed: Array.isArray(value.room_state_changed)
       ? [...new Set(value.room_state_changed.filter((section) => ROOM_STATE_SECTIONS.has(section)))]
       : [],
@@ -582,7 +578,7 @@ export function parseInboxBatches(lines, connectionId) {
         batches.push({
           ...record,
           execute_message_ids: ids,
-          wake_context: validWakeContext(record.wake_context, ids),
+          wake_context: validWakeContext(record.wake_context),
           question_handoff: validQuestionHandoff(record.question_handoff, new Set(ids)),
         })
       } else if (record.type === 'canonical_control') {
@@ -640,10 +636,13 @@ function activePlanAwarenessEvent(ingress, sessionId) {
  *
  * The room is not in these events (item 7fe8e3d1). It is in the local transcript,
  * complete and uncapped, and the current polls, plans and activity are in the room
- * state file; the wake says where both are, how many messages came since this
- * agent last replied, and which parts of the room file moved. There used to be a
- * carried slice of the room here, capped at 20 messages and 12,000 characters,
- * which silently skipped any single message longer than that.
+ * state file; the wake says where both are and which parts of the room file moved.
+ * There used to be a carried slice of the room here, capped at 20 messages and
+ * 12,000 characters, which silently skipped any single message longer than that.
+ *
+ * What this agent has not read is told as counts, never bodies (item 55feedd7,
+ * decision c4c6190f): a short `unread` count on each command, and a `room_unread`
+ * line with the breakdown and the reader that hands the messages over.
  *
  * ## Key order is the budget
  *
@@ -651,10 +650,9 @@ function activePlanAwarenessEvent(ingress, sessionId) {
  * the whole line, so whatever is serialised last is what gets cut. The command
  * event therefore opens with what a reader cannot work without — who sent it,
  * under what authority, whether they have a response style, the command's
- * transcript line and how much came before it since the last reply — then the
- * body, then everything else.
+ * transcript line and how much is unread — then the body, then everything else.
  */
-export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
+export function buildCanonicalCommandEvents(batch, { inboxFile, unread = null } = {}) {
   const ingress = batch?.ingress
   const executeIds = new Set(Array.isArray(batch?.execute_message_ids) ? batch.execute_message_ids : [])
   const commands = Array.isArray(ingress?.commands)
@@ -709,9 +707,10 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
       // The command's line in the local transcript: the full text, attachments,
       // style and scope, found by this id without opening the inbox.
       message_id: command.message_id,
-      // Messages since this agent's last reply, before this one. Null while the
-      // local copy is still filling in history. Navigation, not proof of reading.
-      since_last_reply: pointers?.since_last_reply?.[command.message_id] ?? null,
+      // Real messages this agent has not read, this one included (item 55feedd7).
+      // The breakdown is the `room_unread` line below; the reader it names hands
+      // them over whole and marks them read. Null while there is no local copy.
+      unread: unread ? unread.unread + unread.updated : null,
       // Declared BEFORE the body so a cut line still discloses that it was cut:
       // a shorter body than this means truncation, which is what keeps a capped
       // preview from presenting as complete (decision 366e1beb §7).
@@ -737,6 +736,13 @@ export function buildCanonicalCommandEvents(batch, { inboxFile } = {}) {
         note: 'No preview is executable; the complete canonical command object above is authoritative.',
       },
     })
+  }
+
+  // What this agent has not read, as counts (decision c4c6190f). Its own line,
+  // because the host caps each line at 500 characters and the wake below has to
+  // keep its paths.
+  if (commands.length > 0 && unread) {
+    events.push({ type: 'room_unread', session_id: sessionId, advisory: true, executable: false, ...unread })
   }
 
   events.push({
@@ -1069,7 +1075,12 @@ async function main() {
             if (decision === 'obsolete') { offset = record.endOffset; continue }
           }
           const events = batch.type === 'canonical_commands'
-            ? buildCanonicalCommandEvents(batch, { inboxFile: file })
+            ? buildCanonicalCommandEvents(batch, {
+                inboxFile: file,
+                // Counted as it is emitted, not when the poller wrote it: the
+                // model may have read since. Waking counts as telling it.
+                unread: wakeNotice({ connectionId, sessionId: batch.session_id }),
+              })
             : batch.type === 'canonical_control'
               ? buildCanonicalControlEvents(batch, { inboxFile: file })
               : (batch.type === INTERACTION_ANSWER_RECORD_TYPE || batch.type === DISMISSAL_RECORD_TYPE)

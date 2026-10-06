@@ -40,31 +40,30 @@ dispatch channel carries only explicit `automation_run` events, never action-ite
 assignments.
 
 The wake line is cut at 500 characters. It opens with `from`, `authority`, `style`,
-`message_id`, `since_last_reply` and `body_chars`, then the `body`. The command's
-line in the transcript is complete: read it whenever the body was cut, `style` is
-true, or the command is delegated or has files. The `wake` line that follows gives
-the `transcript` and `room_state` paths, and `orient` prints them too.
+`message_id`, `unread` and `body_chars`, then the `body`. A `room_unread` line
+follows with what you have not read, as counts, and the `read_with` command; the
+`wake` line after it gives the `transcript` and `room_state` paths, and `orient`
+prints them too.
 
-```bash
-jq -c 'select(.message_id == "<message_id>")' <transcript>
-```
+**Read what is unread with `read_with`, before you answer.** It hands over every
+message you have not read, oldest first and whole, as JSON lines (the command you
+were woken with included), and marks exactly those as read. Run it again while its
+header says `remaining`. Each command's line holds the full `text`, `from`,
+`attachments` (each with a `resource_id`) and `delivered_as_command`: its
+`authority`, a delegated command's `project_scope` with the server's instruction
+verbatim (follow it; an owner command has none), and `response_style`, how that
+sender wants to be answered. Apply the style to the reply, even at the end of a long
+run. Sender and style belong to each message, never to the person you talked to
+last. On 2026-09-19 one person sent two commands in a row under two styles.
 
-That line holds the full `text`, `from`, `attachments` (each with a `resource_id`)
-and `delivered_as_command`: its `authority`, a delegated command's `project_scope`
-with the server's instruction verbatim (follow it; an owner command has none), and
-`response_style`, how that sender wants to be answered. Apply the style to the
-reply, even at the end of a long run. Sender and style belong to each message,
-never to the person you talked to last. On 2026-09-19 one person sent two commands
-in a row under two styles.
+While you work, the plugin tells you, as counts, when messages you have not read
+arrive, and holds a room post once if something arrived you were not told about.
+Read them with the same command, then carry on or post again.
 
-**Read the room when the command needs it.** The transcript is the whole room, one
-JSON line per message, oldest first. Read it newest-first and use your own
-judgement: all of it if it is small; otherwise back from the end, and search it.
-Always read back at least to your own last reply (`"you":true`). `since_last_reply`
-says how many messages came after that reply, and it is a count, not proof that you
-read them. After a compaction, re-read what the current command needs. Fetch a file
-with `get_resource` only when it matters to the answer, including a file that was
-sent to someone else.
+**The transcript** is the whole room, one JSON line per message, oldest first. Search
+it for older context when the command needs it. After a compaction, re-read what the
+current command needs. Fetch a file with `get_resource` only when it matters to the
+answer, including a file that was sent to someone else.
 
 **The room file** (`room_state`) says how complete the transcript is, and holds the
 room as it stands now: open polls, Still to Discuss, active plans, and what the

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.39.0 - 2026-10-06
+
+- New: an agent in a DevSpec room now keeps up with the room by itself. While it works, it is told when messages it hasn't read arrive, from you, a teammate or another agent, without being interrupted. That covers messages addressed to someone else and anything said since its last reply. It is told as counts (how many, from whom, how many are addressed to it), never the messages themselves, and it reads them with one command that hands them over whole, oldest first. Joining a room counts the room so far, so asking a newly joined agent "what do you think?" no longer depends on it choosing to scroll back.
+- New: before the agent posts to the room, if messages arrived that it hasn't been told about, the post is held once so it can read them first. It then posts the same answer or a better one. With nothing new, posts go straight through.
+- What counts is what you see in the room: anything from a person, another agent or Dev with text or files, including another agent's reply that is still being written. "Joined" and "left" markers, other system lines, empty or deleted messages, and the agent's own messages never count. A message that changes after the agent has read it is reported as updated.
+- Messages addressed to the agent still wake or interrupt it exactly as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.38.0 - 2026-10-06
 
 - New: when Claude Code stops on something only you can answer in its terminal, such as a permission prompt or a connected tool asking a question, DevSpec now shows the agent as waiting for you, says what for ("Approve Bash"), and notifies you. It is reported once Claude Code raises its own alert (a few seconds after the prompt appears), so answering straight away at the terminal never sends you a notification. Only the tool's name is sent, never its command, SQL or other input. The waiting state clears when you answer: a command you approve clears when it finishes running, and one you deny clears straight away. Needs the DevSpec server change that adds this (shown on the Agents page and in the room).

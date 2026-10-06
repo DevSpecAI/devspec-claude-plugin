@@ -58,6 +58,16 @@ Run `node tests/runtime/project-scope-runtime.mjs` for an installed-Claude smoke
 
 Run `node tests/runtime/commit-observation-runtime.mjs` to load this checkout in the installed Claude executable, using a disposable home, real Git repositories/worktree, and scripted localhost provider/MCP. It exercises direct, `cd`, and `git -C` commits plus a fast-forward merge, checks the exact reports and actual resulting refs, and uses exact-command grants under normal manual permissions. It makes no paid inference request or live DevSpec write. This proves this artifact's routing in the measured host, not a customer cache update or support for untested history operations. Hook/component coverage remains in `hooks/scripts/commit-observation*.test.mjs`.
 
+## Room-awareness host conformance
+
+Run `node tests/runtime/room-unread-runtime.mjs` to load this checkout in the installed Claude executable with a disposable home, a bonded connection and a local room copy, against scripted localhost provider and MCP fixtures. It checks four things:
+- the `PostToolUse` notice reaches the model mid-turn as counts, with no message bodies
+- a message that arrives mid-turn holds the next `post_session_message` once
+- the reader hands the messages over, after which the post goes through
+- nothing is announced twice
+
+It makes no paid inference request and no live DevSpec write. Unit coverage of what counts, the read record and paging is in `hooks/scripts/room-unread.test.mjs` (item 55feedd7).
+
 ## Validating before release
 
 ```bash

@@ -46,6 +46,18 @@ export function watchTurnsForStop(on: Parameters<Register>[0]): void {
 
   on('turn.complete', async ($, e, next) => {
     if (!e.agentId && e.turnId === runningTurn) runningTurn = null
+    // An interrupted turn runs no Stop hook (measured on 2.1.291: Esc, or Stop from
+    // DevSpec), and the Stop hook is what tells DevSpec the turn ended. So DevSpec
+    // went on showing the agent as working. End it the same way the Stop hook does.
+    if (!e.agentId && e.reason === 'aborted') {
+      void (async () => {
+        const sessionId = await $.session.id()
+        await $.process.run(['node', `${$.plugin.root}/hooks/scripts/mirror-turn.mjs`, 'stop'], {
+          stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: sessionId, stop_hook_active: false }),
+          timeoutMs: 30_000,
+        })
+      })().catch(() => undefined)
+    }
     return next(e)
   })
 }

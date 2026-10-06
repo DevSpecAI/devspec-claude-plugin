@@ -42,6 +42,7 @@ function harness(on: TestOn, files: Map<string, string>) {
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
   on('turn.abort', ($, e) => {
     seen.aborted.push(e.turnId)
     return { value: undefined }
@@ -124,3 +125,24 @@ test('a -p run reports nothing and carries nothing out', OPTIONS, async ($, on) 
   expect(seen.aborted).toEqual([])
   expect(seen.runs).toEqual([])
 })
+
+test('an interrupted turn tells DevSpec it ended, as the Stop hook would have', OPTIONS, async ($, on) => {
+  const { seen } = harness(on, bonded())
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'long work', turnId: 'turn-4' })
+  await $.turn.complete({ turnId: 'turn-4', reason: 'aborted', isAborted: true, answer: '', durationMs: 9_000 })
+  await new Promise<void>((resolve) => setTimeout(() => resolve(), 100))
+  const ended = seen.runs.filter((argv) => argv.some((arg) => arg.endsWith('/hooks/scripts/mirror-turn.mjs')))
+  expect(ended.map((argv) => argv.at(-1))).toEqual(['stop'])
+})
+
+test('a turn that ends normally, or a subagent run that is cut off, leaves that to the Stop hook', OPTIONS, async ($, on) => {
+  const { seen } = harness(on, bonded())
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'short work', turnId: 'turn-5' })
+  await $.turn.complete({ turnId: 'turn-5', reason: 'answer', isAborted: false, answer: 'Done.', durationMs: 2_000 })
+  await $.turn.complete({ turnId: 'turn-6', reason: 'aborted', isAborted: true, answer: '', durationMs: 1_000, agentId: 'sub-1' })
+  await new Promise<void>((resolve) => setTimeout(() => resolve(), 100))
+  expect(seen.runs.some((argv) => argv.some((arg) => arg.endsWith('/hooks/scripts/mirror-turn.mjs')))).toBe(false)
+})
+

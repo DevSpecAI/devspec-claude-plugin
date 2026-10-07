@@ -756,6 +756,26 @@ export function buildCanonicalControlEvents() {
   return []
 }
 
+/**
+ * Wake text for a dispatched AUTOMATION RUN (DevSpecV2 child ae168718). This is the
+ * one place it is rendered: the poller only persists the dispatch and wakes with a
+ * pointer to the inbox (canonical ingress, 8bec07e), and this turns the record into
+ * the model's instruction. (The poller kept an uncalled copy of this builder until
+ * item fe15c7c2 removed it; the two had already drifted apart.)
+ *
+ * An automation is not an action item — it is a job the owner saved to run again and
+ * again, and it never completes. It stays on the separate automation run tools and
+ * never enters action-item reserve/claim acquisition.
+ *
+ * The permission line matters: a look-only automation must not be "helpfully" fixed
+ * while the agent is in there.
+ *
+ * The claim and the report name this connection (item fe15c7c2). The record reached
+ * here only because its delivery_connection_id equals this connection
+ * (validateAutomationInboxRecord), so it is exactly the agent doing the run. Leave it
+ * out and the server has to infer the agent instead. What provider does, and what a
+ * refused claim means, the tools themselves say; nothing here restates either.
+ */
 function automationRunCommandText(d) {
   const permission =
     d.permission === 'can_push'
@@ -770,15 +790,16 @@ function automationRunCommandText(d) {
         ? 'This run started on a schedule.'
         : 'This run started because of an event.'
   const ownerName = d.owner?.display_name || 'the owner'
+  const run = `run_id: "${d.run_id}", connection_id: "${d.delivery_connection_id}"`
   return [
     `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
     started,
     `Owner: ${ownerName}`,
     '',
     'What to do:',
-    `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider. If claimed:false, stop; another agent took it.`,
+    `1. claim_automation_run({ ${run} }). If it comes back claimed: false, do what its message says.`,
     '2. Follow the instruction returned by that claim, in this repo.',
-    '3. record_automation_run with one verdict and evidence per acceptance criterion.',
+    `3. record_automation_run({ ${run}, … }) with one verdict and evidence per acceptance criterion.`,
     '',
     `Permission: ${permission}`,
   ].join('\n')

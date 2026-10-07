@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.1 - 2026-10-07
+
+- Fixed: when DevSpec sends Claude an automation run, Claude now tells DevSpec exactly which agent is doing it, both when it takes the run and when it reports the result. Before, DevSpec had to work out which of your agents had taken the run, and with several connected it could only guess from where the run was aimed. If a run can't be taken, Claude now does what DevSpec's reply says (for example, carries on with a run it already holds) instead of always assuming another agent took it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.42.0 - 2026-10-06
 
 - Changed: DevSpec shows Claude as working for as long as the work actually lasts, not for at most an hour. Before, a request was treated as finished one hour after it arrived, even if Claude or its subagents were still busy on it. The open message was then closed with nothing in it ("No response"), and Claude's answer turned up later as a separate message. Now a request stays open while Claude keeps working on it, and while it waits for work it started in the background. Only a request with no activity at all for an hour is treated as finished, which covers Claude Code versions that can't report an interrupt.

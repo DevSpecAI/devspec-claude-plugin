@@ -1338,48 +1338,6 @@ function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
   appendInbox(connectionId, delivered, { type: 'advisory_context', sessionId })
 }
 
-/**
- * Wake text for a dispatched AUTOMATION RUN (DevSpecV2 child ae168718).
- *
- * An automation is not an action item — it is a job the owner saved to run again and
- * again, and it never completes. It stays on the separate automation run tools and
- * never enters action-item reserve/claim acquisition.
- *
- * The permission line matters: a look-only automation must not be "helpfully" fixed
- * while the agent is in there.
- *
- * Always pass provider on claim (hard match against preferred_provider). Omitting
- * it fails even when this agent is the named one — same habit as claim_work_item.
- */
-function automationRunCommandText(d) {
-  const permission =
-    d.permission === 'can_push'
-      ? 'You MAY edit, commit and push.'
-      : d.permission === 'can_commit'
-        ? 'You MAY edit and commit locally, but MUST NOT push.'
-        : 'This automation is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
-
-  const started =
-    d.trigger_kind === 'pressed'
-      ? 'Someone pressed Run.'
-      : d.trigger_kind === 'scheduled'
-        ? 'This run started on a schedule.'
-        : 'This run started because of an event.'
-  const ownerName = d.owner?.display_name || 'the owner'
-  return [
-    `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
-    started,
-    `Owner: ${ownerName}`,
-    '',
-    'What to do:',
-    `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider (and model if the automation names one). If claimed:false the run was already taken by another of your agents, which is normal; stop there.`,
-    '2. Follow the instruction returned by that claim, in this repo.',
-    '3. record_automation_run — report status, a verdict for EACH acceptance criterion WITH evidence, and whatever the run produced as artifacts.',
-    '',
-    `Permission: ${permission}`,
-  ].join('\n')
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   let connectionId = args.connectionId || null

@@ -45,6 +45,7 @@ import {
   EXIT_REARM,
 } from './devspec-remote-wait.mjs'
 import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
+import { appendAutomationDispatches } from './devspec-remote-poll.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
@@ -284,6 +285,61 @@ describe('wait-boundary revalidation and independent channels', () => {
       /stdout closed/,
     )
     assert.equal(written.length, 2)
+  })
+})
+
+describe('the automation run instruction names this connection (item fe15c7c2)', () => {
+  // The whole path a dispatch takes: the poller persists it to the inbox, the wait
+  // path revalidates the record and renders the only instruction the model sees.
+  function instructionFor(connectionId) {
+    const { dispatch } = automationBatch(connectionId)
+    const written = []
+    const persisted = appendAutomationDispatches(
+      connectionId,
+      [dispatch],
+      'dispatch-cursor-1',
+      { dispatchIds: new Set() },
+      null,
+      (_id, record) => { written.push(JSON.stringify(record)); return true },
+    )
+    assert.deepEqual(persisted, { ok: true, appended: 1 })
+    const [record] = parseInboxBatches(written, connectionId)
+    assert.ok(record, 'the persisted dispatch survives revalidation')
+    const [event] = buildAutomationRunEvents(record)
+    assert.equal(event.type, 'automation_run')
+    return { content: event.content, runId: dispatch.run_id }
+  }
+
+  function callLine(content, tool) {
+    const line = content.split('\n').find((l) => l.includes(`${tool}(`))
+    assert.ok(line, `the instruction calls ${tool}`)
+    return line
+  }
+
+  it('passes the delivered connection id to both the claim and the report', () => {
+    const { content, runId } = instructionFor(CONNECTION)
+    for (const tool of ['claim_automation_run', 'record_automation_run']) {
+      const line = callLine(content, tool)
+      assert.ok(line.includes(`run_id: "${runId}"`), `${tool} names the run`)
+      assert.ok(line.includes(`connection_id: "${CONNECTION}"`), `${tool} names this connection`)
+    }
+  })
+
+  it('takes the id from the dispatch, so another connection gets its own', () => {
+    const other = '10000000-0000-4000-8000-0000000000aa'
+    const { content } = instructionFor(other)
+    for (const tool of ['claim_automation_run', 'record_automation_run']) {
+      const line = callLine(content, tool)
+      assert.ok(line.includes(`connection_id: "${other}"`))
+      assert.ok(!line.includes(CONNECTION))
+    }
+  })
+
+  it('does not tell the model to always pass provider or model: the tools say what those do', () => {
+    const { content } = instructionFor(CONNECTION)
+    assert.doesNotMatch(content, /always pass/i)
+    assert.doesNotMatch(content, /provider/)
+    assert.doesNotMatch(content, /\bmodel\b/)
   })
 })
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.2 - 2026-10-07
+
+- Changed: a note Claude leaves on an action item now says which of your agents wrote it, not only whose account. When Claude is driven from DevSpec it passes its connection on the notes it writes (`add_implementation_note`, progress updates, and the notes stored when it records or fails work), so two Claude Code windows working the same item are told apart on the item and to other agents reading it.
+- Both manifests are bumped because Claude Code runs hooks and skills from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.42.1 - 2026-10-07
 
 - Fixed: when DevSpec sends Claude an automation run, Claude now tells DevSpec exactly which agent is doing it, both when it takes the run and when it reports the result. Before, DevSpec had to work out which of your agents had taken the run, and with several connected it could only guess from where the run was aimed. If a run can't be taken, Claude now does what DevSpec's reply says (for example, carries on with a run it already holds) instead of always assuming another agent took it.

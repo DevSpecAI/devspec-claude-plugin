@@ -105,7 +105,7 @@ Body = the answer to the latest command. Lead with it. No preamble, no thinking,
 
 **Reaching a person:** writing @ and their name in your answer (`@Brandon`, or `@Brandon Smith`) notifies them, if they are in the room or on the project. Mention someone only when they need to see it.
 
-**Attribution:** pass your `connection_id` on every write that produces a session card (`create_action_item`, `surface_session_action_items`). Action-item rows carry no agent identity of their own, so without it the server cannot tell two of your agents apart and renders no name at all (item `b6c447fd`).
+**Attribution:** pass your `connection_id` on every write that names the agent behind it: those that produce a session card (`create_action_item`, `surface_session_action_items`) and the notes you leave on an item (`add_implementation_note`, `report_progress`, and the notes `record_implementation` and `fail_work_item` store). Your token is shared by all of your agents, so without the connection the server cannot tell two of them apart: a card renders no name at all, and a note is credited to your account alone (items `b6c447fd`, `838672a6`).
 
 Hooks are mechanical only: a prompt typed in this terminal may be mirrored as a bubble; **Stop does not post your answer**. You do.
 

@@ -73,6 +73,10 @@ Run `node tests/runtime/room-unread-runtime.mjs` to load this checkout in the in
 
 It makes no paid inference request and no live DevSpec write. Unit coverage of what counts, the read record and paging is in `hooks/scripts/room-unread.test.mjs` (item 55feedd7).
 
+## Remote allow-list host conformance
+
+Run `node tests/runtime/remote-allow-list-runtime.mjs` to load this checkout in the installed Claude executable with a disposable home, against scripted localhost provider and MCP fixtures, in manual permission mode with no grant for any DevSpec tool. The scripted model loads the `devspec-remote-command` skill, then calls every DevSpec tool the skill's `allowed-tools:` grants (read from the skill, so a newly granted tool is covered without editing the script), then one it does not grant. It passes only if every granted tool ran with no permission prompt and the ungranted one was refused. A tool the remote flow calls but its list leaves out stalls an agent driven from DevSpec at a prompt nobody is at the terminal to answer (item f24ee061). It makes no paid inference request and no live DevSpec write. That the remote command grants everything the skill does is a unit check in `hooks/scripts/tool-name-forms.test.mjs`.
+
 ## Validating before release
 
 ```bash

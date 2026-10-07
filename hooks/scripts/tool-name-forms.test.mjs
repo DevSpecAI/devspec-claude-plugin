@@ -84,6 +84,21 @@ describe('allow-lists', () => {
   }
 })
 
+// The remote command hands every message to the devspec-remote-command skill
+// ("that protocol lives in one place"), so a turn under the command runs the
+// skill's flow. A tool the skill grants and the command does not stalls that turn
+// at a permission prompt nobody is at the terminal to answer (item f24ee061; the
+// skill's own grants are proven in the host by tests/runtime/remote-allow-list-runtime.mjs).
+describe('the remote command', () => {
+  it('grants every DevSpec tool the remote-command skill grants', () => {
+    const verbsOf = (file) => new Set((allowLists().find((l) => l.file === file)?.tools ?? []).map(devspecToolVerb).filter(Boolean))
+    const skill = verbsOf('skills/devspec-remote-command/SKILL.md')
+    const command = verbsOf('commands/devspec.remote.md')
+    assert.ok(skill.size > 0, 'found the skill’s list')
+    assert.deepEqual([...skill].filter((verb) => !command.has(verb)), [])
+  })
+})
+
 describe('hook matchers', () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(root, 'hooks', 'hooks.json'), 'utf8'))
   const matchers = []

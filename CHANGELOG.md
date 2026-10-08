@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.4 - 2026-10-08
+
+- Added: when Claude records finished work or a decision in DevSpec, DevSpec may ask it which existing action items that change affects. Claude can now answer (`assess_change_impact`, then `record_change_impact`) without stopping to ask permission when you drive it from DevSpec. Nothing in your project changes because of its answers.
+- Both manifests are bumped because Claude Code runs skills and commands from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.42.3 - 2026-10-07
 
 - Fixed: when you drive Claude from DevSpec, it can now leave a note on an action item without stopping to ask permission in its terminal. Before, a note stalled Claude at a prompt that only someone at the keyboard could answer. The same was true of linking a commit to an item, reopening an item before working on it again, recording finished work that had no item, and showing items on a room's card list; Claude can now do each of these without asking.

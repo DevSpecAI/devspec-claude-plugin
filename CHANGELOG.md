@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.42.5 - 2026-10-08
+
+- Fixed: when you drive Claude from DevSpec, it can now link two action items (a follow-up, a blocker, a related item) or remove such a link without stopping to ask permission in its terminal. Before, linking stalled Claude at a prompt only someone at the keyboard could answer.
+- Changed: Claude reserves the items you ask it to work on before it answers you, so each item it then works is recorded as asked for by you even after your message is answered.
+- Both manifests are bumped because Claude Code runs skills and commands from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.42.4 - 2026-10-08
 
 - Added: when Claude records finished work or a decision in DevSpec, DevSpec may ask it which existing action items that change affects. Claude can now answer (`assess_change_impact`, then `record_change_impact`) without stopping to ask permission when you drive it from DevSpec. Nothing in your project changes because of its answers.

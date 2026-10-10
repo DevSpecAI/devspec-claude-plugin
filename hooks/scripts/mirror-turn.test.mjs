@@ -64,13 +64,26 @@ function withConnDir(fn) {
 }
 
 describe('resolveHookConversationId', () => {
-  it('prefers CLAUDE_CODE_SESSION_ID env (the value write stamps)', () => {
+  it("prefers the firing hook's own session_id over an inherited CLAUDE_CODE_SESSION_ID", () => {
+    // REVERSED from "prefers CLAUDE_CODE_SESSION_ID env (the value write stamps)"
+    // (item ffd6e767, 2026-10-10). The two agree whenever this Claude Code set the env
+    // itself. They differ when a Claude Code is started from inside another one's Bash
+    // tool: the child's own process env keeps the PARENT's id, and the hooks module
+    // runs this script through $.process.run with that env and the child's own id on
+    // stdin. Env-first resolved the parent's connection, and the child's prompt
+    // appeared in the parent's room as the owner's message. Third of its shape, after
+    // SHELL_SESSION_ID and a foreign host's id (both below).
     assert.equal(
-      resolveHookConversationId('{"session_id":"stdin-conv"}', {
-        CLAUDE_CODE_SESSION_ID: 'env-conv',
+      resolveHookConversationId('{"session_id":"child-conv"}', {
+        CLAUDE_CODE_SESSION_ID: 'parent-conv',
       }),
-      'env-conv',
+      'child-conv',
     )
+  })
+
+  it('uses CLAUDE_CODE_SESSION_ID when the hook input carries no session_id', () => {
+    assert.equal(resolveHookConversationId('{}', { CLAUDE_CODE_SESSION_ID: 'env-conv' }), 'env-conv')
+    assert.equal(resolveHookConversationId('', { CLAUDE_CODE_SESSION_ID: 'env-conv' }), 'env-conv')
   })
 
   it('falls back to CLAUDE_SESSION_ID', () => {

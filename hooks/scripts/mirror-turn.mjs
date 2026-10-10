@@ -456,23 +456,29 @@ function readStdin() {
 }
 
 /**
- * The DevSpec connection to mirror for belongs to THIS local conversation. Resolve
- * its conversation id the SAME way remote-control-state.mjs `write` stamped it — via
- * the shared detectLocalId (probes whichever conversation-id env var THIS tool
- * exposes), then the hook stdin session_id. Tool-agnostic and SYMMETRIC with connect.
+ * The DevSpec connection to mirror for belongs to THIS local conversation. The firing
+ * hook's own stdin `session_id` is that conversation, so it wins; the env var
+ * `write` stamped from (via the shared detectLocalId, this host's names only) is the
+ * fallback for an invocation with no hook input. This is the order
+ * remote-control-state.mjs `context` already uses.
+ *
+ * Env used to win (item 554b9b42), on the reasoning that it is the value `write`
+ * stamped. The two agree whenever this Claude Code set the env. They differ when one
+ * Claude Code is started from another's Bash tool: the child's process env keeps the
+ * parent's CLAUDE_CODE_SESSION_ID, the hooks module runs this script with that env
+ * and the child's own id on stdin, and env-first posted the child's prompt into the
+ * parent's room as the owner (item ffd6e767). An env value shadowing the real id is
+ * the shape of SHELL_SESSION_ID (87117120) and of a foreign host's id (75f65461) too.
  */
 export function resolveHookConversationId(hookInput, env = process.env) {
-  const fromEnv = detectLocalId({}, env).local_id
-  if (fromEnv) return fromEnv
+  let fromHook = null
   try {
     const parsed = JSON.parse(hookInput || '{}')
-    if (typeof parsed.session_id === 'string' && parsed.session_id.trim()) {
-      return parsed.session_id.trim()
-    }
+    if (typeof parsed.session_id === 'string' && parsed.session_id.trim()) fromHook = parsed.session_id
   } catch {
-    /* fall through — fail closed below */
+    /* no usable hook input; env below, else fail closed */
   }
-  return null
+  return detectLocalId(fromHook ? { 'local-id': fromHook } : {}, env).local_id
 }
 
 /**

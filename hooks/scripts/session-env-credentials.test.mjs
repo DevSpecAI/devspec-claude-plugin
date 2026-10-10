@@ -10,7 +10,14 @@ import { after, before, describe, it } from 'node:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildSessionEnvScript, writeSessionEnvCredentials } from './session-env-credentials.mjs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import {
+  buildSessionEnvScript,
+  PLUGIN_SETTINGS_KEY_MISSING_MESSAGE,
+  PLUGIN_SETTINGS_KEY_VAR,
+  writeSessionEnvCredentials,
+} from './session-env-credentials.mjs'
 import { enumerateCredentialPairs } from './resolve-mcp-auth.mjs'
 
 const PROD = 'https://api.devspec.ai/api/mcp'
@@ -113,12 +120,22 @@ describe('writeSessionEnvCredentials', () => {
     assert.deepEqual(result, { written: false, reason: 'no_env_file' })
   })
 
-  it('does nothing when the plugin has no token configured', () => {
-    const result = writeSessionEnvCredentials({
-      env: { CLAUDE_ENV_FILE: path.join(dir, 'unused.sh') },
-    })
-    assert.deepEqual(result, { written: false, reason: 'no_token' })
-    assert.equal(fs.existsSync(path.join(dir, 'unused.sh')), false)
+  it('marks the session, and carries no credential, when the plugin settings hold no key', () => {
+    // Item 721f9c67: the connect script runs as a Bash tool call and cannot see the
+    // plugin settings, so this hook is the only thing that can tell it.
+    const target = path.join(dir, 'no-key.sh')
+    const result = writeSessionEnvCredentials({ env: { CLAUDE_ENV_FILE: target } })
+    assert.deepEqual(result, { written: true, reason: 'no_token' })
+    const written = fs.readFileSync(target, 'utf8')
+    assert.match(written, new RegExp(`^export ${PLUGIN_SETTINGS_KEY_VAR}='missing'$`, 'm'))
+    assert.doesNotMatch(written, /CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN/)
+  })
+
+  it('drops the marker once the key is in the plugin settings', () => {
+    const target = path.join(dir, 'key-added.sh')
+    writeSessionEnvCredentials({ env: { CLAUDE_ENV_FILE: target } })
+    writeSessionEnvCredentials({ env: { CLAUDE_ENV_FILE: target, CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_now' } })
+    assert.doesNotMatch(fs.readFileSync(target, 'utf8'), new RegExp(PLUGIN_SETTINGS_KEY_VAR))
   })
 
   it('degrades quietly when the path cannot be written', () => {
@@ -195,5 +212,41 @@ describe('precedence is carried, not changed (the reason for these variable name
     } finally {
       fs.rmSync(empty, { recursive: true, force: true })
     }
+  })
+})
+
+describe('the hook tells the person when the plugin settings hold no key (item 721f9c67)', () => {
+  // Run the real hook as Claude Code does: it is the person-facing surface, because
+  // with no key Claude Code also refuses the module that would draw the status line.
+  const script = fileURLToPath(new URL('./session-env-credentials.mjs', import.meta.url))
+  let dir
+  before(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-session-env-hook-')) })
+  after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })
+
+  function runHook(extraEnv) {
+    const env = { ...process.env, CLAUDE_ENV_FILE: path.join(dir, `hook-${Math.random()}.sh`), ...extraEnv }
+    for (const key of ['CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN', 'CLAUDE_PLUGIN_OPTION_devspec_token']) {
+      if (!(key in extraEnv)) delete env[key]
+    }
+    return spawnSync(process.execPath, [script], { env, encoding: 'utf8' })
+  }
+
+  it('shows the notice as a systemMessage when no key is set', () => {
+    const run = runHook({})
+    assert.equal(run.status, 0)
+    assert.deepEqual(JSON.parse(run.stdout), { systemMessage: PLUGIN_SETTINGS_KEY_MISSING_MESSAGE })
+  })
+
+  it('says nothing when the key is set', () => {
+    const run = runHook({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_set' })
+    assert.equal(run.status, 0)
+    assert.equal(run.stdout, '')
+  })
+
+  it('names what is off and the step that fixes it, in words a customer can act on', () => {
+    // The notice is a contract with the person reading it: the menu path must match
+    // the README's, and none of our own machinery may leak into it.
+    assert.match(PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, /\/plugin → Installed → DevSpec, press Enter/)
+    assert.doesNotMatch(PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, /hooks? module|userConfig|CLAUDE_PLUGIN_OPTION|721f9c67/i)
   })
 })

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.6 - 2026-10-10
+
+- Fixed: if your DevSpec key is not saved in the plugin's own settings, Claude Code now tells you when a conversation starts, and again when you connect with `/devspec:devspec.remote`. Before, it said nothing. Without the key there, Claude Code quietly switches off part of the plugin: your agent's model on the Agents page, the DevSpec status line, stopping the agent from DevSpec, and copying what you type into the session. The message gives the one step that turns them back on (`/plugin` → Installed → DevSpec, press Enter, paste your `dvs_` key, restart Claude Code). This mostly affects setups where the key reaches Claude Code another way, such as a project `.mcp.json` or the `DEVSPEC_MCP_TOKEN` environment variable.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.42.5 - 2026-10-08
 
 - Fixed: when you drive Claude from DevSpec, it can now link two action items (a follow-up, a blocker, a related item) or remove such a link without stopping to ask permission in its terminal. Before, linking stalled Claude at a prompt only someone at the keyboard could answer.

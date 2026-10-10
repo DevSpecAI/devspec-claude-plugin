@@ -77,6 +77,30 @@ const URL_KEYS = ['CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL', 'CLAUDE_PLUGIN_OPTION_
  */
 const STARTUP_KEYS = ['CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP', 'CLAUDE_PLUGIN_OPTION_connect_at_startup']
 
+/**
+ * Set to `missing` in the session environment when the plugin's own settings hold no
+ * DevSpec key (item 721f9c67). Claude Code refuses to load the plugin's hooks module
+ * while a `required` userConfig field is empty, and it says so only in a debug log, so
+ * the status line, the runtime model report, Stop from DevSpec and the room copy of a
+ * typed prompt all stop with no sign. Everything else keeps working when the key reaches
+ * Claude Code another way (a project `.mcp.json`, `DEVSPEC_MCP_TOKEN`), which is what
+ * hid it. Only this hook can tell: it is handed the plugin settings, and Bash tool calls
+ * (where `/devspec:devspec.remote` runs) are not. So it leaves an explicit marker rather
+ * than letting the connect script read "no token in my env" as proof. That env is empty
+ * for other reasons too, e.g. a Claude Code too old to have `CLAUDE_ENV_FILE`.
+ */
+export const PLUGIN_SETTINGS_KEY_VAR = 'DEVSPEC_PLUGIN_SETTINGS_KEY'
+
+/**
+ * What the person is told, at session start and in the connect status block. Written
+ * for someone who has never seen our internals: what is off, and the one step that
+ * turns it back on. The menu path matches the README's troubleshooting table.
+ */
+export const PLUGIN_SETTINGS_KEY_MISSING_MESSAGE =
+  "DevSpec: your DevSpec key isn't saved in the plugin's settings, so some DevSpec features are switched off: " +
+  "your agent's model on the Agents page, the DevSpec status line here, stopping this agent from DevSpec, and copying what you type into the session. " +
+  'To turn them on, run /plugin → Installed → DevSpec, press Enter, paste your dvs_ key, then restart Claude Code.'
+
 function firstValue(env, keys) {
   for (const key of keys) {
     const raw = env[key]
@@ -97,7 +121,8 @@ function shellQuote(value) {
 /**
  * The script to hand to Claude Code, or null when there is nothing to say.
  *
- * Null when no token is configured — that is the un-enabled plugin, not an error.
+ * Null when no token is configured: the plugin is enabled but its settings hold no
+ * key (see PLUGIN_SETTINGS_KEY_VAR for what is written instead).
  * The URL falls back to the manifest default so the pair is never half-written.
  */
 export function buildSessionEnvScript(env = process.env) {
@@ -116,12 +141,27 @@ export function buildSessionEnvScript(env = process.env) {
   ].join('\n')
 }
 
+/** The marker script for a session whose plugin settings hold no key. */
+export function buildMissingKeyScript() {
+  return [
+    '# DevSpec plugin: no key in the plugin settings, so its live features are off (item 721f9c67).',
+    `export ${PLUGIN_SETTINGS_KEY_VAR}='missing'`,
+    '',
+  ].join('\n')
+}
+
+/** Whether the plugin's own settings hold a DevSpec key, from the env a hook is handed. */
+export function pluginSettingsHoldKey(env = process.env) {
+  return firstValue(env, TOKEN_KEYS) !== null
+}
+
 /**
  * Write the script to `$CLAUDE_ENV_FILE`.
  *
  * Returns a small result object for the tests. Never throws: an older Claude Code
- * that does not set `CLAUDE_ENV_FILE`, a read-only path, or a plugin with no token
- * all mean "carry nothing", and the resolver's other sources still work. A session
+ * that does not set `CLAUDE_ENV_FILE` or a read-only path means "carry nothing", and
+ * the resolver's other sources still work. A plugin with no token gets the missing-key
+ * marker instead of credentials (reason `no_token`). A session
  * must never fail to start over this.
  */
 export function writeSessionEnvCredentials(options = {}) {
@@ -130,13 +170,13 @@ export function writeSessionEnvCredentials(options = {}) {
   if (!target) return { written: false, reason: 'no_env_file' }
 
   const script = buildSessionEnvScript(env)
-  if (!script) return { written: false, reason: 'no_token' }
+  const missing = script === null
 
   try {
     // Truncate rather than append: the file is this hook's alone, and a resumed
     // session re-running the hook should not stack duplicate exports.
-    writeFile(target, script, { encoding: 'utf8', mode: 0o600 })
-    return { written: true, reason: 'ok' }
+    writeFile(target, missing ? buildMissingKeyScript() : script, { encoding: 'utf8', mode: 0o600 })
+    return { written: true, reason: missing ? 'no_token' : 'ok' }
   } catch {
     return { written: false, reason: 'write_failed' }
   }
@@ -144,7 +184,12 @@ export function writeSessionEnvCredentials(options = {}) {
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
-  // No stdout: SessionStart stdout is parsed as hook JSON, and this hook has
-  // nothing to tell the model. Always exit 0 — see writeSessionEnvCredentials.
+  // SessionStart stdout is parsed as hook JSON. The only thing this hook ever says is
+  // the missing-key notice, as a systemMessage, which Claude Code shows the person:
+  // they are the one who can fix it, and nothing else surfaces it. Always exit 0;
+  // see writeSessionEnvCredentials.
   writeSessionEnvCredentials()
+  if (!pluginSettingsHoldKey()) {
+    process.stdout.write(`${JSON.stringify({ systemMessage: PLUGIN_SETTINGS_KEY_MISSING_MESSAGE })}\n`)
+  }
 }

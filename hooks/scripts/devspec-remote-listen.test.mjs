@@ -443,6 +443,11 @@ describe('/devspec.remote says which wake path is active', () => {
     assert.match(block, /ALREADY ARMED — Claude Code started this connection's listener/)
     assert.doesNotMatch(block, /ARM THE WAKE STREAM NOW/)
   })
+  it('passes on the missing-key notice the session-start hook left, and only then (item 721f9c67)', async () => {
+    const { PLUGIN_SETTINGS_KEY_MISSING_MESSAGE } = await import('./session-env-credentials.mjs')
+    assert.ok(renderStatusBlock({ ...summary, plugin_settings_key_missing: true }, { listenerArmed: true }).includes(`warning: ${PLUGIN_SETTINGS_KEY_MISSING_MESSAGE}`))
+    assert.ok(!renderStatusBlock(summary, { listenerArmed: true }).includes(PLUGIN_SETTINGS_KEY_MISSING_MESSAGE))
+  })
   it('does not claim Claude Code started a listener it did not', () => {
     const block = renderStatusBlock(summary, { listenerArmed: true, startupListener: false })
     assert.match(block, /ALREADY ARMED — a listener is already running/)

@@ -40,6 +40,7 @@ import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext 
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { claudeProcessOf, readOwnerListenerStatus, startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
+import { PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, PLUGIN_SETTINGS_KEY_VAR } from './session-env-credentials.mjs'
 import { PROJECT_ID, projectCandidate, matchingProjects, readProjectSelection, readConversationProject, saveConversationProject, blockConversationProject } from './conversation-project.mjs'
 import {
   detectLocalId,
@@ -496,6 +497,9 @@ export async function connect(options = {}, deps = {}) {
     warning_tokens: written.warning_tokens || null,
     warning_poller: written.warning_poller || null,
     warning_local: written.warning_local || null,
+    // The session-start hook's marker (item 721f9c67): only it can see the plugin
+    // settings. Absent means unknown, never "set".
+    plugin_settings_key_missing: env[PLUGIN_SETTINGS_KEY_VAR] === 'missing',
     poller: written.poller || null,
     bond_action: bond.action,
     state_path: written.path,
@@ -547,6 +551,7 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
   if (!summary.auth_ok) lines.push(`auth: FAILED — ${summary.warning}`)
   if (summary.warning_tokens) lines.push(`warning: ${summary.warning_tokens}`)
   if (!summary.local_id) lines.push(`warning: ${summary.warning_local}`)
+  if (summary.plugin_settings_key_missing) lines.push(`warning: ${PLUGIN_SETTINGS_KEY_MISSING_MESSAGE}`)
   if (!summary.owner_pid && !noPoller) {
     lines.push(
       'warning: no owner pid resolved — pass --owner-pid "$PPID". Without an owner anchor a poller' +

@@ -159,6 +159,11 @@ async function stubServer({ question = true, deliverOnReady = true } = {}) {
       requests.push({ name: call.name, args, capability: request.headers['x-devspec-connection-capability'] })
       let result = text({})
       if (call.name === 'report_pickup') result = text({ outcome: 'started', attempt_id: ATTEMPT, phase: 'working' })
+      if (call.name === 'report_request') {
+        // The inbox record must not exist yet: the wake has to find the request open.
+        world.inboxAtRequest = fs.existsSync(path.join(world.dir ?? '', `${CONNECTION}.inbox.jsonl`))
+        result = text({ outcome: 'committed', request_id: args.request_id, status: 'open', already_open: false, requested_by_user_id: OWNER })
+      }
       if (call.name === 'poll_connection' && args.catch_up_cursor && !String(args.catch_up_cursor).startsWith('before:')) {
         // The server's own refusal (tool-executors: a catch-up cursor must read backwards).
         result = { isError: true, content: [{ type: 'text', text: 'catch_up_cursor has the wrong direction.' }] }
@@ -214,6 +219,7 @@ function startPoller(stub, extraState = {}) {
     inbox_byte_offset: 1_000_000_000,
     ...extraState,
   }), { mode: 0o600 })
+  stub.world.dir = dir
   const child = spawn(process.execPath, [POLL_SCRIPT, '--connection-id', CONNECTION], { env: { ...process.env, HOME: home } })
   let stderr = ''
   child.stdout.resume()
@@ -224,6 +230,7 @@ function startPoller(stub, extraState = {}) {
   return {
     state: () => JSON.parse(read(`${CONNECTION}.json`) || '{}'),
     inbox: () => read(`${CONNECTION}.inbox.jsonl`).split('\n').filter(Boolean).map((line) => JSON.parse(line)),
+    requestLog: () => read(`${CONNECTION}.requests.jsonl`).split('\n').filter(Boolean).map((line) => JSON.parse(line)),
     turnMarked: () => fs.readdirSync(dir).some((name) => name.startsWith(CONNECTION) && /turn/.test(name)),
     stderr: () => stderr,
     stop: () => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }) },
@@ -309,6 +316,32 @@ describe('a message sent while Claude works on an answer (item a11d27fa)', () =>
       assert.equal(Object.hasOwn(record, 'question_handoff'), false)
       const [batch] = parseInboxBatches([JSON.stringify(record)], CONNECTION)
       assert.deepEqual(buildCanonicalCommandEvents(batch).map((e) => e.type), ['owner_message', 'wake'])
+    } finally {
+      poller.stop()
+      await stub.close()
+    }
+  })
+
+  it('opens the command\'s request before the record that wakes anybody (item 7a4d04fd)', async () => {
+    const stub = await stubServer({ question: false })
+    const poller = startPoller(stub)
+    try {
+      assert.ok(await until(() => stub.polls().some((p) => p.args.command_offer_version === 1)), poller.stderr())
+      stub.world.held = true
+      assert.ok(await until(() => poller.inbox().some((r) => r.type === 'canonical_commands')), poller.stderr())
+      const opened = stub.requests.filter((r) => r.name === 'report_request')
+      assert.equal(opened.length, 1)
+      assert.equal(opened[0].capability, 'dvsc_hidden')
+      assert.deepEqual({ ...opened[0].args, request_id: undefined }, {
+        connection_id: CONNECTION, action: 'open', kind: 'command',
+        provenance_ref: 'c0000000-0000-4000-8000-00000000000c', request_id: undefined,
+      })
+      assert.equal(stub.world.inboxAtRequest, false, 'the request was open before the inbox record was written')
+      const [open] = poller.requestLog().filter((event) => event.op === 'open')
+      assert.deepEqual({ ...open, at: undefined }, {
+        op: 'open', id: opened[0].args.request_id, kind: 'command', provenance_ref: 'c0000000-0000-4000-8000-00000000000c',
+        message_id: HELD, requested_by: OWNER, at: undefined,
+      })
     } finally {
       poller.stop()
       await stub.close()

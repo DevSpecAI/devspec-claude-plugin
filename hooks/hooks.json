@@ -97,11 +97,11 @@
         ]
       },
       {
-        "matcher": "^(Bash|Agent|Workflow)$",
+        "matcher": "^(Bash|Agent|Workflow|Monitor|ScheduleWakeup|CronCreate)$",
         "hooks": [
           {
             "type": "command",
-            "command": "command -v node >/dev/null 2>&1 || exit 0; input=$(cat); case \"$input\" in *backgroundTaskId*|*async_launched*|*'\"taskId\"'*) printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mirror-turn.mjs\" background_launch ;; esac; exit 0",
+            "command": "command -v node >/dev/null 2>&1 || exit 0; input=$(cat); case \"$input\" in *backgroundTaskId*|*async_launched*|*remote_launched*|*'\"taskId\"'*|*ScheduleWakeup*|*CronCreate*) printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mirror-turn.mjs\" background_launch ;; esac; exit 0",
             "timeout": 10
           }
         ]

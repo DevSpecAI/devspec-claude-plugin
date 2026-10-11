@@ -5,6 +5,7 @@ import { versionedConnectionArguments, connectionVersionHook } from './connectio
 import { conversationScopeHook } from './conversation-project.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { ownConnectionId, withOwnConnection } from './own-connection.mjs'
+import { stampRequest } from './request-ref.mjs'
 
 export function prepareDevspecToolInput(input, { env = process.env, home } = {}) {
   const match = /^mcp__(?:plugin_devspec_)?devspec__(.+)$/.exec(input?.tool_name ?? '')
@@ -17,7 +18,15 @@ export function prepareDevspecToolInput(input, { env = process.env, home } = {})
   if (scoped?.hookSpecificOutput?.permissionDecision === 'deny') return scoped
   const prepared = scoped?.hookSpecificOutput?.updatedInput ?? input.tool_input
   // This conversation's own connection, so the write says where it came from (item 718825fc).
-  const stamped = withOwnConnection(match[1], prepared, ownConnectionId(input.session_id, { ...(home ? { home } : {}), env }))
+  const connectionId = ownConnectionId(input.session_id, { ...(home ? { home } : {}), env })
+  const withConnection = withOwnConnection(match[1], prepared, connectionId)
+  // ...and the request it serves, so two people's work on this agent is never
+  // credited to each other (item 7a4d04fd, request-ref.mjs).
+  const request = stampRequest(match[1], withConnection, connectionId, input.agent_id, { ...(home ? { home } : {}) })
+  if (request.deny) {
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: request.deny } }
+  }
+  const stamped = request.args
   if (!scoped && stamped === prepared && match[1] !== 'register_connection' && match[1] !== 'attach_connection') return {}
   return { hookSpecificOutput: {
     hookEventName: 'PreToolUse',

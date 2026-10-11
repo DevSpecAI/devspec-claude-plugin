@@ -100,6 +100,7 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
   const CONVERSATION = 'conversation-718825fc'
   // Claude Code's stamp on a prompt typed at the terminal, as hooks/local-prompt.ts passes it.
   const TYPED = { kind: 'composer' }
+  const OWNER = '33333333-3333-4333-8333-333333333333'
   let server
   let url
   let calls = []
@@ -118,7 +119,10 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
         const result = name === 'report_pickup'
           ? { connection_id: args.connection_id, attempt_id: args.attempt_id, expected_session_id: args.expected_session_id,
               status: 'working', already_started: false }
-          : { ok: true }
+          : name === 'report_request'
+            ? { outcome: 'committed', request_id: args.request_id, status: args.action === 'open' ? 'open' : 'closed',
+                requested_by_user_id: OWNER }
+            : { ok: true }
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
       })
@@ -165,12 +169,44 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
       attempt_id: undefined, previous_attempt_id: null,
     })
     assert.deepEqual(stored().local_turn, { attempt_id: pickup.args.attempt_id, session_id: ROOM })
+    // ...and the prompt is a request this agent now carries (item 7a4d04fd).
+    const opened = calls.find(call => call.name === 'report_request')
+    assert.equal(opened.capability, 'dvsc_hidden')
+    assert.deepEqual({ ...opened.args, request_id: undefined },
+      { connection_id: CONNECTION, action: 'open', kind: 'typed_prompt', request_id: undefined })
 
     calls = []
     await run('stop', { last_assistant_message: 'Filed.' })
     const complete = calls.find(call => call.name === 'report_complete')
     assert.deepEqual(complete.args, { connection_id: CONNECTION, attempt_id: pickup.args.attempt_id, reason: 'turn_end' })
     assert.equal(stored().local_turn, null)
+    // Nothing it started is still running, so its request is finished too.
+    const closed = calls.find(call => call.name === 'report_request')
+    assert.deepEqual({ ...closed.args, reason: undefined },
+      { connection_id: CONNECTION, action: 'close', request_id: opened.args.request_id, reason: undefined })
+  })
+
+  it('a job a typed prompt started keeps its request open, and its wake continues it', async () => {
+    seed()
+    await run('user_prompt', { prompt: 'run the slow suite and tell me', origin: TYPED })
+    const request = calls.find(call => call.name === 'report_request').args.request_id
+    await run('background_launch', { tool_name: 'Bash', tool_input: { command: 'npm test' },
+      tool_response: { backgroundTaskId: 'suite1' }, tool_use_id: 'toolu_suite' })
+
+    calls = []
+    await run('stop', { last_assistant_message: 'Started it.', background_tasks: [{ id: 'suite1', status: 'running' }] })
+    assert.equal(calls.some(call => call.name === 'report_request'), false, 'a request with work running stays open')
+
+    await run('user_prompt', { prompt: '<task-notification>\n<task-id>suite1</task-id>\n<status>completed</status>\n</task-notification>',
+      origin: { kind: 'task-notification' } })
+    const log = fs.readFileSync(path.join(connections, `${CONNECTION}.requests.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(log.filter(event => event.op === 'current').at(-1).ref, request)
+    assert.ok(log.some(event => event.op === 'notified' && event.key === 'suite1'))
+
+    calls = []
+    await run('stop', { last_assistant_message: 'All green.', background_tasks: [] })
+    assert.deepEqual(calls.filter(call => call.name === 'report_request').map(call => [call.args.action, call.args.request_id]),
+      [['close', request]])
   })
 
   it('a harness wake is not a prompt: it admits nothing and keeps the open turn', async () => {
@@ -192,8 +228,8 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
 
     calls = []
     await run('user_prompt', { prompt: loop, origin: TYPED })
-    assert.deepEqual(calls.map(call => call.name), ['report_pickup', 'post_session_message', 'heartbeat_connection'])
-    assert.deepEqual(calls[1].args, { message: loop, agent_name: 'Claude Code', turn_kind: 'local_prompt', connection_id: CONNECTION })
+    assert.deepEqual(calls.map(call => call.name), ['report_pickup', 'report_request', 'post_session_message', 'heartbeat_connection'])
+    assert.deepEqual(calls[2].args, { message: loop, agent_name: 'Claude Code', turn_kind: 'local_prompt', connection_id: CONNECTION })
   })
 
   it('a prompt whose origin is unknown or missing is not shown as the owner\'s', async () => {

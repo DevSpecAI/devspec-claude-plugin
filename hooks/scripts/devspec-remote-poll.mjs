@@ -31,6 +31,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { openRequest } from './requests.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { captureInstructionContext } from './instruction-tiers.mjs'
@@ -2041,8 +2042,33 @@ async function main() {
     process.stderr.write(`devspec-remote-poll: ${nowStamp()} owner control ${control.verb} is not carried out here; handing it back\n`)
   }
 
+  async function openCommandRequests(commands) {
+    const call = (args) => mcpToolsCall({
+      mcpUrl,
+      token,
+      connectionCapability,
+      name: 'report_request',
+      arguments: args,
+      timeoutMs: 10_000,
+    })
+    for (const command of Array.isArray(commands) ? commands : []) {
+      try {
+        await openRequest({
+          connectionId,
+          kind: 'command',
+          provenanceRef: command?.delivery?.provenance_ref,
+          messageId: command?.message_id,
+          call,
+          dir: CONNECTIONS_DIR,
+        })
+      } catch {
+        /* see above: an unopened request changes nothing that worked before */
+      }
+    }
+  }
+
   /** Canonical transcript/control channel. Legacy conversational arrays stay inert. */
-  function consumeCanonicalIngress(res) {
+  async function consumeCanonicalIngress(res) {
     const normalized = normalizeRemoteIngressV1(res?.ingress, connectionId)
     if (!normalized.ok) {
       process.stderr.write(
@@ -2097,6 +2123,13 @@ async function main() {
     const roomChanges = channel === 'command' ? roomChangesSince(res, activity, roomAnnounced) : null
 
     const instructionContextFile = channel === 'command' ? captureInstructionContext(connectionId, res) : null
+    // Each command is a request this agent now carries (item 7a4d04fd), opened
+    // BEFORE the inbox record that wakes anybody, so the wake finds it and every
+    // write the work makes names whose request it serves, even after a background
+    // task or a wait wakes the agent again. A request that cannot be opened (an
+    // older server, a closed command) only leaves DevSpec to resolve who asked as
+    // before.
+    if (channel === 'command' && connectionCapability) await openCommandRequests(ingress.commands)
     const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,
       instructionContextFile,
@@ -2473,7 +2506,7 @@ async function main() {
       // Conversational commands/context come only from canonical ingress. Explicit
       // automation runs remain an independent top-level channel with their own clock.
       const automations = consumeAutomationDispatches(res)
-      const canonical = consumeCanonicalIngress(res)
+      const canonical = await consumeCanonicalIngress(res)
       if (canonical.ok) {
         needsSeed = redrainRequested
         redrainRequested = false

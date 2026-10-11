@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.45.0 - 2026-10-11
+
+- DevSpec now records whose request each piece of Claude's work serves, even when it happens later. A background command, a subagent, a workflow, a monitor, a scheduled wake-up or a loop that Claude started for someone carries on that person's request: what Claude does when it wakes it up is credited to them, and to your terminal when you typed the request here. Something Claude started that nobody asked for is recorded as Claude's own initiative. When the plugin cannot tell, it says nothing and DevSpec works it out as before: it never guesses.
+- Two people's requests on one Claude are never credited to each other. If a second person's message reaches Claude while it is working on the first, Claude has to say which request a DevSpec change is for before DevSpec will record it. The plugin tells it the one command to run.
+- Needs the DevSpec server from item 7a4d04fd. On an older server the plugin keeps working as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.44.1 - 2026-10-11
 
 - Recording that one action item replaces another is now DevSpec's own supersede action, with a preview first. Sessions you drive from DevSpec can run both without stopping to ask for permission. The old conflict-ruling tools are gone from DevSpec and from the list of tools those sessions may use.

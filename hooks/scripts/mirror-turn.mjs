@@ -38,6 +38,19 @@ import {
 } from './interaction-events.mjs'
 // The bridge owns clearing a resolved continuation; Stop is its other resolver.
 import { clearStoredContinuation } from './devspec-question.mjs'
+import {
+  appendRequestEvent,
+  closeRequest,
+  launchForRequest,
+  notifiedKeys,
+  openRequest,
+  readRequestState,
+  requestForLaunch,
+  requestForWake,
+  requestsWithWorkPending,
+  setCurrentRequest,
+  UNSTATED,
+} from './requests.mjs'
 import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
 import {
   launchedBackgroundWork,
@@ -286,6 +299,41 @@ export function recordBackgroundLaunch(raw, { load = loadState, record = recordO
   if (!state?.connection_id) return false
   const recorded = record(state.connection_id, launch)
   return recorded ? { state, launch } : false
+}
+
+/**
+ * PostToolUse for a call that left work running or set up a wake: record which
+ * request it belongs to (item 7a4d04fd, requests.mjs), so the wake it causes later
+ * continues that request. Independent of the turn marker, which a new command
+ * rewrites: the request a job serves does not change when someone else asks for
+ * something in between.
+ */
+export function recordRequestLaunch(raw, { load = loadState, dir = CONNECTIONS_DIR } = {}) {
+  let input
+  try {
+    input = JSON.parse(raw || '{}')
+  } catch {
+    return false
+  }
+  const launch = launchForRequest(input?.tool_name, input?.tool_input, input?.tool_response, input?.tool_use_id)
+  if (!launch) return false
+  const state = load(resolveHookConversationId(raw))
+  if (!state?.connection_id) return false
+  const agentId = typeof input?.agent_id === 'string' && input.agent_id ? input.agent_id : null
+  const { request, also } = requestForLaunch(readRequestState(state.connection_id, { dir }), agentId)
+  return launch.schedule
+    ? appendRequestEvent(state.connection_id, { op: 'schedule', prompt: launch.prompt, id: launch.id, request, also }, { dir })
+    : appendRequestEvent(state.connection_id, { op: 'launch', key: launch.key, alias: launch.alias, kind: launch.kind, notifies: launch.notifies, request, also }, { dir })
+}
+
+/** The Stop input's scheduled prompts (`session_crons`), or null when not sent. */
+export function parseSessionCrons(hookInput) {
+  try {
+    const data = JSON.parse(hookInput || '{}')
+    return Array.isArray(data.session_crons) ? data.session_crons : null
+  } catch {
+    return null
+  }
 }
 
 /** The auth a hook posts with: the connection's own token and server, as main() uses. */
@@ -724,6 +772,16 @@ function extractLastText(hookInput, which) {
  */
 const PROMPT_ORIGINS_OF_A_PERSON = new Set(['composer', 'bridge', 'sdk'])
 
+/** Claude Code's own stamp of where a prompt came from (`e.origin.kind`), or null. */
+export function promptOrigin(hookInput) {
+  try {
+    const kind = JSON.parse(hookInput || '{}')?.origin?.kind
+    return typeof kind === 'string' ? kind : null
+  } catch {
+    return null
+  }
+}
+
 /** True only when the hooks module passed an origin that names a person (above). */
 export function promptCameFromAPerson(hookInput) {
   try {
@@ -1027,6 +1085,11 @@ async function main() {
   const raw = readStdin()
   if (mode === 'background_launch') {
     try {
+      recordRequestLaunch(raw)
+    } catch {
+      /* an unrecorded launch only means its wake is credited as nobody's request */
+    }
+    try {
       const recorded = recordBackgroundLaunch(raw)
       if (recorded && DELEGATED_KINDS.has(recorded.launch.kind)) await updateDelegationTrail(recorded.state)
     } catch {
@@ -1080,6 +1143,14 @@ async function main() {
   const connectionId = state.connection_id
   const sessionId = state.session_id || null // null = sessionless (no room to mirror into)
   const localId = state.local_id || null
+  const callRequest = (args) => mcpToolsCall({
+    mcpUrl,
+    token,
+    connectionCapability: state.connection_capability,
+    name: 'report_request',
+    arguments: args,
+    timeoutMs: 8_000,
+  })
 
   const text = extractLastText(raw, mode)
   const fromAPerson = mode === 'user_prompt' && promptCameFromAPerson(raw)
@@ -1166,6 +1237,29 @@ async function main() {
       }
     }
 
+    // The request this turn serves (item 7a4d04fd, requests.mjs). A prompt a person
+    // sent here is the owner's own new request; a wake continues the request that
+    // started whatever woke it, or nobody's. Opened with the connection capability,
+    // so DevSpec knows the request is this host's observation, not the model's.
+    if (mode === 'user_prompt' && connectionId && state.connection_capability) {
+      try {
+        if (fromAPerson && text && String(text).trim()) {
+          const opened = await openRequest({ connectionId, kind: 'typed_prompt', call: callRequest, dir: CONNECTIONS_DIR })
+          setCurrentRequest(connectionId, opened || UNSTATED, { dir: CONNECTIONS_DIR })
+        } else {
+          const origin = promptOrigin(raw)
+          const { ref, also } = requestForWake({ origin, text, state: readRequestState(connectionId, { dir: CONNECTIONS_DIR }) })
+          if (ref) setCurrentRequest(connectionId, ref, { dir: CONNECTIONS_DIR })
+          for (const id of also) appendRequestEvent(connectionId, { op: 'joined', id }, { dir: CONNECTIONS_DIR })
+          if (origin === 'task-notification') {
+            for (const key of notifiedKeys(text)) appendRequestEvent(connectionId, { op: 'notified', key }, { dir: CONNECTIONS_DIR })
+          }
+        }
+      } catch {
+        /* an unrecorded request only leaves DevSpec to resolve who asked as before */
+      }
+    }
+
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
     // the skill must post_session_message the direct answer (prefer connection_id).
@@ -1195,6 +1289,7 @@ async function main() {
     // A blocked stop keeps the turn OPEN — the agent is about to re-arm and carry on.
     // So does a stop that is waiting on the agent's own background work.
     const turnActive = mode === 'user_prompt' || !!blockReason || !!backgroundHold
+    let stopDecisionAction = null
     if (turnActive) writeTurnMarker(connectionId, { held: !!backgroundHold })
     else clearTurnMarker(connectionId)
 
@@ -1236,6 +1331,7 @@ async function main() {
         // wait's poll interval (sub-second), and its cost is bounded — the delivery
         // wakes the model immediately and that turn's end completes exactly — whereas
         // sealing an attempt whose answer the model never saw is unrecoverable.
+        stopDecisionAction = stopDecision.action
         if (stopDecision.action !== 'hold') {
           // A terminal turn this connection admitted closes exactly; anything else
           // keeps the connection-scoped completion it always had.
@@ -1266,6 +1362,26 @@ async function main() {
           // The turn is over whether or not the completion landed: never carry it
           // into the next one.
           if (state.local_turn) patchOwnState(connectionId, { local_turn: null })
+        }
+      }
+    }
+
+    // Close every request whose work is finished (item 7a4d04fd): nothing it
+    // launched is still running or still to wake the agent, and no question it
+    // asked is still waiting for its answer. A request with work in flight stays
+    // open whatever else this agent does in between, so another person's command
+    // ending never ends it.
+    if (mode === 'stop' && connectionId && !blockReason && state.connection_capability) {
+      const requests = readRequestState(connectionId, { dir: CONNECTIONS_DIR })
+      if (requests.open.size > 0) {
+        const pending = requestsWithWorkPending(requests, {
+          backgroundTasks: parseBackgroundTasks(raw),
+          sessionCrons: parseSessionCrons(raw),
+        })
+        const awaitingAnswer = stopDecisionAction === 'hold' ? requests.current : null
+        for (const requestId of requests.open.keys()) {
+          if (pending.has(requestId) || requestId === awaitingAnswer) continue
+          await closeRequest({ connectionId, requestId, call: callRequest, dir: CONNECTIONS_DIR })
         }
       }
     }

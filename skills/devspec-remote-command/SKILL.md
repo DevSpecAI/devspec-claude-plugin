@@ -132,6 +132,15 @@ Finish as usual, with the answer posted with `connection_id` and
 answer (a deploy you were watching) wakes you as a new turn: post what happened
 the same way, and it lands in the room under your name as a new message.
 
+**Whose request a write serves.** The plugin tells DevSpec which request each
+write serves: the command or typed prompt that woke you, and, when a background
+job, a monitor, a scheduled wake-up or a loop wakes you, the request that started
+it. You do nothing for that. When one turn carries more than one person's
+request (a second person's command reached you mid-turn, or one wake carried
+two), a DevSpec write that records who asked is refused until you say which
+request it serves, with the one command to run. Run it, then retry the write;
+run it again before writes for another request.
+
 **Say which model you are:** pass `model: { providerID, modelID }` — for this
 host, `{ providerID: 'anthropic', modelID: '<your exact model id>' }`. The
 transcript renders it beside the timestamp, so a reader can tell a Fable answer

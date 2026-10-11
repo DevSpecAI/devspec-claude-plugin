@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.44.0 - 2026-10-11
+
+- New: you can clear Claude's conversation from DevSpec. Use Clear conversation in the agent's controls, or type `/clear` to the agent. It runs exactly as typing `/clear` in Claude Code's terminal would: Claude starts afresh, stays connected to the same session, and the old conversation can still be picked up with `claude --resume`. If Claude is busy, it clears when it finishes what it is doing.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.43.0 - 2026-10-11
 
 - New: you can change Claude's thinking level and compact its conversation from DevSpec, as well as stop it. Open the agent's controls from the composer's To menu, or type `/thinking high` or `/compact` to the agent. Each runs exactly as typing `/effort` or `/compact` in Claude Code's terminal would, so a new thinking level also becomes Claude Code's default for that model in new sessions. If Claude is busy, the change waits until it finishes what it is doing, and Stop stays available meanwhile.

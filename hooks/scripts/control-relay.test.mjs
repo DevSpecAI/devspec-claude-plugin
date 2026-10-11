@@ -33,10 +33,10 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'control-relay-'))
 after(() => fs.rmSync(HOME, { recursive: true, force: true }))
 
 describe('what the module says it carries out', () => {
-  it('is Stop, thinking and compact while the module keeps its report fresh', () => {
+  it('is Stop, thinking, compact and clear while the module keeps its report fresh', () => {
     assert.deepEqual(
       carriedControls(carriedControlsRecord(new Date(NOW - 5_000).toISOString()), NOW),
-      ['abort', 'set_thinking', 'compact'],
+      ['abort', 'set_thinking', 'compact', 'clear'],
     )
   })
 
@@ -72,9 +72,10 @@ describe('a control handed to the module', () => {
     assert.equal(parsePendingControl(JSON.stringify({ verb: 'abort' })), null)
   })
 
-  it("becomes Claude Code's own /compact or /effort, and Stop stays a turn cancel", () => {
+  it("becomes Claude Code's own /compact, /clear or /effort, and Stop stays a turn cancel", () => {
     const control = (verb, args) => parsePendingControl(JSON.stringify({ id: CONTROL, verb, ...(args ? { args } : {}), received_at: new Date(NOW).toISOString() }))
     assert.deepEqual(commandForControl(control('compact')), { command: 'compact', args: '' })
+    assert.deepEqual(commandForControl(control('clear')), { command: 'clear', args: '' })
     assert.deepEqual(commandForControl(control('set_thinking', { thinking: 'xhigh' })), { command: 'effort', args: 'xhigh' })
     assert.equal(commandForControl(control('abort')), null)
   })

@@ -101,11 +101,21 @@ test('Stop cancels the running turn and hands the control back', OPTIONS, async 
   expect(seen.runs.length).toBe(runs)
 })
 
-test('says it carries out Stop, thinking and compact while it is loaded', OPTIONS, async ($, on) => {
+test('says it carries out Stop, thinking, compact and clear while it is loaded', OPTIONS, async ($, on) => {
   const { clock, seen } = harness(on, bonded())
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   await tickOnce(clock)
-  expect(JSON.parse(seen.writes.get(REPORT_FILE) ?? '{}').verbs).toEqual(['abort', 'set_thinking', 'compact'])
+  expect(JSON.parse(seen.writes.get(REPORT_FILE) ?? '{}').verbs).toEqual(['abort', 'set_thinking', 'compact', 'clear'])
+})
+
+test("Clear runs Claude Code's own /clear, then hands the control back", OPTIONS, async ($, on) => {
+  const files = bonded()
+  const { clock, seen } = harness(on, files)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  files.set(CONTROL_FILE, controlFile(new Date().toISOString(), 'clear'))
+  await tickOnce(clock)
+  expect(seen.commands).toEqual([{ command: 'clear', args: '' }])
+  expect(acked(seen.runs)).toBe(true)
 })
 
 test("Compact runs Claude Code's own /compact, then hands the control back", OPTIONS, async ($, on) => {

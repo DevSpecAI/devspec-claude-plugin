@@ -1,12 +1,12 @@
 /**
  * The owner's controls from DevSpec, carried out by Claude Code (item cbf3d758).
  *
- * The owner presses Stop, picks a thinking level or compacts in DevSpec. The server
+ * The owner presses Stop, picks a thinking level, compacts or clears in DevSpec. The server
  * stamps a CONTROL verb on the connection, the poller receives it, and something has
  * to act on it inside Claude Code. A command hook cannot: hooks run only when Claude
  * Code calls them. The plugin's function-hooks module can (`$.turn.abort` cancels the
- * running turn; `$.command.run` runs `/effort` and `/compact` exactly as if the owner
- * had typed them in that terminal), so the poller hands the control to the module
+ * running turn; `$.command.run` runs `/effort`, `/compact` and `/clear` exactly as if
+ * the owner had typed them in that terminal), so the poller hands the control to the module
  * through one small file and the module hands it back, carried out, through
  * heartbeat_connection `control_ack`.
  *
@@ -31,7 +31,7 @@
 const REMOTE_DIR = '.devspec/remote-control'
 
 /** The verbs this plugin carries out. */
-export const CARRIED_CONTROLS = Object.freeze(['abort', 'set_thinking', 'compact'])
+export const CARRIED_CONTROLS = Object.freeze(['abort', 'set_thinking', 'compact', 'clear'])
 
 /** Claude Code's effort levels, which DevSpec calls thinking levels. */
 export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -112,6 +112,9 @@ export function parsePendingControl(text) {
  */
 export function commandForControl(control) {
   if (control?.verb === 'compact') return { command: 'compact', args: '' }
+  // A new conversation in the same process; the plugin carries this connection over
+  // to it (startup-listener.mjs), so the agent stays in its room (item 6beb89c6).
+  if (control?.verb === 'clear') return { command: 'clear', args: '' }
   if (control?.verb === 'set_thinking' && EFFORT_LEVELS.includes(control.thinking)) {
     return { command: 'effort', args: control.thinking }
   }

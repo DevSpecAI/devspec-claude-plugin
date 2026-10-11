@@ -134,7 +134,7 @@ const OMISSION_REASONS = new Set([
   'history_before_window',
   'delivery_retry',
 ])
-const CONTROL_VERBS = new Set(['abort', 'set_model', 'set_thinking', 'compact', 'reload', 'list_models'])
+const CONTROL_VERBS = new Set(['abort', 'set_model', 'set_thinking', 'compact', 'clear', 'reload', 'list_models'])
 const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const CONTEXT_BUCKETS = [
   ['human_context', 'human'],

@@ -1,10 +1,11 @@
 /**
  * Carry out the owner's controls from DevSpec inside Claude Code (item cbf3d758).
  *
- * The owner presses Stop, picks a thinking level or compacts in DevSpec; the poller
+ * The owner presses Stop, picks a thinking level, compacts or clears in DevSpec; the poller
  * writes the control to a hand-off file; this module carries it out and hands it back
  * through scripts/devspec-control.mjs. Stop cancels the running turn with
- * `$.turn.abort`. Thinking and compact run Claude Code's own `/effort` and `/compact`
+ * `$.turn.abort`. Thinking, compact and clear run Claude Code's own `/effort`, `/compact`
+ * and `/clear`
  * through `$.command.run`, exactly as if the owner had typed them in this terminal,
  * so Claude Code applies, saves and shows them the way it always does. The module
  * also keeps a small report saying what it carries out, which the poller passes to

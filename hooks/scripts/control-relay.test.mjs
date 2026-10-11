@@ -18,6 +18,7 @@ import {
   CONTROL_STALE_MS,
   carriedControls,
   carriedControlsRecord,
+  commandForControl,
   controlIsCurrent,
   parsePendingControl,
   pendingControlPath,
@@ -32,8 +33,11 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'control-relay-'))
 after(() => fs.rmSync(HOME, { recursive: true, force: true }))
 
 describe('what the module says it carries out', () => {
-  it('is Stop while the module keeps its report fresh', () => {
-    assert.deepEqual(carriedControls(carriedControlsRecord(new Date(NOW - 5_000).toISOString()), NOW), ['abort'])
+  it('is Stop, thinking and compact while the module keeps its report fresh', () => {
+    assert.deepEqual(
+      carriedControls(carriedControlsRecord(new Date(NOW - 5_000).toISOString()), NOW),
+      ['abort', 'set_thinking', 'compact'],
+    )
   })
 
   it('is nothing once the module stops ticking, or when there is no module', () => {
@@ -47,8 +51,9 @@ describe('what the module says it carries out', () => {
   })
 
   it('never claims a verb this plugin does not carry out', () => {
+    // Switching model needs an answer at Claude Code's own terminal, so it is never reported.
     const report = JSON.stringify({ verbs: ['abort', 'compact', 'set_model'], at: new Date(NOW).toISOString() })
-    assert.deepEqual(carriedControls(report, NOW), ['abort'])
+    assert.deepEqual(carriedControls(report, NOW), ['abort', 'compact'])
   })
 })
 
@@ -65,6 +70,21 @@ describe('a control handed to the module', () => {
   it('reads nothing from a malformed file', () => {
     assert.equal(parsePendingControl('not json'), null)
     assert.equal(parsePendingControl(JSON.stringify({ verb: 'abort' })), null)
+  })
+
+  it("becomes Claude Code's own /compact or /effort, and Stop stays a turn cancel", () => {
+    const control = (verb, args) => parsePendingControl(JSON.stringify({ id: CONTROL, verb, ...(args ? { args } : {}), received_at: new Date(NOW).toISOString() }))
+    assert.deepEqual(commandForControl(control('compact')), { command: 'compact', args: '' })
+    assert.deepEqual(commandForControl(control('set_thinking', { thinking: 'xhigh' })), { command: 'effort', args: 'xhigh' })
+    assert.equal(commandForControl(control('abort')), null)
+  })
+
+  it('runs nothing for a level Claude Code has no effort for, or a verb it does not carry out', () => {
+    const control = (verb, args) => parsePendingControl(JSON.stringify({ id: CONTROL, verb, ...(args ? { args } : {}), received_at: new Date(NOW).toISOString() }))
+    assert.equal(commandForControl(control('set_thinking', { thinking: 'off' })), null)
+    assert.equal(commandForControl(control('set_thinking')), null)
+    assert.equal(commandForControl(control('set_model', { model: 'sonnet' })), null)
+    assert.equal(commandForControl(control('reload')), null)
   })
 })
 

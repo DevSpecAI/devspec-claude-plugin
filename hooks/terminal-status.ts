@@ -90,6 +90,8 @@ export const register: Register = (on) => {
       readText,
       writeText: (path, text) => $.fs.write(path, text),
       abortTurn: (turnId) => $.turn.abort({ turnId }),
+      runCommand: (command, args) => $.command.run({ command, args }),
+      readSettings: () => $.settings.read(),
       run: (argv) => $.process.run(argv, { timeoutMs: 15_000 }),
       every: (ms, fn) => {
         $.clock.every(ms, fn)

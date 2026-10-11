@@ -16,6 +16,7 @@ import { after, describe, it } from 'node:test'
 
 import {
   contextFigures,
+  effortChangedRecord,
   effortLevel,
   parseTelemetryRecord,
   refreshedRecord,
@@ -101,6 +102,30 @@ describe('the model DevSpec is told about', () => {
     assert.equal(effortLevel('xhigh'), 'xhigh')
     assert.equal(effortLevel(16_000), null)
     assert.equal(effortLevel('turbo'), null)
+  })
+
+  it("offers Claude Code's effort levels for a model with effort, and none for one without (item cbf3d758)", () => {
+    assert.deepEqual(settle(null).report.supportedThinkingLevels, ['low', 'medium', 'high', 'xhigh', 'max'])
+    // Claude Code sends no effort for a model that has none.
+    assert.deepEqual(settle(null, { effort: undefined }).report.supportedThinkingLevels, [])
+  })
+})
+
+describe('a thinking change from DevSpec', () => {
+  it('is reported at once with the level Claude Code applied, everything else as it was', () => {
+    const first = settle(null)
+    const changed = parseTelemetryRecord(effortChangedRecord({ previous: first, conversationId: CONVERSATION, effort: 'low', nowIso: T2 }))
+    assert.equal(changed.report.thinkingLevel, 'low')
+    assert.equal(changed.report.at, T2)
+    assert.deepEqual(changed.report.model, first.report.model)
+    assert.deepEqual(changed.report.session, first.report.session)
+  })
+
+  it("says nothing without this conversation's report, or for a level it cannot name", () => {
+    const first = settle(null)
+    assert.equal(effortChangedRecord({ previous: null, conversationId: CONVERSATION, effort: 'low', nowIso: T2 }), null)
+    assert.equal(effortChangedRecord({ previous: first, conversationId: 'another-conversation', effort: 'low', nowIso: T2 }), null)
+    assert.equal(effortChangedRecord({ previous: first, conversationId: CONVERSATION, effort: undefined, nowIso: T2 }), null)
   })
 })
 

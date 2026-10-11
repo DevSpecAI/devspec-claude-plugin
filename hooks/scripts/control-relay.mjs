@@ -1,12 +1,19 @@
 /**
  * The owner's controls from DevSpec, carried out by Claude Code (item cbf3d758).
  *
- * The owner presses Stop in DevSpec. The server stamps a CONTROL verb on the
- * connection, the poller receives it, and something has to act on it inside Claude
- * Code. A command hook cannot: hooks run only when Claude Code calls them. The
- * plugin's function-hooks module can (`$.turn.abort` cancels the running turn), so
- * the poller hands the control to the module through one small file and the module
- * hands it back, carried out, through heartbeat_connection `control_ack`.
+ * The owner presses Stop, picks a thinking level or compacts in DevSpec. The server
+ * stamps a CONTROL verb on the connection, the poller receives it, and something has
+ * to act on it inside Claude Code. A command hook cannot: hooks run only when Claude
+ * Code calls them. The plugin's function-hooks module can (`$.turn.abort` cancels the
+ * running turn; `$.command.run` runs `/effort` and `/compact` exactly as if the owner
+ * had typed them in that terminal), so the poller hands the control to the module
+ * through one small file and the module hands it back, carried out, through
+ * heartbeat_connection `control_ack`.
+ *
+ * Switching model is not carried out. Claude Code asks for confirmation in its own
+ * terminal before switching a conversation whose history is cached, and nobody is at
+ * that terminal to answer when the owner is steering from DevSpec, so the plugin does
+ * not report `set_model` and DevSpec does not offer it.
  *
  *   poller ── <cid>.control.json ──▶ module ── devspec-control.mjs ack ──▶ DevSpec
  *   module ── <cid>.controls.json (what it carries out, refreshed) ──▶ poller
@@ -23,8 +30,11 @@
 
 const REMOTE_DIR = '.devspec/remote-control'
 
-/** The verbs this plugin carries out. Model, thinking and compact are not built yet. */
-export const CARRIED_CONTROLS = Object.freeze(['abort'])
+/** The verbs this plugin carries out. */
+export const CARRIED_CONTROLS = Object.freeze(['abort', 'set_thinking', 'compact'])
+
+/** Claude Code's effort levels, which DevSpec calls thinking levels. */
+export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
 /**
  * How old the module's report may be before the poller treats the module as gone.
@@ -41,7 +51,7 @@ export const CARRIED_REFRESH_MS = 10_000
 /**
  * A control older than this is handed back, never carried out. Stop means "the turn
  * running now"; one left over from before a reload or a failed ack must not cut off
- * a turn the owner never meant.
+ * a turn the owner never meant, nor compact a conversation they have moved on from.
  */
 export const CONTROL_STALE_MS = 60_000
 
@@ -86,7 +96,26 @@ export function parsePendingControl(text) {
   const value = parseJson(text)
   if (!value || typeof value.id !== 'string' || !value.id || typeof value.verb !== 'string') return null
   const receivedAt = typeof value.received_at === 'string' ? Date.parse(value.received_at) : NaN
-  return { id: value.id, verb: value.verb, receivedAtMs: Number.isFinite(receivedAt) ? receivedAt : null }
+  const thinking = typeof value.args?.thinking === 'string' ? value.args.thinking : null
+  return {
+    id: value.id,
+    verb: value.verb,
+    thinking,
+    receivedAtMs: Number.isFinite(receivedAt) ? receivedAt : null,
+  }
+}
+
+/**
+ * The Claude Code slash command that carries a control out, as `$.command.run` takes
+ * it, or null for one that is not a command (Stop cancels the turn instead) or that
+ * Claude Code cannot do (a thinking level it has no effort for, such as `off`).
+ */
+export function commandForControl(control) {
+  if (control?.verb === 'compact') return { command: 'compact', args: '' }
+  if (control?.verb === 'set_thinking' && EFFORT_LEVELS.includes(control.thinking)) {
+    return { command: 'effort', args: control.thinking }
+  }
+  return null
 }
 
 /** Whether the module should still carry a control out, rather than only hand it back. */

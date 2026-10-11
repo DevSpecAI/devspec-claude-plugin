@@ -2024,13 +2024,14 @@ async function main() {
   /**
    * Give a control to the module when it carries that verb out, or hand it back on
    * the next poll when nothing here does: an older Claude Code, a `-p` run, a module
-   * that stopped, or a verb not built yet. Either way the slot is freed.
+   * that stopped, or a verb this plugin does not carry out. Either way the slot is freed.
    */
   function handOverControl(control) {
     if (carriedControlsNow().includes(control.verb)) {
       writePrivateJson(pendingControlPath(os.homedir(), connectionId), {
         id: control.id,
         verb: control.verb,
+        ...(control.args ? { args: control.args } : {}),
         received_at: new Date().toISOString(),
       })
       process.stderr.write(`devspec-remote-poll: ${nowStamp()} owner control ${control.verb} handed to Claude Code\n`)

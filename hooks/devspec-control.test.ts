@@ -1,7 +1,8 @@
 /**
- * The owner's Stop from DevSpec, under Claude Code's own engine (`claude plugin test .`):
- * it cancels the turn that is running and hands the control back, never cancels a turn
- * for a stale or idle control, says it carries Stop out only while loaded, and does
+ * The owner's controls from DevSpec, under Claude Code's own engine (`claude plugin
+ * test .`): Stop cancels the turn that is running and hands the control back, never
+ * cancels a turn for a stale or idle control; thinking and compact run Claude Code's own
+ * /effort and /compact; the module says what it carries out only while loaded, and does
  * nothing in a `-p` run. The files and the ack script are covered in
  * scripts/control-relay.test.mjs.
  */
@@ -14,6 +15,7 @@ const CONTROL_ID = '0c7a6f2e-4b1d-4c55-9b0e-2f8d6c1a9e10'
 const BOND = `${HOME}/.devspec/remote-control/local/claude-code/${CONVERSATION_ID}.json`
 const CONTROL_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.control.json`
 const REPORT_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.controls.json`
+const TELEMETRY_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.telemetry.json`
 
 // The manifest requires a token, and Claude Code admits the module only with
 // options that fit it.
@@ -24,10 +26,20 @@ type TestOn = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
 // The test runner has timers; the module's environment, whose types this file uses, does not.
 declare const setTimeout: (callback: () => void, ms: number) => unknown
 
-function harness(on: TestOn, files: Map<string, string>) {
+function harness(on: TestOn, files: Map<string, string>, settings: Record<string, unknown> = {}) {
   mock.env(on, { HOME })
   const clock = mock.clock(on)
-  const seen = { aborted: [] as string[], runs: [] as Array<readonly string[]>, writes: new Map<string, string>() }
+  const seen = {
+    aborted: [] as string[],
+    runs: [] as Array<readonly string[]>,
+    writes: new Map<string, string>(),
+    commands: [] as Array<{ command: string; args: string }>,
+  }
+  on('command.run', ($, e) => {
+    seen.commands.push({ command: e.command, args: e.args })
+    return { text: '' }
+  })
+  on('settings.read', () => ({ value: settings }))
   on('fs.read', ($, e) => {
     const text = files.get(e.path)
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -60,9 +72,12 @@ async function tickOnce(clock: { advance: (ms: number) => Promise<unknown> }) {
   await new Promise<void>((resolve) => setTimeout(() => resolve(), 100))
 }
 
-function controlFile(receivedAt: string) {
-  return JSON.stringify({ id: CONTROL_ID, verb: 'abort', received_at: receivedAt })
+function controlFile(receivedAt: string, verb = 'abort', args?: Record<string, string>) {
+  return JSON.stringify({ id: CONTROL_ID, verb, ...(args ? { args } : {}), received_at: receivedAt })
 }
+
+const acked = (runs: Array<readonly string[]>) =>
+  runs.some((argv) => argv.includes('ack') && argv.includes(CONTROL_ID))
 
 const bonded = () => new Map([[BOND, JSON.stringify({ status: 'live', connection_id: CONNECTION_ID })]])
 
@@ -86,11 +101,62 @@ test('Stop cancels the running turn and hands the control back', OPTIONS, async 
   expect(seen.runs.length).toBe(runs)
 })
 
-test('says it carries out Stop while it is loaded', OPTIONS, async ($, on) => {
+test('says it carries out Stop, thinking and compact while it is loaded', OPTIONS, async ($, on) => {
   const { clock, seen } = harness(on, bonded())
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   await tickOnce(clock)
-  expect(JSON.parse(seen.writes.get(REPORT_FILE) ?? '{}').verbs).toEqual(['abort'])
+  expect(JSON.parse(seen.writes.get(REPORT_FILE) ?? '{}').verbs).toEqual(['abort', 'set_thinking', 'compact'])
+})
+
+test("Compact runs Claude Code's own /compact, then hands the control back", OPTIONS, async ($, on) => {
+  const files = bonded()
+  const { clock, seen } = harness(on, files)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  files.set(CONTROL_FILE, controlFile(new Date().toISOString(), 'compact'))
+  await tickOnce(clock)
+  expect(seen.commands).toEqual([{ command: 'compact', args: '' }])
+  expect(acked(seen.runs)).toBe(true)
+  expect(seen.aborted).toEqual([])
+})
+
+test('a thinking level runs /effort and tells DevSpec the level Claude Code saved', OPTIONS, async ($, on) => {
+  const files = bonded()
+  files.set(TELEMETRY_FILE, JSON.stringify({
+    v: 1,
+    conversation_id: CONVERSATION_ID,
+    report: { v: 1, model: { provider: 'anthropic', id: 'claude-opus-5-5' }, thinkingLevel: 'high', at: '2026-10-10T20:00:00.000Z' },
+  }))
+  const { clock, seen } = harness(on, files, { modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  files.set(CONTROL_FILE, controlFile(new Date().toISOString(), 'set_thinking', { thinking: 'xhigh' }))
+  await tickOnce(clock)
+  expect(seen.commands).toEqual([{ command: 'effort', args: 'xhigh' }])
+  expect(JSON.parse(seen.writes.get(TELEMETRY_FILE) ?? '{}').report?.thinkingLevel).toBe('xhigh')
+  expect(seen.runs.some((argv) => argv.some((arg) => arg.endsWith('/hooks/scripts/devspec-telemetry.mjs')))).toBe(true)
+  expect(acked(seen.runs)).toBe(true)
+})
+
+test('a level Claude Code has no effort for runs nothing and is still handed back', OPTIONS, async ($, on) => {
+  const files = bonded()
+  const { clock, seen } = harness(on, files)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  files.set(CONTROL_FILE, controlFile(new Date().toISOString(), 'set_thinking', { thinking: 'off' }))
+  await tickOnce(clock)
+  expect(seen.commands).toEqual([])
+  expect(acked(seen.runs)).toBe(true)
+})
+
+test('Compact sent mid-turn is handed back at once, so Stop stays free, and still runs', OPTIONS, async ($, on) => {
+  const files = bonded()
+  const { clock, seen } = harness(on, files)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'long work', turnId: 'turn-8' })
+  files.set(CONTROL_FILE, controlFile(new Date().toISOString(), 'compact'))
+  await tickOnce(clock)
+  expect(acked(seen.runs)).toBe(true)
+  // Claude Code holds the command until the turn ends, as it would one typed here.
+  expect(seen.commands).toEqual([{ command: 'compact', args: '' }])
+  expect(seen.aborted).toEqual([])
 })
 
 test('with no turn running, a Stop stops nothing and is still handed back', OPTIONS, async ($, on) => {

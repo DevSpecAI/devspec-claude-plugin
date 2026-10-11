@@ -36,13 +36,12 @@
  * Pure: no Node built-ins, because the module imports it too.
  */
 
+import { EFFORT_LEVELS } from './control-relay.mjs'
+
 const REMOTE_DIR = '.devspec/remote-control'
 
 /** The vendor of every model Claude Code runs. DevSpec shows it as the route. */
 export const MODEL_PROVIDER = 'anthropic'
-
-/** Claude Code's effort levels, as DevSpec's thinking levels name them. */
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
 /** The module's report for one connection, read by the poller. */
 export function telemetryPath(home, connectionId) {
@@ -72,7 +71,17 @@ function modelId(value) {
 
 /** A level DevSpec can show, or null: a numeric thinking budget is not a level. */
 export function effortLevel(effort) {
-  return typeof effort === 'string' && EFFORT_LEVELS.has(effort) ? effort : null
+  return typeof effort === 'string' && EFFORT_LEVELS.includes(effort) ? effort : null
+}
+
+/**
+ * The thinking levels the owner can pick for this model: Claude Code's effort levels
+ * when the request carried an effort, none when it did not, because Claude Code sends
+ * no effort for a model without one (item cbf3d758). Claude Code itself lowers a level
+ * a model cannot take, and the report after the change says what it applied.
+ */
+export function supportedThinkingLevels(effort) {
+  return effort === undefined || effort === null ? [] : [...EFFORT_LEVELS]
 }
 
 function emptyUsage() {
@@ -128,6 +137,7 @@ export function refreshedRecord({ previous, conversationId, model, effort, conte
     v: 1,
     model: id ? { provider: MODEL_PROVIDER, id } : before?.model ?? null,
     thinkingLevel: id ? effortLevel(effort) : before?.thinkingLevel ?? null,
+    supportedThinkingLevels: id ? supportedThinkingLevels(effort) : before?.supportedThinkingLevels,
     context: contextFigures(context) ?? before?.context ?? null,
     turn: before?.turn ?? { ...emptyUsage(), messages: 0 },
     session: before?.session ?? { ...emptyUsage(), turns: 0 },
@@ -180,9 +190,23 @@ export function settledRecord({
     model: id ? { provider: MODEL_PROVIDER, id } : before?.model ?? null,
     // The effort rides the request, so it is known only when a request was seen.
     thinkingLevel: modelId(stepModel) ? effortLevel(effort) : before?.thinkingLevel ?? null,
+    supportedThinkingLevels: modelId(stepModel) ? supportedThinkingLevels(effort) : before?.supportedThinkingLevels,
     context: contextFigures(context) ?? before?.context ?? null,
     turn,
     session,
     at: nowIso,
   })
+}
+
+/**
+ * After the owner changed the thinking level from DevSpec and Claude Code applied it:
+ * the report as it was, with the level Claude Code now holds for this model, timed
+ * now, so DevSpec can confirm the change without waiting for the next turn. Null when
+ * there is no report for this conversation yet, or the level is not one DevSpec shows.
+ */
+export function effortChangedRecord({ previous, conversationId, effort, nowIso }) {
+  const before = previousFor(previous, conversationId)
+  const level = effortLevel(effort)
+  if (!before || !level) return null
+  return record(conversationId, { ...before, thinkingLevel: level, at: nowIso })
 }

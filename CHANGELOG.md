@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.43.0 - 2026-10-11
+
+- New: you can change Claude's thinking level and compact its conversation from DevSpec, as well as stop it. Open the agent's controls from the composer's To menu, or type `/thinking high` or `/compact` to the agent. Each runs exactly as typing `/effort` or `/compact` in Claude Code's terminal would, so a new thinking level also becomes Claude Code's default for that model in new sessions. If Claude is busy, the change waits until it finishes what it is doing, and Stop stays available meanwhile.
+- DevSpec now shows the thinking levels Claude's current model offers, and confirms the new level as soon as Claude Code has applied it.
+- Switching model from DevSpec is not offered for Claude Code: Claude Code asks for confirmation in its own terminal before switching model part-way through a conversation, and nobody is there to answer when you are steering from DevSpec.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.42.7 - 2026-10-10
 
 - Fixed: a Claude Code started from inside another Claude Code (for example `claude -p` run by the first one's Bash tool) no longer copies its prompt into the first conversation's DevSpec session as if you had typed it. Each prompt is now matched to the conversation it was actually typed in.

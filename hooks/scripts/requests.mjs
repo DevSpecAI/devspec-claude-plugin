@@ -620,6 +620,25 @@ export function serveCommand(connectionId) {
   return `node ${JSON.stringify(REQUESTS_SCRIPT)} serve --connection-id ${connectionId}`
 }
 
+/**
+ * The choices the agent is offered for an undecided turn. "Nobody's request" is
+ * offered only when no other person's request is open here: DevSpec refuses it
+ * while a teammate's is (migration 1272), because a nobody's change is judged by
+ * the owner's role. Who the owner is shows only through their typed requests, so
+ * an open command from anyone not seen typing here counts as another person's;
+ * the agent is then offered "could not identify" instead, which DevSpec resolves
+ * itself or holds for a person to confirm.
+ */
+export function servableCarried(state, carried) {
+  if (!carried?.some((entry) => entry.kind === 'none')) return carried
+  const owners = new Set([...state.open.values()].filter((info) => info.kind === 'typed_prompt').map((info) => info.requested_by))
+  const teammateOpen = [...state.open.values()].some((info) => info.kind === 'command' && !owners.has(info.requested_by))
+  if (!teammateOpen) return carried
+  const choices = carried.filter((entry) => entry.kind !== 'none')
+  if (!choices.some((entry) => entry.kind === 'unstated')) choices.push({ id: UNSTATED, kind: 'unstated', current: false })
+  return choices
+}
+
 /** How a carried request is named to the agent, and the serve flag that picks it. */
 export function describeCarried(entry) {
   if (entry.kind === 'none') return '- nobody\'s request (your own initiative): --none'
@@ -657,7 +676,8 @@ export function serveMain(argv, { dir = path.join(os.homedir(), '.devspec', 'rem
   if ([Boolean(messageId), flags.terminal, flags.none, flags.unstated].filter(Boolean).length !== 1) {
     return { ok: false, error: 'serve needs exactly one of --message-id <id>, --terminal, --none or --unstated' }
   }
-  const carried = turnAmbiguity(readRequestState(connectionId, { dir }))
+  const state = readRequestState(connectionId, { dir })
+  const carried = servableCarried(state, turnAmbiguity(state))
   if (!carried) return { ok: false, error: 'Nothing to choose: this turn carries one request, and your writes already name it.' }
   const entry = [...carried].reverse().find((candidate) => (messageId ? candidate.message_id === messageId
     : flags.terminal ? candidate.kind === 'typed_prompt'

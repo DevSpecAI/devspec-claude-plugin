@@ -16,7 +16,7 @@ import path from 'node:path'
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { ownConnectionId } from './own-connection.mjs'
-import { readRequestState, startsBackgroundWork, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
+import { readRequestState, servableCarried, startsBackgroundWork, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
 
 export function launchGuard(input, { home = os.homedir(), env = process.env } = {}) {
   if (!startsBackgroundWork(input?.tool_name, input?.tool_input)) return {}
@@ -24,12 +24,13 @@ export function launchGuard(input, { home = os.homedir(), env = process.env } = 
   if (!connectionId) return {}
   const dir = path.join(home, '.devspec', 'remote-control', 'connections')
   const agentId = typeof input?.agent_id === 'string' && input.agent_id ? input.agent_id : null
-  const carried = turnAmbiguity(readRequestState(connectionId, { dir }), agentId)
+  const state = readRequestState(connectionId, { dir })
+  const carried = turnAmbiguity(state, agentId)
   if (!carried) return {}
   return { hookSpecificOutput: {
     hookEventName: 'PreToolUse',
     permissionDecision: 'deny',
-    permissionDecisionReason: undecidedTurnMessage(connectionId, carried, 'whatever this background work does when it wakes you'),
+    permissionDecisionReason: undecidedTurnMessage(connectionId, servableCarried(state, carried), 'whatever this background work does when it wakes you'),
   } }
 }
 

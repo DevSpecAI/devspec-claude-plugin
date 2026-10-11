@@ -17,7 +17,7 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { readRequestState, requestRefForWrite, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
+import { readRequestState, requestRefForWrite, servableCarried, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
 
 const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive|complete|request)$/
 
@@ -56,7 +56,7 @@ export function stampRequest(toolName, args, connectionId, agentId = null, { hom
   // serves (provenance_ref) already says whose it is: DevSpec reads those first.
   const cites = typeof own.work_claim_ref === 'string' || typeof own.provenance_ref === 'string'
   const carried = REQUEST_REF_TOOLS.has(toolName) && !cites ? turnAmbiguity(state, agent) : null
-  if (carried) return { deny: undecidedTurnMessage(connectionId, carried, 'this change') }
+  if (carried) return { deny: undecidedTurnMessage(connectionId, servableCarried(state, carried), 'this change') }
   const ref = requestRefForWrite(state, agent)
   return { args: ref ? { ...own, request_ref: ref } : own }
 }

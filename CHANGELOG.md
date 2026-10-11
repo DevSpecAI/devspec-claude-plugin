@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.45.3 - 2026-10-11
+
+- When Claude has to say which request a change is for, it's no longer offered "nobody's request" while a teammate's request is open, since DevSpec won't accept that. It can say it couldn't identify the request instead, and DevSpec takes it from there.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.45.2 - 2026-10-11
 
 - Fixed: a message that reaches Claude while it is already working, whether a teammate's message or something you type, no longer takes over the credit for the work in progress. Both requests are kept, and Claude says which one a DevSpec change is for before it is recorded.

@@ -16,6 +16,7 @@ import {
   openRequest,
   promptArrival,
   rotateRequestLog,
+  servableCarried,
   readRequestState,
   reduceRequestLog,
   requestForLaunch,
@@ -492,6 +493,21 @@ describe('starting background work in an undecided turn', () => {
     assert.deepEqual(launchGuard({ session_id: 'conv-1', tool_name: 'Monitor', tool_input: { command: 'node /x/devspec-remote-wait.mjs --stream' } }, { home, env }), {})
     const decided = sessionHome(...undecided, { op: 'serve', ref: B })
     assert.deepEqual(launchGuard({ session_id: 'conv-1', tool_name: 'Bash', tool_input: { command: 'npm test', run_in_background: true } }, { home: decided, env }), {})
+  })
+})
+
+describe('offering nobody\'s request', () => {
+  it('is offered only when no teammate\'s request is open; otherwise "could not identify" stands in for it', () => {
+    const own = reduceRequestLog(log(openT, { op: 'current', ref: T }, { op: 'joined', id: NO_REQUEST }))
+    assert.ok(turnAmbiguity(own) === null || turnAmbiguity(own).some((entry) => entry.kind === 'none'))
+    const withTeammate = reduceRequestLog(log(openT, openB, { op: 'current', ref: B }, { op: 'joined', id: NO_REQUEST }))
+    const offered = servableCarried(withTeammate, turnAmbiguity(withTeammate))
+    assert.deepEqual(offered.map((entry) => entry.kind), ['command', 'unstated'])
+    const { dir } = tempHome()
+    for (const event of [openT, openB, { op: 'current', ref: B }, { op: 'joined', id: NO_REQUEST }]) appendRequestEvent(CONN, event, { dir })
+    assert.match(serveMain(['--connection-id', CONN, '--none'], { dir }).error, /not one of the requests/)
+    assert.equal(serveMain(['--connection-id', CONN, '--unstated'], { dir }).ok, true)
+    assert.equal(requestRefForWrite(readRequestState(CONN, { dir })), null)
   })
 })
 

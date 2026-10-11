@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.45.2 - 2026-10-11
+
+- Fixed: a message that reaches Claude while it is already working, whether a teammate's message or something you type, no longer takes over the credit for the work in progress. Both requests are kept, and Claude says which one a DevSpec change is for before it is recorded.
+- Fixed: Claude can no longer state for itself whose request a change serves. Only the plugin does.
+- Claude now names which request background work is for before starting it, whenever it is carrying more than one request, so whatever that work does later is credited correctly.
+- Fixed: a teammate's message waiting to reach Claude is no longer marked finished when Claude's current turn ends.
+- Fixed: a request whose finish DevSpec didn't hear about is tried again, and a background job that ends without telling Claude no longer keeps its request open for ever. Messages from other sources, and loops started by two people, are handled too.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.45.1 - 2026-10-11
 
 - Work Claude does for a DevSpec automation run is credited to that run, even while someone's message to Claude is still open.

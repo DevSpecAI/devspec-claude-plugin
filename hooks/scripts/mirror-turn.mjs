@@ -39,16 +39,16 @@ import {
 // The bridge owns clearing a resolved continuation; Stop is its other resolver.
 import { clearStoredContinuation } from './devspec-question.mjs'
 import {
+  absentLaunches,
   appendRequestEvent,
   closeRequest,
   launchForRequest,
-  notifiedKeys,
   openRequest,
+  promptArrival,
   readRequestState,
   requestForLaunch,
-  requestForWake,
   requestsWithWorkPending,
-  setCurrentRequest,
+  rotateRequestLog,
   UNSTATED,
 } from './requests.mjs'
 import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
@@ -773,6 +773,16 @@ function extractLastText(hookInput, which) {
 const PROMPT_ORIGINS_OF_A_PERSON = new Set(['composer', 'bridge', 'sdk'])
 
 /** Claude Code's own stamp of where a prompt came from (`e.origin.kind`), or null. */
+/** The running turn a prompt was submitted into (`prompt.submit`'s turnId), or null. */
+export function promptTurnId(hookInput) {
+  try {
+    const turnId = JSON.parse(hookInput || '{}')?.turn_id
+    return typeof turnId === 'string' && turnId ? turnId : null
+  } catch {
+    return null
+  }
+}
+
 export function promptOrigin(hookInput) {
   try {
     const kind = JSON.parse(hookInput || '{}')?.origin?.kind
@@ -1143,17 +1153,42 @@ async function main() {
   const connectionId = state.connection_id
   const sessionId = state.session_id || null // null = sessionless (no room to mirror into)
   const localId = state.local_id || null
-  const callRequest = (args) => mcpToolsCall({
+  // Short, and in parallel at Stop: a slow DevSpec must not hold the person's
+  // prompt or the turn's end, and a request it did not hear about is retried.
+  const callRequest = (args, timeoutMs = 5_000) => mcpToolsCall({
     mcpUrl,
     token,
     connectionCapability: state.connection_capability,
     name: 'report_request',
     arguments: args,
-    timeoutMs: 8_000,
+    timeoutMs,
   })
 
   const text = extractLastText(raw, mode)
   const fromAPerson = mode === 'user_prompt' && promptCameFromAPerson(raw)
+
+  // The request this prompt serves (item 7a4d04fd, requests.mjs), recorded before
+  // any network call: a hook cut short leaves this turn's request unknown, never an
+  // earlier one's. A prompt a person sent here is the owner's own new request; a
+  // wake continues whatever started what woke it. Anything Claude Code delivers
+  // into a running turn joins it instead of replacing what it serves.
+  let typedRequest = null
+  if (mode === 'user_prompt' && connectionId) {
+    try {
+      const midTurn = promptTurnId(raw) !== null
+      const arrival = promptArrival({
+        fromAPerson: fromAPerson && Boolean(text && String(text).trim()),
+        origin: promptOrigin(raw),
+        text,
+        midTurn,
+        state: readRequestState(connectionId, { dir: CONNECTIONS_DIR }),
+      })
+      for (const event of arrival.events) appendRequestEvent(connectionId, event, { dir: CONNECTIONS_DIR })
+      if (arrival.typedId) typedRequest = { id: arrival.typedId, midTurn }
+    } catch {
+      /* an unrecorded request only leaves DevSpec to resolve who asked itself */
+    }
+  }
 
   // Consume any explicit-reply marker so it cannot bleed into a later turn.
   // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full
@@ -1237,27 +1272,14 @@ async function main() {
       }
     }
 
-    // The request this turn serves (item 7a4d04fd, requests.mjs). A prompt a person
-    // sent here is the owner's own new request; a wake continues the request that
-    // started whatever woke it, or nobody's. Opened with the connection capability,
-    // so DevSpec knows the request is this host's observation, not the model's.
-    if (mode === 'user_prompt' && connectionId && state.connection_capability) {
-      try {
-        if (fromAPerson && text && String(text).trim()) {
-          const opened = await openRequest({ connectionId, kind: 'typed_prompt', call: callRequest, dir: CONNECTIONS_DIR })
-          setCurrentRequest(connectionId, opened || UNSTATED, { dir: CONNECTIONS_DIR })
-        } else {
-          const origin = promptOrigin(raw)
-          const { ref, also } = requestForWake({ origin, text, state: readRequestState(connectionId, { dir: CONNECTIONS_DIR }) })
-          if (ref) setCurrentRequest(connectionId, ref, { dir: CONNECTIONS_DIR })
-          for (const id of also) appendRequestEvent(connectionId, { op: 'joined', id }, { dir: CONNECTIONS_DIR })
-          if (origin === 'task-notification') {
-            for (const key of notifiedKeys(text)) appendRequestEvent(connectionId, { op: 'notified', key }, { dir: CONNECTIONS_DIR })
-          }
-        }
-      } catch {
-        /* an unrecorded request only leaves DevSpec to resolve who asked as before */
-      }
+    // The typed request recorded above, opened on DevSpec before the turn runs, with
+    // the connection capability, so DevSpec knows it is this host's observation,
+    // not the model's. One that cannot be opened leaves its turn's writes unstated,
+    // or, delivered mid-turn, joins the turn as something not known.
+    if (typedRequest && state.connection_capability) {
+      const opened = await openRequest({ connectionId, kind: 'typed_prompt', call: callRequest, dir: CONNECTIONS_DIR, id: typedRequest.id })
+        .catch(() => null)
+      if (!opened && typedRequest.midTurn) appendRequestEvent(connectionId, { op: 'joined', id: UNSTATED }, { dir: CONNECTIONS_DIR })
     }
 
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
@@ -1373,17 +1395,21 @@ async function main() {
     // ending never ends it.
     if (mode === 'stop' && connectionId && !blockReason && state.connection_capability) {
       const requests = readRequestState(connectionId, { dir: CONNECTIONS_DIR })
+      const backgroundTasks = parseBackgroundTasks(raw)
       if (requests.open.size > 0) {
-        const pending = requestsWithWorkPending(requests, {
-          backgroundTasks: parseBackgroundTasks(raw),
-          sessionCrons: parseSessionCrons(raw),
-        })
+        const pending = requestsWithWorkPending(requests, { backgroundTasks, sessionCrons: parseSessionCrons(raw) })
         const awaitingAnswer = stopDecisionAction === 'hold' ? requests.current : null
-        for (const requestId of requests.open.keys()) {
-          if (pending.has(requestId) || requestId === awaitingAnswer) continue
-          await closeRequest({ connectionId, requestId, call: callRequest, dir: CONNECTIONS_DIR })
-        }
+        // Only a request that has reached the agent: a command opened ahead of its
+        // wake has not started, and closing it would lose its turn's attribution.
+        const finished = [...requests.open.keys()]
+          .filter((id) => requests.started.has(id) && !pending.has(id) && id !== awaitingAnswer)
+        await Promise.all(finished.map((requestId) =>
+          closeRequest({ connectionId, requestId, call: (args) => callRequest(args, 3_000), dir: CONNECTIONS_DIR })))
       }
+      for (const key of absentLaunches(requests, backgroundTasks)) {
+        appendRequestEvent(connectionId, { op: 'absent', key }, { dir: CONNECTIONS_DIR })
+      }
+      rotateRequestLog(connectionId, { dir: CONNECTIONS_DIR })
     }
   } catch (e) {
     process.stderr.write(`[devspec-remote] ${e instanceof Error ? e.message : String(e)}\n`)

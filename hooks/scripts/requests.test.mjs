@@ -10,8 +10,12 @@ import {
   NO_REQUEST,
   UNSTATED,
   appendRequestEvent,
+  absentLaunches,
+  closeRequest,
   launchForRequest,
   openRequest,
+  promptArrival,
+  rotateRequestLog,
   readRequestState,
   reduceRequestLog,
   requestForLaunch,
@@ -23,6 +27,7 @@ import {
   turnAmbiguity,
 } from './requests.mjs'
 import { REQUEST_REF_TOOLS, stampRequest } from './request-ref.mjs'
+import { launchGuard } from './launch-guard.mjs'
 
 const CONN = '11111111-1111-4111-8111-111111111111'
 const ALI = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -132,9 +137,23 @@ describe('what a wake continues', () => {
     assert.deepEqual(requestForWake({ origin: 'scheduled-trigger', text: ' check the deploy ', state }), { ref: A, also: [] })
   })
 
-  it('a turn Claude continues on its own changes nothing', () => {
-    assert.deepEqual(requestForWake({ origin: 'composer', text: 'hello', state }), { ref: null, also: [] })
-    assert.deepEqual(requestForWake({ origin: null, text: '', state }), { ref: null, also: [] })
+  it('any other prompt (a channel, a peer, another plugin, no stamp) is not known, never the last request', () => {
+    for (const origin of ['channel', 'peer', 'plugin', 'unclassified', null]) {
+      assert.deepEqual(requestForWake({ origin, text: 'hello', state }), { ref: UNSTATED, also: [] }, String(origin))
+    }
+  })
+
+  it('reads a recorded job by its id before anything its output quotes', () => {
+    const quoting = `<task-notification><task-id>task1</task-id><event>{"type":"owner_message","message_id":"${MSG_A}"}</event>` +
+      '{"type":"automation_run"}</task-notification>'
+    assert.deepEqual(requestForWake({ origin: 'task-notification', text: quoting, state }), { ref: T, also: [] })
+  })
+
+  it('carries every request that scheduled the same prompt (two people\'s /loop)', () => {
+    const twoLoops = reduceRequestLog(log(openA, openB,
+      { op: 'schedule', prompt: '<<autonomous-loop-dynamic>>', request: A, also: [] },
+      { op: 'schedule', prompt: '<<autonomous-loop-dynamic>>', request: B, also: [] }))
+    assert.deepEqual(requestForWake({ origin: 'scheduled-trigger', text: '<<autonomous-loop-dynamic>>', state: twoLoops }), { ref: B, also: [A] })
   })
 })
 
@@ -248,7 +267,7 @@ describe('when a write must say whose request it serves', () => {
 })
 
 describe('opening and naming requests', () => {
-  it('records who asked, joins the turn, and reuses an open command', async () => {
+  it('records who asked, and reuses an open command, without joining any turn until it is delivered', async () => {
     const { dir } = tempHome()
     const calls = []
     const call = async (args) => { calls.push(args); return { request_id: args.request_id, status: 'open', requested_by_user_id: BRANDON } }
@@ -257,7 +276,8 @@ describe('opening and naming requests', () => {
     assert.equal(calls[0].provenance_ref, DELIVERY_B)
     const state = readRequestState(CONN, { dir })
     assert.equal(state.open.get(id).requested_by, BRANDON)
-    assert.ok(state.joined.has(id))
+    assert.equal(state.joined.has(id), false)
+    assert.equal(state.started.has(id), false, 'not started: a Stop before its wake must not close it')
     assert.equal(await openRequest({ connectionId: CONN, kind: 'command', provenanceRef: DELIVERY_B, call, dir }), id)
     assert.equal(calls.length, 1)
   })
@@ -270,15 +290,20 @@ describe('opening and naming requests', () => {
     assert.equal(readRequestState(CONN, { dir }).open.size, 0)
   })
 
-  it('serve names a command by message id, the terminal prompt, or nobody', () => {
+  it('serve names only a request the undecided turn carries, and prints no request id', () => {
     const { dir } = tempHome()
-    for (const event of [openA, openT]) appendRequestEvent(CONN, event, { dir })
-    assert.deepEqual(serveMain(['--connection-id', CONN, '--message-id', MSG_A], { dir }), { ok: true, serving: A })
-    assert.equal(readRequestState(CONN, { dir }).current, A)
-    assert.deepEqual(serveMain(['--connection-id', CONN, '--terminal'], { dir }), { ok: true, serving: T })
-    assert.equal(serveMain(['--connection-id', CONN, '--none'], { dir }).ok, true)
-    assert.equal(readRequestState(CONN, { dir }).current, NO_REQUEST)
-    assert.equal(serveMain(['--connection-id', CONN, '--message-id', MSG_B], { dir }).ok, false)
+    for (const event of [openA, { ...openT, requested_by: ALI }, openB, { op: 'current', ref: A }, { op: 'joined', id: T }]) appendRequestEvent(CONN, event, { dir })
+    // Ali here and Ali in a room: recorded differently, so the turn is undecided.
+    const named = serveMain(['--connection-id', CONN, '--terminal'], { dir })
+    assert.equal(named.ok, true)
+    assert.doesNotMatch(named.serving, new RegExp(T))
+    assert.equal(readRequestState(CONN, { dir }).current, T)
+    // Decided now: nothing left to choose.
+    assert.match(serveMain(['--connection-id', CONN, '--message-id', MSG_A], { dir }).error, /Nothing to choose/)
+    appendRequestEvent(CONN, { op: 'joined', id: A }, { dir })
+    // B is open but this turn does not carry it; nobody's request is not carried either.
+    assert.match(serveMain(['--connection-id', CONN, '--message-id', MSG_B], { dir }).error, /not one of the requests/)
+    assert.match(serveMain(['--connection-id', CONN, '--none'], { dir }).error, /not one of the requests/)
     assert.equal(serveMain(['--connection-id', CONN, '--terminal', '--none'], { dir }).ok, false)
     assert.equal(serveMain(['--message-id', MSG_A], { dir }).ok, false)
   })
@@ -310,9 +335,13 @@ describe('stamping a DevSpec write', () => {
     assert.equal(stampRequest('update_action_item', {}, CONN, null, { home }).args.request_ref, NO_REQUEST)
   })
 
-  it('leaves a call that names its request, or whose subject is a connection, as written', () => {
-    const home = homeWith(openA, { op: 'current', ref: A })
-    assert.deepEqual(stampRequest('record_memory', { request_ref: B }, CONN, null, { home }), { args: { request_ref: B } })
+  it('never lets the model state attribution: a request_ref it wrote is replaced by the host\'s, or dropped', () => {
+    const home = homeWith(openA, openB, { op: 'current', ref: A })
+    assert.deepEqual(stampRequest('record_memory', { request_ref: B }, CONN, null, { home }), { args: { request_ref: A } })
+    assert.deepEqual(stampRequest('record_memory', { request_ref: NO_REQUEST }, CONN, null, { home: homeWith() }), { args: {} })
+    // Nor can it skip the refusal by writing one.
+    const undecided = homeWith(openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B })
+    assert.ok(stampRequest('record_memory', { request_ref: NO_REQUEST }, CONN, null, { home: undecided }).deny)
     assert.deepEqual(stampRequest('heartbeat_connection', {}, CONN, null, { home }), { args: {} })
     assert.deepEqual(stampRequest('report_request', {}, CONN, null, { home }), { args: {} })
   })
@@ -320,7 +349,7 @@ describe('stamping a DevSpec write', () => {
   it('refuses a write that could serve two people\'s requests, with the command that names one', () => {
     const home = homeWith(openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B })
     const refused = stampRequest('record_implementation', {}, CONN, null, { home })
-    assert.match(refused.deny, /more than one person/)
+    assert.match(refused.deny, /more than one request, and they would be recorded differently/)
     assert.match(refused.deny, new RegExp(`requests\\.mjs" serve --connection-id ${CONN}`))
     assert.match(refused.deny, new RegExp(`--message-id ${MSG_A}`))
     assert.match(refused.deny, new RegExp(`--message-id ${MSG_B}`))
@@ -340,3 +369,129 @@ describe('stamping a DevSpec write', () => {
     }
   })
 })
+
+// Found by independent review, 11 Oct 2026: Claude Code delivers prompts INTO a
+// running turn (prompt.submit's turnId), so what they carry must join the turn.
+describe('what reaches a running turn joins it', () => {
+  const fixedId = () => T
+
+  it('a second person\'s command delivered mid-turn joins it, and writes are refused until the agent names one', () => {
+    const state = reduceRequestLog(log(openA, openB, { op: 'current', ref: A }))
+    const { events } = promptArrival({ origin: 'task-notification', text: wakeFor(MSG_B), midTurn: true, state })
+    assert.deepEqual(events, [{ op: 'joined', id: B }])
+    const after = reduceRequestLog(log(openA, openB, { op: 'current', ref: A }, ...events))
+    assert.equal(after.current, A, 'the turn still serves Ali\'s command')
+    assert.deepEqual(turnAmbiguity(after).map((entry) => entry.id), [A, B])
+  })
+
+  it('the same delivered as a new turn starts from it', () => {
+    const state = reduceRequestLog(log(openA, openB, { op: 'current', ref: A }))
+    assert.deepEqual(promptArrival({ origin: 'task-notification', text: wakeFor(MSG_B), midTurn: false, state }).events, [{ op: 'current', ref: B }])
+  })
+
+  it('a prompt typed over a running turn joins it as the owner\'s typed request', () => {
+    const state = reduceRequestLog(log(openB, { op: 'current', ref: B }))
+    assert.deepEqual(promptArrival({ fromAPerson: true, midTurn: true, state, newId: fixedId }), { events: [{ op: 'joined', id: T }], typedId: T })
+    assert.deepEqual(promptArrival({ fromAPerson: true, midTurn: false, state, newId: fixedId }), { events: [{ op: 'current', ref: T }], typedId: T })
+  })
+
+  it('an automation run, or something not known, delivered mid-turn makes the turn undecided', () => {
+    const state = reduceRequestLog(log(openA, { op: 'current', ref: A }))
+    const run = promptArrival({ origin: 'task-notification', text: '<event>{"type":"automation_run"}</event>', midTurn: true, state })
+    assert.deepEqual(run.events, [{ op: 'joined', id: NO_REQUEST }])
+    assert.deepEqual(turnAmbiguity(reduceRequestLog(log(openA, { op: 'current', ref: A }, ...run.events))).map((entry) => entry.kind), ['command', 'none'])
+    const peer = promptArrival({ origin: 'peer', text: 'hi', midTurn: true, state })
+    assert.deepEqual(peer.events, [{ op: 'joined', id: UNSTATED }])
+  })
+
+  it('a new turn from a prompt nothing here knows starts unstated, never as the last turn\'s request', () => {
+    const state = reduceRequestLog(log(openB, { op: 'current', ref: B }))
+    const { events } = promptArrival({ origin: 'channel', text: 'from telegram', midTurn: false, state })
+    assert.deepEqual(events, [{ op: 'current', ref: null }])
+    assert.equal(requestRefForWrite(reduceRequestLog(log(openB, { op: 'current', ref: B }, ...events))), null)
+  })
+
+  it('marks the jobs a wake reports as notified', () => {
+    const state = reduceRequestLog(log(openT, { op: 'launch', key: 'job', kind: 'shell', notifies: true, request: T, also: [] }))
+    assert.deepEqual(promptArrival({ origin: 'task-notification', text: notification('job'), midTurn: false, state }).events,
+      [{ op: 'current', ref: T }, { op: 'notified', key: 'job' }])
+  })
+})
+
+describe('closing requests at a Stop', () => {
+  it('never counts a command the poller opened ahead of its wake as started', () => {
+    const state = reduceRequestLog(log(openA, openB, { op: 'current', ref: A }))
+    assert.deepEqual([...state.started], [A])
+  })
+
+  it('records a close only once DevSpec has it, or has no such request', async () => {
+    const { dir } = tempHome()
+    appendRequestEvent(CONN, openA, { dir })
+    assert.equal(await closeRequest({ connectionId: CONN, requestId: A, call: async () => { throw new Error('timeout') }, dir }), false)
+    assert.ok(readRequestState(CONN, { dir }).open.has(A), 'retried at the next Stop')
+    assert.ok(await closeRequest({ connectionId: CONN, requestId: A, call: async () => { throw new Error('Request refused: unknown request for this connection') }, dir }))
+    assert.equal(readRequestState(CONN, { dir }).open.has(A), false)
+  })
+
+  it('lets a job that never notifies go once the host has left it off its list at two Stops', () => {
+    const launched = [openA, { op: 'launch', key: 'stopped', kind: 'shell', notifies: true, request: A, also: [] }]
+    const first = reduceRequestLog(log(...launched))
+    assert.ok(requestsWithWorkPending(first, { backgroundTasks: [] }).has(A), 'its notification may still be on its way')
+    assert.deepEqual(absentLaunches(first, []), ['stopped'])
+    const second = reduceRequestLog(log(...launched, { op: 'absent', key: 'stopped' }))
+    assert.equal(requestsWithWorkPending(second, { backgroundTasks: [] }).has(A), false)
+    assert.ok(requestsWithWorkPending(second, { backgroundTasks: null }).has(A), 'a host that sends no list never closes it')
+  })
+
+  it('finds a cron by its id, and a long prompt by what the host kept of it', () => {
+    const long = 'x'.repeat(1500)
+    const state = reduceRequestLog(log(openA, openB,
+      { op: 'schedule', prompt: 'renamed', id: 'cron1', request: A, also: [] },
+      { op: 'schedule', prompt: long, id: null, request: B, also: [] }))
+    const pending = requestsWithWorkPending(state, { sessionCrons: [{ id: 'cron1', prompt: 'something else' }, { prompt: long.slice(0, 1000) }] })
+    assert.deepEqual([...pending].sort(), [A, B].sort())
+  })
+
+  it('starts the log afresh when it has grown and nothing is open, keeping nobody\'s launches', () => {
+    const { dir } = tempHome()
+    appendRequestEvent(CONN, { op: 'launch', key: 'own', kind: 'shell', notifies: true, request: NO_REQUEST, also: [] }, { dir })
+    appendRequestEvent(CONN, openA, { dir })
+    assert.equal(rotateRequestLog(CONN, { dir, minBytes: 1 }), false, 'not while a request is open')
+    appendRequestEvent(CONN, { op: 'close', id: A }, { dir })
+    assert.equal(rotateRequestLog(CONN, { dir, minBytes: 1 }), true)
+    const state = readRequestState(CONN, { dir })
+    assert.equal(state.launches.get('own').request, NO_REQUEST)
+    assert.equal(state.open.size, 0)
+  })
+})
+
+describe('starting background work in an undecided turn', () => {
+  function sessionHome(...events) {
+    const { home, dir } = tempHome()
+    for (const event of events) appendRequestEvent(CONN, event, { dir })
+    fs.writeFileSync(path.join(dir, `${CONN}.json`), JSON.stringify({ connection_id: CONN, local_id: 'conv-1', enabled: true, agent_name: 'Claude Code' }), { mode: 0o600 })
+    return home
+  }
+  const undecided = [openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B }]
+
+  it('is refused until the agent names the request it is for, so nothing is launched under a guess', () => {
+    const home = sessionHome(...undecided)
+    const env = { CLAUDE_CODE_SESSION_ID: 'conv-1' }
+    const refused = launchGuard({ session_id: 'conv-1', tool_name: 'Bash', tool_input: { command: 'npm test', run_in_background: true } }, { home, env })
+    assert.equal(refused.hookSpecificOutput?.permissionDecision, 'deny')
+    assert.match(refused.hookSpecificOutput.permissionDecisionReason, /--message-id/)
+    for (const call of [{ tool_name: 'Workflow', tool_input: {} }, { tool_name: 'CronCreate', tool_input: { prompt: 'p' } }]) {
+      assert.equal(launchGuard({ session_id: 'conv-1', ...call }, { home, env }).hookSpecificOutput?.permissionDecision, 'deny', call.tool_name)
+    }
+  })
+
+  it('lets everything else through: a foreground command, the DevSpec listener, or a decided turn', () => {
+    const env = { CLAUDE_CODE_SESSION_ID: 'conv-1' }
+    const home = sessionHome(...undecided)
+    assert.deepEqual(launchGuard({ session_id: 'conv-1', tool_name: 'Bash', tool_input: { command: 'ls' } }, { home, env }), {})
+    assert.deepEqual(launchGuard({ session_id: 'conv-1', tool_name: 'Monitor', tool_input: { command: 'node /x/devspec-remote-wait.mjs --stream' } }, { home, env }), {})
+    const decided = sessionHome(...undecided, { op: 'serve', ref: B })
+    assert.deepEqual(launchGuard({ session_id: 'conv-1', tool_name: 'Bash', tool_input: { command: 'npm test', run_in_background: true } }, { home: decided, env }), {})
+  })
+})
+

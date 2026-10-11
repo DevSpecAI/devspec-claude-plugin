@@ -44,8 +44,8 @@ function harness(on: TestOn, files: Map<string, string>, { runFails = false } = 
 
 const bonded = () => new Map([[BOND, JSON.stringify({ status: 'live', connection_id: CONNECTION_ID })]])
 
-function submit($: Parameters<NonNullable<Parameters<typeof test>[2]>>[0], text: string, origin: PromptOrigin) {
-  return $.prompt.submit({ text, wait: false, origin })
+function submit($: Parameters<NonNullable<Parameters<typeof test>[2]>>[0], text: string, origin: PromptOrigin, turnId?: string) {
+  return $.prompt.submit({ text, wait: false, origin, ...(turnId ? { turnId } : {}) })
 }
 
 test('a typed prompt reaches the mirror, stamped as typed, before it enters', OPTIONS, async ($, on) => {
@@ -61,7 +61,16 @@ test('a typed prompt reaches the mirror, stamped as typed, before it enters', OP
     session_id: CONVERSATION_ID,
     prompt: 'file an item for the flaky test',
     origin: { kind: 'composer' },
+    turn_id: null,
   })
+})
+
+test('a prompt delivered into a running turn says which turn, so what it carries joins it (item 7a4d04fd)', OPTIONS, async ($, on) => {
+  const seen = harness(on, bonded())
+
+  await submit($, '<task-notification><task-id>b1</task-id></task-notification>', { kind: 'task-notification' }, 'turn-1')
+
+  expect(JSON.parse(String(seen.runs[0]?.stdin)).turn_id).toBe('turn-1')
 })
 
 test('a scheduled firing reaches the mirror stamped as scheduled, so the script can tell', OPTIONS, async ($, on) => {

@@ -35,6 +35,9 @@ export function mirrorPromptsToTheRoom(on: Parameters<Register>[0]): void {
             session_id: conversationId,
             prompt: e.text,
             origin: e.origin,
+            // Set when the prompt is delivered into, or typed over, a running turn:
+            // what it carries then joins that turn (item 7a4d04fd).
+            turn_id: e.turnId ?? null,
           }),
           timeoutMs: 30_000,
         })

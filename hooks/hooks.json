@@ -60,6 +60,16 @@
         ]
       },
       {
+        "matcher": "^(Bash|Agent|Workflow|Monitor|ScheduleWakeup|CronCreate)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 || exit 0; input=$(cat); case \"$input\" in *run_in_background*|*Workflow*|*Monitor*|*ScheduleWakeup*|*CronCreate*) printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/launch-guard.mjs\" ;; esac; exit 0",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit|NotebookEdit|Bash",
         "hooks": [
           {

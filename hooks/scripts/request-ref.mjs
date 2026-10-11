@@ -4,9 +4,10 @@
  * Only this plugin knows what woke the agent, so the write carries it: the request
  * the current turn continues, or, for a subagent, the request that launched it.
  * `request_ref` is a host-only parameter DevSpec hides from the model; a tool that
- * does not declare it simply drops it. A call that already names a request, and a
- * call whose subject is a connection, are left as written. Nothing known stamps
- * nothing, which leaves DevSpec to resolve who asked as it always has.
+ * does not declare it simply drops it. The model never states attribution: a
+ * request_ref it wrote is dropped before the host's is stamped. A call whose
+ * subject is a connection is left unstamped. Nothing known stamps nothing, which
+ * leaves DevSpec to resolve who asked itself.
  *
  * When the turn carries more than one person's request and the agent has not said
  * which it is working on, a write that records who asked is refused, with the
@@ -16,7 +17,7 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { readRequestState, requestRefForWrite, serveCommand, turnAmbiguity } from './requests.mjs'
+import { readRequestState, requestRefForWrite, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
 
 const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive|complete|request)$/
 
@@ -36,35 +37,26 @@ export const REQUEST_REF_TOOLS = new Set([
   'update_memory', 'update_resource', 'write_project_instruction_rule',
 ])
 
-function describeRequest(entry) {
-  if (entry.kind === 'none') return '- nobody\'s request (your own initiative): --none'
-  if (entry.kind === 'typed_prompt') return '- the prompt your owner typed at this terminal: --terminal'
-  return `- the room command with message_id ${entry.message_id ?? '(unknown)'}: --message-id ${entry.message_id ?? '<id>'}`
-}
-
 /**
  * @returns {{ args: object } | { deny: string }} the call's arguments, stamped, or
  *   why it is refused
  */
 export function stampRequest(toolName, args, connectionId, agentId = null, { home = os.homedir() } = {}) {
-  if (!connectionId || !args || typeof args !== 'object' || CONNECTION_SUBJECT.test(toolName)) return { args }
-  if (args.request_ref !== undefined) return { args }
+  if (!args || typeof args !== 'object') return { args }
+  let own = args
+  if (Object.hasOwn(args, 'request_ref')) {
+    const { request_ref: _written, ...rest } = args
+    own = rest
+  }
+  if (!connectionId || CONNECTION_SUBJECT.test(toolName)) return { args: own }
   const dir = path.join(home, '.devspec', 'remote-control', 'connections')
   const state = readRequestState(connectionId, { dir })
   const agent = typeof agentId === 'string' && agentId ? agentId : null
   // A write that cites the work it belongs to (work_claim_ref) or the command it
   // serves (provenance_ref) already says whose it is: DevSpec reads those first.
-  const cites = typeof args.work_claim_ref === 'string' || typeof args.provenance_ref === 'string'
-  const ambiguous = REQUEST_REF_TOOLS.has(toolName) && !cites ? turnAmbiguity(state, agent) : null
-  if (ambiguous) {
-    return { deny: [
-      'This turn carries requests from more than one person (or from a person and nobody), and DevSpec records who asked for this write.',
-      'Say which request it serves, then make the call again. Run:',
-      `  ${serveCommand(connectionId)} <one of>`,
-      ...ambiguous.map(describeRequest),
-      'Writes follow that request until another reaches you. Name each request before its writes when you switch.',
-    ].join('\n') }
-  }
+  const cites = typeof own.work_claim_ref === 'string' || typeof own.provenance_ref === 'string'
+  const carried = REQUEST_REF_TOOLS.has(toolName) && !cites ? turnAmbiguity(state, agent) : null
+  if (carried) return { deny: undecidedTurnMessage(connectionId, carried, 'this change') }
   const ref = requestRefForWrite(state, agent)
-  return { args: ref ? { ...args, request_ref: ref } : args }
+  return { args: ref ? { ...own, request_ref: ref } : own }
 }

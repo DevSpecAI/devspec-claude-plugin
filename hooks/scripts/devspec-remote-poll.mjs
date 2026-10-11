@@ -2049,7 +2049,7 @@ async function main() {
       connectionCapability,
       name: 'report_request',
       arguments: args,
-      timeoutMs: 10_000,
+      timeoutMs: 5_000,
     })
     for (const command of Array.isArray(commands) ? commands : []) {
       try {
@@ -2126,9 +2126,9 @@ async function main() {
     // Each command is a request this agent now carries (item 7a4d04fd), opened
     // BEFORE the inbox record that wakes anybody, so the wake finds it and every
     // write the work makes names whose request it serves, even after a background
-    // task or a wait wakes the agent again. A request that cannot be opened (an
-    // older server, a closed command) only leaves DevSpec to resolve who asked as
-    // before.
+    // task or a wait wakes the agent again. It joins a turn only once Claude Code
+    // delivers it (mirror-turn.mjs). A request that cannot be opened (an older
+    // server, a closed command) only leaves DevSpec to resolve who asked itself.
     if (channel === 'command' && connectionCapability) await openCommandRequests(ingress.commands)
     const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,

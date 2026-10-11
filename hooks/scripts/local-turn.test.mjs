@@ -216,6 +216,32 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
     assert.deepEqual(stored().local_turn, { attempt_id: OLDER, session_id: ROOM })
   })
 
+  it('a command delivered into a running turn joins it, and one not yet delivered outlives the turn\'s Stop', async () => {
+    seed()
+    const brandon = '44444444-4444-4444-8444-444444444444'
+    const delivered = '55555555-5555-4555-8555-555555555555'
+    const message = '66666666-6666-4666-8666-666666666666'
+    const waiting = '77777777-7777-4777-8777-777777777777'
+    // The poller opened two commands ahead of their wakes.
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.requests.jsonl`), [
+      { op: 'open', id: delivered, kind: 'command', message_id: message, provenance_ref: brandon, requested_by: brandon },
+      { op: 'open', id: waiting, kind: 'command', message_id: brandon, provenance_ref: message, requested_by: brandon },
+    ].map(event => JSON.stringify(event)).join('\n') + '\n')
+    await run('user_prompt', { prompt: 'tidy the changelog', origin: TYPED })
+    const typed = calls.find(call => call.name === 'report_request').args.request_id
+    await run('user_prompt', { prompt: `<task-notification><task-id>listener</task-id><event>{"type":"owner_message","message_id":"${message}"}</event></task-notification>`,
+      origin: { kind: 'task-notification' }, turn_id: 'turn-1' })
+    const events = () => fs.readFileSync(path.join(connections, `${CONNECTION}.requests.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(events().filter(event => event.op === 'current').map(event => event.ref), [typed], 'the turn still serves the typed prompt')
+    assert.ok(events().some(event => event.op === 'joined' && event.id === delivered))
+
+    calls = []
+    await run('stop', { last_assistant_message: 'Done.', background_tasks: [] })
+    const closed = calls.filter(call => call.name === 'report_request').map(call => call.args.request_id).sort()
+    assert.deepEqual(closed, [typed, delivered].sort())
+    assert.equal(closed.includes(waiting), false, 'a command whose wake has not come is not closed')
+  })
+
   // Measured on 2.1.291: a /loop firing carries exactly the text typed to start the
   // loop, so only the engine's stamp tells them apart (item dd1a8325).
   it('a scheduled firing of a prompt the owner once typed is not the owner speaking now', async () => {

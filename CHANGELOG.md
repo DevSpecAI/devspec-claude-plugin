@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.44.1 - 2026-10-11
+
+- Recording that one action item replaces another is now DevSpec's own supersede action, with a preview first. Sessions you drive from DevSpec can run both without stopping to ask for permission. The old conflict-ruling tools are gone from DevSpec and from the list of tools those sessions may use.
+- DevSpec's trial that asked Claude to judge which existing items its own change affected has ended, so its two tools are no longer pre-approved.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.44.0 - 2026-10-11
 
 - New: you can clear Claude's conversation from DevSpec. Use Clear conversation in the agent's controls, or type `/clear` to the agent. It runs exactly as typing `/clear` in Claude Code's terminal would: Claude starts afresh, stays connected to the same session, and the old conversation can still be picked up with `claude --resume`. If Claude is busy, it clears when it finishes what it is doing.

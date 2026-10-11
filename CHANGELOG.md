@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.45.1 - 2026-10-11
+
+- Work Claude does for a DevSpec automation run is credited to that run, even while someone's message to Claude is still open.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.45.0 - 2026-10-11
 
 - DevSpec now records whose request each piece of Claude's work serves, even when it happens later. A background command, a subagent, a workflow, a monitor, a scheduled wake-up or a loop that Claude started for someone carries on that person's request: what Claude does when it wakes it up is credited to them, and to your terminal when you typed the request here. Something Claude started that nobody asked for is recorded as Claude's own initiative. When the plugin cannot tell, it says nothing and DevSpec works it out as before: it never guesses.

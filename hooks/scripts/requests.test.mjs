@@ -100,6 +100,11 @@ describe('what a wake continues', () => {
     assert.deepEqual(requestForWake({ origin: { kind: 'task-notification' }, text: delivered, state }), { ref: A, also: [] })
   })
 
+  it('an automation run DevSpec dispatched is nobody\'s request, so DevSpec credits the run', () => {
+    const run = `<task-notification>\n<task-id>b2hh67xwv</task-id>\n<event>{"type":"automation_run","session_id":null,"authoritative":true,"executable":true,"channel":"explicit_automation_dispatch"}</event>\n</task-notification>`
+    assert.deepEqual(requestForWake({ origin: { kind: 'task-notification' }, text: run, state }), { ref: NO_REQUEST, also: [] })
+  })
+
   it('a command this plugin could not open leaves the write for DevSpec to resolve', () => {
     const unknown = '1000000f-0000-4000-8000-00000000000f'
     assert.deepEqual(requestForWake({ origin: 'task-notification', text: wakeFor(unknown), state }), { ref: UNSTATED, also: [] })

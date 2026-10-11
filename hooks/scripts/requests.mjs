@@ -265,6 +265,7 @@ function ownerMessageIds(text) {
  * stamp of where the prompt came from (`e.origin`) and its text.
  *
  * - A DevSpec command (the listener's owner_message) is that command's request.
+ * - An automation run DevSpec dispatched is nobody's request: the run's.
  * - A background job's notification is the request that launched it.
  * - A scheduled firing is the request whose ScheduleWakeup, CronCreate or /loop
  *   recorded that prompt.
@@ -292,6 +293,9 @@ export function requestForWake({ origin, text, state }) {
     if (commands.length > 0) return { ref: commands.at(-1), also: commands.slice(0, -1) }
     // A command not opened here: DevSpec resolves it from the turn.
     if (ownerMessageIds(text).length > 0) return { ref: UNSTATED, also: [] }
+    // An automation run DevSpec dispatched is positively nobody's request: DevSpec
+    // credits the run while it is running, never a command that happens to be live.
+    if (/"type"\s*:\s*"automation_run"/.test(String(text || ''))) return { ref: NO_REQUEST, also: [] }
     for (const key of [tag(text, 'task-id'), tag(text, 'tool-use-id')]) {
       const launch = key ? state.launches.get(key) : null
       if (launch) return carried(launch)

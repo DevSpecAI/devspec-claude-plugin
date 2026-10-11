@@ -93,6 +93,13 @@ describe('what a wake continues', () => {
     assert.deepEqual(requestForWake({ origin: 'task-notification', text: wakeFor(MSG_A, MSG_B), state }), { ref: B, also: [A] })
   })
 
+  it('reads the listener wake as Claude Code delivers it, a body cut mid-string included', () => {
+    // Measured 2026-10-11: a Monitor event inside a task-notification, one JSON object per <event>.
+    const delivered = `<task-notification>\n<task-id>b2hh67xwv</task-id>\n<summary>Monitor event: "DevSpec: messages sent to this agent"</summary>\n` +
+      `<event>{"type":"owner_message","from":"Ali Price","authority":"owner","style":true,"message_id":"${MSG_A}","unread":27,"body_chars":681,"body":"Please, can you get caught up and get grou</event>\n</task-notification>`
+    assert.deepEqual(requestForWake({ origin: { kind: 'task-notification' }, text: delivered, state }), { ref: A, also: [] })
+  })
+
   it('a command this plugin could not open leaves the write for DevSpec to resolve', () => {
     const unknown = '1000000f-0000-4000-8000-00000000000f'
     assert.deepEqual(requestForWake({ origin: 'task-notification', text: wakeFor(unknown), state }), { ref: UNSTATED, also: [] })

@@ -586,6 +586,27 @@ export function parseInboxBatches(lines, connectionId) {
         if (!parsed.ok || parsed.envelope.wake.kind !== 'control' ||
             !parsed.envelope.wake.active || parsed.envelope.delivery_state !== 'live') continue
         batches.push(record)
+      } else if (record.type === 'canonical_system_notices') {
+        if (record.authoritative_source !== REMOTE_INGRESS_RESOURCE_URI) continue
+        const parsed = normalizeRemoteIngressV1(record.ingress, connectionId)
+        if (
+          !parsed.ok ||
+          parsed.envelope.delivery_state !== 'live' ||
+          !Array.isArray(parsed.envelope.system_notices) ||
+          parsed.envelope.system_notices.length === 0
+        ) {
+          continue
+        }
+        const ids = Array.isArray(record.execute_notice_ids)
+          ? record.execute_notice_ids
+          : parsed.envelope.system_notices.map((notice) => notice.notice_id)
+        const noticeIds = new Set(parsed.envelope.system_notices.map((notice) => notice.notice_id))
+        if (ids.length === 0 || new Set(ids).size !== ids.length || ids.some((id) => !noticeIds.has(id))) continue
+        batches.push({
+          ...record,
+          execute_notice_ids: ids,
+          wake_context: validWakeContext(record.wake_context),
+        })
       } else if ((record.type === INTERACTION_ANSWER_RECORD_TYPE || record.type === DISMISSAL_RECORD_TYPE)) {
         // Revalidated here as well as at write time: this is the only channel whose
         // payload came from a person answering a card, and a record that no longer
@@ -605,6 +626,113 @@ export function parseInboxBatches(lines, connectionId) {
 /** Backward-named test surface; runtime accepts canonical command records only. */
 export function parseOwnerBatches(lines, connectionId) {
   return parseInboxBatches(lines, connectionId).filter((record) => record.type === 'canonical_commands')
+}
+
+export function formatSystemNoticeContent(notice) {
+  if (notice?.kind === 'server_notice') {
+    const lines = [
+      `[DevSpec System Notice: ${notice.topic} / ${notice.notice_type}]`,
+      `Summary: ${notice.summary}`,
+      '',
+      notice.prompt,
+    ]
+    for (const rec of Array.isArray(notice.records) ? notice.records : []) {
+      const header = rec.title
+        ? `${rec.label} (${rec.record_type} ${rec.record_id} — "${rec.title}"):`
+        : `${rec.label} (${rec.record_type} ${rec.record_id}):`
+      lines.push('', header, rec.text)
+      if (rec.url) {
+        lines.push(`Link: ${rec.url}`)
+      }
+    }
+    if (Array.isArray(notice.allowed_outcomes) && notice.allowed_outcomes.length > 0) {
+      lines.push('', `Allowed outcomes: ${notice.allowed_outcomes.join(', ')}`)
+    }
+    if (Array.isArray(notice.allowed_tools) && notice.allowed_tools.length > 0) {
+      lines.push(`Allowed tools: ${notice.allowed_tools.join(', ')}`)
+    }
+    lines.push(
+      '',
+      'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
+        'This is a server-initiated notice on your own work, not a room message or new work authorization.',
+    )
+    return lines.join('\n')
+  }
+
+  const branchSuffix = notice?.branch ? ` on branch ${notice.branch}` : ''
+  return [
+    '[DevSpec System Notice: unlinked_commit_item_review]',
+    `Your push of commit ${notice?.commit_sha}${branchSuffix} did not carry a [devspec:<id>] tag, while you hold claimed item "${notice?.action_item_title}" (${notice?.action_item_id}).`,
+    `Prompt: ${notice?.prompt}`,
+    `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
+    `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
+    'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
+      'This is a narrow server review prompt for your own claimed item and commit — not a room command or new work authorization.',
+  ].join('\n')
+}
+
+export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
+  const ingress = batch?.ingress
+  const executeIds = new Set(Array.isArray(batch?.execute_notice_ids) ? batch.execute_notice_ids : [])
+  const notices = Array.isArray(ingress?.system_notices)
+    ? ingress.system_notices.filter((notice) => executeIds.has(notice.notice_id))
+    : []
+  const sessionId = batch?.session_id ?? null
+  const pointers = batch?.wake_context ?? null
+  const events = []
+
+  for (const notice of notices) {
+    events.push({
+      type: 'system_notice',
+      kind: notice.kind,
+      notice_id: notice.notice_id,
+      ...(notice.kind === 'server_notice'
+        ? {
+            topic: notice.topic,
+            notice_type: notice.notice_type,
+            summary: notice.summary,
+            prompt: notice.prompt,
+            records: notice.records,
+            allowed_outcomes: notice.allowed_outcomes,
+            allowed_tools: notice.allowed_tools,
+          }
+        : {
+            commit_sha: notice.commit_sha,
+            action_item_id: notice.action_item_id,
+            action_item_title: notice.action_item_title,
+            branch: notice.branch,
+            prompt: notice.prompt,
+            allowed_outcomes: notice.allowed_outcomes,
+            allowed_tools: notice.allowed_tools,
+          }),
+      content: formatSystemNoticeContent(notice),
+      session_id: sessionId,
+      envelope_id: ingress?.envelope_id ?? null,
+      inbox: inboxFile ?? null,
+      authoritative: false,
+      executable: true,
+      authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
+      notice,
+    })
+  }
+
+  events.push({
+    type: 'wake',
+    reason: 'exact_connection_system_notice',
+    transcript: pointers?.transcript ?? null,
+    room_state: pointers?.room_state ?? null,
+    room_state_changed: pointers?.room_state_changed ?? [],
+    session_id: sessionId,
+    count: notices.length,
+    envelope_id: ingress?.envelope_id ?? null,
+    system_notice_ids: notices.map((notice) => notice.notice_id),
+    inbox: inboxFile ?? null,
+    authoritative: false,
+    executable: false,
+    continuous_poller: true,
+    rearm: 'devspec-remote-wait',
+  })
+  return events
 }
 
 /**
@@ -1049,11 +1177,13 @@ async function main() {
               })
             : batch.type === 'canonical_control'
               ? buildCanonicalControlEvents(batch, { inboxFile: file })
-              : (batch.type === INTERACTION_ANSWER_RECORD_TYPE || batch.type === DISMISSAL_RECORD_TYPE)
-                ? (batch.disposition === QUEUED
-                    ? buildQueuedAnswerEvents(batch, { inboxFile: file })
-                    : buildInteractionAnswerEvents(batch, { inboxFile: file }))
-                : buildAutomationRunEvents(batch, { inboxFile: file })
+              : batch.type === 'canonical_system_notices'
+                ? buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })
+                : (batch.type === INTERACTION_ANSWER_RECORD_TYPE || batch.type === DISMISSAL_RECORD_TYPE)
+                  ? (batch.disposition === QUEUED
+                      ? buildQueuedAnswerEvents(batch, { inboxFile: file })
+                      : buildInteractionAnswerEvents(batch, { inboxFile: file }))
+                  : buildAutomationRunEvents(batch, { inboxFile: file })
           if (batch.type === DISMISSAL_RECORD_TYPE) {
             let emitted = false
             for (const event of events) {
@@ -1067,7 +1197,9 @@ async function main() {
           } else await writeEventSequence(events)
           delivered += batch.type === 'canonical_commands'
             ? batch.execute_message_ids.length
-            : 1
+            : batch.type === 'canonical_system_notices'
+              ? batch.execute_notice_ids.length
+              : 1
         }
         // Commit only complete records, never a partially emitted canonical batch.
         // Keeping this prefix in memory also prevents replay when own state cannot

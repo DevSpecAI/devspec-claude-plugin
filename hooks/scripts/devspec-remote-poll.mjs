@@ -603,6 +603,7 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
     envelopeIds: new Set(),
     commandMessageIds: new Set(),
     controlIds: new Set(),
+    systemNoticeIds: new Set(),
     dispatchIds: new Set(),
     // Durable interaction-event identity, so a poller that died between the inbox
     // append and the ACK acknowledges the redelivery instead of applying it twice.
@@ -631,6 +632,14 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
       }
       if (record?.type === 'canonical_control' && typeof record.ingress?.control?.id === 'string') {
         index.controlIds.add(record.ingress.control.id)
+      }
+      if (record?.type === 'canonical_system_notices') {
+        const ids = Array.isArray(record.execute_notice_ids)
+          ? record.execute_notice_ids
+          : Array.isArray(record.ingress?.system_notices)
+            ? record.ingress.system_notices.map((notice) => notice?.notice_id)
+            : []
+        for (const id of ids) if (typeof id === 'string') index.systemNoticeIds.add(id)
       }
       if (record?.type === 'automation_run' && typeof record.dispatch?.id === 'string') {
         index.dispatchIds.add(record.dispatch.id)
@@ -722,6 +731,12 @@ export function appendCanonicalInbox(
         .map((command) => command.message_id)
         .filter((id) => !index.commandMessageIds.has(id))
     : []
+  const systemNoticesSeen = index.systemNoticeIds instanceof Set ? index.systemNoticeIds : new Set()
+  const executeNoticeIds = channel === 'system_notice' && Array.isArray(ingress.system_notices)
+    ? ingress.system_notices
+        .map((notice) => notice.notice_id)
+        .filter((id) => !systemNoticesSeen.has(id))
+    : []
   if (channel === 'command' && executeMessageIds.length === 0) {
     index.envelopeIds.add(ingress.envelope_id)
     return { ok: true, appended: false }
@@ -730,12 +745,18 @@ export function appendCanonicalInbox(
     index.envelopeIds.add(ingress.envelope_id)
     return { ok: true, appended: false }
   }
+  if (channel === 'system_notice' && executeNoticeIds.length === 0) {
+    index.envelopeIds.add(ingress.envelope_id)
+    return { ok: true, appended: false }
+  }
 
   const type = channel === 'command'
     ? 'canonical_commands'
     : channel === 'control'
       ? 'canonical_control'
-      : 'canonical_context'
+      : channel === 'system_notice'
+        ? 'canonical_system_notices'
+        : 'canonical_context'
   const record = {
     type,
     connection_id: connectionId,
@@ -744,6 +765,7 @@ export function appendCanonicalInbox(
     authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
     ingress,
     ...(channel === 'command' ? { execute_message_ids: executeMessageIds } : {}),
+    ...(channel === 'system_notice' ? { execute_notice_ids: executeNoticeIds } : {}),
     // Where the room is, for the wake (item 7fe8e3d1): the transcript and room file
     // paths, each command's count since this agent's last reply, and which parts of
     // the room file moved since the last command. Pointers, never the room itself.
@@ -759,7 +781,16 @@ export function appendCanonicalInbox(
   index.envelopeIds.add(ingress.envelope_id)
   for (const id of executeMessageIds) index.commandMessageIds.add(id)
   if (channel === 'control') index.controlIds.add(ingress.control.id)
-  return { ok: true, appended: true, executeMessageIds, handedOff: Object.hasOwn(record, 'question_handoff') }
+  if (channel === 'system_notice' && index.systemNoticeIds instanceof Set) {
+    for (const id of executeNoticeIds) index.systemNoticeIds.add(id)
+  }
+  return {
+    ok: true,
+    appended: true,
+    executeMessageIds,
+    ...(channel === 'system_notice' ? { executeNoticeIds } : {}),
+    handedOff: Object.hasOwn(record, 'question_handoff'),
+  }
 }
 
 export function appendAutomationDispatches(
@@ -2119,6 +2150,8 @@ async function main() {
       channel = 'command'
     } else if (ingress.wake.kind === 'control' && ingress.wake.active && ingress.delivery_state === 'live') {
       channel = 'control'
+    } else if (ingress.wake.kind === 'system_notice' && ingress.wake.active && ingress.delivery_state === 'live') {
+      channel = 'system_notice'
     }
     const roomChanges = channel === 'command' ? roomChangesSince(res, activity, roomAnnounced) : null
 
@@ -2187,6 +2220,24 @@ async function main() {
       // An owner control is carried out by the plugin's module, never by the model,
       // so it wakes nobody (item cbf3d758, control-relay.mjs).
       handOverControl(ingress.control)
+    } else if (channel === 'system_notice') {
+      process.stdout.write(JSON.stringify({
+        type: 'canonical_system_notices_persisted',
+        authoritative: false,
+        executable: false,
+        envelope_id: ingress.envelope_id,
+        notice_ids: persisted.executeNoticeIds,
+        note: 'Poller stdout is notification only; read the canonical inbox record.',
+      }) + '\n')
+      process.stdout.write(JSON.stringify({
+        type: 'wake',
+        reason: 'exact_connection_system_notice',
+        count: persisted.executeNoticeIds.length,
+        inbox: inboxPathForConnection(connectionId),
+        continuous: true,
+        authoritative: false,
+        executable: false,
+      }) + '\n')
     }
     return { ok: true, delivered: true }
   }

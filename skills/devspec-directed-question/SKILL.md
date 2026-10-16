@@ -1,6 +1,6 @@
 ---
 name: devspec-directed-question
-description: Ask the person driving this DevSpec session one question and wait for their answer, when a decision is genuinely theirs to make and no recorded intent settles it. Never for work you can do, check, or decide yourself.
+description: Ask the person driving this DevSpec session a question, or several independent ones together, and wait for their answer, when a decision is genuinely theirs to make and no recorded intent settles it. Never for work you can do, check, or decide yourself.
 allowed-tools: Bash
 ---
 
@@ -13,8 +13,11 @@ Everything the recorded intent, acceptance criteria and served
 so is anything you could find out by looking. A question is not a way to hand judgement
 work back — if you could observe the answer, observe it.
 
-Ask at most one at a time, and only when someone is actually there to answer: the card
-sits above their composer until they respond or cancel it.
+Ask only when someone is actually there to answer: the card sits above their composer
+until they respond or cancel it. When you have several independent choices for the same
+person, ask them together rather than one per turn, so they answer in one sitting and in
+any order: create each with `--keep-turn` except the last. Each answer reaches you as its
+own event. A question that depends on an earlier answer waits until that answer arrives.
 
 ## Ask
 

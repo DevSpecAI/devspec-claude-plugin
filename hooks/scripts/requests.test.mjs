@@ -23,12 +23,15 @@ import {
   requestForWake,
   requestRefForWrite,
   requestsWithWorkPending,
+  requestFinished,
+  selectableRequests,
   serveMain,
   setCurrentRequest,
   turnAmbiguity,
 } from './requests.mjs'
 import { REQUEST_REF_TOOLS, stampRequest } from './request-ref.mjs'
 import { launchGuard } from './launch-guard.mjs'
+import { markCommandsAnswered } from './mark-explicit-reply.mjs'
 
 const CONN = '11111111-1111-4111-8111-111111111111'
 const ALI = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -299,14 +302,48 @@ describe('opening and naming requests', () => {
     assert.equal(named.ok, true)
     assert.doesNotMatch(named.serving, new RegExp(T))
     assert.equal(readRequestState(CONN, { dir }).current, T)
-    // Decided now: nothing left to choose.
-    assert.match(serveMain(['--connection-id', CONN, '--message-id', MSG_A], { dir }).error, /Nothing to choose/)
-    appendRequestEvent(CONN, { op: 'joined', id: A }, { dir })
-    // B is open but this turn does not carry it; nobody's request is not carried either.
+    assert.equal(turnAmbiguity(readRequestState(CONN, { dir })), null, 'decided: writes go through')
+    // B is open but has never reached this agent; nobody's request is not carried either.
     assert.match(serveMain(['--connection-id', CONN, '--message-id', MSG_B], { dir }).error, /not one of the requests/)
     assert.match(serveMain(['--connection-id', CONN, '--none'], { dir }).error, /not one of the requests/)
     assert.equal(serveMain(['--connection-id', CONN, '--terminal', '--none'], { dir }).ok, false)
     assert.equal(serveMain(['--message-id', MSG_A], { dir }).ok, false)
+  })
+
+  // Observed 15 Oct (item 984ca8b4): after "could not identify", nothing else
+  // could be named, so the room command the work served could not be credited.
+  it('a choice never locks the turn: the agent can switch to another request it carries', () => {
+    const { dir } = tempHome()
+    for (const event of [openA, openT, { op: 'current', ref: T }, { op: 'joined', id: UNSTATED }, { op: 'joined', id: A }]) appendRequestEvent(CONN, event, { dir })
+    assert.equal(serveMain(['--connection-id', CONN, '--unstated'], { dir }).ok, true)
+    assert.equal(requestRefForWrite(readRequestState(CONN, { dir })), null)
+    assert.equal(serveMain(['--connection-id', CONN, '--message-id', MSG_A], { dir }).ok, true)
+    assert.equal(requestRefForWrite(readRequestState(CONN, { dir })), A)
+    assert.equal(serveMain(['--connection-id', CONN, '--terminal'], { dir }).ok, true)
+    assert.equal(requestRefForWrite(readRequestState(CONN, { dir })), T)
+    assert.equal(turnAmbiguity(readRequestState(CONN, { dir })), null)
+  })
+
+  it('a room command not yet answered stays open and can be named in a later turn something else woke', () => {
+    const { dir } = tempHome()
+    // A arrives and is worked; the agent stops without its final answer.
+    for (const event of [openT, openA, { op: 'current', ref: A }]) appendRequestEvent(CONN, event, { dir })
+    let state = readRequestState(CONN, { dir })
+    assert.equal(requestFinished(state, A, new Set()), false, 'unanswered: kept open at Stop')
+    assert.equal(requestFinished(state, T, new Set()), false, 'the prompt never reached this turn')
+    // A later turn woken by a subagent the typed prompt launched carries only that prompt and an unknown wake.
+    for (const event of [{ op: 'current', ref: T }, { op: 'joined', id: UNSTATED }]) appendRequestEvent(CONN, event, { dir })
+    state = readRequestState(CONN, { dir })
+    assert.deepEqual(selectableRequests(state).map((entry) => entry.id), [T, UNSTATED, A])
+    assert.equal(serveMain(['--connection-id', CONN, '--message-id', MSG_A], { dir }).ok, true)
+    assert.equal(requestRefForWrite(readRequestState(CONN, { dir })), A)
+    // The final answer, posted while the turn serves A, finishes it at the next Stop.
+    assert.deepEqual(markCommandsAnswered(CONN, { dir }), [A])
+    state = readRequestState(CONN, { dir })
+    assert.equal(requestFinished(state, A, new Set()), true)
+    assert.equal(requestFinished(state, A, new Set([A])), false, 'not while its work still runs')
+    assert.deepEqual(markCommandsAnswered(CONN, { dir }), [], 'answered once')
+    assert.equal(selectableRequests(state).some((entry) => entry.id === A), true, 'still carried this turn')
   })
 
   it('an unknown turn clears the current request instead of keeping the last one', () => {
@@ -364,7 +401,7 @@ describe('stamping a DevSpec write', () => {
   })
 
   it('covers exactly the DevSpec tools that take a request', () => {
-    assert.equal(REQUEST_REF_TOOLS.size, 31)
+    assert.equal(REQUEST_REF_TOOLS.size, 34)
     for (const name of ['post_session_message', 'reserve_work_items', 'claim_work_item', 'report_request']) {
       assert.equal(REQUEST_REF_TOOLS.has(name), false, name)
     }

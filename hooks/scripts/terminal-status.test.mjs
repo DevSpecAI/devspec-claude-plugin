@@ -160,7 +160,7 @@ test('a refused or failed claim is not work in hand', () => {
   const tool = 'mcp__plugin_devspec_devspec__claim_work_item'
   const input = { action_item_id: ITEM_ID }
   assert.equal(workChange({ tool, input, resultText: JSON.stringify({ claim_success: false, id: ITEM_ID }), isError: false }), null)
-  assert.equal(workChange({ tool, input, resultText: JSON.stringify({ error: 'possible_conflict' }), isError: false }), null)
+  assert.equal(workChange({ tool, input, resultText: JSON.stringify({ error: 'Action item is already claimed by another agent', code: 'already_claimed' }), isError: false }), null)
   assert.equal(workChange({ tool, input, resultText: 'Action item is claimed by another agent', isError: true }), null)
   assert.equal(workChange({ tool: 'mcp__plugin_devspec_devspec__get_action_item', input, resultText: '{}', isError: false }), null)
 })

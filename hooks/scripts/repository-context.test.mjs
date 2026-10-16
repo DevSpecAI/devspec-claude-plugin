@@ -117,3 +117,32 @@ test('the real hook points at the rules at every size, leads with them, and neve
  }
  assert.equal(shapes.size,1,'the same notice whatever the size of the rules')
 }))
+
+// register_connection's GitHub identity (DevSpec item c45f75d4) reaches the model
+// with the repository facts, at connect and through the context hook, so the person
+// is asked once to link their account and never by a link the plugin did not check.
+test('an unlinked GitHub identity asks the person once, with the link DevSpec built',()=>temp(dir=>{
+ const url='https://devspecstaging.com/api/git/github/identity?returnTo=%2Fsettings%2Faccount%2Fsecurity'
+ const unlinked={...registration,github_identity:{status:'link_required',url,message:'server prose'}}
+ const text=renderRepositoryContext(unlinked)
+ const [data,prompt]=text.split('</devspec-repository-data>')
+ assert.doesNotMatch(data,/github_accounts/)
+ assert.match(prompt,/GitHub account not linked/)
+ assert.ok(prompt.includes(`\n${url}\n`),'the link is given whole, on its own line')
+ assert.match(prompt,/keeps no access/)
+ assert.doesNotMatch(text,/server prose/)
+ storeRepositoryContext('c',unlinked,{dir})
+ assert.match(takeRepositoryContext('c','one',{dir}),/GitHub account not linked/)
+ assert.equal(takeRepositoryContext('c','one',{dir}),'')
+ for(const bad of ['javascript:alert(1)','http://evil.example.test/link','https://user:pw@devspec.example/x','not a url',42]){
+  assert.doesNotMatch(renderRepositoryContext({...registration,github_identity:{status:'link_required',url:bad}}),/GitHub account not linked/)
+ }
+}))
+
+test('a linked GitHub identity is a fact, not a request',()=>{
+ const text=renderRepositoryContext({...registration,github_identity:{status:'linked',logins:['DevSpecAliPrice','bad login']}})
+ const data=JSON.parse(text.split('<devspec-repository-data>\n')[1].split('\n</devspec-repository-data>')[0])
+ assert.deepEqual(data.github_accounts,['DevSpecAliPrice'])
+ assert.doesNotMatch(text,/not linked/)
+ assert.doesNotMatch(renderRepositoryContext(registration),/GitHub account/)
+})

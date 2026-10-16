@@ -752,6 +752,28 @@ export function isSystemNoticeV1(value) {
   return false
 }
 
+/** The notice kinds this plugin can read and show in full. */
+export const READABLE_SYSTEM_NOTICE_KINDS = Object.freeze(['unlinked_commit_item_review', 'server_notice'])
+const NOTICE_KIND = /^[a-z][a-z0-9_.-]{0,119}$/
+
+/**
+ * A notice of a kind this plugin version cannot read: still a DevSpec notice for
+ * this connection (version, id and contract), but nothing else in it is read.
+ * DevSpec counts a notice as delivered once it is handed over, so rejecting the
+ * whole package would lose it silently (item 984ca8b4, after bb1e58c8's
+ * compatibility rule). The agent is told one arrived, never what it said.
+ */
+export function isUnreadableSystemNoticeV1(value) {
+  return (
+    record(value) &&
+    value.version === SYSTEM_NOTICE_VERSION &&
+    value.contract_uri === REMOTE_INGRESS_RESOURCE_URI &&
+    typeof value.kind === 'string' && NOTICE_KIND.test(value.kind) &&
+    !READABLE_SYSTEM_NOTICE_KINDS.includes(value.kind) &&
+    uuid(value.notice_id)
+  )
+}
+
 export function isSenderResponseStyleV1(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   if (!exactKeys(value, ['message_id', 'notes'])) return false
@@ -1059,7 +1081,7 @@ function envelopeV1(value) {
     if (hasNotices && (value.commands.length > 0 || value.control !== null)) {
       return 'system notices cannot accompany commands or control'
     }
-    if (hasNotices && (!value.system_notices.every(isSystemNoticeV1) ||
+    if (hasNotices && (!value.system_notices.every((notice) => isSystemNoticeV1(notice) || isUnreadableSystemNoticeV1(notice)) ||
         new Set(value.system_notices.map((notice) => notice.notice_id)).size !== value.system_notices.length)) {
       return 'invalid system_notices'
     }

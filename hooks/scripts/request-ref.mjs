@@ -17,7 +17,7 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { readRequestState, requestRefForWrite, servableCarried, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
+import { readRequestState, requestRefForWrite, selectableRequests, servableCarried, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
 
 const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive|complete|request)$/
 
@@ -30,8 +30,9 @@ export const REQUEST_REF_TOOLS = new Set([
   'add_commit_reference', 'add_implementation_note', 'archive_resource', 'classify_criterion',
   'create_action_item', 'create_automation', 'create_resource', 'delete_automation',
   'fail_work_item', 'import_instruction_rules', 'link_action_items', 'manage_knowledge_links',
-  'record_completed_work', 'record_criterion_verdicts', 'record_implementation', 'record_memory',
-  'release_work_item', 'reopen_action_item', 'resolve_memory_flag', 'resolve_resource_flag',
+  'manage_protected_intent', 'record_completed_work', 'record_criterion_verdicts',
+  'record_duplicate_nonmatch', 'record_implementation', 'record_memory',
+  'release_work_item', 'reopen_action_item', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag',
   'retract_memory', 'spin_off_action_item', 'supersede_action_item', 'supersede_memory',
   'supersede_resource', 'unlink_action_items', 'update_action_item', 'update_automation',
   'update_memory', 'update_resource', 'write_project_instruction_rule',
@@ -56,7 +57,7 @@ export function stampRequest(toolName, args, connectionId, agentId = null, { hom
   // serves (provenance_ref) already says whose it is: DevSpec reads those first.
   const cites = typeof own.work_claim_ref === 'string' || typeof own.provenance_ref === 'string'
   const carried = REQUEST_REF_TOOLS.has(toolName) && !cites ? turnAmbiguity(state, agent) : null
-  if (carried) return { deny: undecidedTurnMessage(connectionId, servableCarried(state, carried), 'this change') }
+  if (carried) return { deny: undecidedTurnMessage(connectionId, servableCarried(state, selectableRequests(state) ?? carried), 'this change') }
   const ref = requestRefForWrite(state, agent)
   return { args: ref ? { ...own, request_ref: ref } : own }
 }

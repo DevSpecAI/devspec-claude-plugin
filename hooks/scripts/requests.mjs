@@ -14,8 +14,8 @@
  * (`request_ref`, stamped by devspec-tool-input.mjs) and the server keeps which
  * requests are open (`report_request`, opened and closed here with the
  * connection's capability). Whatever this cannot tell is left unstated, and
- * DevSpec turns a change it cannot attribute into a proposal (item 3279dab5),
- * never a guess.
+ * DevSpec records that it could not tell who asked (item 3279dab5), never a
+ * guess.
  *
  * A turn starts from what woke it (`current`). Anything delivered INTO a running
  * turn — a second person's command, a prompt typed over it, another job's
@@ -157,13 +157,28 @@ export function reduceRequestLog(text) {
         break
       case 'serve':
         // The agent named the request its writes now serve, until something else
-        // reaches it.
+        // reaches it. What the turn served until now stays carried, so the agent
+        // can still switch back to it: naming one never locks the turn (item
+        // 984ca8b4, observed 15 Oct when choosing "could not identify" left no
+        // way to name the room command afterwards).
         if (carriedRef(event.ref)) {
-          current = event.ref === UNSTATED ? null : event.ref
+          const next = event.ref === UNSTATED ? null : event.ref
+          const previous = current ?? UNSTATED
+          if (previous !== (next ?? UNSTATED)) joined.add(previous)
+          joined.delete(next ?? UNSTATED)
+          current = next
           chosen = true
           if (UUID.test(current ?? '')) started.add(current)
         }
         break
+      case 'answered': {
+        // The agent posted its final answer to this room command
+        // (post_session_message with complete_turn), so once its work is done
+        // the command is finished. Until then it stays open (item 984ca8b4).
+        const info = open.get(event.id)
+        if (info) info.answered = true
+        break
+      }
       case 'launch':
         if (KEY.test(event.key ?? '') && carriedRef(event.request)) {
           launches.set(event.key, {
@@ -435,20 +450,69 @@ function attributionOf(info) {
 export function turnAmbiguity(state, agentId = null) {
   if (state.chosen || state.joined.size === 0) return null
   if (agentId && state.launches.has(agentId)) return null
+  return undecided(carriedEntries(state))
+}
+
+/** Everything the current turn carries, the request it serves first. */
+function carriedEntries(state) {
   const entries = []
   const add = (ref, current) => {
     if (entries.some((entry) => entry.id === (ref ?? UNSTATED))) return
     if (ref === NO_REQUEST) entries.push({ id: NO_REQUEST, kind: 'none', current, attribution: 'nobody' })
     else if (ref === UNSTATED || ref === null) entries.push({ id: UNSTATED, kind: 'unstated', current, attribution: 'unknown' })
-    else if (state.open.has(ref)) {
-      const info = state.open.get(ref)
-      entries.push({ id: ref, kind: info.kind, ...(info.message_id ? { message_id: info.message_id } : {}), current, attribution: attributionOf(info) })
-    }
+    else if (state.open.has(ref)) entries.push(openEntry(ref, state.open.get(ref), current))
   }
   add(state.current, true)
   for (const id of state.joined) add(id, false)
+  return entries
+}
+
+function openEntry(id, info, current) {
+  return { id, kind: info.kind, ...(info.message_id ? { message_id: info.message_id } : {}), current, attribution: attributionOf(info) }
+}
+
+/** The entries, when they would not all be recorded the same way; otherwise null. */
+function undecided(entries) {
   if (new Set(entries.map((entry) => entry.attribution)).size < 2) return null
   return entries.map(({ attribution: _attribution, ...entry }) => entry)
+}
+
+/**
+ * What the agent may name with `serve`: everything the turn carries, even after
+ * it has named one, and every room command it has started on and not yet given
+ * its final answer to. A command's work can come back in a later turn that
+ * something else woke (a subagent launched earlier, say), and the agent is the
+ * one who knows that work is the command's (item 984ca8b4). Null when every
+ * choice would be recorded the same way.
+ */
+export function selectableRequests(state) {
+  const entries = carriedEntries(state)
+  for (const [id, info] of state.open) {
+    if (info.kind !== 'command' || info.answered || !state.started.has(id)) continue
+    if (!entries.some((entry) => entry.id === id)) entries.push(openEntry(id, info, false))
+  }
+  return undecided(entries)
+}
+
+/**
+ * The room commands a final answer posted now finishes: those the turn carries.
+ * `complete_turn` ends the turn for every command in it.
+ */
+export function commandsAnsweredNow(state) {
+  return [state.current, ...state.joined]
+    .filter((id) => state.open.get(id)?.kind === 'command' && !state.open.get(id)?.answered)
+}
+
+/**
+ * Whether an open request is finished at a Stop: it has reached the agent, has no
+ * work still running or still to wake the agent, and, for a room command, has its
+ * final answer. A command the agent stopped on without answering stays open, so
+ * the work it still owes is still credited to the person who asked.
+ */
+export function requestFinished(state, id, pending) {
+  const info = state.open.get(id)
+  if (!info || !state.started.has(id) || pending.has(id)) return false
+  return info.kind !== 'command' || info.answered === true
 }
 
 /**
@@ -626,8 +690,8 @@ export function serveCommand(connectionId) {
  * while a teammate's is (migration 1272), because a nobody's change is judged by
  * the owner's role. Who the owner is shows only through their typed requests, so
  * an open command from anyone not seen typing here counts as another person's;
- * the agent is then offered "could not identify" instead, which DevSpec resolves
- * itself or holds for a person to confirm.
+ * the agent is then offered "could not identify" instead, which DevSpec records
+ * as just that (the served contract's `authority_contract.requester_rule`).
  */
 export function servableCarried(state, carried) {
   if (!carried?.some((entry) => entry.kind === 'none')) return carried
@@ -642,7 +706,7 @@ export function servableCarried(state, carried) {
 /** How a carried request is named to the agent, and the serve flag that picks it. */
 export function describeCarried(entry) {
   if (entry.kind === 'none') return '- nobody\'s request (your own initiative): --none'
-  if (entry.kind === 'unstated') return '- something DevSpec could not identify (DevSpec then works out who asked, and asks a person to confirm when it cannot): --unstated'
+  if (entry.kind === 'unstated') return '- none of these, or you cannot tell (DevSpec records that it could not tell who asked; the served contract\'s requester_rule says how that change is judged): --unstated'
   if (entry.kind === 'typed_prompt') return '- the prompt your owner typed at this terminal: --terminal'
   return `- the room command with message_id ${entry.message_id ?? '(unknown)'}: --message-id ${entry.message_id ?? '<id>'}`
 }
@@ -660,9 +724,10 @@ export function undecidedTurnMessage(connectionId, carried, what = 'this change'
 
 /**
  * `serve --connection-id <id> (--message-id <id> | --terminal | --none | --unstated)`:
- * the agent says which of the requests its turn carries the writes it makes next
- * serve. Only a request the turn carries can be named, and only while it carries
- * more than one way of recording them. Prints what it recorded, as one JSON line.
+ * the agent says which request the writes it makes next serve: one its turn
+ * carries, or a room command it has started on and not yet answered
+ * (`selectableRequests`). It can name another later; a choice never locks the
+ * turn. Prints what it recorded, as one JSON line.
  */
 export function serveMain(argv, { dir = path.join(os.homedir(), '.devspec', 'remote-control', 'connections') } = {}) {
   const value = (flag) => {
@@ -677,7 +742,7 @@ export function serveMain(argv, { dir = path.join(os.homedir(), '.devspec', 'rem
     return { ok: false, error: 'serve needs exactly one of --message-id <id>, --terminal, --none or --unstated' }
   }
   const state = readRequestState(connectionId, { dir })
-  const carried = servableCarried(state, turnAmbiguity(state))
+  const carried = servableCarried(state, selectableRequests(state))
   if (!carried) return { ok: false, error: 'Nothing to choose: this turn carries one request, and your writes already name it.' }
   const entry = [...carried].reverse().find((candidate) => (messageId ? candidate.message_id === messageId
     : flags.terminal ? candidate.kind === 'typed_prompt'

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { LOADED_PLUGIN_VERSION, connectionVersionHook, versionedConnectionArguments } from './connection-version.mjs'
-import { mcpToolsCall } from './mcp-call.mjs'
+import { PLUGIN_HEADER, mcpToolsCall, mcpToolsList, pluginHeaderValue } from './mcp-call.mjs'
+import { PLUGIN_ID } from './agent-identity.mjs'
 import { prepareDevspecToolInput } from './devspec-tool-input.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -16,6 +17,32 @@ const version = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json')
 test('both manifests agree with the loaded reporter', () => {
   assert.equal(LOADED_PLUGIN_VERSION, version)
   assert.equal(JSON.parse(readFileSync(join(root, '.claude-plugin/marketplace.json'), 'utf8')).plugins[0].version, version)
+})
+
+// The host's own MCP client sends the header written in plugin.json; the scripts
+// send one built from the manifest version. A bump that forgets the header leaves
+// every host tool call naming the previous release, which DevSpec would then
+// treat as an outdated plugin (item 984ca8b4).
+test('the host header in plugin.json names this plugin at the manifest version', () => {
+  const manifest = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8'))
+  assert.equal(manifest.mcpServers.devspec.headers[PLUGIN_HEADER], `${PLUGIN_ID}/${version}`)
+  assert.equal(pluginHeaderValue(), `${PLUGIN_ID}/${version}`)
+})
+
+test('every script MCP request carries the plugin header, the same as the host client', async () => {
+  const fetch = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async (_url, init) => {
+    seen.push(init.headers)
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true}' }] } }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    await mcpToolsCall({ mcpUrl: 'https://fixture.example.test/api/mcp', token: 'fixture', name: 'list_projects', arguments: {} })
+    await mcpToolsCall({ mcpUrl: 'https://fixture.example.test/api/mcp', token: 'fixture', name: 'poll_connection', arguments: {}, connectionCapability: 'cap' })
+    await mcpToolsList({ mcpUrl: 'https://fixture.example.test/api/mcp', token: 'fixture' })
+    assert.equal(seen.length, 3)
+    for (const headers of seen) assert.equal(headers[PLUGIN_HEADER], `${PLUGIN_ID}/${version}`)
+  } finally { globalThis.fetch = fetch }
 })
 
 test('internal register and attach wire requests use this artifact and never a guessed host', async () => {

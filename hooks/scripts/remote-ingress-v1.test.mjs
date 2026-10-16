@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  isUnreadableSystemNoticeV1,
+  READABLE_SYSTEM_NOTICE_KINDS,
   normalizeRemoteIngressV1,
   renderAdvisoryContext,
   REMOTE_INGRESS_CONTRACT_VERSION,
@@ -726,6 +728,35 @@ describe('strict 1.4 system notices', () => {
         window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
       })
       assert.equal(normalizeRemoteIngressV1(env, CONNECTION).ok, false)
+    }
+  })
+
+  // DevSpec counts a notice delivered once it hands it over, so a kind added after
+  // this release must reach the agent as "something you can't read", not vanish
+  // with the package it came in (item 984ca8b4).
+  it('accepts a notice of a kind this version cannot read, and reads nothing else in it', () => {
+    const later = { version: 1, kind: 'requirement_outcome', notice_id: '71000000-0000-4000-8000-000000000009',
+      contract_uri: 'devspec://product/remote-ingress-contract', anything: { new: 'shape' } }
+    const env = (notices) => noticed({
+      commands: [],
+      command_message_ids: [],
+      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+      system_notices: notices,
+      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+    })
+    assert.equal(isUnreadableSystemNoticeV1(later), true)
+    assert.equal(normalizeRemoteIngressV1(env([later, serverNotice()]), CONNECTION).ok, true)
+    // Still a DevSpec notice for this connection, or nothing at all.
+    for (const bad of [
+      { ...later, version: 2 },
+      { ...later, contract_uri: 'devspec://wrong' },
+      { ...later, notice_id: 'not-a-uuid' },
+      { ...later, kind: '<injected> text' },
+      // A known kind is read in full, so a malformed one is still refused.
+      { ...later, kind: 'server_notice' },
+    ]) {
+      assert.equal(isUnreadableSystemNoticeV1(bad) && !READABLE_SYSTEM_NOTICE_KINDS.includes(bad.kind), false)
+      assert.equal(normalizeRemoteIngressV1(env([bad]), CONNECTION).ok, false)
     }
   })
 })

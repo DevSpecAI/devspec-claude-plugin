@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { attachmentFromPoll, localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
+import { markCommandsAnswered } from './mark-explicit-reply.mjs'
 
 const CONNECTION = '11111111-1111-4111-8111-111111111111'
 const ROOM = '22222222-2222-4222-8222-222222222222'
@@ -237,9 +238,18 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
 
     calls = []
     await run('stop', { last_assistant_message: 'Done.', background_tasks: [] })
-    const closed = calls.filter(call => call.name === 'report_request').map(call => call.args.request_id).sort()
-    assert.deepEqual(closed, [typed, delivered].sort())
+    let closed = calls.filter(call => call.name === 'report_request').map(call => call.args.request_id).sort()
+    assert.deepEqual(closed, [typed], 'a command without its final answer stays open (item 984ca8b4)')
     assert.equal(closed.includes(waiting), false, 'a command whose wake has not come is not closed')
+
+    // The final answer (post_session_message with complete_turn) finishes it at the next Stop.
+    await run('user_prompt', { prompt: `<task-notification><task-id>listener</task-id><event>{"type":"owner_message","message_id":"${message}"}</event></task-notification>`,
+      origin: { kind: 'task-notification' } })
+    assert.deepEqual(markCommandsAnswered(CONNECTION, { dir: connections }), [delivered])
+    calls = []
+    await run('stop', { last_assistant_message: 'Done.', background_tasks: [] })
+    closed = calls.filter(call => call.name === 'report_request').map(call => call.args.request_id)
+    assert.deepEqual(closed, [delivered])
   })
 
   // Measured on 2.1.291: a /loop firing carries exactly the text typed to start the

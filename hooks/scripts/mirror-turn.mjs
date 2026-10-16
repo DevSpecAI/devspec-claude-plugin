@@ -46,6 +46,7 @@ import {
   openRequest,
   promptArrival,
   readRequestState,
+  requestFinished,
   requestForLaunch,
   requestsWithWorkPending,
   rotateRequestLog,
@@ -1389,10 +1390,10 @@ async function main() {
     }
 
     // Close every request whose work is finished (item 7a4d04fd): nothing it
-    // launched is still running or still to wake the agent, and no question it
-    // asked is still waiting for its answer. A request with work in flight stays
-    // open whatever else this agent does in between, so another person's command
-    // ending never ends it.
+    // launched is still running or still to wake the agent, no question it asked
+    // is still waiting for its answer, and a room command has its final answer
+    // (item 984ca8b4). A request with work in flight stays open whatever else
+    // this agent does in between, so another person's command ending never ends it.
     if (mode === 'stop' && connectionId && !blockReason && state.connection_capability) {
       const requests = readRequestState(connectionId, { dir: CONNECTIONS_DIR })
       const backgroundTasks = parseBackgroundTasks(raw)
@@ -1402,7 +1403,7 @@ async function main() {
         // Only a request that has reached the agent: a command opened ahead of its
         // wake has not started, and closing it would lose its turn's attribution.
         const finished = [...requests.open.keys()]
-          .filter((id) => requests.started.has(id) && !pending.has(id) && id !== awaitingAnswer)
+          .filter((id) => requestFinished(requests, id, pending) && id !== awaitingAnswer)
         await Promise.all(finished.map((requestId) =>
           closeRequest({ connectionId, requestId, call: (args) => callRequest(args, 3_000), dir: CONNECTIONS_DIR })))
       }

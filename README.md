@@ -194,6 +194,8 @@ From 0.32.15, connecting also gives Claude the selected project's complete repos
 
 Manual connection prints the facts with its result. Automatic connection stores them privately until a local prompt or the first remote orientation reads them; session start restores them on resume/compaction. Choosing a different project uses its fresh conversation's facts. Identical subsequent reads do not repeat the list. An older server or failed read is explicitly unavailable, not an empty project.
 
+**Linking your GitHub account.** When the project's repositories are on GitHub and you have not linked your GitHub account to DevSpec yet, Claude tells you once, with a link to open. Linking makes your pull requests and commits show as yours in DevSpec. It is one click, GitHub confirms who you are, and DevSpec keeps no access to your GitHub account. Nothing waits on it. You can also link or unlink it in DevSpec under **Settings → Sign-in & security**.
+
 Update the installed plugin and start a new conversation after upgrading: Claude's version-keyed cache, not the repository checkout, supplies its hooks.
 
 ## How it finds the right project
@@ -233,6 +235,9 @@ How Claude branches, commits, tests, and merges is controlled per project in Dev
 
 - Changes are made on an **isolated branch** — your working checkout stays clean.
 - It **never force-pushes**, and it respects the protected paths you set.
+- **Work that would undo someone else's decision waits for their OK.** Claude can still build it, on its own branch, but it does not merge it until the OK is given, and it tells you who it is waiting for. The same goes for an item marked as an experiment. Who can give the OK is decided by DevSpec.
+- **It tells you what DevSpec finds about its work** — for example that a change would undo a decision, duplicates other work, or left a description out of date — while it is connected to DevSpec.
+- It tells DevSpec which plugin it is and which version, on every call. That only identifies it; it grants nothing.
 - **Claude records the work; it never signs it off.** What happens after that — whether the task's own checks settle it, or a person has to verify it — is decided by DevSpec, the same way for every tool.
 - It won't stall on a question nobody may be reading: a task too ambiguous to do safely is failed with a reason, not guessed at.
 - Commits it makes for a tracked task carry a small `[devspec:…]` tag so DevSpec can link the commit — and later the deployment — back to the task.

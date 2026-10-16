@@ -85,11 +85,14 @@ claude plugin validate . --strict
 
 ## Bumping the version
 
-Update **both**:
+Update **all three**:
 - `.claude-plugin/plugin.json` → `version`
+- `.claude-plugin/plugin.json` → `mcpServers.devspec.headers["x-devspec-plugin"]`, as `claude_code/<version>`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
 
-Keep them in lockstep and record the change in `CHANGELOG.md`.
+Keep them in lockstep and record the change in `CHANGELOG.md`. `hooks/scripts/connection-version.test.mjs` fails when they disagree.
+
+The header is how DevSpec tells which plugin and version made a request (item 984ca8b4; ADR "Protecting intent" §14). The host's own MCP client sends the value written in `plugin.json`; the hook scripts build theirs from the manifest version beside the running copy (`pluginHeaderValue` in `hooks/scripts/mcp-call.mjs`), so both always name the version that is running. Claude Code offers no variable for the plugin version in `mcpServers`, which is why the host's value is written out.
 
 ## Local dev against staging (or any non-prod endpoint)
 

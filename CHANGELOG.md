@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.46.0 - 2026-10-16
+
+- The plugin now tells DevSpec which plugin it is and which version, on every call, from Claude Code itself and from the plugin's own scripts. It only identifies the plugin and grants nothing; DevSpec uses it to know which agents have the plugin and, if a release ever breaks something, to ask you to update.
+- When your project's repositories are on GitHub and you haven't linked your GitHub account to DevSpec, Claude tells you once when it connects, with a link to open. Linking makes your pull requests and commits show as yours. It is one click, and DevSpec keeps no access to your GitHub account.
+- Claude tells you what DevSpec finds about its work while it is connected: that a change would undo someone's decision, duplicates other work, left a description out of date or breaks a requirement, and what happened to a change that was waiting on someone. A notice this version can't read is no longer dropped: Claude says one arrived.
+- Work that would undo someone else's decision, or an item marked as an experiment, is built on its own branch and not merged until it has the OK. Claude says who it is waiting for, and gives an OK, a no or any other answer on a decision only when the person it belongs to asks it to.
+- Claude records a decision only when it was a real choice, made for a reason, that will steer later work, and only once you've confirmed it was deliberate. A "related" link is just a link: it never settles anything.
+- Sessions you drive from DevSpec can answer for a person on a decision, resolve a duplicate, or record that two records are not duplicates, without stopping to ask for permission.
+- Fixed: once Claude had said which request a change was for, it could not change its mind, so work could end up credited to nobody. It can now name another request at any time, including a room message it has started on and not yet answered, even after something else woke it. A room message now stays open until Claude has given its final answer to it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.45.5 - 2026-10-16
 
 - When Claude has several independent questions for you, it now asks them together instead of one at a time, so you can answer them in one go and in any order. A question that depends on an earlier answer still waits for it.

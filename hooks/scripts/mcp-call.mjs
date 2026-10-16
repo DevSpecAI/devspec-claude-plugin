@@ -14,7 +14,21 @@
  * deliberate abort from a network failure. Omitting them keeps the original behaviour.
  */
 
-import { versionedConnectionArguments } from './connection-version.mjs'
+import { LOADED_PLUGIN_VERSION, versionedConnectionArguments } from './connection-version.mjs'
+import { PLUGIN_ID } from './agent-identity.mjs'
+
+/**
+ * Every request this plugin's scripts make says which plugin and version made it
+ * (item 984ca8b4; ADR "Protecting intent" §14). The host's own MCP client sends
+ * the same header from `.claude-plugin/plugin.json`. The version is the one in the
+ * manifest beside this executing copy, never cwd's, so a script always names the
+ * version that is actually running. Not a credential: nothing is unlocked by it.
+ */
+export const PLUGIN_HEADER = 'x-devspec-plugin'
+export function pluginHeaderValue(version = LOADED_PLUGIN_VERSION) {
+  return typeof version === 'string' && version ? `${PLUGIN_ID}/${version}` : null
+}
+const PLUGIN_HEADER_VALUE = pluginHeaderValue()
 
 /** HTTP statuses that describe a transient condition, not a verdict on the request. */
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 502, 503, 504])
@@ -134,6 +148,7 @@ export async function mcpRequest({
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
+        ...(PLUGIN_HEADER_VALUE ? { [PLUGIN_HEADER]: PLUGIN_HEADER_VALUE } : {}),
         ...(connectionCapability
           ? { 'x-devspec-connection-capability': connectionCapability }
           : {}),

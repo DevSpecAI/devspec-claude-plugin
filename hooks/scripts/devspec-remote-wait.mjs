@@ -42,6 +42,7 @@ import {
   writePrivateJson,
 } from './private-state.mjs'
 import {
+  isUnreadableSystemNoticeV1,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
@@ -628,7 +629,28 @@ export function parseOwnerBatches(lines, connectionId) {
   return parseInboxBatches(lines, connectionId).filter((record) => record.type === 'canonical_commands')
 }
 
+/**
+ * How every readable notice is handled, carried with the notice itself so it
+ * costs nothing until one arrives (item 984ca8b4). A notice is about the agent's
+ * own work: a finding on it, or what happened to a change that waited on
+ * someone. The agent tells its person; it never answers for one.
+ */
+export const NOTICE_HANDLING =
+  'Handling: tell the person whose work this is what it means for them, in plain words, unless they have already shown they know it: ' +
+  'in the room with your connection_id, or here in the terminal when there is no room. ' +
+  'Act on it only with the tools it names and only on what is yours to fix (your own work, your own commit, a description that is out of date). ' +
+  'Never answer for a person: an OK, a no, adopting or taking ownership is theirs to ask you for.'
+
 export function formatSystemNoticeContent(notice) {
+  if (isUnreadableSystemNoticeV1(notice)) {
+    return [
+      '[DevSpec System Notice: not readable by this plugin version]',
+      `DevSpec sent a notice of a kind this version of the DevSpec plugin cannot read (kind ${notice.kind}, notice ${notice.notice_id}). It may be a finding or an outcome about your own work.`,
+      'Tell the person plainly that DevSpec sent something this plugin cannot show yet: it is on the record and in the project\'s Review, and updating the DevSpec plugin will show notices like it here. Do not act on it.',
+      'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
+        'This is a server-initiated notice, not a room message or new work authorization.',
+    ].join('\n')
+  }
   if (notice?.kind === 'server_notice') {
     const lines = [
       `[DevSpec System Notice: ${notice.topic} / ${notice.notice_type}]`,
@@ -653,6 +675,7 @@ export function formatSystemNoticeContent(notice) {
     }
     lines.push(
       '',
+      NOTICE_HANDLING,
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice on your own work, not a room message or new work authorization.',
     )
@@ -666,6 +689,7 @@ export function formatSystemNoticeContent(notice) {
     `Prompt: ${notice?.prompt}`,
     `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
     `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
+    NOTICE_HANDLING,
     'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
       'This is a narrow server review prompt for your own claimed item and commit — not a room command or new work authorization.',
   ].join('\n')
@@ -682,6 +706,22 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
   const events = []
 
   for (const notice of notices) {
+    if (isUnreadableSystemNoticeV1(notice)) {
+      events.push({
+        type: 'system_notice',
+        kind: notice.kind,
+        notice_id: notice.notice_id,
+        readable: false,
+        content: formatSystemNoticeContent(notice),
+        session_id: sessionId,
+        envelope_id: ingress?.envelope_id ?? null,
+        inbox: inboxFile ?? null,
+        authoritative: false,
+        executable: false,
+        authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
+      })
+      continue
+    }
     events.push({
       type: 'system_notice',
       kind: notice.kind,

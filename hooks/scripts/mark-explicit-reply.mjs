@@ -19,9 +19,11 @@
  */
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { devspecToolVerb } from './devspec-tool-name.mjs'
+import { appendRequestEvent, commandsAnsweredNow, readRequestState } from './requests.mjs'
 import {
   resolveHookConversationId,
   loadState,
@@ -67,6 +69,20 @@ export function declaresCompleteTurn(raw) {
   }
 }
 
+/**
+ * Record that the turn's room commands were answered. Exported for tests;
+ * `dir` defaults to where the request log lives.
+ */
+export function markCommandsAnswered(connectionId, { dir = path.join(os.homedir(), '.devspec', 'remote-control', 'connections') } = {}) {
+  try {
+    const ids = commandsAnsweredNow(readRequestState(connectionId, { dir }))
+    for (const id of ids) appendRequestEvent(connectionId, { op: 'answered', id }, { dir })
+    return ids
+  } catch {
+    return [] // never fails the post: an unmarked command only stays open longer
+  }
+}
+
 async function main() {
   const raw = readStdin()
   if (devspecToolVerb(toolNameFrom(raw)) !== TARGET_VERB) process.exit(0)
@@ -86,7 +102,13 @@ async function main() {
   // The agent said this turn is over, so stop the poller re-asserting that it is
   // not. Deliberately AFTER the explicit-reply marker: that one must be written
   // even if this throws, since Stop depends on it.
-  if (declaresCompleteTurn(raw)) clearTurnMarker(connectionId)
+  if (declaresCompleteTurn(raw)) {
+    clearTurnMarker(connectionId)
+    // ...and the room commands this turn carries have their final answer, so the
+    // next Stop may finish them once their work is done (item 984ca8b4). Until
+    // then a command stays open: work it still owes is still that person's.
+    markCommandsAnswered(connectionId)
+  }
 
   process.exit(0)
 }

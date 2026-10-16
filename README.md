@@ -41,7 +41,7 @@ Inside Claude Code:
 /reload-plugins
 ```
 
-When you enable the plugin, Claude Code asks for your **DevSpec API token**. Paste your `dvs_…` token — it's stored securely on your machine (your OS keychain on macOS, an encrypted credentials file on Linux/Windows). The plugin bundles the DevSpec MCP server and wires it to your token for you, so **you don't need to add anything to `.mcp.json` or configure any URLs**.
+When you enable the plugin, Claude Code asks for your **DevSpec API token**. Paste your `dvs_…` token — it's stored securely on your machine (your OS keychain on macOS, an encrypted credentials file on Linux/Windows). While a Claude Code session is open, the plugin's own commands read it from a file in `~/.devspec` that only your user account can open, which is deleted when the session ends (or, after a crash, when the next session starts). The token is never put on a command line, where other accounts on the same computer could see it. The plugin bundles the DevSpec MCP server and wires it to your token for you, so **you don't need to add anything to `.mcp.json` or configure any URLs**.
 
 <details>
 <summary>Installing from a local clone (for contributors)</summary>

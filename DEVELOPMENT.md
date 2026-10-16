@@ -147,28 +147,73 @@ env vars, which is every customer — `/devspec:devspec.remote` could not authen
 all. It appeared to work here only because a hand-written project `.mcp.json` was
 supplying the pair.
 
-`hooks/scripts/session-env-credentials.mjs` closes it. On `SessionStart` Claude Code
-hands the hook a `CLAUDE_ENV_FILE` path (`session-env/<session>/sessionstart-hook-<n>.sh`)
-and applies whatever is written there to the session environment, which Bash tool calls
-inherit. The hook re-exports the two `CLAUDE_PLUGIN_OPTION_*` values it was given.
+`hooks/scripts/session-env-credentials.mjs` closes it, without putting the key on a
+command line (item `4d40407b`). On `SessionStart` Claude Code hands the hook the
+plugin settings and a `CLAUDE_ENV_FILE` path
+(`session-env/<session>/sessionstart-hook-<n>.sh`). The hook:
 
-Two things about that are deliberate:
+1. files the key and server for this conversation in
+   `~/.devspec/remote-control/startup/<conversation-id>.json`, mode 0600 in a 0700
+   directory (`hooks/scripts/plugin-settings.mjs`);
+2. writes `export DEVSPEC_PLUGIN_SETTINGS_SESSION='<conversation-id>'` to
+   `CLAUDE_ENV_FILE` (plus `connect_at_startup` when set). Nothing secret.
 
-- **It re-exports the same names, not `DEVSPEC_MCP_TOKEN`.** `DEVSPEC_MCP_TOKEN` is
+Scripts that were not handed the settings (Bash tool calls, the startup listener) read
+that file back by the conversation id, through `pluginSettingsFromEnv`.
+
+**Why not export the key itself.** Measured on Claude Code 2.1.301: the Bash tool reads
+the hook-written env files and splices their *text* into the shell's own argv
+(`zsh -c "source <snapshot> 2>/dev/null || true && <env file text>\n: && … eval '…'"`), and
+plugin monitors start the same way. Until 0.46.1 the hook exported the key, so every
+Bash tool call and the listener carried it in `/proc/<pid>/cmdline`, which every local
+account can read (`pgrep -af` found 11 such processes on one developer machine). A file
+can be permissioned; a command line cannot.
+
+**Why a conversation id and not a `. <file>` line or a path.** On Windows, Claude
+Code's PowerShell tool (the only shell tool when Git for Windows is absent) does not
+run the env files: it parses them, applies them only if *every* line is a comment or a
+plain `export NAME=value`, and drops any value containing `/` or `\`. A `.`-source line
+would empty the session environment of every hook for PowerShell, and a path would
+never arrive. A conversation id is a plain value with no separators.
+
+**Lifetime.** The file is rewritten at every SessionStart (startup, resume, `/clear`,
+compaction) and removed at SessionEnd (`session-env-credentials.mjs session-end`),
+unless the same conversation was resumed in another window that still runs. A session
+that ends without SessionEnd (a crash, a killed terminal) leaves its file; the next
+SessionStart on the machine removes it once the Claude Code process that wrote it has
+gone (`sweepSessionSettings`: recorded owner pid and, on Linux, its start time). A file
+that names no owner (written before 0.46.1) is removed once it is a day old. The file
+is never the only copy: Claude Code keeps the key in its own store.
+
+**Windows.** POSIX modes do not apply. The file sits under `%USERPROFILE%` and inherits
+the profile folder's default ACL: that user, SYSTEM and Administrators. Other standard
+accounts cannot open it. Nothing here was measured on Windows; the PowerShell behaviour
+above is read from Claude Code's source.
+
+**Session env files written before 0.46.1** still hold the key (0600, in
+`~/.claude/session-env/<session>/`). They are left for Claude Code's own cleanup
+(`cleanupPeriodDays`, 30 days by default) rather than rewritten from another session,
+because a running older session may still depend on its copy.
+
+Two things about the design are deliberate:
+
+- **It keeps the plugin at source 6, not `DEVSPEC_MCP_TOKEN`.** `DEVSPEC_MCP_TOKEN` is
   source 1. Feeding plugin config in at the top would make the plugin's key outrank a
   developer's project `.mcp.json` and `~/.claude.json`, inverting the order below for
-  everyone. Re-exporting the plugin's own names keeps it at source 6, where it belongs.
-  The environment is being *carried*, not *changed*.
+  everyone. Where the settings are carried changed; where they rank did not.
 - **It does not read the credential store.** There is no portable one to read:
   `pluginSecrets` goes through the macOS Keychain, the Windows Credential Manager, or
   `~/.claude/.credentials.json` on Linux. Only the last is a file, so reading it would
   work on a Linux dev box and fail silently for most customers. The hook is handed the
   resolved value whatever stored it.
 
-If a host ever stops setting `CLAUDE_ENV_FILE`, the hook writes nothing and the sources
-below still work — but `/devspec:devspec.remote` goes back to needing an explicit
-`.mcp.json` or env var, so that is the thing to check first if remote connect starts
-failing on auth after a Claude Code upgrade.
+If a host ever stops setting `CLAUDE_ENV_FILE`, the hook still files the settings (the
+listener finds them by its own conversation id), but Bash tool calls get no pointer and
+`/devspec:devspec.remote` goes back to needing an explicit `.mcp.json` or env var. That
+is the thing to check first if remote connect starts failing on auth after a Claude
+Code upgrade. To check that no process carries the key, count matches rather than
+printing them (`pgrep -af` prints the value): compare each `/proc/<pid>/cmdline`
+against the key in a script and print only the count.
 
 ### Resolution order used by the hook scripts
 
@@ -180,6 +225,7 @@ token **and** its own URL; the two are never mixed.
 3. Project `.mcp.json` (cwd and parents)
 4. `~/.claude.json` entries matching the cwd
 5. `~/.claude.json` top-level
-6. `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` + `CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL` — the
-   plugin's own configured pair. Present in hooks because Claude Code sets it, and in
-   command scripts because the `SessionStart` hook carries it there (see above).
+6. The plugin's own configured pair: `CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN` +
+   `CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL` in hooks, where Claude Code sets them; in
+   command scripts and the listener, the conversation's settings file the `SessionStart`
+   hook names in `DEVSPEC_PLUGIN_SETTINGS_SESSION` (see above).

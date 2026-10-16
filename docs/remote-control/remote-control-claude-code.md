@@ -9,7 +9,7 @@
 Claude Code starts the DevSpec listener itself. `plugin.json` declares it as a **plugin monitor** (`experimental.monitors`, name `devspec-remote`), and Claude Code launches plugin monitors at session start, with no model turn, and keeps them for the lifetime of the session. `hooks/scripts/devspec-remote-listen.mjs`:
 
 1. resolves the conversation id (`CLAUDE_CODE_SESSION_ID`) and the owning Claude Code pid (`CLAUDE_PID`, trusted only if it is an ancestor; otherwise the ancestry is walked to `claude`);
-2. reads the plugin settings — from the session environment the SessionStart hook writes, or from the private `~/.devspec/remote-control/startup/<session>.json` that `remote-session-lifecycle.mjs session-start` files, whichever arrives first. Plugin monitors are not given `CLAUDE_PLUGIN_OPTION_*` by Claude Code;
+2. reads the plugin settings from the private `~/.devspec/remote-control/startup/<session>.json` (mode 0600) that `session-env-credentials.mjs` files at SessionStart and removes at SessionEnd, waiting briefly if the listener starts first. Plugin monitors are not given `CLAUDE_PLUGIN_OPTION_*` by Claude Code, and the key is never put in the session environment, because Claude Code starts monitors and Bash tool calls with that environment's text on their command line (item 4d40407b);
 3. runs `connect({ startup: true })` — see "Startup scope" below — which registers, writes state and starts the poller;
 4. files the tier texts in `<connection>.tiers.json` for the first command (`instruction-tiers.mjs`), writes `<connection>.listener.json`, and
 5. **serves the connection** for the rest of the session (see "A connection lasts until a person ends it" below): it runs `devspec-remote-wait.mjs --stream` as a child whose stdout **is** the monitor's stdout, and keeps that reader and the poller running.
@@ -156,7 +156,7 @@ Only if `devspec-remote-connect.mjs` is absent. Do not invent a third path — f
 |---|---|
 | Invoke remote | `/devspec:devspec.remote` (bare / `--session` / `--new`) |
 | Bond id | `CLAUDE_CODE_SESSION_ID` / `CLAUDE_SESSION_ID` |
-| Token | Plugin MCP / `CLAUDE_PLUGIN_OPTION_*` style resolution via shared auth helpers |
+| Token | Plugin MCP / `CLAUDE_PLUGIN_OPTION_*` in hooks, the per-conversation settings file elsewhere, via shared auth helpers (`plugin-settings.mjs`, `resolve-mcp-auth.mjs`) |
 | Agent name | `AGENT_NAME = 'Claude Code'` in `hooks/scripts/agent-identity.mjs` |
 | Identity file | Pinned by this repo’s `agent-identity.test.mjs`; never hardcode another host’s name |
 

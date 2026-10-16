@@ -3,11 +3,10 @@
  * kept apart from the listener itself so the state CLI and the session hooks can read
  * them without importing the listener (which imports them).
  *
- * Two files:
- *   - `connections/<id>.listener.json` — "a startup listener holds this connection's
- *     wake, and this is its pid". Liveness is proved by the pid, never by the file.
- *   - `startup/<session>.json` — the plugin's settings as the SessionStart hook saw
- *     them, for a listener that starts before the session environment reaches it.
+ * `connections/<id>.listener.json` says "a startup listener holds this connection's
+ * wake, and this is its pid". Liveness is proved by the pid, never by the file. The
+ * plugin settings the listener connects with are filed per conversation by the
+ * SessionStart hook (`plugin-settings.mjs`).
  *
  * ## Why /clear needs this at all
  *
@@ -28,12 +27,11 @@ import { readPrivateJsonResult, STATE_OK, writePrivateJson } from './private-sta
 
 const REMOTE_DIR = path.join(os.homedir(), '.devspec', 'remote-control')
 const CONNECTIONS_DIR = path.join(REMOTE_DIR, 'connections')
-export const STARTUP_DIR = path.join(REMOTE_DIR, 'startup')
 
 /** SessionEnd reasons after which the same Claude Code process carries on. */
 export const CONVERSATION_SWITCH_REASONS = new Set(['clear', 'resume'])
 
-function pidAlive(pid) {
+export function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false
   try {
     process.kill(pid, 0)
@@ -313,29 +311,4 @@ export function findStartupListenerForOwner(ownerPid, dir = CONNECTIONS_DIR) {
     if (marker && Number(marker.owner_pid) === ownerPid) return marker
   }
   return null
-}
-
-export function startupFilePath(sessionId, dir = STARTUP_DIR) {
-  return path.join(dir, `${String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '')}.json`)
-}
-
-/** File the plugin's settings for this session's listener. Never throws. */
-export function writeStartupConfig(sessionId, config, { dir = STARTUP_DIR } = {}) {
-  if (!sessionId || !config?.token) return false
-  try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writePrivateJson(startupFilePath(sessionId, dir), { ...config, written_at: new Date().toISOString() })
-    return true
-  } catch {
-    return false
-  }
-}
-
-export function removeStartupConfig(sessionId, { dir = STARTUP_DIR } = {}) {
-  if (!sessionId) return
-  try {
-    fs.rmSync(startupFilePath(sessionId, dir), { force: true })
-  } catch {
-    /* best effort */
-  }
 }

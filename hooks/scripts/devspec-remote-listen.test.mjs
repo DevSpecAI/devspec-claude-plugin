@@ -31,11 +31,9 @@ import { renderTiers, storeTiers, takeTiersFor, tiersPath } from './instruction-
 import {
   findStartupListenerForOwner,
   readLiveStartupListener,
-  startupFilePath,
   writeListenerMarker,
-  writeStartupConfig,
 } from './startup-listener.mjs'
-import { startupConfigFromEnv } from './remote-session-lifecycle.mjs'
+import { pluginSettingsFromHookEnv, sessionSettingsPath, writeSessionSettings } from './plugin-settings.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const tmp = []
@@ -138,8 +136,8 @@ describe('the listener finds its settings whichever starts first', () => {
 
   it('reads the file the SessionStart hook filed', async () => {
     const dir = tmpDir('devspec-startup-')
-    assert.equal(writeStartupConfig('s-2', { token: 'dvs_file', mcp_url: 'https://x/api/mcp' }, { dir }), true)
-    const mode = fs.statSync(startupFilePath('s-2', dir)).mode & 0o777
+    assert.equal(writeSessionSettings('s-2', { token: 'dvs_file', mcp_url: 'https://x/api/mcp' }, { dir }), true)
+    const mode = fs.statSync(sessionSettingsPath('s-2', dir)).mode & 0o777
     assert.equal(mode, 0o600, 'the file carries a bearer and must be owner-only')
     const config = await readStartupConfig('s-2', { env: {}, dir, waitMs: 0 })
     assert.equal(config.token, 'dvs_file')
@@ -156,13 +154,13 @@ describe('the listener finds its settings whichever starts first', () => {
   })
 
   it('files token and URL together, and never without a token', () => {
-    assert.equal(startupConfigFromEnv({}), null)
-    assert.deepEqual(startupConfigFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_a' }), {
+    assert.equal(pluginSettingsFromHookEnv({}), null)
+    assert.deepEqual(pluginSettingsFromHookEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_a' }), {
       token: 'dvs_a',
       mcp_url: 'https://api.devspec.ai/api/mcp',
     })
     assert.equal(
-      startupConfigFromEnv({
+      pluginSettingsFromHookEnv({
         CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_a',
         CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false',
       }).connect_at_startup,
@@ -374,15 +372,26 @@ describe('/clear keeps a connection whose startup listener survives it', () => {
 
   it('SessionStart files settings privately and SessionEnd removes them', async () => {
     const home = tmpDir('devspec-startup-file-')
-    await runHook('remote-session-lifecycle.mjs', ['session-start'], {
+    await runHook('session-env-credentials.mjs', [], {
       home,
       stdin: { session_id: NEW, source: 'startup' },
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_hook', CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'https://s/api/mcp' },
+      env: {
+        CLAUDE_PID: String(process.pid),
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_hook',
+        CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'https://s/api/mcp',
+      },
     })
     const file = path.join(home, '.devspec', 'remote-control', 'startup', `${NEW}.json`)
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, 'dvs_hook')
     assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-    await runHook('remote-session-lifecycle.mjs', ['session-end'], { home, stdin: { session_id: NEW, reason: 'other' } })
+    // The listener finds it by its own conversation id, with no key in its environment.
+    const config = await readStartupConfig(NEW, { env: {}, dir: path.dirname(file), waitMs: 0 })
+    assert.equal(config.mcp_url, 'https://s/api/mcp')
+    await runHook('session-env-credentials.mjs', ['session-end'], {
+      home,
+      stdin: { session_id: NEW, reason: 'other' },
+      env: { CLAUDE_PID: String(process.pid) },
+    })
     assert.equal(fs.existsSync(file), false)
   })
 

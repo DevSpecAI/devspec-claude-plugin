@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.46.1 - 2026-10-16
+
+- Security: your DevSpec key no longer appears on the command line of the commands Claude Code runs, where any other account on the same computer could read it. The plugin's own commands now read it from a file in `~/.devspec` that only your account can open, created for each Claude Code session and deleted when the session ends, or when the next session starts after a crash.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.46.0 - 2026-10-16
 
 - The plugin now tells DevSpec which plugin it is and which version, on every call, from Claude Code itself and from the plugin's own scripts. It only identifies the plugin and grants nothing; DevSpec uses it to know which agents have the plugin and, if a release ever breaks something, to ask you to update.

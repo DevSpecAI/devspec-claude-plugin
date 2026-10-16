@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
  * Session-boundary bookkeeping for the listener Claude Code starts with the session
- * (item b7ef1fe2). Registered as a SessionStart and a SessionEnd hook.
+ * (item b7ef1fe2). Registered as a SessionStart hook.
  *
- *   session-start — file the plugin's settings for this session's listener, and when
- *                   the conversation changed underneath a running listener (`/clear`,
- *                   `/resume`) move that listener's connection onto the new
- *                   conversation.
- *   session-end   — remove the settings file for the conversation that ended.
+ *   session-start — when the conversation changed underneath a running listener
+ *                   (`/clear`, `/resume`), move that listener's connection onto the
+ *                   new conversation.
+ *
+ * The plugin settings the listener connects with are filed, and removed at
+ * SessionEnd, by `session-env-credentials.mjs` (item 4d40407b).
  *
  * Always exit 0: a session must never fail to start over DevSpec bookkeeping. The one
  * thing SessionStart puts on stdout is a two-sentence note for the model, and only where
@@ -20,45 +21,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { pluginSettingsFromHookEnv } from './plugin-settings.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import { readConversationProject } from './conversation-project.mjs'
 import { rebondConnectionToConversation, reportConnectionEnded } from './remote-control-state.mjs'
 import {
   CONVERSATION_SWITCH_REASONS,
   findStartupListenerForOwner,
-  removeStartupConfig,
   resolveClaudePid,
   writeListenerMarker,
-  writeStartupConfig,
 } from './startup-listener.mjs'
-
-const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
-
-function firstValue(env, keys) {
-  for (const key of keys) {
-    const raw = env[key]
-    if (typeof raw === 'string' && raw.trim()) return raw.trim()
-  }
-  return null
-}
-
-/** The plugin settings Claude Code handed this hook, in the listener's shape. */
-export function startupConfigFromEnv(env = process.env) {
-  const token = firstValue(env, ['CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN', 'CLAUDE_PLUGIN_OPTION_devspec_token'])
-  if (!token) return null
-  const connectAtStartup = firstValue(env, [
-    'CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP',
-    'CLAUDE_PLUGIN_OPTION_connect_at_startup',
-  ])
-  return {
-    token,
-    // Token and URL travel together or not at all (item 8bb707fd).
-    mcp_url:
-      firstValue(env, ['CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL', 'CLAUDE_PLUGIN_OPTION_devspec_mcp_url']) ||
-      DEFAULT_PROD_URL,
-    ...(connectAtStartup === null ? {} : { connect_at_startup: connectAtStartup }),
-  }
-}
 
 function readPayload(stdin = 0) {
   try {
@@ -75,10 +47,8 @@ function readPayload(stdin = 0) {
 export function onSessionStart(payload, { env = process.env, ownerPid = undefined } = {}) {
   const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : null
   const source = typeof payload?.source === 'string' ? payload.source : null
-  const result = { config_filed: false, rebonded: null }
+  const result = { rebonded: null }
   if (!sessionId) return result
-
-  result.config_filed = writeStartupConfig(sessionId, startupConfigFromEnv(env))
 
   // A new conversation under a listener that is already running. On `startup` there is
   // no listener yet (it starts alongside this hook and connects by itself); `compact`
@@ -116,7 +86,7 @@ export function onSessionStart(payload, { env = process.env, ownerPid = undefine
  * session, and the protocol itself loads from the skill only when a message arrives.
  */
 export function startupNote({ env = process.env, cwd = process.cwd(), localId = null } = {}) {
-  const config = startupConfigFromEnv(env)
+  const config = pluginSettingsFromHookEnv(env)
   if (!config) return null
   if (/^(false|0|no|off)$/i.test(String(config.connect_at_startup ?? '').trim())) return null
   let selected = false
@@ -128,12 +98,6 @@ export function startupNote({ env = process.env, cwd = process.cwd(), localId = 
     'it names, who cannot see this terminal: load the devspec-remote-command skill once per ' +
     'conversation and answer them in DevSpec with post_session_message.'
   )
-}
-
-export function onSessionEnd(payload) {
-  const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : null
-  if (sessionId) removeStartupConfig(sessionId)
-  return { removed: !!sessionId }
 }
 
 const isMain =
@@ -156,7 +120,7 @@ if (isMain) {
           JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: note } }) + '\n',
         )
       }
-    } else if (mode === 'session-end') onSessionEnd(payload)
+    }
   } catch {
     /* never block a session over bookkeeping */
   }

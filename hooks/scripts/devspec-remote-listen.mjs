@@ -72,6 +72,7 @@ import { conversationProjectFingerprint, readConversationProject } from './conve
 import { EXIT_REARM, EXIT_SUPERSEDED, waitHolderPid } from './devspec-remote-wait.mjs'
 import { storeTiers } from './instruction-tiers.mjs'
 import { readPrivateJsonResult, STATE_OK } from './private-state.mjs'
+import { SESSION_SETTINGS_DIR, sessionSettingsPath } from './plugin-settings.mjs'
 import { detectLocalId, pollerRunning, recordConnectionEvent } from './remote-control-state.mjs'
 import {
   ownedByAnotherProcess,
@@ -79,8 +80,6 @@ import {
   readOwnedConnectionPointer,
   removeOwnerListenerFiles,
   resolveClaudePid,
-  STARTUP_DIR,
-  startupFilePath,
   writeListenerMarker,
   writeOwnerListenerStatus,
 } from './startup-listener.mjs'
@@ -165,12 +164,13 @@ export function connectAtStartupEnabled(env = process.env, fileValue = undefined
  * The plugin's configuration as the SessionStart hook recorded it for this session.
  *
  * Claude Code gives plugin settings to HOOKS, not to monitors. The SessionStart hook
- * already carries them into the session environment, and a monitor started after it
- * inherits them — observed, not promised. So the hook also files them privately, keyed
- * by session, and this waits briefly for that file when the environment has no key:
- * whichever of the two starts first, the listener still finds its configuration.
+ * files them privately, keyed by conversation (`plugin-settings.mjs`), and never puts
+ * the key itself in the session environment, because Claude Code starts a monitor
+ * with that environment's text on its command line (item 4d40407b). This reads the
+ * file, waiting briefly for it: whichever of the two starts first, the listener still
+ * finds its configuration.
  */
-export async function readStartupConfig(sessionId, { env = process.env, waitMs = STARTUP_FILE_WAIT_MS, dir = STARTUP_DIR, sleepFn = sleep } = {}) {
+export async function readStartupConfig(sessionId, { env = process.env, waitMs = STARTUP_FILE_WAIT_MS, dir = SESSION_SETTINGS_DIR, sleepFn = sleep } = {}) {
   // Any key the resolver already reads from the environment — the plugin's own, or an
   // explicit override — means there is nothing to wait for.
   const envToken =
@@ -178,10 +178,11 @@ export async function readStartupConfig(sessionId, { env = process.env, waitMs =
     env.CLAUDE_PLUGIN_OPTION_devspec_token ||
     env.DEVSPEC_MCP_TOKEN ||
     env.DEVSPEC_TOKEN
-  if (envToken || !sessionId) return null
+  const file = sessionSettingsPath(sessionId, dir)
+  if (envToken || !file) return null
   const deadline = Date.now() + waitMs
   for (;;) {
-    const read = readPrivateJsonResult(startupFilePath(sessionId, dir))
+    const read = readPrivateJsonResult(file)
     if (read.status === STATE_OK && read.value) return read.value
     if (Date.now() >= deadline) return null
     await sleepFn(500)

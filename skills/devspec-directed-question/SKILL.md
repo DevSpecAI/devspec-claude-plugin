@@ -1,6 +1,6 @@
 ---
 name: devspec-directed-question
-description: Ask the person driving this DevSpec session a question, or several independent ones together, and wait for their answer, when a decision is genuinely theirs to make and no recorded intent settles it. Never for work you can do, check, or decide yourself.
+description: Ask the person driving this DevSpec session a question and wait for their answer, when a decision is genuinely theirs to make and no recorded intent settles it. Never for work you can do, check, or decide yourself.
 allowed-tools: Bash
 ---
 
@@ -13,11 +13,8 @@ Everything the recorded intent, acceptance criteria and served
 so is anything you could find out by looking. A question is not a way to hand judgement
 work back — if you could observe the answer, observe it.
 
-Ask only when someone is actually there to answer: the card sits above their composer
-until they respond or cancel it. When you have several independent choices for the same
-person, ask them together rather than one per turn, so they answer in one sitting and in
-any order: create each with `--keep-turn` except the last. Each answer reaches you as its
-own event. A question that depends on an earlier answer waits until that answer arrives.
+Ask only when someone is there to answer: the card sits above their composer
+until they respond or cancel it.
 
 ## Ask
 
@@ -30,15 +27,16 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-question.mjs" use --connection
 
 `describe` returns the server's current schema. `response_kind` is `text`,
 `single_select` or `multi_select`; select kinds need at least two distinct choices, and
-`allow_custom` is on by default — they can always answer in their own words. Pass
-`allow_custom: false` only when the choices must be strictly constrained. `client_request_id` is a
+`allow_custom` defaults on, so they can answer in their own words; pass
+`allow_custom: false` only when the choices must be strict. `client_request_id` is a
 fresh UUID per question — reusing one retries that same question rather than asking a
 new one. `list`, `get` and `cancel` reach only your own questions; cancel one that
 events have overtaken rather than leaving it up.
 
 **Asking ends Working.** The server closes the asking turn; do not poll or loop. Pass
-`--keep-turn` only if you still have work — that sets `keep_turn` so the server leaves
-the turn open.
+`--keep-turn` (`keep_turn`) only if you still have work, or to ask independent choices for
+one person together: on all but the last. Each answer arrives as its own event; hold a
+question that depends on one until it does.
 
 ## When they answer
 
@@ -59,8 +57,8 @@ That one call stores the reply and closes the turn their answer opened. Replying
 through the ordinary session path instead leaves the room showing Working with nothing
 working. `status` says whether a reply is still owed.
 
-The question, its choices and the answer are already recorded in the transcript, so do
-not restate them — reply with what you did or concluded, not a receipt.
+The transcript already records the question and the answer: reply with what you did or
+concluded, not a receipt.
 
 Delivery, leasing and completion authority are the served
 `devspec://product/interaction-event-contract`. Nothing here overrides it, and asking a

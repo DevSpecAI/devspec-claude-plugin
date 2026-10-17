@@ -96,9 +96,9 @@ This lists the connection on DevSpec's Agents page without inventing a chat tran
 
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
-**Choosing a project (plugin 0.32.14+).** Normal connection stays automatic when the repository or existing pin resolves. If it is ambiguous, Claude offers accessible projects labelled with their organisations using its native question UI. Cancel leaves it unconnected. You can also specify an exact name or ID: `/devspec:devspec.remote --project "Client Website"`. Duplicate names require a choice; a partial name is not guessed.
+**Choosing a project.** Normal connection stays automatic when the repository or existing pin resolves. If it is ambiguous, Claude offers accessible projects labelled with their organisations using its native question UI. Cancel leaves it unconnected. You can also specify an exact name or ID: `/devspec:devspec.remote --project "Client Website"`. Duplicate names require a choice; a partial name is not guessed.
 
-The choice belongs to this **local Claude conversation**, including resume, and is applied to normal DevSpec tools as well as Remote. Choosing does not write a folder pin. `/devspec:devspec.project remember` previews the file and asks before saving a shared folder default; `forget` previews and confirms removal. Neither changes an already-selected conversation. To switch an established conversation, use `/devspec:devspec.project choose`. Claude prepares a **fresh** native conversation and gives you a `claude --session-id …` command to run in a new terminal. Its project is selected before auto-connect, without changing the folder default or carrying old model context across organisations. `/clear` may retain a same-project remote connection; it is not a project switch. Project choice is separate from DevSpec room selection and Claude's own resume flags.
+The choice belongs to this **local Claude conversation**, including resume, and is applied to normal DevSpec tools as well as Remote. Choosing does not write a folder pin. `/devspec:devspec.project remember` saves a folder default, warning you once that the file can be shared; `forget` removes it. Neither changes an already-selected conversation. To switch an established conversation, use `/devspec:devspec.project choose`. Claude prepares a **fresh** native conversation and gives you a `claude --session-id …` command to run in a new terminal. Its project is selected before auto-connect, without changing the folder default or carrying old model context across organisations. `/clear` may retain a same-project remote connection; it is not a project switch. Project choice is separate from DevSpec room selection and Claude's own resume flags.
 
 When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
 
@@ -112,15 +112,15 @@ A short notice appears when it connects.
 
 **Waiting for you shows in DevSpec.** If Claude Code stops on something only you can answer in its terminal, such as a permission prompt or a connected tool asking a question, DevSpec shows the agent as waiting for you, says what for ("Approve Bash"), and notifies you. Only the tool's name is sent, never what it was going to run. You still answer it in the terminal.
 
-**Stop, thinking, compact and clear work from DevSpec.** While Claude is working, the square Stop button in the session's composer stops it in its terminal, just as pressing Esc there would. Claude Code and the conversation stay open for your next message. From the agent's controls in the composer, or by typing `/thinking high`, `/compact` or `/clear` to it, you can change how hard Claude thinks, compact its conversation or clear it, exactly as typing `/effort`, `/compact` or `/clear` in its terminal would. After a clear, Claude starts a fresh conversation and stays connected to the same session; the old conversation can still be picked up with `claude --resume`. Like `/effort` there, a new thinking level also becomes Claude Code's default for that model in new sessions. If Claude is busy, the change happens when it finishes what it is doing. DevSpec offers these only when this Claude Code can carry them out (they need a recent Claude Code), so it never shows a control that does nothing. Switching model from DevSpec is not available for Claude Code: Claude Code asks for confirmation in its own terminal before switching model part-way through a conversation, and nobody is there to answer when you are steering from DevSpec.
+**Stop, thinking, compact and clear work from DevSpec.** While Claude is working, the square Stop button in the session's composer stops it in its terminal, just as pressing Esc there would. Claude Code and the conversation stay open for your next message. From the agent's controls in the composer, or by typing `/thinking high`, `/compact` or `/clear` to it, you can change how hard Claude thinks, compact its conversation or clear it, exactly as typing `/effort`, `/compact` or `/clear` in its terminal would. After a clear, Claude starts a fresh conversation and stays connected to the same session; the old conversation can still be picked up with `claude --resume`. Like `/effort` there, a new thinking level also becomes Claude Code's default for that model in new sessions. If Claude is busy, the change happens when it finishes what it is doing. DevSpec offers these only when this Claude Code can carry them out (they need a recent Claude Code). Switching model from DevSpec is not available for Claude Code: Claude Code asks for confirmation in its own terminal before switching model part-way through a conversation, and nobody is there to answer when you are steering from DevSpec.
 
-**Ending it from DevSpec closes it.** When you end the agent from DevSpec (End on the Agents page or in a session), its Claude Code closes in its terminal, even if it is in the middle of something, so you don't have to hunt through your tabs for it. The conversation is kept, and you can pick it up again with `claude --resume`. Stopping it from the terminal with `/devspec:devspec.remote-stop`, detaching it from a session, or a blip on DevSpec's side never closes it. On Windows it is not closed yet: the line under the prompt changes to `devspec: Cosmic Raven · ended from DevSpec` instead. Showing this never calls the model. On older Claude Code versions the line does not appear and everything else works the same.
+**Ending it from DevSpec closes it.** When you end the agent from DevSpec (End on the Agents page or in a session), its Claude Code closes in its terminal, even if it is in the middle of something, so you don't have to hunt through your tabs for it. The conversation is kept, and you can pick it up again with `claude --resume`. Stopping it from the terminal with `/devspec:devspec.remote-stop`, detaching it from a session, or a blip on DevSpec's side never closes it. On Windows it is not closed yet: the line under the prompt changes to `devspec: Cosmic Raven · ended from DevSpec` instead. On older Claude Code versions the line does not appear and everything else works the same.
 
 ### Shared session plans
 
 Claude keeps routine read-only investigation and quick answers plan-free. When work has material multi-phase progress that others in the room need to follow or resume, it creates one shared plan, advances it atomically at meaningful boundaries, and explicitly completes or abandons it. Reconnecting agents receive the latest revision.
 
-Everyone attached to the room can read active plans, but visibility is not mutation authority. Cross-plan changes and adoption require explicit revisioned targeting, and adoption is restricted to an orphaned plan belonging to the same owner. Plans coordinate progress only: they do not claim action-item work, create provenance, or replace the reserve/claim/record implementation lifecycle.
+Everyone attached to the room can read a plan; reading it gives no right to change it. A plan shows progress only: it never claims or records work.
 
 ### Who can talk to it
 
@@ -136,10 +136,8 @@ controls are not conversation messages. The mutable runtime policy is published 
 
 ## Other workflows
 
-**There is no command for these, and that is the point.** The plugin ships two
-commands because connecting and disconnecting run a real setup script. Working
-on an item does not — your agent already has the DevSpec tools, so you ask for
-what you want in plain language.
+**There is no command for these.** Claude already has the DevSpec tools, so you
+ask for what you want in plain language.
 
 ### Work on a single task
 
@@ -174,13 +172,25 @@ fix — record it." "Write the commit message for 4f2a." "Link commit a1b2c3d to
 4f2a." "How do I set up a deployment target?" Each maps to a DevSpec MCP tool
 your agent can already see.
 
-There used to be nine more commands here. Every one was a page of prose telling
-a model to call a tool it already had, kept in six repositories with no way to
-notice when one drifted out of date.
+### Decisions waiting in Review
+
+Ask Claude to make any decision you could make on DevSpec's Review page and it
+makes it as soon as your request is clear, then tells you what happened and what you
+can do next. It warns you once, up front, only if you seem unaware of a significant
+consequence (say, that it undoes someone's decision), and never asks you to confirm
+again. Who may decide what is DevSpec's rule; if you can't, Claude says who can.
+
+| To | Claude uses |
+|---|---|
+| See what is waiting | `get_review_queue` |
+| Accept or decline a proposed change, or a request to confirm | `decide_proposal` |
+| Answer on work that would undo a decision, let an experiment land, adopt or take ownership | `manage_protected_intent` |
+| Say a memory or document flagged out of date is still accurate | `resolve_memory_flag`, `resolve_resource_flag` |
+| Close a duplicate, or say two records are not duplicates | `resolve_duplicate`, `record_duplicate_nonmatch` |
 
 ## All commands
 
-Both commands are in Claude Code's `/` menu after install, under the `/devspec:` prefix.
+All three are in Claude Code's `/` menu after install, under the `/devspec:` prefix.
 
 | Command | What it does |
 |---|---|
@@ -190,9 +200,9 @@ Both commands are in Claude Code's `/` menu after install, under the `/devspec:`
 
 ### Repository context
 
-From 0.32.15, connecting also gives Claude the selected project's complete repository list, including remote URLs and tracked/default branches. These are project facts, not claims that code is cloned on this computer or that pushing is allowed. Description and vision remain available on demand.
+Connecting also gives Claude the selected project's complete repository list, including remote URLs and tracked/default branches. These are project facts, not claims that code is cloned on this computer or that pushing is allowed. Description and vision remain available on demand.
 
-Manual connection prints the facts with its result. Automatic connection stores them privately until a local prompt or the first remote orientation reads them; session start restores them on resume/compaction. Choosing a different project uses its fresh conversation's facts. Identical subsequent reads do not repeat the list. An older server or failed read is explicitly unavailable, not an empty project.
+If DevSpec can't be read, Claude says the list is unavailable rather than treating the project as empty.
 
 **Linking your GitHub account.** When the project's repositories are on GitHub and you have not linked your GitHub account to DevSpec yet, Claude tells you once, with a link to open. Linking makes your pull requests and commits show as yours in DevSpec. It is one click, GitHub confirms who you are, and DevSpec keeps no access to your GitHub account. Nothing waits on it. You can also link or unlink it in DevSpec under **Settings → Sign-in & security**.
 

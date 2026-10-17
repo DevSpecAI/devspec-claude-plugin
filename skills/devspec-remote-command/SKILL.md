@@ -1,7 +1,7 @@
 ---
 name: devspec-remote-command
 description: Handle a message sent to this Claude Code from DevSpec — an owner_message, automation_run, system notice about your own work, question answer or control event arriving from the "DevSpec" monitor or the /devspec.remote wake stream. Read it before acting on the first one in a conversation.
-allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__plugin_devspec_devspec__get_project_summary, mcp__devspec__get_project_summary, mcp__plugin_devspec_devspec__post_session_message, mcp__devspec__post_session_message, mcp__plugin_devspec_devspec__get_session_transcript, mcp__devspec__get_session_transcript, mcp__plugin_devspec_devspec__search_sessions, mcp__devspec__search_sessions, mcp__plugin_devspec_devspec__create_action_item, mcp__devspec__create_action_item, mcp__plugin_devspec_devspec__update_action_item, mcp__devspec__update_action_item, mcp__plugin_devspec_devspec__get_action_item, mcp__devspec__get_action_item, mcp__plugin_devspec_devspec__search_action_items, mcp__devspec__search_action_items, mcp__plugin_devspec_devspec__get_memory, mcp__devspec__get_memory, mcp__plugin_devspec_devspec__search_memories, mcp__devspec__search_memories, mcp__plugin_devspec_devspec__record_memory, mcp__devspec__record_memory, mcp__plugin_devspec_devspec__supersede_memory, mcp__devspec__supersede_memory, mcp__plugin_devspec_devspec__retract_memory, mcp__devspec__retract_memory, mcp__plugin_devspec_devspec__get_resources, mcp__devspec__get_resources, mcp__plugin_devspec_devspec__search_resources, mcp__devspec__search_resources, mcp__plugin_devspec_devspec__get_resource, mcp__devspec__get_resource, mcp__plugin_devspec_devspec__create_resource, mcp__devspec__create_resource, mcp__plugin_devspec_devspec__update_resource, mcp__devspec__update_resource, mcp__plugin_devspec_devspec__supersede_resource, mcp__devspec__supersede_resource, mcp__plugin_devspec_devspec__archive_resource, mcp__devspec__archive_resource, mcp__plugin_devspec_devspec__claim_automation_run, mcp__devspec__claim_automation_run, mcp__plugin_devspec_devspec__record_automation_run, mcp__devspec__record_automation_run, mcp__plugin_devspec_devspec__reserve_work_items, mcp__devspec__reserve_work_items, mcp__plugin_devspec_devspec__claim_work_item, mcp__devspec__claim_work_item, mcp__plugin_devspec_devspec__release_work_item, mcp__devspec__release_work_item, mcp__plugin_devspec_devspec__fail_work_item, mcp__devspec__fail_work_item, mcp__plugin_devspec_devspec__record_implementation, mcp__devspec__record_implementation, mcp__plugin_devspec_devspec__report_progress, mcp__devspec__report_progress, mcp__plugin_devspec_devspec__record_criterion_verdicts, mcp__devspec__record_criterion_verdicts, mcp__plugin_devspec_devspec__classify_criterion, mcp__devspec__classify_criterion, mcp__plugin_devspec_devspec__get_personal_instructions, mcp__devspec__get_personal_instructions, mcp__plugin_devspec_devspec__update_personal_instructions, mcp__devspec__update_personal_instructions, mcp__plugin_devspec_devspec__get_project_instruction_rules, mcp__devspec__get_project_instruction_rules, mcp__plugin_devspec_devspec__write_project_instruction_rule, mcp__devspec__write_project_instruction_rule, mcp__plugin_devspec_devspec__import_instruction_rules, mcp__devspec__import_instruction_rules, mcp__plugin_devspec_devspec__preview_supersession, mcp__devspec__preview_supersession, mcp__plugin_devspec_devspec__manage_protected_intent, mcp__devspec__manage_protected_intent, mcp__plugin_devspec_devspec__resolve_duplicate, mcp__devspec__resolve_duplicate, mcp__plugin_devspec_devspec__record_duplicate_nonmatch, mcp__devspec__record_duplicate_nonmatch, mcp__plugin_devspec_devspec__manage_plan, mcp__devspec__manage_plan, mcp__plugin_devspec_devspec__manage_poll, mcp__devspec__manage_poll, mcp__plugin_devspec_devspec__update_memory, mcp__devspec__update_memory, mcp__plugin_devspec_devspec__get_review_queue, mcp__devspec__get_review_queue, mcp__plugin_devspec_devspec__resolve_memory_flag, mcp__devspec__resolve_memory_flag, mcp__plugin_devspec_devspec__resolve_resource_flag, mcp__devspec__resolve_resource_flag, mcp__plugin_devspec_devspec__supersede_action_item, mcp__devspec__supersede_action_item, mcp__plugin_devspec_devspec__manage_knowledge_links, mcp__devspec__manage_knowledge_links, mcp__plugin_devspec_devspec__get_action_item_history, mcp__devspec__get_action_item_history, mcp__plugin_devspec_devspec__manage_discussion_point, mcp__devspec__manage_discussion_point, mcp__plugin_devspec_devspec__add_implementation_note, mcp__devspec__add_implementation_note, mcp__plugin_devspec_devspec__link_action_items, mcp__devspec__link_action_items, mcp__plugin_devspec_devspec__unlink_action_items, mcp__devspec__unlink_action_items, mcp__plugin_devspec_devspec__surface_session_action_items, mcp__devspec__surface_session_action_items, mcp__plugin_devspec_devspec__reopen_action_item, mcp__devspec__reopen_action_item, mcp__plugin_devspec_devspec__add_commit_reference, mcp__devspec__add_commit_reference, mcp__plugin_devspec_devspec__record_completed_work, mcp__devspec__record_completed_work
+allowed-tools: Read, Grep, Glob, Bash, Agent, mcp__plugin_devspec_devspec__get_project_summary, mcp__devspec__get_project_summary, mcp__plugin_devspec_devspec__post_session_message, mcp__devspec__post_session_message, mcp__plugin_devspec_devspec__get_session_transcript, mcp__devspec__get_session_transcript, mcp__plugin_devspec_devspec__search_sessions, mcp__devspec__search_sessions, mcp__plugin_devspec_devspec__create_action_item, mcp__devspec__create_action_item, mcp__plugin_devspec_devspec__update_action_item, mcp__devspec__update_action_item, mcp__plugin_devspec_devspec__get_action_item, mcp__devspec__get_action_item, mcp__plugin_devspec_devspec__search_action_items, mcp__devspec__search_action_items, mcp__plugin_devspec_devspec__get_memory, mcp__devspec__get_memory, mcp__plugin_devspec_devspec__search_memories, mcp__devspec__search_memories, mcp__plugin_devspec_devspec__record_memory, mcp__devspec__record_memory, mcp__plugin_devspec_devspec__supersede_memory, mcp__devspec__supersede_memory, mcp__plugin_devspec_devspec__retract_memory, mcp__devspec__retract_memory, mcp__plugin_devspec_devspec__get_resources, mcp__devspec__get_resources, mcp__plugin_devspec_devspec__search_resources, mcp__devspec__search_resources, mcp__plugin_devspec_devspec__get_resource, mcp__devspec__get_resource, mcp__plugin_devspec_devspec__create_resource, mcp__devspec__create_resource, mcp__plugin_devspec_devspec__update_resource, mcp__devspec__update_resource, mcp__plugin_devspec_devspec__supersede_resource, mcp__devspec__supersede_resource, mcp__plugin_devspec_devspec__archive_resource, mcp__devspec__archive_resource, mcp__plugin_devspec_devspec__claim_automation_run, mcp__devspec__claim_automation_run, mcp__plugin_devspec_devspec__record_automation_run, mcp__devspec__record_automation_run, mcp__plugin_devspec_devspec__reserve_work_items, mcp__devspec__reserve_work_items, mcp__plugin_devspec_devspec__claim_work_item, mcp__devspec__claim_work_item, mcp__plugin_devspec_devspec__release_work_item, mcp__devspec__release_work_item, mcp__plugin_devspec_devspec__fail_work_item, mcp__devspec__fail_work_item, mcp__plugin_devspec_devspec__record_implementation, mcp__devspec__record_implementation, mcp__plugin_devspec_devspec__report_progress, mcp__devspec__report_progress, mcp__plugin_devspec_devspec__record_criterion_verdicts, mcp__devspec__record_criterion_verdicts, mcp__plugin_devspec_devspec__classify_criterion, mcp__devspec__classify_criterion, mcp__plugin_devspec_devspec__get_personal_instructions, mcp__devspec__get_personal_instructions, mcp__plugin_devspec_devspec__update_personal_instructions, mcp__devspec__update_personal_instructions, mcp__plugin_devspec_devspec__get_project_instruction_rules, mcp__devspec__get_project_instruction_rules, mcp__plugin_devspec_devspec__write_project_instruction_rule, mcp__devspec__write_project_instruction_rule, mcp__plugin_devspec_devspec__import_instruction_rules, mcp__devspec__import_instruction_rules, mcp__plugin_devspec_devspec__preview_supersession, mcp__devspec__preview_supersession, mcp__plugin_devspec_devspec__manage_protected_intent, mcp__devspec__manage_protected_intent, mcp__plugin_devspec_devspec__decide_proposal, mcp__devspec__decide_proposal, mcp__plugin_devspec_devspec__resolve_duplicate, mcp__devspec__resolve_duplicate, mcp__plugin_devspec_devspec__record_duplicate_nonmatch, mcp__devspec__record_duplicate_nonmatch, mcp__plugin_devspec_devspec__manage_plan, mcp__devspec__manage_plan, mcp__plugin_devspec_devspec__manage_poll, mcp__devspec__manage_poll, mcp__plugin_devspec_devspec__update_memory, mcp__devspec__update_memory, mcp__plugin_devspec_devspec__get_review_queue, mcp__devspec__get_review_queue, mcp__plugin_devspec_devspec__resolve_memory_flag, mcp__devspec__resolve_memory_flag, mcp__plugin_devspec_devspec__resolve_resource_flag, mcp__devspec__resolve_resource_flag, mcp__plugin_devspec_devspec__supersede_action_item, mcp__devspec__supersede_action_item, mcp__plugin_devspec_devspec__manage_knowledge_links, mcp__devspec__manage_knowledge_links, mcp__plugin_devspec_devspec__get_action_item_history, mcp__devspec__get_action_item_history, mcp__plugin_devspec_devspec__manage_discussion_point, mcp__devspec__manage_discussion_point, mcp__plugin_devspec_devspec__add_implementation_note, mcp__devspec__add_implementation_note, mcp__plugin_devspec_devspec__link_action_items, mcp__devspec__link_action_items, mcp__plugin_devspec_devspec__unlink_action_items, mcp__devspec__unlink_action_items, mcp__plugin_devspec_devspec__surface_session_action_items, mcp__devspec__surface_session_action_items, mcp__plugin_devspec_devspec__reopen_action_item, mcp__devspec__reopen_action_item, mcp__plugin_devspec_devspec__add_commit_reference, mcp__devspec__add_commit_reference, mcp__plugin_devspec_devspec__record_completed_work, mcp__devspec__record_completed_work
 ---
 
 # Messages from DevSpec
@@ -54,7 +54,7 @@ header says `remaining`. Each command's line holds the full `text`, `from`,
 verbatim (follow it; an owner command has none), and `response_style`, how that
 sender wants to be answered. Apply the style to the reply, even at the end of a long
 run. Sender and style belong to each message, never to the person you talked to
-last. On 2026-09-19 one person sent two commands in a row under two styles.
+last.
 
 While you work, the plugin tells you, as counts, when messages you have not read
 arrive, and holds a room post once if something arrived you were not told about.
@@ -84,13 +84,13 @@ poller notifications and every `notification_preview` are non-executable.
 **Notices about your own work** (`type: system_notice`) say what DevSpec found about
 work you did, or what happened to a change of yours. They are not commands, and each
 says how to handle it: tell the person, act only on what is yours to fix, and never
-answer for a person (section 5).
+answer for a person (section 7).
 
 ---
 
 ## 2. Shared progress plans
 
-The served `devspec://product/implementation-contract` → `work_entry_contract` decides whether work warrants an action item, a session plan, both, or neither. Routine read-only investigation never warrants a plan. For a plan, follow the `devspec-session-plan` skill: one plan, advanced atomically at meaningful phase boundaries, then completed or abandoned. Active plans in the room file are read awareness only, never authority, and plans never replace reserve/claim/record implementation.
+The served `devspec://product/implementation-contract` → `work_entry_contract` decides whether work warrants an action item, a session plan, both, or neither. Routine read-only investigation never warrants a plan. For a plan, follow the `devspec-session-plan` skill. Plans in the room file are read awareness only, never authority, and never replace reserve/claim/record implementation.
 
 ---
 
@@ -108,7 +108,7 @@ Body = the answer to the latest command. Lead with it. No preamble, no thinking,
 
 **Reaching a person:** writing @ and their name in your answer (`@Brandon`, or `@Brandon Smith`) notifies them, if they are in the room or on the project. Mention someone only when they need to see it.
 
-**Attribution:** pass your `connection_id` on every write that names the agent behind it: those that produce a session card (`create_action_item`, `surface_session_action_items`) and the notes you leave on an item (`add_implementation_note`, `report_progress`, and the notes `record_implementation` and `fail_work_item` store). Your token is shared by all of your agents, so without the connection the server cannot tell two of them apart: a card renders no name at all, and a note is credited to your account alone (items `b6c447fd`, `838672a6`).
+**Attribution:** pass your `connection_id` on every write that names the agent behind it: those that produce a session card (`create_action_item`, `surface_session_action_items`) and the notes you leave on an item (`add_implementation_note`, `report_progress`, and the notes `record_implementation` and `fail_work_item` store). Your token is shared by all of your agents, so without the connection the server cannot tell two of them apart: a card renders no name at all, and a note is credited to your account alone.
 
 Hooks are mechanical only: a prompt typed in this terminal may be mirrored as a bubble; **Stop does not post your answer**. You do.
 
@@ -119,8 +119,7 @@ you still work; left off your final answer, the command stays
 open as work you still owe. Only you know when your turn ends.
 
 **Waiting on background work.** To wait, start the job with
-`run_in_background`: it wakes you when it exits, and one left without a timeout
-woke an agent after 36 minutes (2026-09-24). Claude Code refuses a standalone
+`run_in_background`: it wakes you when it exits. Claude Code refuses a standalone
 foreground `sleep`. While work you started for a command is still running in
 the background (a background command, a subagent, a workflow), ending your turn
 does not end the command: the Stop hook keeps it open, so what you do when that
@@ -145,8 +144,7 @@ DevSpec records and judges that is the served contract's
 
 **Say which model you are:** pass `model: { providerID, modelID }` — for this
 host, `{ providerID: 'anthropic', modelID: '<your exact model id>' }`. The
-transcript renders it beside the timestamp, so a reader can tell a Fable answer
-from an Opus one without asking. It is optional, which is why it gets
+transcript renders it beside the timestamp. It is optional, which is why it gets
 forgotten, and on this host nothing else stamps it.
 
 ---
@@ -160,8 +158,8 @@ For the requested item or ordered items:
 1. **Reserve first,** while the command is still live, before your answer completes the turn: `reserve_work_items({ action_item_ids: [...], connection_id })`, preserving the requested order. Read and report every `skipped` result. Who the work is recorded as asked by once the command is answered is the served contract's `authority_contract.requester_rule`, not this file's.
 2. **Then claim in order:** call `claim_work_item` for each reserved item only as you reach it, always with this `connection_id`. A refused claim names what stopped it; report that, and never force past it without the authority the served contract asks for.
 3. **Waiting for an OK.** A claim or item with `waiting_for_ok` ("Waiting for <name>'s OK", or "Experiment") is built and pushed on its own branch, never merged into the tracking branch, and recorded as usual (`core.waiting-work-stays-on-its-branch`). Tell the person in the label's words, and say an experiment is not agreed to land until it has the OK.
-4. **Answers belong to people.** Call `manage_protected_intent` (an answer on a decision, an experiment, adopting, taking ownership) only when the person you are answering asked for exactly that: never on your own judgement, to clear your own work's wait, or in someone else's name. Unsure what they want? Ask them. Who may answer is the contract's `reversal_rule`.
-5. Follow the served **`devspec://product/implementation-contract`** for lifecycle, isolation, decision boundaries, verification, commit provenance, reporting and completion. The work-entry response supplies the live contract; this command does not duplicate it.
+4. Never answer on a decision to clear your own work's wait: the answer is the person's (section 7).
+5. Follow the served **`devspec://product/implementation-contract`** for lifecycle, isolation, decision boundaries, verification, commit provenance, reporting and completion.
 
 An automation run is not action-item work. It stays on the separately typed, exactly addressed `automation_run` path and uses `claim_automation_run` / `record_automation_run`, never `reserve_work_items` or `claim_work_item`.
 
@@ -177,17 +175,33 @@ Record a decision only when it was a real choice between alternatives, made for 
 - **Delivery evidence → the action item too, not a memory.** What shipped, which commit, what passed belongs on the item (`record_implementation` carries it). Record in memory what a future decision needs that the existing record does not already preserve.
 - **An instruction someone must follow → a rule, not a memory.** A memory records what the team decided; a rule is what an agent is made to do about it every time. The same conversation often produces both.
   - Team: `write_project_instruction_rule` (`add`/`amend`/`retract`, one at a time). `get_project_instruction_rules` first.
-  - The owner's own machine/tooling context: `update_personal_instructions`. This is the right home for anything true of *them across their machines* — it reaches every agent they run, everywhere, unlike a file on one box.
+  - The owner's own machine/tooling context: `update_personal_instructions`. It reaches every agent they run, on every machine.
   - A repo `CLAUDE.md` full of team rules: offer `import_instruction_rules`, which categorises it for approval rather than pasting it in.
-- Show the exact text and get a clear yes **before** writing, every time.
-- **Read the `outcome` and report what it says.** `committed` = live now. `queued_for_review` = **not in effect**: relay the `proposal_id` and the reason the server gave, and say a maintainer has to accept it on the project's Review page, under Proposed changes, before it applies. Who may commit which kind of write, and why a call was queued, is the served contract's decision — `devspec://product/implementation-contract` → `authority_contract` — not this command's; do not predict the outcome, read it.
-- **What waits on people is in Review** (`get_review_queue`). A link or a label settles none of it. Work that would undo a decision is settled only by an answer (section 5). An out-of-date description is corrected (`update_memory`, `supersede_memory`, `update_resource`, `supersede_resource`) or retired; the flag tools only say it is still accurate. A duplicate: fold in what only it had, then `resolve_duplicate` (preview first), or `record_duplicate_nonmatch` when the outcomes differ. A "related" link (`link_action_items`, `manage_knowledge_links`) clears nothing. Use `preview_supersession` before superseding. Who may do each is the served contract's decision.
-- Safety-class rules (branch protection, force-push, secrets) need `confirm_safety_change`. Never move a rule in or out of that class in passing.
-- Do not rely on post-session extraction for this channel. Mirror a short confirmation into the room so the phone sees knowledge landing.
+- **Read the `outcome` and report what it says** (section 7). Who may commit which kind of write, and why a call was queued, is the served contract's `authority_contract`: do not predict the outcome, read it.
+- Use `preview_supersession` before superseding. Never move a rule in or out of the safety class (`confirm_safety_change`) in passing.
+- Say in the room what you recorded: nothing extracts it later.
 
 ---
 
-## 7. Finding an earlier conversation
+## 7. Acting for the person, and Review
+
+You act for the person whose command you are answering, with their authority: the served contract's `acting_rule`. Who may do what is its `authority_contract`, not this file. When their request is clear and they evidently know what it does, do it at once: never ask them to confirm what they just said, or send them to Review to do it themselves. Ask only when what they want is unclear. If they seem unaware of a significant consequence (say, that it undoes someone's decision), say so once, up front, then do what they decide. Never decide on your own judgement or in someone else's name.
+
+Every decision a person can make in Review has a tool:
+
+- `get_review_queue`: what is waiting, with the ids and revisions the others need. Read it first.
+- `decide_proposal`: accept or decline a proposed change, or a request to confirm, with its `proposal_id` and `proposal_revision`.
+- `manage_protected_intent`: answer on work that would undo a decision (go ahead, decline, not a reversal, keep, undo), let an experiment land, adopt, take ownership. Another person's agreement is theirs: `request_confirmation` asks them.
+- `resolve_memory_flag`, `resolve_resource_flag`: a memory or document flagged out of date is still accurate. If it is out of date, correct it (`update_memory`, `supersede_memory`, `update_resource`, `supersede_resource`) or retire it instead.
+- `resolve_duplicate` (preview first): close a duplicate once what only it had is in the one kept. `record_duplicate_nonmatch`: they are not duplicates.
+
+A "related" link (`link_action_items`, `manage_knowledge_links`) settles none of these.
+
+Relay each result in plain words from its `summary` (or `note`) and `next`. `queued_for_review` carries a `proposal_id` and changes nothing until whoever decides it accepts it. Never report a refused, queued, unconfirmed or unknown outcome as done.
+
+---
+
+## 8. Finding an earlier conversation
 
 "I'm sure we talked about this somewhere": search items, memories and resources first — anything filed is already there. `search_sessions` is for what was only ever **said**: a keyword or short phrase across titles and transcripts, ranked hits with excerpts. Then `get_session_transcript` on the one you need. Last-resort recall, never a gather step.
 

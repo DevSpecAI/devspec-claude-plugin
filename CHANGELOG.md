@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.46.3 - 2026-10-17
+
+- Claude makes any decision you could make in DevSpec's Review for you, as soon as your request is clear: accepting or declining a proposed change (new: `decide_proposal`), answering on work that would undo a decision, saying a flagged record is still accurate, or resolving a duplicate. It warns you once, up front, only if you seem unaware of a significant consequence, and never asks you to confirm again. It then tells you what happened and what you can do next.
+- Claude no longer asks you to approve wording you gave it yourself before saving a rule or a decision, and saves a folder's default project straight away when you asked for exactly that.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.46.2 - 2026-10-17
 
 - Fixed: what DevSpec finds about Claude's own work now reaches Claude again: that a change would undo someone's decision, duplicates other work or breaks a requirement, and what happened to a change that was waiting on someone. Until now the plugin told DevSpec it couldn't read these, so they went only to your notifications and the Agents page showed the agent as "Not receiving findings".

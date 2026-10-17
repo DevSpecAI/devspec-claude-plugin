@@ -104,7 +104,19 @@ import {
 
 export const DELEGATED_SCOPE_VERSION = 1
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
-export const SYSTEM_NOTICE_VERSION = 1
+/**
+ * The notice CHANNEL version this poller negotiates — which notice kinds DevSpec
+ * may send it — not the shape version each notice carries inside it.
+ *
+ * 1 carries `unlinked_commit_item_review`; 2 also carries `server_notice`
+ * (confirmed findings and pending-edit outcomes about this agent's own work).
+ * DevSpec sends a `server_notice` only to a channel that asked for 2, and records
+ * the version on the connection, so a poller still asking for 1 never receives a
+ * finding and the Agents page shows it "Not receiving findings" (1fd34942, item
+ * 0b26f6ea). Version 2 adds kinds and changes none: every notice still arrives with
+ * its own `version: 1` body, validated by `isSystemNoticeV1` in remote-ingress-v1.mjs.
+ */
+export const SYSTEM_NOTICE_CHANNEL_VERSION = 2
 export const SENDER_STYLE_VERSION = 1
 
 /**
@@ -113,9 +125,8 @@ export const SENDER_STYLE_VERSION = 1
  *
  * `sender_style_version` is what makes the person who SENT a command decide how
  * they get answered, rather than whoever happens to own this connection
- * (item af5e3d6c). The server refuses it without `system_notice_version`, so
- * notices come along for the ride; we accept them and treat them as advisory —
- * they never carry commands or authority.
+ * (item af5e3d6c). The server refuses it without `system_notice_version`.
+ * Notices are advisory: they never carry commands or authority.
  */
 /**
  * Echo the instruction tiers this connection already holds, so the server can
@@ -138,7 +149,7 @@ export function remoteIngressNegotiationArguments() {
     ingress_version: 1,
     delegated_scope_version: DELEGATED_SCOPE_VERSION,
     active_plan_projection_version: ACTIVE_PLAN_PROJECTION_VERSION,
-    system_notice_version: SYSTEM_NOTICE_VERSION,
+    system_notice_version: SYSTEM_NOTICE_CHANNEL_VERSION,
     sender_style_version: SENDER_STYLE_VERSION,
     // Remote-ingress 1.6.0 (item 1a4f0246): room context for the local transcript.
     // The server refuses it without every rung below, which is why it sits last.

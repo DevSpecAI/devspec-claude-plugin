@@ -16,6 +16,7 @@ import {
   REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
   REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION,
 } from './remote-ingress-v1.mjs'
+import { remoteIngressNegotiationArguments } from './devspec-remote-poll.mjs'
 
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
 const OWNER = '20000000-0000-4000-8000-000000000002'
@@ -711,6 +712,26 @@ describe('strict 1.4 system notices', () => {
     assert.equal(result.envelope.system_notices.length, 1)
     assert.equal(result.envelope.system_notices[0].kind, 'server_notice')
     assert.equal(result.envelope.system_notices[0].records.length, 2)
+  })
+
+  // The channel version this plugin negotiates (2: the one that carries findings)
+  // is not the shape version inside each notice. DevSpec's version 2 adds kinds and
+  // changes none, so a server_notice on a version-2 channel still says `version: 1`
+  // and must be read in full, exactly as before (1fd34942, item 0b26f6ea).
+  it('reads a version-1 server_notice body delivered over the version-2 channel it asks for', () => {
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
+    const notice = serverNotice()
+    assert.equal(notice.version, 1)
+    const result = normalizeRemoteIngressV1(noticed({
+      commands: [],
+      command_message_ids: [],
+      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+      system_notices: [notice],
+      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+    }), CONNECTION)
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.envelope.system_notices, [notice])
+    assert.equal(isUnreadableSystemNoticeV1(notice), false)
   })
 
   it('rejects malformed server_notice payloads (missing records, extra keys, bad contract_uri)', () => {

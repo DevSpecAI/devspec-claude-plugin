@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.46.2 - 2026-10-17
+
+- Fixed: what DevSpec finds about Claude's own work now reaches Claude again: that a change would undo someone's decision, duplicates other work or breaks a requirement, and what happened to a change that was waiting on someone. Until now the plugin told DevSpec it couldn't read these, so they went only to your notifications and the Agents page showed the agent as "Not receiving findings".
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.46.1 - 2026-10-16
 
 - Security: your DevSpec key no longer appears on the command line of the commands Claude Code runs, where any other account on the same computer could read it. The plugin's own commands now read it from a file in `~/.devspec` that only your account can open, created for each Claude Code session and deleted when the session ends, or when the next session starts after a crash.

@@ -40,6 +40,7 @@ import {
   appendCanonicalInbox,
   appendAutomationDispatches,
   DELEGATED_SCOPE_VERSION,
+  SYSTEM_NOTICE_CHANNEL_VERSION,
   ACTIVE_PLAN_PROJECTION_VERSION,
   remoteIngressNegotiationArguments,
   knownInstructionTierArguments,
@@ -167,20 +168,29 @@ describe('poll negotiation', () => {
       ingress_version: 1,
       delegated_scope_version: 1,
       active_plan_projection_version: 1,
-      system_notice_version: 1,
+      system_notice_version: 2,
       sender_style_version: 1,
       room_context_version: 1,
       session_polls_projection_version: 2,
     })
   })
 
+  it('asks for notice channel version 2, the first that carries findings about its own work', () => {
+    // DevSpec sends server_notice (confirmed findings, pending-edit outcomes) only
+    // to a channel that negotiated 2 and records the version on the connection; at
+    // 1 the Agents page shows "Not receiving findings" (1fd34942, item 0b26f6ea).
+    assert.equal(SYSTEM_NOTICE_CHANNEL_VERSION, 2)
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
+  })
+
   it('never asks for room context without the full ladder below it, which the server refuses', () => {
     // 1.6.0 is one lane (item 1dcb75df): room_context_version with any rung
     // missing is an error, not a quieter page.
     const args = remoteIngressNegotiationArguments()
-    for (const rung of ['ingress_version', 'delegated_scope_version', 'active_plan_projection_version', 'system_notice_version', 'sender_style_version']) {
+    for (const rung of ['ingress_version', 'delegated_scope_version', 'active_plan_projection_version', 'sender_style_version']) {
       assert.equal(args[rung], 1, rung)
     }
+    assert.equal(args.system_notice_version, SYSTEM_NOTICE_CHANNEL_VERSION)
   })
 
   it('echoes the instruction tiers it already holds, so the server can suppress them', () => {

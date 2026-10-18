@@ -51,12 +51,12 @@ describe('ownConnectionId', () => {
 
 describe('withOwnConnection', () => {
   it('adds the connection to a call that names none', () => {
-    assert.deepEqual(withOwnConnection('create_action_item', { title: 't' }, MINE), { title: 't', connection_id: MINE })
+    assert.deepEqual(withOwnConnection('create_task', { title: 't' }, MINE), { title: 't', connection_id: MINE })
     assert.deepEqual(withOwnConnection('search_memories', { query: 'q' }, MINE), { query: 'q', connection_id: MINE })
   })
   it('leaves a call that names a connection or a room exactly as written', () => {
     const named = { title: 't', connection_id: OTHER }
-    assert.equal(withOwnConnection('create_action_item', named, MINE), named)
+    assert.equal(withOwnConnection('create_task', named, MINE), named)
     const room = { message: 'm', session_id: 'room' }
     assert.equal(withOwnConnection('post_session_message', room, MINE), room)
   })
@@ -70,7 +70,7 @@ describe('withOwnConnection', () => {
   })
   it('changes nothing without a connection', () => {
     const args = { title: 't' }
-    assert.equal(withOwnConnection('create_action_item', args, null), args)
+    assert.equal(withOwnConnection('create_task', args, null), args)
   })
 })
 
@@ -82,7 +82,7 @@ describe('the PreToolUse hook stamps project and connection in one input', () =>
     bond(MINE)
     const output = prepareDevspecToolInput({
       session_id: CONVERSATION,
-      tool_name: 'mcp__plugin_devspec_devspec__create_action_item',
+      tool_name: 'mcp__plugin_devspec_devspec__create_task',
       tool_input: { title: 'filed from the terminal' },
     }, { home, env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: endpoint } })
     assert.deepEqual(output.hookSpecificOutput.updatedInput, {

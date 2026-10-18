@@ -28,7 +28,7 @@ const home = mkdtempSync(join(tmpdir(), 'claude-remote-allow-list-runtime-'))
 const work = join(home, 'work')
 const SKILL = 'devspec:devspec-remote-command'
 // Never pre-approved by any remote list: only a person present may verify work.
-const UNGRANTED = 'verify_action_item'
+const UNGRANTED = 'verify_task'
 
 const skillText = readFileSync(join(root, 'skills/devspec-remote-command/SKILL.md'), 'utf8')
 const granted = [...new Set(/^allowed-tools:(.*)$/m.exec(skillText)[1].split(',').map((t) => devspecToolVerb(t.trim())).filter(Boolean))]

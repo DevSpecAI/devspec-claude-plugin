@@ -686,7 +686,7 @@ function recoveryText(claims) {
   return [
     'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
     'Recover without leaving this turn: reuse or create the smallest item that covers it',
-    '(search_action_items, or create_action_item with a one-line description — a thin',
+    '(search_tasks, or create_task with a one-line description — a thin',
     'last-mile item is fine), then add [devspec:<full-uuid>] to the commit message and retry.',
     `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
@@ -727,7 +727,7 @@ function unresolvedReferenceText(reference) {
     `DevSpec: [devspec:${reference}] is well formed but resolves to no item in this project,`,
     'so this commit would read as linked and link to nothing.',
     'That is usually a correct short code with a wrong uuid tail, or an item belonging to a different project.',
-    'Recover without leaving this turn: confirm the id (get_action_item, or search_action_items),',
+    'Recover without leaving this turn: confirm the id (get_task, or search_tasks),',
     'correct the reference in the commit message and retry.',
     `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
@@ -778,7 +778,7 @@ function claimedItemIdFrom(input) {
     }
   }
   collect(response)
-  const requested = input?.tool_input?.action_item_id
+  const requested = input?.tool_input?.task_id
   for (const text of texts) {
     let parsed
     try { parsed = JSON.parse(text) } catch { continue }
@@ -883,7 +883,7 @@ function maybeNudge(scope, { env, now, platform }) {
   // write one thin item. State that, and nothing else.
   return nudge(
     'DevSpec: no work item is claimed in this repository, so work done here has nothing to trace it to. ' +
-    'Claim one before you commit — search_action_items for an existing item, or create_action_item for a ' +
+    'Claim one before you commit — search_tasks for an existing item, or create_task for a ' +
     'thin last-mile one — and put [devspec:<full-uuid>] in the commit message. Editing is never blocked. ' +
     `Shown once per session. Authority: ${CONTRACT_URI}`,
   )

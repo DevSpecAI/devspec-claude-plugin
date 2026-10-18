@@ -216,7 +216,7 @@ export function workChange({ tool, input, resultText, isError }) {
   if (isError === true) return null
   const answer = parseJson(resultText)
   if (!answer || answer.error || answer.success === false || answer.ok === false) return null
-  const requested = typeof input?.action_item_id === 'string' ? input.action_item_id.toLowerCase() : null
+  const requested = typeof input?.task_id === 'string' ? input.task_id.toLowerCase() : null
   if (verb === CLAIM_VERB) {
     if (answer.claim_success === false) return null
     const id = typeof answer.id === 'string' ? answer.id.toLowerCase() : requested

@@ -28,13 +28,13 @@ const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive
  */
 export const REQUEST_REF_TOOLS = new Set([
   'add_commit_reference', 'add_implementation_note', 'archive_resource', 'classify_criterion',
-  'create_action_item', 'create_automation', 'create_resource', 'delete_automation',
-  'fail_work_item', 'import_instruction_rules', 'link_action_items', 'manage_knowledge_links',
+  'create_task', 'create_automation', 'create_resource', 'delete_automation',
+  'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_knowledge_links',
   'decide_proposal', 'manage_protected_intent', 'record_completed_work', 'record_criterion_verdicts',
   'record_duplicate_nonmatch', 'record_implementation', 'record_memory',
-  'release_work_item', 'reopen_action_item', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag',
-  'retract_memory', 'spin_off_action_item', 'supersede_action_item', 'supersede_memory',
-  'supersede_resource', 'unlink_action_items', 'update_action_item', 'update_automation',
+  'release_work_item', 'reopen_task', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag',
+  'retract_memory', 'spin_off_task', 'supersede_task', 'supersede_memory',
+  'supersede_resource', 'unlink_tasks', 'update_task', 'update_automation',
   'update_memory', 'update_resource', 'write_project_instruction_rule',
 ])
 

@@ -1262,7 +1262,7 @@ describe('roomChangesSince', () => {
   })
 
   it('flags session activity when a new event arrived, not when it was merely re-read', () => {
-    const view = (events) => ({ items: [{ kind: 'action_item', id: 'a', title: 'T', relation: 'produced', creator: null }], events })
+    const view = (events) => ({ items: [{ kind: 'task', id: 'a', title: 'T', relation: 'produced', creator: null }], events })
     const first = roomChangesSince({}, view([{ event: 'produced' }]))
     assert.deepEqual(first.changed, ['session_activity'])
     assert.deepEqual(roomChangesSince({}, view([{ event: 'produced' }]), first.seen).changed, [])

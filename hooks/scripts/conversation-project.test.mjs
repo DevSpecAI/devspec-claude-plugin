@@ -104,7 +104,7 @@ test('corrupt or foreign-endpoint state fails closed rather than using a folder'
  saveConversationProject('local',endpoint,A,'explicit',{home})
  assert.throws(()=>readConversationProject('local',{endpoint:'https://other.invalid',home}),/another DevSpec endpoint/)
  fs.writeFileSync(projectStatePath('local',home),'broken')
- assert.equal(conversationScopeHook({session_id:'local',tool_name:'mcp__devspec__get_action_items',tool_input:{}},{endpoint,home}).hookSpecificOutput.permissionDecision,'deny')
+ assert.equal(conversationScopeHook({session_id:'local',tool_name:'mcp__devspec__get_tasks',tool_input:{}},{endpoint,home}).hookSpecificOutput.permissionDecision,'deny')
 })
 test('a prepared native fresh-conversation ID beats the folder default before auto-connect',async()=>{
  const {deps,calls}=backend()

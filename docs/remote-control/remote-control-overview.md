@@ -8,10 +8,10 @@
 
 A **connection** is a first-class DevSpec agent identity for one local coding-agent conversation. It can be:
 
-- **Sessionless** — available on the Agents page without a chat transcript. This does not assign it action-item work.
+- **Sessionless** — available on the Agents page without a chat transcript. This does not assign it task work.
 - **Attached** to a DevSpec session — optional canonical conversation + shared transcript and room context.
 
-A **session is optional**. Never invent a session because a cwd or another agent recently stopped. Bond on the local conversation / thread id only. Explicit owner-scoped automation runs remain a separately typed, exactly addressed channel; they are not action-item assignments.
+A **session is optional**. Never invent a session because a cwd or another agent recently stopped. Bond on the local conversation / thread id only. Explicit owner-scoped automation runs remain a separately typed, exactly addressed channel; they are not task assignments.
 
 ## Shared DevSpec contract (all hosts)
 
@@ -23,7 +23,7 @@ is authoritative at
 than copying version-sensitive rules.
 
 Action-item acquisition and execution are governed by the served
-**`devspec://product/implementation-contract`**. Nothing routes action-item work to an
+**`devspec://product/implementation-contract`**. Nothing routes task work to an
 available connection: only when a canonical conversation asks for named item work does
 the agent reserve the requested order, then claim each reserved item as it reaches it.
 
@@ -31,7 +31,7 @@ The host-specific invariant is architectural: negotiate canonical ingress at
 `poll_connection`, validate it at the network boundary, preserve its complete durable
 record, and keep notification/preview output non-authoritative. Active plan inventories
 are room-wide read awareness only; they grant no execution or mutation authority and
-never substitute for action-item reserve/claim/record implementation.
+never substitute for task reserve/claim/record implementation.
 
 ## Three implementation families
 
@@ -49,7 +49,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 2. Server stamps the exact-target canonical command, preserves requester provenance, and supplies delegated project scope when applicable.
 3. Host plugin receives it via `poll_connection`.
 4. Host delivers it to the model (wake **or** inject — family-specific).
-5. Model works on the machine. If the command asks for action-item work, it reserves the named items and then claims them in order under the served implementation contract.
+5. Model works on the machine. If the command asks for task work, it reserves the named items and then claims them in order under the served implementation contract.
 6. Reply returns to the DevSpec session (model post **or** bridge/plugin mirror — family-specific). Action-item progress is never a substitute for this conversational answer.
 
 ## What not to break
@@ -57,7 +57,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 - Do not reintroduce Stop-hook **full-turn** mirroring as the primary answer path.
 - Do not copy wake/auth/state files across plugin repos — plugins are independent; **no file crosses a repo boundary**. There is no sync list, no `owns` tier, no canonical plugin, and no sync tooling: it was deleted on 2026-08-03 because porting one host's fix outward kept breaking hosts that already worked. Duplicate by hand, in the affected repo. Reading another plugin as a reference is fine.
 - Do not treat advisory room traffic as instructions.
-- Do not turn connection availability or an automation run into action-item work.
+- Do not turn connection availability or an automation run into task work.
 - Do not bond on `SHELL_SESSION_ID` / cwd — conversation/thread id only.
 - Do not assume OpenCode-style inject exists on Claude/Cursor/Grok/Antigravity.
 

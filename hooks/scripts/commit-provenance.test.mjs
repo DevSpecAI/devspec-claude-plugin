@@ -76,7 +76,7 @@ function claim(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__claim_work_i
     cwd,
     hook_event_name: 'PostToolUse',
     tool_name: toolName,
-    tool_input: { action_item_id: itemId },
+    tool_input: { task_id: itemId },
     tool_response: { content: [{ type: 'text', text: JSON.stringify({ id: itemId, claim_success: true }) }] },
   }, { env })
 }
@@ -87,7 +87,7 @@ function record(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__record_impl
     cwd,
     hook_event_name: 'PostToolUse',
     tool_name: toolName,
-    tool_input: { action_item_id: itemId },
+    tool_input: { task_id: itemId },
     tool_response: {
       content: [{ type: 'text', text: JSON.stringify({ id: itemId, lifecycle: 'implemented' }) }],
     },
@@ -405,7 +405,7 @@ describe('denial is non-terminating and independently recoverable', () => {
     const result = await bash('git commit -m "untracked work"')
     assert.equal(decision(result), 'deny')
     const reason = result.hookSpecificOutput.permissionDecisionReason
-    for (const expected of [/create_action_item|search_action_items/, /\[devspec:/, /retry/i, /Nothing else is blocked/]) {
+    for (const expected of [/create_task|search_tasks/, /\[devspec:/, /retry/i, /Nothing else is blocked/]) {
       assert.match(reason, expected)
     }
     assert.match(reason, new RegExp(CONTRACT_URI.replace(/[/:]/g, '\\$&')))
@@ -454,7 +454,7 @@ describe('one nudge per session and repository, never more', () => {
     // and must not promise a refusal that only holds for the shapes this can read.
     const { additionalContext: text } = (await handlePre(editInput(), { env })).hookSpecificOutput
     assert.match(text, /Claim one before you commit/i)
-    assert.match(text, /create_action_item/)
+    assert.match(text, /create_task/)
     assert.match(text, /\[devspec:<full-uuid>\]/)
     assert.equal(/refus/i.test(text), false, 'must not promise a refusal')
     assert.equal(/analy[sz]er|reconcil/i.test(text), false, 'must not name a backstop')
@@ -546,7 +546,7 @@ describe('uncertainty always allows', () => {
       cwd: repo,
       hook_event_name: 'PostToolUse',
       tool_name: 'mcp__devspec__claim_work_item',
-      tool_input: { action_item_id: ITEM },
+      tool_input: { task_id: ITEM },
       tool_response: { content: [{ type: 'text', text: JSON.stringify({ error: 'already claimed' }) }] },
     }, { env })
     assert.deepEqual(readClaims(scope(), { env }), [])
@@ -611,7 +611,7 @@ describe('the installed hook, run the way Claude runs it', () => {
     const post = run('PostToolUse', {
       session_id: SESSION, cwd: repo, hook_event_name: 'PostToolUse',
       tool_name: 'mcp__devspec__claim_work_item',
-      tool_input: { action_item_id: ITEM },
+      tool_input: { task_id: ITEM },
       tool_response: { content: [{ type: 'text', text: JSON.stringify({ id: ITEM, claim_success: true }) }] },
     })
     assert.equal(post.status, 0, post.stderr)
@@ -746,7 +746,7 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
   beforeEach(async () => {
     requests = []
     held = []
-    reply = (res) => sendJson(res, answer('valid', { action_item_id: ITEM }))
+    reply = (res) => sendJson(res, answer('valid', { task_id: ITEM }))
     server = http.createServer((req, res) => {
       let body = ''
       req.on('data', (chunk) => { body += chunk })

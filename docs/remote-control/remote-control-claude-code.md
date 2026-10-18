@@ -73,10 +73,10 @@ Because the plugin monitor already delivers zero-turn connect and zero-cost idle
 2. `devspec-remote-poll.mjs` holds `poll_connection`, negotiates delegated project scope plus active-plan projection v1, validates canonical ingress at the network boundary, and writes the complete envelope to the connection inbox. Explicit top-level `automation_run` dispatches remain a separately validated/deduped channel; assignments do not.
 3. `devspec-remote-wait.mjs --stream` revalidates inbox records and prints active plans as advisory room awareness, typed advisory context, complete canonical owner-message events (including the verbatim server instruction only for delegated commands), and explicit automations. Owner controls are carried out by the module and emit nothing.
 4. Claude Code turns those lines into model-visible events without exiting — through the **plugin monitor** the listener runs under (default), or, on the manual path, through the **Monitor** tool — `persistent: true` where the host serves that schema, otherwise the largest `timeout_ms` it allows, re-armed at each expiry; notification/preview summaries are non-authoritative.
-5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and action-item progress is not a substitute.
+5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and task progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
 
-Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named action-item work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `automation_run` records remain separate and use only their automation claim/report path.
+Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named task work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `automation_run` records remain separate and use only their automation claim/report path.
 
 ## Directed-question answers (item `54b63e47`)
 

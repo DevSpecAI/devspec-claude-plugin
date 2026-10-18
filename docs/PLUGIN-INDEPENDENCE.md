@@ -31,8 +31,8 @@ Everything shared lives **on the DevSpec side**, as a contract:
   provenance and typed controls, plus each host's durable inbox and byte-offset cursor
   implementation
 - the **implementation contract** — `devspec://product/implementation-contract` —
-  which governs action-item acquisition and execution; connection availability never
-  assigns action-item work
+  which governs task acquisition and execution; connection availability never
+  assigns task work
 - the **delivery contract** — the agent posts answers; Stop does **not** full-mirror
   assistant text (monorepo `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md`, ADR `b98a39a9`).
   Nothing here may re-introduce dual-writer full-turn Stop mirroring.

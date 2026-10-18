@@ -2253,7 +2253,7 @@ async function main() {
     return { ok: true, delivered: true }
   }
 
-  /** Independent explicit automation channel; action-item assignments are rejected. */
+  /** Independent explicit automation channel; task assignments are rejected. */
   function consumeAutomationDispatches(res) {
     if (!Array.isArray(res?.dispatches)) {
       process.stderr.write('devspec-remote-poll: rejected malformed dispatches channel\n')

@@ -64,7 +64,7 @@ const server = createServer(async (req, res) => {
         if (name === 'report_commit_provenance') {
           assert.equal(req.headers['x-devspec-connection-capability'], 'fixture-capability')
           reports.push(args); result = textResult({ recorded: true })
-        } else if (name === 'validate_commit_reference') result = textResult({ status: 'valid', valid: true, action_item_id: item })
+        } else if (name === 'validate_commit_reference') result = textResult({ status: 'valid', valid: true, task_id: item })
         else result = textResult({ success: true, commands: [], project_id: project, connection_id: connectionId })
       }
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); return

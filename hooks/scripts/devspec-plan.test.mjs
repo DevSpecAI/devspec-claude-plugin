@@ -70,7 +70,7 @@ describe('Claude shared-plan policy surfaces', () => {
   })
 
   it('does not let plans become claim or provenance evidence', () => {
-    assert.match(skill, /outside action-item mutation claim enforcement/)
+    assert.match(skill, /outside task mutation claim enforcement/)
     assert.match(skill, /cannot create claim\/provenance evidence/)
     for (const operation of ['reserve_work_items', 'claim_work_item', 'record_implementation']) {
       assert.match(skill, new RegExp(operation))

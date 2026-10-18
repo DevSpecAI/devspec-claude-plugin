@@ -685,7 +685,7 @@ export function formatSystemNoticeContent(notice) {
   const branchSuffix = notice?.branch ? ` on branch ${notice.branch}` : ''
   return [
     '[DevSpec System Notice: unlinked_commit_item_review]',
-    `Your push of commit ${notice?.commit_sha}${branchSuffix} did not carry a [devspec:<id>] tag, while you hold claimed item "${notice?.action_item_title}" (${notice?.action_item_id}).`,
+    `Your push of commit ${notice?.commit_sha}${branchSuffix} did not carry a [devspec:<id>] tag, while you hold claimed item "${notice?.task_title}" (${notice?.task_id}).`,
     `Prompt: ${notice?.prompt}`,
     `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
     `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
@@ -738,8 +738,8 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
           }
         : {
             commit_sha: notice.commit_sha,
-            action_item_id: notice.action_item_id,
-            action_item_title: notice.action_item_title,
+            task_id: notice.task_id,
+            task_title: notice.task_title,
             branch: notice.branch,
             prompt: notice.prompt,
             allowed_outcomes: notice.allowed_outcomes,
@@ -931,9 +931,9 @@ export function buildCanonicalControlEvents() {
  * the model's instruction. (The poller kept an uncalled copy of this builder until
  * item fe15c7c2 removed it; the two had already drifted apart.)
  *
- * An automation is not an action item — it is a job the owner saved to run again and
+ * An automation is not a task — it is a job the owner saved to run again and
  * again, and it never completes. It stays on the separate automation run tools and
- * never enters action-item reserve/claim acquisition.
+ * never enters task reserve/claim acquisition.
  *
  * The permission line matters: a look-only automation must not be "helpfully" fixed
  * while the agent is in there.

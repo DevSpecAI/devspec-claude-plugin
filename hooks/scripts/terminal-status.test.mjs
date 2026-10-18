@@ -141,7 +141,7 @@ test('claimed work shows by short code and clears when the work is recorded', as
   const tool = 'mcp__plugin_devspec_devspec__claim_work_item'
   let work = applyWorkChange([], workChange({
     tool,
-    input: { action_item_id: ITEM_ID },
+    input: { task_id: ITEM_ID },
     resultText: JSON.stringify({ id: ITEM_ID, title: 'x', claim_success: true }),
     isError: false,
   }))
@@ -149,7 +149,7 @@ test('claimed work shows by short code and clears when the work is recorded', as
 
   work = applyWorkChange(work, workChange({
     tool: 'mcp__devspec__record_implementation',
-    input: { action_item_id: ITEM_ID },
+    input: { task_id: ITEM_ID },
     resultText: JSON.stringify({ lifecycle: 'implemented' }),
     isError: false,
   }))
@@ -158,9 +158,9 @@ test('claimed work shows by short code and clears when the work is recorded', as
 
 test('a refused or failed claim is not work in hand', () => {
   const tool = 'mcp__plugin_devspec_devspec__claim_work_item'
-  const input = { action_item_id: ITEM_ID }
+  const input = { task_id: ITEM_ID }
   assert.equal(workChange({ tool, input, resultText: JSON.stringify({ claim_success: false, id: ITEM_ID }), isError: false }), null)
-  assert.equal(workChange({ tool, input, resultText: JSON.stringify({ error: 'Action item is already claimed by another agent', code: 'already_claimed' }), isError: false }), null)
-  assert.equal(workChange({ tool, input, resultText: 'Action item is claimed by another agent', isError: true }), null)
-  assert.equal(workChange({ tool: 'mcp__plugin_devspec_devspec__get_action_item', input, resultText: '{}', isError: false }), null)
+  assert.equal(workChange({ tool, input, resultText: JSON.stringify({ error: 'Task is already claimed by another agent', code: 'already_claimed' }), isError: false }), null)
+  assert.equal(workChange({ tool, input, resultText: 'Task is claimed by another agent', isError: true }), null)
+  assert.equal(workChange({ tool: 'mcp__plugin_devspec_devspec__get_task', input, resultText: '{}', isError: false }), null)
 })

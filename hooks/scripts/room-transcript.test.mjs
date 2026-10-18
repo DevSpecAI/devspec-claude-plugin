@@ -567,7 +567,7 @@ describe('the wake points at the transcript (item 7fe8e3d1)', () => {
 })
 
 describe('what the session produced and referenced', () => {
-  const item = (status, over = {}) => ({ kind: 'action_item', id: id(500), title: 'Detach asks first', status, relation: 'produced', creator: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' }, ...over })
+  const item = (status, over = {}) => ({ kind: 'task', id: id(500), title: 'Detach asks first', status, relation: 'produced', creator: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' }, ...over })
   const list = (entries, status = 'available') => ({
     version: 1, advisory: true, status, as_of: at(1), revision: status === 'available' ? `sha256:${'a'.repeat(64)}` : null, entries: status === 'available' ? entries : [], truncated: false,
   })
@@ -595,9 +595,9 @@ describe('what the session produced and referenced', () => {
   const events = (list, status = 'available', revision = `sha256:${'e'.repeat(64)}`) => ({
     version: 1, advisory: true, status, as_of: at(50), revision: status === 'unavailable' ? null : revision, events: status === 'available' ? list : [], truncated: false,
   })
-  const produced = { id: `produced:action_item:${id(500)}`, at: at(10), kind: 'action_item', record_id: id(500), event: 'produced', actor: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' } }
-  const moved = { id: 'lifecycle:10000000-0000-4000-8000-000000000777', at: at(20), kind: 'action_item', record_id: id(500), event: 'lifecycle_changed', from: 'open', to: 'implemented' }
-  const done = { id: 'lifecycle:10000000-0000-4000-8000-000000000778', at: at(30), kind: 'action_item', record_id: id(500), event: 'lifecycle_changed', from: 'implemented', to: 'done' }
+  const produced = { id: `produced:task:${id(500)}`, at: at(10), kind: 'task', record_id: id(500), event: 'produced', actor: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' } }
+  const moved = { id: 'lifecycle:10000000-0000-4000-8000-000000000777', at: at(20), kind: 'task', record_id: id(500), event: 'lifecycle_changed', from: 'open', to: 'implemented' }
+  const done = { id: 'lifecycle:10000000-0000-4000-8000-000000000778', at: at(30), kind: 'task', record_id: id(500), event: 'lifecycle_changed', from: 'implemented', to: 'done' }
 
   it('keeps the server history of what happened, append-only, with when it happened', () => {
     const dir = tmpDir()
@@ -636,15 +636,15 @@ describe('what the session produced and referenced', () => {
     state.activity = {
       seen: [{ ...item('open') }],
       events: [
-        { seen_at: at(5), event: 'listed', kind: 'action_item', id: id(500), title: 'Detach asks first', relation: 'produced', status: 'open' },
-        { seen_at: at(6), event: 'status_changed', kind: 'action_item', id: id(500), title: 'Detach asks first', from: 'open', to: 'done' },
+        { seen_at: at(5), event: 'listed', kind: 'task', id: id(500), title: 'Detach asks first', relation: 'produced', status: 'open' },
+        { seen_at: at(6), event: 'status_changed', kind: 'task', id: id(500), title: 'Detach asks first', from: 'open', to: 'done' },
       ],
       read_at: at(6),
       available: true,
     }
     fs.writeFileSync(statePath, JSON.stringify(state))
     const view = sessionActivityView(loadTranscriptStore(CONN, SESSION, { dir }))
-    assert.deepEqual(view.items, [{ kind: 'action_item', id: id(500), title: 'Detach asks first', relation: 'produced', creator: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' } }])
+    assert.deepEqual(view.items, [{ kind: 'task', id: id(500), title: 'Detach asks first', relation: 'produced', creator: { kind: 'agent', label: 'Pi · Racing Gecko · Ali Price' } }])
     assert.deepEqual(view.events, [])
     assert.equal(JSON.stringify(view).includes('seen_at'), false)
   })

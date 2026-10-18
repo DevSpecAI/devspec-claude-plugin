@@ -6,15 +6,15 @@ Once the plugin is configured, start Claude Code in your project folder and it c
 
 [DevSpec](https://devspec.ai) is where your team, your knowledge and your agents build software together, made for AI-native development from the ground up.
 
-Bring your team's DevSpec work into Claude Code — and drive Claude from your browser or phone. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can implement the action-item work you request and report back — and so you can steer a Claude Code session running on your machine from anywhere.
+Bring your team's DevSpec work into Claude Code — and drive Claude from your browser or phone. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can implement the task work you request and report back — and so you can steer a Claude Code session running on your machine from anywhere.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## What you can do with it
 
 - **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread; only the owner or a server-authorized delegate can send an exactly addressed command. → [Remote control](#-drive-a-session-from-devspec-remote-control)
-- **Work a task end to end.** Point Claude at an action item and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
-- **Work an explicit batch in order.** Ask Claude in a conversation to work named action items; it reserves the requested order, then claims and implements them one by one.
+- **Work a task end to end.** Point Claude at a task and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
+- **Work an explicit batch in order.** Ask Claude in a conversation to work named tasks; it reserves the requested order, then claims and implements them one by one.
 - **Share material progress in the room.** For genuinely multi-phase work, Claude can maintain one revisioned session plan that every attached participant can follow and a reconnecting agent can resume. Routine read-only investigation stays plan-free.
 - **Small conveniences.** Create tasks, make tracked commits, and ask DevSpec's docs questions without leaving the terminal.
 
@@ -92,7 +92,7 @@ It only connects in folders that belong to a DevSpec project, meaning a repo you
 /devspec:devspec.remote
 ```
 
-This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped automation runs may still target the connection through their own validated claim/report path.
+This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive task assignments. Separately typed owner-scoped automation runs may still target the connection through their own validated claim/report path.
 
 **Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
 
@@ -142,10 +142,10 @@ ask for what you want in plain language.
 ### Work on a single task
 
 ```
-Work on DevSpec action item 4f2a
+Work on DevSpec task 4f2a
 ```
 
-Because the conversation explicitly asked for action-item work, Claude reserves it
+Because the conversation explicitly asked for task work, Claude reserves it
 so no other agent takes it mid-run, then claims it. The served
 `devspec://product/implementation-contract` supplies the current lifecycle rules for
 isolation, implementation, verification, commits and reporting; the plugin does not

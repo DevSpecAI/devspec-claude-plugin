@@ -56,7 +56,7 @@ test('the line appears when the conversation connects, follows a claim, and says
   expect(lines.at(-1)).toBe('Cosmic Raven')
   expect(toasts).toEqual(['Connected to DevSpec as Cosmic Raven.'])
 
-  await $.tool.call({ tool: 'mcp__plugin_devspec_devspec__claim_work_item', action_item_id: ITEM_ID, agent_branch: 'b' })
+  await $.tool.call({ tool: 'mcp__plugin_devspec_devspec__claim_work_item', task_id: ITEM_ID, agent_branch: 'b' })
   expect(lines.at(-1)).toBe('Cosmic Raven · working on c6dcb524')
 
   files.set(CONNECTION, JSON.stringify({ ...connected, enabled: false, ended_from_ui: true, end_reason: 'ui' }))

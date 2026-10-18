@@ -261,7 +261,7 @@ describe('the pre-post check (PreToolUse on post_session_message)', () => {
   })
 
   it('looks only at room posts', () => {
-    assert.equal(prePost(makeHome([msg()]), hookInput('mcp__plugin_devspec_devspec__get_action_item')), null)
+    assert.equal(prePost(makeHome([msg()]), hookInput('mcp__plugin_devspec_devspec__get_task')), null)
     assert.ok(prePost(makeHome([msg()]), hookInput('mcp__devspec__post_session_message')), 'either server name')
   })
 

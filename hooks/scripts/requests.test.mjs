@@ -370,7 +370,7 @@ describe('stamping a DevSpec write', () => {
 
   it('stamps nobody\'s request as none, so DevSpec records the agent\'s own initiative', () => {
     const home = homeWith({ op: 'current', ref: NO_REQUEST })
-    assert.equal(stampRequest('update_action_item', {}, CONN, null, { home }).args.request_ref, NO_REQUEST)
+    assert.equal(stampRequest('update_task', {}, CONN, null, { home }).args.request_ref, NO_REQUEST)
   })
 
   it('never lets the model state attribution: a request_ref it wrote is replaced by the host\'s, or dropped', () => {
@@ -395,9 +395,9 @@ describe('stamping a DevSpec write', () => {
 
   it('never refuses a read, or a write that already cites its work or command', () => {
     const home = homeWith(openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B })
-    assert.ok(stampRequest('get_action_item', {}, CONN, null, { home }).args)
+    assert.ok(stampRequest('get_task', {}, CONN, null, { home }).args)
     assert.ok(stampRequest('record_implementation', { work_claim_ref: 'x' }, CONN, null, { home }).args)
-    assert.ok(stampRequest('update_action_item', { provenance_ref: DELIVERY_B }, CONN, null, { home }).args)
+    assert.ok(stampRequest('update_task', { provenance_ref: DELIVERY_B }, CONN, null, { home }).args)
   })
 
   it('covers exactly the DevSpec tools that take a request', () => {

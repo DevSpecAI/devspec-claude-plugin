@@ -23,8 +23,8 @@ describe('current Claude authority and work-acquisition prose', () => {
     const allowedTools = command.match(/^allowed-tools: (.+)$/m)?.[1] ?? ''
     // Located by heading TEXT, not its ordinal: a section added above this one must not
     // silently empty the slice and pass every assertion below on an empty string.
-    const workSection = command.slice(command.indexOf('Working action items when asked'))
-    assert.ok(command.includes('Working action items when asked'), 'work section must exist')
+    const workSection = command.slice(command.indexOf('Working tasks when asked'))
+    assert.ok(command.includes('Working tasks when asked'), 'work section must exist')
 
     assert.match(command, /devspec:\/\/product\/remote-ingress-contract/)
     assert.match(allowedTools, /mcp__devspec__claim_automation_run/)
@@ -32,7 +32,7 @@ describe('current Claude authority and work-acquisition prose', () => {
     assert.match(command, /Preserve the command's requester attribution/)
     assert.match(command, /A sessionless connection has no conversation answer path/)
     assert.match(workSection, /Nothing is ever sent work/)
-    assert.match(workSection, /Only acquire action-item work when a canonical conversation explicitly asks/)
+    assert.match(workSection, /Only acquire task work when a canonical conversation explicitly asks/)
     assert.ok(workSection.indexOf('reserve_work_items') < workSection.indexOf('claim_work_item'))
     assert.match(workSection, /devspec:\/\/product\/implementation-contract/)
     assert.match(workSection, /separately typed, exactly addressed `automation_run` path/)
@@ -76,7 +76,7 @@ describe('current Claude authority and work-acquisition prose', () => {
     assert.match(currentDocs, /Typed host controls|typed controls/)
     assert.match(currentDocs, /owner-scoped automation runs/)
     assert.match(currentDocs, /devspec:\/\/product\/implementation-contract/)
-    assert.match(readme, /Sessionless means available; it does not receive action-item assignments/)
+    assert.match(readme, /Sessionless means available; it does not receive task assignments/)
     assert.match(readme, /owner or a server-authorized delegate[^\n]*exactly addressed command/)
 
     assert.doesNotMatch(currentDocs, /receives dispatches \/ assignments/i)

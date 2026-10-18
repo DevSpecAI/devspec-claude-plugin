@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.47.0 — Tasks cutover candidate (activation held)
+
+- Tool names, claim/result readers, remote instructions and status projections use the shared Tasks contract without old-tool aliases. Existing UUID claim records and `[devspec:<id>]` commit references are preserved.
+- Plugin, marketplace and request-header versions move together so the installed version-keyed cache can refresh.
+- Install only with the matching server during the coordinated pause. Refresh the configured marketplace/plugin through Claude Code, reload plugins and verify the running cache version and room connection before resuming work. A source checkout change alone does not update an installed copy.
+
 ## 0.46.3 - 2026-10-17
 
 - Claude makes any decision you could make in DevSpec's Review for you, as soon as your request is clear: accepting or declining a proposed change (new: `decide_proposal`), answering on work that would undo a decision, saying a flagged record is still accurate, or resolving a duplicate. It warns you once, up front, only if you seem unaware of a significant consequence, and never asks you to confirm again. It then tells you what happened and what you can do next.

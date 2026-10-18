@@ -6,7 +6,7 @@ allowed-tools: Bash, mcp__plugin_devspec_devspec__manage_plan, mcp__devspec__man
 
 # Shared session plans
 
-Use the served `devspec://product/implementation-contract` → `work_entry_contract` to decide whether work is an action item, a session plan, both, or neither. Do not copy or infer that authority matrix here.
+Use the served `devspec://product/implementation-contract` → `work_entry_contract` to decide whether work is a task, a session plan, both, or neither. Do not copy or infer that authority matrix here.
 
 The threshold is deliberately high. Routine read-only investigation never warrants a plan. For material multi-phase shared progress, create one plan once; do not restart or duplicate it. Keep milestones outcome-shaped and advance only at meaningful phase boundaries.
 
@@ -30,4 +30,4 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/devspec-plan.mjs" use --connection-id 
 - Every existing-plan mutation uses `expected_revision`. Cross-plan work and `adopt` also require explicit `plan_id`; adoption is only for an orphaned same-owner plan in the same session.
 - Active room projections are authoritative inventory but advisory read-awareness only. Another owner or agent's plan may be read with `list`/`get`; its presence grants no mutation or execution authority.
 
-Plan calls are coordination, not product-work evidence. They stay outside action-item mutation claim enforcement and cannot create claim/provenance evidence or replace `reserve_work_items`, `claim_work_item`, or `record_implementation` when the served implementation contract requires those operations.
+Plan calls are coordination, not product-work evidence. They stay outside task mutation claim enforcement and cannot create claim/provenance evidence or replace `reserve_work_items`, `claim_work_item`, or `record_implementation` when the served implementation contract requires those operations.

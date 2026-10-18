@@ -76,7 +76,7 @@ Because the plugin monitor already delivers zero-turn connect and zero-cost idle
 5. Model acts; canonical conversation answers go through `post_session_message({ connection_id })`. A sessionless connection has no conversation answer path, and task progress is not a substitute.
 6. Stop hook updates busy/heartbeat only — **does not** full-mirror assistant text.
 
-Action-item work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named task work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `automation_run` records remain separate and use only their automation claim/report path.
+Task work is never delivered by connection availability or dispatch. Only when a canonical conversation explicitly requests named task work does Claude call `reserve_work_items` and then `claim_work_item` in order. The served `devspec://product/implementation-contract` governs the lifecycle. Explicit owner-scoped `automation_run` records remain separate and use only their automation claim/report path.
 
 ## Directed-question answers (item `54b63e47`)
 
@@ -132,7 +132,7 @@ Design rules for anyone editing it:
 - **Keep the pump architecture.** `devspec-remote-poll.mjs` → durable JSONL inbox → `devspec-remote-wait.mjs` → Monitor, including byte-offset resume semantics. The byte-offset cursor is what makes a re-arm after a bounded expiry lossless.
 - Keep three clocks distinct: `cursor_v2` advances the live stream, `window.next_cursor` is persisted/drained only as `catch_up_cursor`, and `dispatch_cursor` advances only after every offered automation is durable.
 - Remote-ingress policy, including delegated project scope, is authoritative at `devspec://product/remote-ingress-contract`; validate and surface the server instruction verbatim rather than restating mutable wording here.
-- Action-item work acquisition and execution are authoritative at `devspec://product/implementation-contract`; teach only the conversation-requested reserve-then-claim order here.
+- Task work acquisition and execution are authoritative at `devspec://product/implementation-contract`; teach only the conversation-requested reserve-then-claim order here.
 
 ### Conditional tiers and bounded reads
 

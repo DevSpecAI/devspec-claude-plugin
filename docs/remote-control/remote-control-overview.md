@@ -22,7 +22,7 @@ is authoritative at
 **`devspec://product/remote-ingress-contract`**. Operational docs point there rather
 than copying version-sensitive rules.
 
-Action-item acquisition and execution are governed by the served
+Task acquisition and execution are governed by the served
 **`devspec://product/implementation-contract`**. Nothing routes task work to an
 available connection: only when a canonical conversation asks for named item work does
 the agent reserve the requested order, then claim each reserved item as it reaches it.
@@ -50,7 +50,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 3. Host plugin receives it via `poll_connection`.
 4. Host delivers it to the model (wake **or** inject — family-specific).
 5. Model works on the machine. If the command asks for task work, it reserves the named items and then claims them in order under the served implementation contract.
-6. Reply returns to the DevSpec session (model post **or** bridge/plugin mirror — family-specific). Action-item progress is never a substitute for this conversational answer.
+6. Reply returns to the DevSpec session (model post **or** bridge/plugin mirror — family-specific). Task progress is never a substitute for this conversational answer.
 
 ## What not to break
 
@@ -64,7 +64,7 @@ Same MCP verbs and delivery rules. Different laptop plumbing. **Do not port one 
 ## Canonical pointers
 
 - Canonical remote ingress: `devspec://product/remote-ingress-contract`
-- Action-item implementation: `devspec://product/implementation-contract`
+- Task implementation: `devspec://product/implementation-contract`
 - Delivery contract: `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md`
 - Activity / pickup lease: `docs/REMOTE-CONTROL-ACTIVITY-CONFORMANCE.md`
 - Plugin independence: each host owns its scripts; share the MCP contract and these primers, not a cross-repo sync pipeline

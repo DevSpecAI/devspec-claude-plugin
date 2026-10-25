@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.47.2 - 2026-10-25
+
+- Updated `skills/devspec-remote-command/SKILL.md` with task field partitioning guidance for `create_task` and `update_task`: place why the task exists, speaker attribution/quotes, and desired outcome in `intent`; write the complete product behaviour and architectural or technical mechanism in natural English in `description` (since duplicate and reversal screening reads `title`, `intent`, and `description`, never `ai_instructions`); keep `acceptance_criteria` as plain-prose checkable conditions; and place raw file paths, line numbers, code snippets, CSS classes, and edit recipes in `ai_instructions`.
+
 ## 0.47.0 — Tasks cutover candidate (activation held)
 
 - Tool names, claim/result readers, remote instructions and status projections use the shared Tasks contract without old-tool aliases. Existing UUID claim records and `[devspec:<id>]` commit references are preserved.

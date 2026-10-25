@@ -113,21 +113,18 @@ Body = the answer to the latest command. Lead with it. No preamble, no thinking,
 Hooks are mechanical only: a prompt typed in this terminal may be mirrored as a bubble; **Stop does not post your answer**. You do.
 
 **`complete_turn: true` means the turn is OVER — only pass it on your final
-answer.** A mid-turn post (progress on a long brief, an answer to one question
-while other work continues) must omit it. Passed early, it shows you Idle while
-you still work; left off your final answer, the command stays
-open as work you still owe. Only you know when your turn ends.
+answer.** A mid-turn post (progress on a long brief, or answering one question
+while work continues) must omit it. Passed early, it shows you Idle while
+you still work; left off your final answer, the command stays open.
 
-**Waiting on background work.** To wait, start the job with
-`run_in_background`: it wakes you when it exits. Claude Code refuses a standalone
-foreground `sleep`. While work you started for a command is still running in
-the background (a background command, a subagent, a workflow), ending your turn
-does not end the command: the Stop hook keeps it open, so what you do when that
-work wakes you still carries that command and its requester.
-Finish as usual, with the answer posted with `connection_id` and
-`complete_turn: true`. Something that finishes after you already gave your final
-answer (a deploy you were watching) wakes you as a new turn: post what happened
-the same way, and it lands in the room under your name as a new message.
+**Waiting on background work.** Start background jobs with
+`run_in_background`: they wake you on exit (Claude Code refuses foreground `sleep`).
+While work you started for a command is running in the background (command,
+subagent, workflow), ending your turn does not end the command: the Stop hook
+keeps it open so the wake still carries that command and its requester.
+Finish with your answer posted with `connection_id` and `complete_turn: true`.
+Work finishing after your final answer wakes you as a new turn: post what
+happened the same way.
 
 **Whose request a write serves.** The plugin tells DevSpec which request each
 write serves: the command or typed prompt that woke you, and, when a background
@@ -160,6 +157,7 @@ For the requested item or ordered items:
 3. **Waiting for an OK.** A claim or item with `waiting_for_ok` ("Waiting for <name>'s OK", or "Experiment") is built and pushed on its own branch, never merged into the tracking branch, and recorded as usual (`core.waiting-work-stays-on-its-branch`). Tell the person in the label's words, and say an experiment is not agreed to land until it has the OK.
 4. Never answer on a decision to clear your own work's wait: the answer is the person's (section 7).
 5. Follow the served **`devspec://product/implementation-contract`** for lifecycle, isolation, decision boundaries, verification, commit provenance, reporting and completion.
+6. **Task fields (`create_task` / `update_task`).** Put *why*, speaker attribution/quotes, and desired outcome in `intent`; complete product behaviour and architectural/technical mechanism in natural English in `description` (screening reads `title`, `intent`, and `description`, never `ai_instructions`); plain-prose checkable conditions in `acceptance_criteria`; and raw file paths, line numbers, code snippets, CSS classes, and edit recipes in `ai_instructions`.
 
 An automation run is not task work. It stays on the separately typed, exactly addressed `automation_run` path and uses `claim_automation_run` / `record_automation_run`, never `reserve_work_items` or `claim_work_item`.
 

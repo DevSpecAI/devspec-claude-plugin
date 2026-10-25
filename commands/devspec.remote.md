@@ -33,7 +33,7 @@ Map what the user asked for onto flags — that mapping is the only judgement he
 | `--private` | `--private` | Only with `--new`. Alone or with `--session` it does nothing — say so rather than ignoring it. |
 | `--name "…"` | `--name "…"` | Choose the codename instead of letting the server mint one. |
 
-Pass `--owner-pid "$PPID"` exactly as written. Never hunt for the pid yourself (item `3cddb3b4`); on Windows `$PPID` is not a real Win32 pid and the script self-resolves the true owner.
+Pass `--owner-pid "$PPID"` exactly as written. Never hunt for the pid yourself; on Windows `$PPID` is not a real Win32 pid and the script self-resolves the true owner.
 
 **Preserve the fast path.** The script resolves folder facts and lets the server arbitrate scope; an explicit `--project` is the person's choice, not a guess. Do not list projects or ask a question before an ordinary connect that already resolves. Do not implement remote/pin precedence in the model.
 
@@ -71,7 +71,7 @@ Connect prints the exact command. Run it with the **`Monitor`** tool, descriptio
 node ".../devspec-remote-wait.mjs" --connection-id <uuid> --owner-pid <pid> --stream --from-end
 ```
 
-**Never** `Bash` with `run_in_background` — on either path below. A background task wakes you by *exiting*, which ties the listener to the turn; this host reaps background tasks at turn end, so the agent re-armed once per turn for ever (item `be0a929a`). `Monitor` wakes you by printing a line instead, so nothing has to die.
+**Never** `Bash` with `run_in_background` — on either path below. A background task wakes you by *exiting*, which ties the listener to the turn; this host reaps background tasks at turn end, so the agent would have to re-arm once per turn. `Monitor` wakes you by printing a line instead, so nothing has to die.
 
 **Two `Monitor` schemas exist and the host chooses one per session — read the one you were served.**
 
@@ -103,7 +103,7 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/remote-control-state.mjs" status \
 
 It alone translates a human UI/local stop or dead owner into `stand_down`; every unproven/recoverable server end says `reconnect`. The command prints presence booleans only—never the bearer or hidden plan capability.
 
-Never infer a UI End from silence — that inference took every agent offline during a redeploy (brief `e691c68a`).
+Never infer a UI End from silence.
 
 **Re-arming always uses `--pending`,** never `--from-end`: `--pending` drains mail already in the inbox, `--from-end` jumps the cursor to EOF and permanently drops it.
 
@@ -123,7 +123,3 @@ The status block already gave you this connection's `connection_id` and printed 
 ## 4. Stopping
 
 `/devspec.remote-stop` — detaches and marks the connection offline immediately. Simply exiting Claude leaves a stale chip for ~90s until the poller notices its owner is gone.
-
----
-
-Deeper background — the poller and wait protocol, the delivery contract, failure history and the no-plugin fallback — is in `docs/remote-control/`. It is not needed to run this command.

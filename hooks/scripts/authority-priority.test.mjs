@@ -64,20 +64,14 @@ describe('current Claude authority and work-acquisition prose', () => {
     }
   })
 
-  it('keeps user-facing and maintainer docs free of sessionless assignment claims', () => {
+  it('keeps user-facing docs free of sessionless assignment claims', () => {
     const readme = source('README.md')
-    const overview = source('docs/remote-control/remote-control-overview.md')
-    const claude = source('docs/remote-control/remote-control-claude-code.md')
-    const independence = source('docs/PLUGIN-INDEPENDENCE.md')
-    const currentDocs = [readme, overview, claude, independence].join('\n')
+    const remoteCmd = source('commands/devspec.remote.md')
+    const currentDocs = [readme, remoteCmd].join('\n')
 
-    assert.match(currentDocs, /server-only owner\/delegated exact-target authority/)
-    assert.match(currentDocs, /immutable requester provenance/)
-    assert.match(currentDocs, /Typed host controls|typed controls/)
-    assert.match(currentDocs, /owner-scoped automation runs/)
-    assert.match(currentDocs, /devspec:\/\/product\/implementation-contract/)
-    assert.match(readme, /Sessionless means available; it does not receive task assignments/)
-    assert.match(readme, /owner or a server-authorized delegate[^\n]*exactly addressed command/)
+    assert.match(readme, /outside any session/)
+    assert.match(readme, /you or an authorized teammate asks it to do something/)
+    assert.match(remoteCmd, /sessionless means available without a chat transcript, not waiting for task work/i)
 
     assert.doesNotMatch(currentDocs, /receives dispatches \/ assignments/i)
     assert.doesNotMatch(currentDocs, /assignment protocol/i)

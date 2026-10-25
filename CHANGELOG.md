@@ -1,14 +1,26 @@
 # Changelog
 
+## 0.47.5 - 2026-10-25
+
+- Updated the README with step-by-step installation, token configuration, permission-bypass guidance for remote phone and voice control, project selection, and command reference matching the in-app setup flow, and removed internal engineering notes from the published repository tree.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.47.4 - 2026-10-25
+
+- Updated task creation and editing guidance so task `intent` records synthesized rationale rather than conversational go-ahead quotes.
+
+## 0.47.3 - 2026-10-25
+
+- Enforced single-subject atomicity in task and memory guidance so distinct deliverables or decisions are recorded as separate linked records rather than bundled together.
+
 ## 0.47.2 - 2026-10-25
 
 - Updated `skills/devspec-remote-command/SKILL.md` with task field partitioning guidance for `create_task` and `update_task`: place why the task exists, speaker attribution/quotes, and desired outcome in `intent`; write the complete product behaviour and architectural or technical mechanism in natural English in `description` (since duplicate and reversal screening reads `title`, `intent`, and `description`, never `ai_instructions`); keep `acceptance_criteria` as plain-prose checkable conditions; and place raw file paths, line numbers, code snippets, CSS classes, and edit recipes in `ai_instructions`.
 
-## 0.47.0 — Tasks cutover candidate (activation held)
+## 0.47.0 - 2026-10-22
 
-- Tool names, claim/result readers, remote instructions and status projections use the shared Tasks contract without old-tool aliases. Existing UUID claim records and `[devspec:<id>]` commit references are preserved.
-- Plugin, marketplace and request-header versions move together so the installed version-keyed cache can refresh.
-- Install only with the matching server during the coordinated pause. Refresh the configured marketplace/plugin through Claude Code, reload plugins and verify the running cache version and room connection before resuming work. A source checkout change alone does not update an installed copy.
+- Tool names, claim/result readers, remote instructions and status projections use the shared Tasks contract. Existing UUID claim records and `[devspec:<id>]` commit references are preserved.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
 
 ## 0.46.3 - 2026-10-17
 
@@ -65,7 +77,7 @@
 
 - DevSpec now records whose request each piece of Claude's work serves, even when it happens later. A background command, a subagent, a workflow, a monitor, a scheduled wake-up or a loop that Claude started for someone carries on that person's request: what Claude does when it wakes it up is credited to them, and to your terminal when you typed the request here. Something Claude started that nobody asked for is recorded as Claude's own initiative. When the plugin cannot tell, it says nothing and DevSpec works it out as before: it never guesses.
 - Two people's requests on one Claude are never credited to each other. If a second person's message reaches Claude while it is working on the first, Claude has to say which request a DevSpec change is for before DevSpec will record it. The plugin tells it the one command to run.
-- Needs the DevSpec server from item 7a4d04fd. On an older server the plugin keeps working as before.
+- On an older server the plugin keeps working as before.
 - Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
 
 ## 0.44.1 - 2026-10-11
@@ -235,7 +247,7 @@
 
 ## 0.32.23 - 2026-10-01
 
-- Changed: DevSpec's personal Coding agents settings page is now **Agents**, at `/settings/agents`. The plugin now links to it instead of pointing you at "You → Coding agents", a menu path that doesn't appear until you are already in Settings. The warning shown when two DevSpec keys on this machine disagree, and the error shown when neither key owns a connection, both link the Agents page on the DevSpec you are connected to (`app.devspec.ai`, or `app.devspecstaging.com` for a plugin pointed at staging). The README and the token prompt link the production page.
+- Changed: DevSpec's personal Coding agents settings page is now **Agents**, at `/settings/agents`. The plugin now links to it instead of pointing you at "You → Coding agents", a menu path that doesn't appear until you are already in Settings. The warning shown when two DevSpec keys on this machine disagree, and the error shown when neither key owns a connection, both link the Agents page on the DevSpec you are connected to (`app.devspec.ai`). The README and the token prompt link the production page.
 - Changed: the per-project page is now named **Project Settings → Agents**, and the README says "agent" where it said "coding agent" or "local agent".
 - Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to get the new messages. Nothing about how the plugin behaves has changed.
 
@@ -315,7 +327,7 @@ The knowledge-capture guidance your agent reads now draws one more line: what sh
 
 ## 0.32.9 - 2026-09-26
 
-- Added: a test that reads DevSpec's live tool list from a devspecv2 checkout
+- Added: a test that reads DevSpec's live tool list from a server checkout
   beside this repo and fails if anything in this plugin names a DevSpec tool
   the server does not have. A tool renamed or retired on the server is then
   caught here, before Claude is told to call it in someone's session. With no
@@ -701,7 +713,7 @@ Nothing could tell two of the owner's own agents apart. `commits` carries only t
 author, which is the machine's git config — every agent on one machine commits as the
 same person. So an action item auto-created from an unlinked commit could not be
 attributed to the agent that did the work, and nothing could be told that its commit
-had produced an item (item `27fab61a`).
+had produced an item.
 
 The observation was never missing. This plugin already watched every commit go past in
 `PreToolUse`; it just used that only to gate, and discarded it whenever the gate did
@@ -766,7 +778,7 @@ which repository the commit lands in.
 This **deliberately reverses two assertions** that previously required `git add -A &&
 git commit -m "x"` to be unreadable ("prefix is not cd", "compound"). The reversal is
 recorded in the test with the reasoning, so it reads as a decision rather than an
-erosion of the fail-open doctrine (item `e6873db2`).
+erosion of the fail-open doctrine.
 
 Still refused, and refusing still means allow: `npm test && git commit` (a test command
 can write the very file the commit will include), `make build`, any script, a bare
@@ -797,7 +809,7 @@ Measured on one repository's `staging` branch over 14 days: 343 non-merge commit
 carrying `[devspec:…]`, **59 without — and all 59 of them multi-line. Zero single-line
 commits escaped.** The deny path had had no opportunity to fire at all. The hole was
 documented as deliberate ("the analyzer reconciles it server-side"); what was not
-anticipated is that it is the *common* path rather than the edge case (item `022e487b`).
+anticipated is that it is the *common* path rather than the edge case.
 
 `heredocGitCommit` adds the two multi-line forms whose message is a **single-quoted**
 heredoc, where the shell expands nothing and the text is exactly the bytes between the
@@ -1011,13 +1023,7 @@ it.
 **One deliberate limitation, stated plainly:** a reference is checked for *shape*, not
 verified to exist. A correct short code with a wrong uuid suffix will pass this hook.
 Catching it would mean a network call and an auth dependency in front of every commit,
-for a case the server already resolves. The full capability table, including what
-Claude Code genuinely exposes and what it does not, is in
-[`docs/commit-provenance.md`](docs/commit-provenance.md).
-
-Implements ADR `71c23b46` under brief `e3d3b54f` (item `e21d7d4b`). The items that
-built the previous architecture — `cdd7a494`, `dfa86f3f`, `4910e673`, `730bf485` —
-remain accurate history; this supersedes their enforcement model, not their record.
+for a case the server already resolves.
 
 ## 0.15.4 - 2026-08-19
 
@@ -1257,8 +1263,7 @@ Cursor's plan mode from DevSpec, so that goes with it. If you want plan mode it
 should come back as a deliberate feature, not as a leftover.
 
 **The README's "Stage for Autopilot" section is also gone.** It described work
-being handed to an idle session — a dispatch model deleted some time ago
-(`13958ab4`). Nothing is ever sent work now: an agent reserves what it was asked
+being handed to an idle session — a dispatch model deleted some time ago. Nothing is ever sent work now: an agent reserves what it was asked
 to do.
 
 ## 0.13.0 - 2026-08-17
@@ -1321,9 +1326,8 @@ Connecting used to be something the model *performed*: check node, read the git 
 - **It decides nothing.** It sends the git remote and the folder pin up as facts and lets the server arbitrate scope — which is what lets a stale pin copied in with a template correct itself instead of hijacking a folder. The `list_projects` round-trip is gone entirely: the server resolves the project from the remote.
 - **Reconnecting no longer re-reads what you already know.** The connection state now retains the instruction-tier fingerprint, so a reconnecting conversation is told the tiers are unchanged instead of being handed all four again. Orientation reads are bounded and echo that fingerprint, so the same texts are never sent twice inside one connect — and the seed always reports how much of the room it saw, so a bound is never a silent truncation.
 - **`/devspec.work` points at the product contract** (`devspec://product/implementation-contract/{attended,unattended}`) instead of restating its rules. DevSpec owns what an implementation must do; the command file owns only the Claude Code mechanics for doing it here.
-- The long-form background — the poller and wait protocol, the failure history, the no-plugin fallback — moved to `docs/remote-control/`, where it is available when someone is debugging and absent when they are not.
 
-Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are untouched. Item `5a393e4c`.
+Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are untouched.
 
 ## 0.10.0 - 2026-08-14
 
@@ -1334,7 +1338,7 @@ Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wa
 - **The "Remote" badge is gone from the sessions list** (server side). How a session was opened is not a property worth labelling on every row; who is attached is already shown by the connection strip and the Agents page. The "Remote control" type filter still exists for anyone who wants to narrow to them.
 - **The "Private" badge now means what it says.** It was only ever drawn on remote-control rows, so a private ordinary session looked identical to a shared one. It now shows for any private session, whatever its type.
 
-Nothing about private sessions is removed — only the assumption that an agent wanted one. Item `32801088`; server side in DevSpecV2.
+Nothing about private sessions is removed — only the assumption that an agent wanted one.
 
 ## 0.9.0 - 2026-08-14
 
@@ -1345,13 +1349,11 @@ Nothing about private sessions is removed — only the assumption that an agent 
 - **The pin is passed as `pinned_project_id`, never as `project_id`.** They are not interchangeable. `project_id` is an explicit override that outranks a verified git remote; the pin is only a local assertion, and the server deliberately ranks it BELOW a remote it can verify. Commands send whichever signals they have and let the server arbitrate — precedence is never decided locally.
 - **A real remote always wins.** So a pin that arrives by copying a template or forking quietly stops mattering the moment the folder has its own repo, instead of hijacking it. And because the pin holds no file paths, moving or renaming the folder never breaks it.
 
-Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which was left at 0.8.0 by the previous release.
-
 ## 0.8.1 - 2026-08-14
 
 ### A quiet connection stays up while the host process is alive
 
-- **Removed the 72h idle-disconnect.** The poller no longer stamps `idle_timeout` and exits after three quiet days. A connection lives as long as its Claude Code process, unless you End it or run `/devspec:devspec.remote-stop`. Item `addbfdbf`.
+- **Removed the 72h idle-disconnect.** The poller no longer stamps `idle_timeout` and exits after three quiet days. A connection lives as long as its Claude Code process, unless you End it or run `/devspec:devspec.remote-stop`.
 
 ## 0.8.0 - 2026-08-11
 
@@ -1366,8 +1368,6 @@ Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which wa
 - **`fail_work_item` joins the remote allow-list** so a batch member that can't be done safely fails loudly and the batch continues, instead of stalling on a question nobody is there to answer.
 - The same deletion lands across the Cursor, OpenCode, Grok, Antigravity and Codex plugins under the same item, so the concept doesn't survive in one tool after leaving another.
 
-Item `3f2f390c`.
-
 ## 0.7.4 - 2026-08-07
 
 ### A screenshot can no longer go missing between the inbox and the agent
@@ -1377,8 +1377,6 @@ Item `3f2f390c`.
 - **The advisory tiers get the same treatment.** `owner_ambient` and `room_context` are room messages like any other and can carry a teammate's screenshot. They are still never acted on, but an agent reading the room can now open what the room was looking at.
 - **Materialisation is idempotent, which is load-bearing rather than tidy.** The wait script still runs it over everything it reads. Without a pass-through for its own descriptors it would look for a payload, find none, and drop the attachment — a worse bug than the one being fixed. It is asserted directly in the tests, and it is also what keeps inbox lines written by an **older** poller working, since a running poller keeps the code it started with until the agent is relaunched.
 - **The command doc now says attachments exist at all.** It never did — so the only record of the trap was one agent's private memory on one machine. It now states that a `delivery: "file"` path is part of the instruction, and that an ad-hoc inbox reader must print `attachments` alongside `content`.
-
-Item `b237de43` (the write half of `99165e12`). Claude Code plugin only — the other families are independent and are not being synced.
 
 ## 0.7.3 - 2026-08-04
 
@@ -1392,30 +1390,24 @@ DevSpec's `search_memories` (and `get_decisions` / `get_conventions`) changed to
 
 Nothing else needs reinstalling for the DevSpec-side change: MCP tool definitions come from the server, so a reconnect picks up the renamed `body` parameter and the now-required `title` on `record_memory`. **This release is required only because `allowed-tools:` lists ship inside the plugin.**
 
-Item `93a851b5`.
-
 ## 0.7.2 - 2026-08-02
 
 ### A connected agent no longer wakes itself up once a day for nothing
 
-- **Measured, not theorised.** The 24h cap fired on schedule two days running against a healthy owner-anchored stream. Each firing spent a model turn on a wake that carried no owner mail and a re-arm that changed nothing — and the host reported the non-zero exit as a failure on top of that. `be0a929a`'s own intent named this cost before it happened: *"in a metered product that is real money spent on zero work."*
+- **Measured, not theorised.** The 24h cap fired on schedule two days running against a healthy owner-anchored stream. Each firing spent a model turn on a wake that carried no owner mail and a re-arm that changed nothing — and the host reported the non-zero exit as a failure on top of that. *"in a metered product that is real money spent on zero work."*
 - **The cap was buying nothing there.** A deadline is a zombie backstop, not a policy. An owner-anchored arm already exits the moment the owning agent process goes, which is exactly the contract the poller has always run on with **no** time cap — it was at 2d+ uptime while this was written. So an anchored `--stream` arm now has no deadline at all.
 - **An arm that cannot anchor still keeps the cap**, because for that one the clock is the only remaining guarantee that it cannot outlive its owner. That is the case `remote-control-state.mjs` already refuses to start a *poller* in, and it must not be given up here either.
-- **The one-shot fallback keeps its cap unconditionally.** That asymmetry is deliberate: a one-shot arm is expected to be short-lived, so its 24h rollover is a rare edge case rather than a daily event, and exit-3-at-24h is a contract `d655b2a4` established on purpose.
-
-Item `be0a929a`.
+- **The one-shot fallback keeps its cap unconditionally.** That asymmetry is deliberate: a one-shot arm is expected to be short-lived, so its 24h rollover is a rare edge case rather than a daily event, and exit-3-at-24h is an intentional contract.
 
 ## 0.7.1 - 2026-08-01
 
 ### A 24-hour rollover no longer looks like a crash
 
-- **Observed in real use, one day after 0.7.0 shipped.** The wake stream hit its 24h cap exactly as designed, emitted its `listener_rollover` notice and exited 3 (non-terminal, "re-arm me"). The host then reported that as **"script failed (exit 3)"** — so a routine rollover reads, at a glance, like something broke. This is the same misreading `d655b2a4` was filed for, in new clothing: a non-terminal end that looks like an ending, which historically provokes the harmful reflex of re-registering a perfectly live connection.
+- **Observed in real use, one day after 0.7.0 shipped.** The wake stream hit its 24h cap exactly as designed, emitted its `listener_rollover` notice and exited 3 (non-terminal, "re-arm me"). The host then reported that as **"script failed (exit 3)"** — so a routine rollover reads, at a glance, like something broke. This is a non-terminal rollover that looked like an error: a non-terminal end that looks like an ending, which historically provokes the harmful reflex of re-registering a perfectly live connection.
 - **The rollover notice now says so explicitly** — that the host may label the exit a failure, that it is not one, and that nothing is lost because re-arming resumes from the same cursor. The exit table says the same, and to trust the event over the host's summary label. The truth goes where the agent actually reads it, rather than relying on it to interpret an exit code correctly.
 - No behaviour change: the cap, the exit code and the cursor are all unchanged.
 
 Also confirms 0.7.0 in the field: that stream ran a **full 24 hours** as a persistent monitor before its own cap ended it, across an entirely idle period, and the re-arm drained a cursor exactly level with the inbox — nothing skipped, nothing replayed.
-
-Item `be0a929a`.
 
 ## 0.7.0 - 2026-07-31
 
@@ -1427,8 +1419,6 @@ Item `be0a929a`.
 - **"Live" and "will actually wake up" stop being different promises** on this host: the listener's lifetime is now the session's lifetime. 0.6.6's honest **Not reading** signal stays exactly as it is, for any host that cannot hold a stream.
 - **No command is lost in the switch.** The inbox cursor is unchanged, and now advances only *after* a command has been handed over — so an interrupted delivery repeats rather than vanishes.
 - The one-shot behaviour remains available for hosts with no persistent monitor; drop `--stream` and it exits on the first command as before.
-
-Item `be0a929a` (related: `8b4ceaa3`, `d655b2a4`).
 
 ### Maintainers: plugin families are independent implementations now
 
@@ -1445,8 +1435,6 @@ Item `be0a929a` (related: `8b4ceaa3`, `d655b2a4`).
 - **Armed is proved by a live pid, never by a leftover file** — a hard-killed listener leaves its pidfile behind, and trusting that would report exactly the lie this is meant to catch.
 - **It will not cry wolf.** A missing pidfile only counts as evidence once this connection has armed a pidfile-writing wait at least once. Waits armed before that shipped never wrote one, so "no file" from them means "older build", not "deaf" — otherwise every healthy pre-upgrade agent would light up as Not reading at the very moment you were deciding whether to trust the new badge.
 
-Items `8b4ceaa3`, `d655b2a4`.
-
 ## 0.6.5 - 2026-07-30
 
 ### A remote agent can no longer go silently deaf while telling you it is fine
@@ -1457,8 +1445,6 @@ Items `8b4ceaa3`, `d655b2a4`.
 - **A blocked stop keeps you "working".** The turn genuinely has not ended, so the indicator stays on rather than reporting a finish that has not happened.
 - **A reaped or aged-out listener no longer reads as a dead connection.** The wait used to exit 1 both for "a human ended this" and for "my arm aged out" — and the documented response to exit 1 is *stop*, so an agent following the instructions correctly tore down a perfectly live connection on a 24-hour rollover. Non-terminal cases now exit **3**, meaning "re-arm me, nothing is wrong", and exit 1 is strictly "a human or the server ended this".
 - **The arming instructions now say not to pass a timeout**, since supplying a plausible-looking one was a way for an agent to manufacture this failure itself.
-
-Items `8b4ceaa3`, `d655b2a4`.
 
 > Note for maintainers: `devspec-remote-wait.mjs` is in the sync's UNIVERSAL list, so the next `sync-hooks` run would carry exit 3 to the other plugin families — whose exit tables still document only 0/1/2 and would misread it. Propagate the docs with the code. The `mirror-turn.mjs` change relies on Claude Code's Stop-hook decision control and is not portable as-is.
 >
@@ -1533,7 +1519,7 @@ Items `8b4ceaa3`, `d655b2a4`.
 - **Answers:** when attached, post via `post_session_message({ connection_id })` (server resolves current session / reattach-safe). Sessionless: assignment / `report_progress` only — never invent a room.
 - **Stop hooks:** busy/heartbeat + optional local_prompt only — **no** full assistant text as primary path (no dual writers).
 - **`/devspec.work --remote`:** defaults **sessionless**; optional `--session` / `--new` for a transcript.
-- **Delivery contract:** skills/commands align with DevSpecV2 `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md` (ADR b98a39a9).
+- **Delivery contract:** skills/commands align with the DevSpec remote-control delivery contract.
 
 ### Repo + plugin rename, token docs, and remote-control groundwork
 

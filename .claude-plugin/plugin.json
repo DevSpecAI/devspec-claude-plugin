@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "Connect Claude Code to DevSpec: pull a batch of tasks and work them, and drive sessions from the Agents page.",
-  "version": "0.47.7",
+  "version": "0.47.8",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -22,7 +22,7 @@
     "devspec_token": {
       "type": "string",
       "title": "DevSpec API token",
-      "description": "Your DevSpec API token with read_write scope. Create one on the Agents page in your DevSpec settings (https://app.devspec.ai/settings/agents): choose Connect a tool and pick Read & write. It starts with 'dvs_' and is account-wide — reuse the same token everywhere.",
+      "description": "Your DevSpec API token with read_write scope. Create one on DevSpec's Agent setup page (https://app.devspec.ai/settings/agents): choose Create your token and pick Read & write. It starts with 'dvs_' and is account-wide — reuse the same token everywhere.",
       "sensitive": true,
       "required": true
     },
@@ -47,7 +47,7 @@
       "url": "${user_config.devspec_mcp_url}?model_tools=heartbeat_connection,detach_connection",
       "headers": {
         "Authorization": "Bearer ${user_config.devspec_token}",
-        "x-devspec-plugin": "claude_code/0.47.7"
+        "x-devspec-plugin": "claude_code/0.47.8"
       }
     }
   },

@@ -64,15 +64,15 @@ export function devspecAppOrigin(mcpUrl) {
   return url.origin
 }
 
-/** The personal Agents settings page (where the account's key is revealed), on that deployment. */
+/** The personal Agent setup page (where the account's key is revealed), on that deployment. */
 export function agentsSettingsUrl(mcpUrl) {
   return `${devspecAppOrigin(mcpUrl)}/settings/agents`
 }
 
-/** How to settle two disagreeing keys, linking the Agents page on the host in use. */
+/** How to settle two disagreeing keys, linking the Agent setup page on the host in use. */
 export function tokensWarningFix(mcpUrl) {
   return (
-    `Open DevSpec's Agents page at ${agentsSettingsUrl(mcpUrl)} to reveal the key you want, ` +
+    `Open DevSpec's Agent setup page at ${agentsSettingsUrl(mcpUrl)} to reveal the key you want, ` +
     'then make the plugin key and the project .mcp.json key the same.'
   )
 }

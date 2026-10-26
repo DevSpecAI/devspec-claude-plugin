@@ -63,6 +63,14 @@ import { wakeNotice } from './room-unread.mjs'
 // can materialise at inbox-write time — see that module's header for why (b237de43).
 export { describeAttachment, materialiseAttachments, MAX_INLINE_ATTACHMENT_CHARS }
 
+/**
+ * Claude Code shows the model at most this many characters of each line a Monitor
+ * prints; the rest of the line is cut (item 725d18b2). Not ours to change, so every
+ * line this stream emits puts what a cut line must still say first, and says how long
+ * the cut part was (`body_chars`), with the whole command on its transcript line.
+ */
+export const HOST_NOTIFICATION_LINE_MAX_CHARS = 500
+
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const POLL_MS = 500

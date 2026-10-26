@@ -46,12 +46,23 @@ export const TIER_FIELDS = [
   ['project_agent_rules', 'Project agent rules (execution mechanics)'],
 ]
 
+/**
+ * The tiers that govern the whole run, which is what every rendered rules file is
+ * told to the model as ("follow it for the rest of this conversation"). The owner's
+ * response style is stored but never rendered here: reply style belongs to whoever
+ * sent each command and arrives with that command (`sender_response_style`), so a
+ * run-wide file labelled "in force" would apply the owner's style to a teammate's
+ * reply. The per-command snapshot always left it out; the connect status block and
+ * the first-command pointer did not, until item 9a4c0d6a.
+ */
+export const RUN_TIER_FIELDS = TIER_FIELDS.filter(([field]) => field !== 'owner_custom_instructions')
+
 export function renderTiers(payload) {
   if (payload?.instructions_unchanged) {
     return '\nInstructions: unchanged since this conversation last connected — the tiers you already hold still apply.\n'
   }
   const parts = []
-  for (const [field, label] of TIER_FIELDS) {
+  for (const [field, label] of RUN_TIER_FIELDS) {
     const value = payload?.[field]
     if (typeof value === 'string' && value.trim()) {
       parts.push(`\n### ${label}\n\n${value}\n`)
@@ -110,8 +121,8 @@ export function captureInstructionContext(connectionId, payload, {dir=CONNECTION
   if(payload?.instructions_unchanged || !TIER_FIELDS.some(([key])=>Object.hasOwn(payload??{},key))) return null
   const snapshot=tierSnapshot(connectionId,payload,dir,new Date())
   // Render this response's snapshot, not a mutable cache another process can replace.
-  // Response style is attributed to each command's sender, never this cached owner.
-  const text=renderTiers(Object.fromEntries(Object.entries(snapshot.texts).filter(([key])=>key!=='owner_custom_instructions')))
+  // renderTiers leaves out response style, which belongs to each command's sender.
+  const text=renderTiers(snapshot.texts)
   const file=saveTiersText(connectionId,text,{dir})
   writePrivateJson(tiersPath(connectionId,dir),snapshot)
   return file

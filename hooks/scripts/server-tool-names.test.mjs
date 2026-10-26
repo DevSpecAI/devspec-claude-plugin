@@ -59,6 +59,7 @@ function serverToolList(root) {
   const script = `import { getMcpAllTools } from ${JSON.stringify(path.join(root, DEFINITIONS))}
 process.stdout.write(JSON.stringify(getMcpAllTools().map((tool) => ({
   name: tool.name,
+  params: Object.keys(tool.inputSchema?.properties ?? {}),
   requestRef: Boolean(tool.inputSchema?.properties?.request_ref),
 }))))`
   const out = execFileSync(tsx, ['--tsconfig=apps/web/tsconfig.json', '-e', script], {
@@ -72,6 +73,16 @@ process.stdout.write(JSON.stringify(getMcpAllTools().map((tool) => ({
 
 function serverToolNames(root) {
   return new Set(serverToolList(root).map((tool) => tool.name))
+}
+
+/**
+ * Every argument name any server tool takes. Prose that tells an agent which field to
+ * fill ("connect them via `parent_task_id`") reads exactly like prose naming a tool, so
+ * the scan matches it. A name the server takes as an argument is not a missing tool;
+ * a name that is neither a tool nor an argument still fails (item 9a4c0d6a).
+ */
+function serverParamNames(root) {
+  return new Set(serverToolList(root).flatMap((tool) => tool.params))
 }
 
 function referencedNames() {
@@ -107,10 +118,11 @@ describe('DevSpec tools this plugin names', () => {
   it('are all tools the server has', (t) => {
     const server = pairedServer(t)
     if (!server) return
+    const params = pairedServer(t, serverParamNames)
     const found = referencedNames()
     for (const name of MUST_FIND) assert.ok(found.has(name), `the scan did not find ${name}: it is broken, not clean`)
     const unknown = [...found]
-      .filter(([name]) => !server.has(name) && !NOT_DEVSPEC_TOOLS.has(name))
+      .filter(([name]) => !server.has(name) && !params.has(name) && !NOT_DEVSPEC_TOOLS.has(name))
       .map(([name, files]) => `${name} (${[...files].sort().join(', ')})`)
     assert.deepEqual(unknown, [], `named here, but the server has no such tool:\n  ${unknown.join('\n  ')}`)
   })

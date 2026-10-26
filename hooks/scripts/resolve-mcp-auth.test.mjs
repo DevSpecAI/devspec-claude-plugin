@@ -54,6 +54,10 @@ describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)'
       'CLAUDE_PLUGIN_OPTION_devspec_token',
       'CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL',
       'CLAUDE_PLUGIN_OPTION_devspec_mcp_url',
+      // A Bash command inside a Claude Code session also inherits the file the plugin's
+      // settings were exported to, which resolves a real key and URL. Run from an agent's
+      // own session, this test otherwise measured that session (item 9a4c0d6a).
+      'DEVSPEC_PLUGIN_SETTINGS_SESSION',
     ]) {
       saved[k] = process.env[k]
       delete process.env[k]

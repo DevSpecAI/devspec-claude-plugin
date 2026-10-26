@@ -1,9 +1,19 @@
 # Changelog
 
-## 0.47.6 - 2026-10-26
+## 0.47.8 - 2026-10-26
 
 - Uses DevSpec's new settings page names: the personal settings page where you create or reveal your token is now **Agent setup**, and the project settings page for agent execution rules is now **Agent rules**. The token prompt, the two-keys warning and the README link to Agent setup, and the token prompt names the real **Create your token** button.
 - Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.47.7 - 2026-10-26
+
+- When a commit is stopped because it isn't linked to a task, the recovery message now asks the agent to find the right task, or to create one with a real description and the reason it is needed. It used to suggest a quick one-line task, which DevSpec now turns down, so following it left the commit stuck.
+- Work waiting for someone's OK is described correctly: it stays on its own branch until the OK is given, then merges and can be finished. The guidance also points to DevSpec's own rule on who can give the OK.
+- Corrected two tool hints: previewing a replacement applies to tasks, not memories, and accepting a proposal takes its revision as `revision`.
+- The reminder about an unlinked repository now points to the project's Settings → Repositories page.
+- The rules file an agent follows for the whole conversation no longer includes your personal reply style. Each message is answered in the style of the person who sent it.
+- Long messages are no longer cut short at 12,000 characters: a reply to an answered question and a prompt you type are sent whole. A prompt longer than a room message can hold (100,000 characters) is posted with a note saying how much is missing.
+- Removed the plugin's own size limits on its instruction files. The one limit Claude Code itself applies, the 1,536-character skill description, is now checked instead.
 
 ## 0.47.5 - 2026-10-25
 

@@ -47,10 +47,11 @@ const PROPERTIES = new Set([
   'allow_custom', 'keep_turn', 'provenance_ref', 'expected_revision',
 ])
 const RESPONSE_KINDS = new Set(['text', 'single_select', 'multi_select'])
+// manage_directed_question's own input limits (prompt, each option, option count), checked
+// here only so a bad call is refused with the limit before it leaves the machine.
 const MAX_PROMPT_CODE_POINTS = 4000
 const MAX_OPTION_CODE_POINTS = 200
 const MAX_OPTIONS = 20
-const MAX_REPLY_CHARS = 12_000
 
 export function parseArgs(argv) {
   const out = { command: null, connectionId: null, input: null, message: null, keepTurn: false }
@@ -296,7 +297,8 @@ async function main() {
       arguments: respondArguments({
         connectionId: args.connectionId,
         continuation,
-        message: message.slice(0, MAX_REPLY_CHARS),
+        // Whole: the agent running this sees the server's refusal if it is ever too long.
+        message,
       }),
     })
     // Only after the server stored the reply and completed the attempt: keeping it

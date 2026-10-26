@@ -89,3 +89,21 @@ test('a receipt from an earlier delivery mode counts as no delivery',()=>{
   }
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 })
+
+test('no run-wide rules file presents the owner\'s reply style as in force (item 9a4c0d6a)',()=>{
+ // The rules file is followed "for the rest of this conversation". Reply style belongs to
+ // whoever sent each command, so the owner's must never ride in it: a teammate's command
+ // would then be answered in the owner's style.
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'claude-tier-style-'))
+ try {
+  const registration={owner_custom_instructions:'OWNER STYLE: talk like a pirate',owner_agent_rules:'machine',project_custom_instructions:'principles',project_agent_rules:'mechanics',instruction_tiers_hash:'h1'}
+  storeTiers('c',registration,{dir})
+  const pointed=fs.readFileSync(takeTiersFor('c','reader',{dir}).file,'utf8')
+  const captured=fs.readFileSync(captureInstructionContext('c',{...registration,instruction_tiers_hash:'h2'},{dir}),'utf8')
+  for (const text of [pointed,captured]) {
+   assert.match(text,/machine/); assert.match(text,/principles/); assert.match(text,/mechanics/)
+   assert.doesNotMatch(text,/OWNER STYLE|response style/i)
+  }
+  assert.equal(JSON.parse(fs.readFileSync(tiersPath('c',dir),'utf8')).texts.owner_custom_instructions,'OWNER STYLE: talk like a pirate','still stored, only not rendered')
+ } finally { fs.rmSync(dir,{recursive:true,force:true}) }
+})

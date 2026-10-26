@@ -2276,6 +2276,8 @@ async function main() {
     dispatchCursor = nextDispatchCursor
     patchState({
       dispatch_cursor: dispatchCursor,
+      // Diagnostic only: nothing reads this back, and dedupe uses the inbox index
+      // itself. The newest 200 keep a state file that is rewritten on every poll small.
       delivered_dispatch_ids: [...persistedInbox.dispatchIds].slice(-200),
     })
     if (persisted.appended > 0) {

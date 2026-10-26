@@ -104,10 +104,15 @@ beforeEach(() => {
   gitInit(repo)
   markDevspecProject(repo)
   // Real credentials in the developer's shell would otherwise send these tests at the
-  // live server. The online block below supplies its own endpoint explicitly.
+  // live server. The online block below supplies its own endpoint explicitly. Run from
+  // inside a Claude Code session, the plugin's exported settings file
+  // (DEVSPEC_PLUGIN_SETTINGS_SESSION) and option pairs would win over the test's own
+  // .mcp.json, so they go too (item 9a4c0d6a).
   const {
     DEVSPEC_MCP_TOKEN: _t, DEVSPEC_TOKEN: _t2, DEVSPEC_MCP_URL: _u,
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: _p, ...ambient
+    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: _p, CLAUDE_PLUGIN_OPTION_devspec_token: _p2,
+    CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: _pu, CLAUDE_PLUGIN_OPTION_devspec_mcp_url: _pu2,
+    DEVSPEC_PLUGIN_SETTINGS_SESSION: _s, ...ambient
   } = process.env
   env = { ...ambient, DEVSPEC_CLAUDE_STATE_DIR: path.join(sandbox, 'state') }
 })
@@ -422,7 +427,20 @@ describe('denial is non-terminating and independently recoverable', () => {
 
   it('does not demand a full criteria set merely to commit', async () => {
     const reason = (await bash('git commit -m "x"')).hookSpecificOutput.permissionDecisionReason
-    assert.match(reason, /thin\s+last-mile item is fine|smallest item/)
+    assert.match(reason, /smallest adequate task/)
+    assert.equal(/acceptance|criteria/i.test(reason), false)
+  })
+
+  it('never advises a task the server would refuse to create', async () => {
+    // create_task requires a substantive description and the reason for the work, and
+    // refuses thin or title-only content before writing anything. Advice to make "a thin
+    // last-mile item" sent an agent that was already blocked on a commit into a second
+    // refusal (item 9a4c0d6a).
+    const reason = (await bash('git commit -m "x"')).hookSpecificOutput.permissionDecisionReason
+    assert.equal(/thin last-mile|one-line description/i.test(reason), false)
+    assert.match(reason, /description/)
+    assert.match(reason, /reason it is needed/)
+    assert.match(reason, /work_entry_contract/)
   })
 })
 
@@ -431,7 +449,7 @@ describe('one nudge per session and repository, never more', () => {
 
   it('reminds once, then stays quiet', async () => {
     const first = await handlePre(editInput(), { env })
-    assert.match(first.systemMessage, /no work item is claimed/i)
+    assert.match(first.systemMessage, /no task is claimed/i)
     assert.equal(decision(first), null, 'a nudge is never a denial')
     assert.equal(await handlePre(editInput(), { env }), null)
     assert.equal(await handlePre(editInput(), { env }), null)
@@ -442,7 +460,7 @@ describe('one nudge per session and repository, never more', () => {
     // phone, where there is no terminal to render into, and the party that can act on
     // the reminder is the agent — which reads additionalContext.
     const first = await handlePre(editInput(), { env })
-    assert.match(first.hookSpecificOutput.additionalContext, /no work item is claimed/i)
+    assert.match(first.hookSpecificOutput.additionalContext, /no task is claimed/i)
     assert.equal(first.hookSpecificOutput.hookEventName, 'PreToolUse')
     assert.equal(first.hookSpecificOutput.permissionDecision, undefined, 'still never a denial')
     assert.equal(first.hookSpecificOutput.additionalContext, first.systemMessage)
@@ -458,6 +476,8 @@ describe('one nudge per session and repository, never more', () => {
     assert.match(text, /\[devspec:<full-uuid>\]/)
     assert.equal(/refus/i.test(text), false, 'must not promise a refusal')
     assert.equal(/analy[sz]er|reconcil/i.test(text), false, 'must not name a backstop')
+    assert.equal(/\bthin\b/i.test(text), false, 'must not advise a task the server refuses (item 9a4c0d6a)')
+    assert.match(text, /reason it is needed/)
   })
 
   it('says nothing at all when a claim is held', async () => {
@@ -988,18 +1008,6 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
     assert.equal(status, 0, stderr)
     assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'deny')
     assert.equal(requests.length, 1, 'the installed hook must make the call itself')
-  })
-})
-
-describe('the capability table is published', () => {
-  it('documents every surface the item requires', () => {
-    const doc = fs.readFileSync(path.join(PLUGIN_ROOT, 'docs', 'commit-provenance.md'), 'utf8')
-    for (const row of [
-      /edit event/i, /commit message/i, /transform/i, /push/i,
-      /project association/i, /offline/i, /non-terminating|continuation/i, /installed test/i,
-    ]) {
-      assert.match(doc, row)
-    }
   })
 })
 

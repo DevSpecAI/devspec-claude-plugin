@@ -672,8 +672,12 @@ function nudge(message) {
 /**
  * How a denial reads matters as much as when it fires: the work is already written by
  * the time a commit is refused, so the message must be a complete recipe the agent can
- * follow alone. It never terminates the turn and never demands a full criteria set —
- * a thin last-mile item is a legitimate answer.
+ * follow alone. It never terminates the turn and never demands a full criteria set.
+ * It used to call "a thin last-mile item" with a one-line description fine; since the
+ * server requires a substantive description and a stated reason on every create_task
+ * (and refuses thin ones before writing), following that advice mid-commit got the
+ * agent refused a second time (item 9a4c0d6a). Which item to reuse, reopen or create
+ * is the served contract's work_entry_contract, so this points there instead.
  */
 function recoveryText(claims) {
   if (claims.length > 1) {
@@ -685,10 +689,11 @@ function recoveryText(claims) {
   }
   return [
     'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
-    'Recover without leaving this turn: reuse or create the smallest item that covers it',
-    '(search_tasks, or create_task with a one-line description — a thin',
-    'last-mile item is fine), then add [devspec:<full-uuid>] to the commit message and retry.',
-    `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
+    'Recover without leaving this turn: search_tasks for the task this work belongs to and claim it;',
+    'if none fits, create_task for the smallest adequate task, with a real description of the change',
+    'and the reason it is needed (DevSpec refuses a thin or title-only task). Then add',
+    '[devspec:<full-uuid>] to the commit message and retry. Whether to reuse, reopen or create is',
+    `the work_entry_contract in ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
 }
 
@@ -879,13 +884,14 @@ function maybeNudge(scope, { env, now, platform }) {
   // unreferenced commit "will be refused", which is true only of the shapes this can
   // read, and it named the reconciliation that happens afterwards — so it read as a
   // safety net. An agent that believes something will tidy up behind it has less
-  // reason to do the right thing now, and the right thing now is cheap: claim, or
-  // write one thin item. State that, and nothing else.
+  // reason to do the right thing now, and the right thing now is cheap: claim an
+  // existing task, or create one properly. "Write one thin item" was the old advice;
+  // the server now refuses thin creates (item 9a4c0d6a). State that, and nothing else.
   return nudge(
-    'DevSpec: no work item is claimed in this repository, so work done here has nothing to trace it to. ' +
-    'Claim one before you commit — search_tasks for an existing item, or create_task for a ' +
-    'thin last-mile one — and put [devspec:<full-uuid>] in the commit message. Editing is never blocked. ' +
-    `Shown once per session. Authority: ${CONTRACT_URI}`,
+    'DevSpec: no task is claimed in this repository, so work done here has nothing to trace it to. ' +
+    'Claim one before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
+    'with a real description and the reason it is needed. Put [devspec:<full-uuid>] in the commit message. ' +
+    `Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }
 

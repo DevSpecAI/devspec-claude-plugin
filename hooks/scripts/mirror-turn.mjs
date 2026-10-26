@@ -19,6 +19,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { fitRoomMessage } from './room-message.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
@@ -1089,7 +1090,7 @@ export function prepareAgentMirrorText(text) {
   if (!t) return null
   if (t.includes(REMOTE_STATUS_BANNER)) t = stripRemoteControlBanner(t).trim()
   if (!t || isOperationalChrome(t)) return null
-  return t.slice(0, 12000)
+  return fitRoomMessage(t)
 }
 
 async function main() {
@@ -1287,7 +1288,7 @@ async function main() {
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
     // the skill must post_session_message the direct answer (prefer connection_id).
     if (fromAPerson && sessionId && text && String(text).trim()) {
-      const cleaned = String(text).trim().slice(0, 12000)
+      const cleaned = fitRoomMessage(String(text).trim())
       if (cleaned) {
         const postArgs = {
           message: cleaned,

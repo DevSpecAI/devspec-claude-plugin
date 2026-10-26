@@ -87,7 +87,7 @@ describe('the reminder', () => {
     const text = out?.hookSpecificOutput?.additionalContext
     assert.equal(out?.hookSpecificOutput?.hookEventName, 'PostToolUse')
     assert.match(text, /"Greenfield"/)
-    assert.match(text, /Settings → Integrations → Repositories/)
+    assert.match(text, /Settings → Repositories/)
     assert.ok(text.includes(REMOTE))
     assert.doesNotMatch(text, new RegExp(PROJECT), 'the person needs the name, not our id')
   })

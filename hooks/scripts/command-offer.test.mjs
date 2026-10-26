@@ -17,6 +17,7 @@ import {
   validQuestionHandoff,
 } from './command-offer.mjs'
 import { appendCanonicalInbox, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
+import { HOST_NOTIFICATION_LINE_MAX_CHARS } from './devspec-remote-wait.mjs'
 
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
 const ROOM = '20000000-0000-4000-8000-000000000002'
@@ -211,6 +212,6 @@ describe('telling the model', () => {
     assert.equal(event.executable, false)
     assert.match(event.note, /do not use devspec-question respond/)
     assert.match(event.note, /post_session_message/)
-    assert.ok(JSON.stringify(event).length < 500, `${JSON.stringify(event).length} characters`)
+    assert.ok(JSON.stringify(event).length < HOST_NOTIFICATION_LINE_MAX_CHARS, `${JSON.stringify(event).length} characters`)
   })
 })

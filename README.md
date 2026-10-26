@@ -21,7 +21,7 @@ Inside Claude Code, run these three commands one by one:
 
 ### 2. Paste your DevSpec token
 
-When Claude Code installs the plugin, it prompts you for your DevSpec API token. Create a token with **Read & write** access on your [Agents settings](https://app.devspec.ai/settings/agents) page and paste your `dvs_…` token when asked.
+When Claude Code installs the plugin, it prompts you for your DevSpec API token. Create a token with **Read & write** access on your [Agent setup](https://app.devspec.ai/settings/agents) page and paste your `dvs_…` token when asked.
 
 To change your token later, open `/plugin` → **Installed** → **DevSpec** in Claude Code.
 

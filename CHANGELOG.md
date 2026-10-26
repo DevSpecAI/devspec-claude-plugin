@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.47.6 - 2026-10-26
+
+- Uses DevSpec's new settings page names: the personal settings page where you create or reveal your token is now **Agent setup**, and the project settings page for agent execution rules is now **Agent rules**. The token prompt, the two-keys warning and the README link to Agent setup, and the token prompt names the real **Create your token** button.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.47.5 - 2026-10-25
 
 - Updated the README with step-by-step installation, token configuration, permission-bypass guidance for remote phone and voice control, project selection, and command reference matching the in-app setup flow, and removed internal engineering notes from the published repository tree.

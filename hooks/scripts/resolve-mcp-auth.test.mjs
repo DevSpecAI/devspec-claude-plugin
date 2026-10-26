@@ -399,7 +399,7 @@ describe('links to the DevSpec app follow the MCP host in use', () => {
     assert.equal(devspecAppOrigin('file:///etc/passwd'), 'https://app.devspec.ai')
   })
 
-  it('builds the Agents settings link on that host', () => {
+  it('builds the Agent setup link on that host', () => {
     assert.equal(agentsSettingsUrl(PROD), 'https://app.devspec.ai/settings/agents')
     assert.equal(
       agentsSettingsUrl('https://api.devspecstaging.com/api/mcp'),
@@ -409,7 +409,7 @@ describe('links to the DevSpec app follow the MCP host in use', () => {
 
   it('the two-keys fix links the page instead of naming a breadcrumb', () => {
     const fix = tokensWarningFix('https://api.devspecstaging.com/api/mcp')
-    assert.ok(fix.includes('https://app.devspecstaging.com/settings/agents'), fix)
+    assert.ok(fix.includes("Open DevSpec's Agent setup page at https://app.devspecstaging.com/settings/agents"), fix)
     assert.doesNotMatch(fix, /You →|Coding agents|coding agent/i)
   })
 })

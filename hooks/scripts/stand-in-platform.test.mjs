@@ -193,15 +193,26 @@ describe(`the git stand-in on ${process.platform}`, () => {
     after(() => { server.closeAllConnections(); server.close() })
 
     it('stops one that resolves to nothing, before git runs', async () => {
-      const head = git(['rev-parse', 'HEAD'])
-      const result = await shell(`git commit --allow-empty -q -m "mistyped [devspec:${OTHER_TASK}]"`, {
-        env: { DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: `http://127.0.0.1:${server.address().port}/api/mcp` },
-      })
-      assert.equal(result.status, 1, result.stderr)
-      assert.match(result.stderr, /resolves to no item in this project/)
-      assert.equal(git(['rev-parse', 'HEAD']), head)
-      assert.equal(calls.length, 1)
-      assert.equal(calls[0].name, 'validate_commit_reference')
+      // The answer must arrive within the check's 2.5 second bound; past it the commit
+      // goes ahead by design, because only a definitive answer stops one. A loaded
+      // Windows runner has missed that bound once (run 40505387859), so the stop must
+      // happen on one of three attempts, and a commit let through meanwhile is just one
+      // more commit for the reporting test to find.
+      const attempts = []
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const head = git(['rev-parse', 'HEAD'])
+        const result = await shell(`git commit --allow-empty -q -m "mistyped [devspec:${OTHER_TASK}]"`, {
+          env: { DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: `http://127.0.0.1:${server.address().port}/api/mcp` },
+        })
+        attempts.push(result)
+        if (result.status !== 1) continue
+        assert.match(result.stderr, /resolves to no item in this project/)
+        assert.equal(git(['rev-parse', 'HEAD']), head, 'the stopped commit was never made')
+        break
+      }
+      assert.equal(attempts.at(-1).status, 1, `stopped on none of ${attempts.length} attempts: ${attempts.map((a) => a.stderr).join(' | ')}`)
+      assert.ok(calls.length >= 1)
+      for (const call of calls) assert.equal(call.name, 'validate_commit_reference')
     })
 
     it('lets the commit through when DevSpec cannot be reached', async () => {
@@ -221,10 +232,12 @@ describe(`the git stand-in on ${process.platform}`, () => {
     // Every commit after each repository's first, oldest first.
     const made = (cwd) => git(['rev-list', '--reverse', 'HEAD'], cwd).split('\n').slice(1)
     const project = made(repo)
-    assert.equal(project.length, 6, 'plain, heredoc, substituted, file, from elsewhere, written by hand')
+    // plain, heredoc, substituted, file, from elsewhere, written by hand, and any reference
+    // check a slow runner let through.
+    assert.ok(project.length >= 6, String(project.length))
     assert.deepEqual(calls.filter((report) => report.git_remote === 'git@github.com:Fixture/Project.git').map((report) => report.commit_sha), project)
     assert.deepEqual(calls.filter((report) => report.git_remote === 'https://github.com/fixture/elsewhere.git').map((report) => report.commit_sha), made(outside))
-    assert.equal(calls.length, 7)
+    assert.equal(calls.length, project.length + made(outside).length, 'each commit reported once')
     for (const report of calls) assert.match(report.commit_sha, /^[0-9a-f]{40}$/)
   })
 })

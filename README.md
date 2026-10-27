@@ -27,6 +27,8 @@ Inside Claude Code, run:
 /reload-plugins
 ```
 
+Then open `/plugin` → **Marketplaces** → **devspec** and choose **Enable auto-update** so Claude Code installs new plugin releases automatically when it starts.
+
 ### 2. Enter your DevSpec token
 
 When Claude Code installs the plugin, it prompts you for your DevSpec API token. Create a **Read & write** token on your [Agent setup](https://app.devspec.ai/settings/agents) page and paste your `dvs_…` token when asked.

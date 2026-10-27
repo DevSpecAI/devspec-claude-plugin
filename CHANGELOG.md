@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.50.2 - 2026-10-27
+
+- The README now says which setups get full commit tracking: "Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, or Windows through WSL." On native Windows, the plugin uses a simpler check that reads the commit command Claude runs. It catches plain commit commands, but not commits made by scripts, in background work or by subagents.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.50.1 - 2026-10-27
 
 - Restored: a task tag Claude writes into a commit message itself is checked with DevSpec again before the commit is made, now inside the plugin's stand-in for `git`. Since 0.17.0 a tag that names no task in the project, usually a correct short code with a wrong ending, stopped the commit with the likely cause. 0.50.0 had dropped that check wherever the stand-in runs, so such a commit would have linked to nothing.

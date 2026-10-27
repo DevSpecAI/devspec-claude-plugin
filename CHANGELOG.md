@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.49.0 - 2026-10-27
+
+- Every commit Claude makes is now reported to DevSpec by git itself, so it is credited to Claude and the work it was doing. Before, only some commits were reported, and only in a folder with a DevSpec project pin.
+- How it works: for each conversation, the plugin puts a private stand-in for `git` first on the `PATH` of the shell commands Claude Code runs, through the environment file Claude Code applies to every one of them. That covers Claude's own commands, its subagents, background commands and Monitor commands. The stand-in runs the real git unchanged. When git reports that it made a commit, the stand-in notes the full commit id, the branch and the repository's address. The plugin then reports the commit, and DevSpec decides which project the repository belongs to.
+- Commits are caught whether Claude runs `git -C`, a chained command, a script, an alias, an amend or a commit in a linked worktree. Claude's command text is never read to decide whether a commit happened.
+- Nothing is installed in your repositories, and your git configuration and hooks are untouched. A repository no longer needs a `.devspec/project.json` pin to be reported. The pin is used only when a repository has no remote address.
+- If a report can't be sent, Claude's git command still succeeds. The report is retried a few times, and every report, refusal and drop is written to `~/.devspec/git-observer/commits.log`. Commits made while Claude was not connected to DevSpec, and commits you make yourself outside Claude, are not reported as Claude's.
+- On Windows, where the stand-in does not run yet, the previous recogniser still reports the commits it can.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.48.1 - 2026-10-27
 
 - Fixed: when the plugin's folder path contains a space, the commits Claude makes are reported to DevSpec again, so they are credited to Claude and the task it was working on. Until now none were reported from such a path, and no error was shown. The check that let a script run only when Claude Code started it compared two spellings of the same path, and they differ when the path contains a space.

@@ -85,7 +85,7 @@ The plugin does this with a private stand-in for `git` that it puts on the path 
 
 A commit reaches a task in one of two ways:
 
-- **Through the task's tag in the commit message,** `[devspec:<task id>]`. In any of the project's repositories, the plugin adds the tag to Claude's commits itself when Claude has claimed exactly one task, however the message is written. It recognises the project's repositories by their remote address, or by a `.devspec/project.json` pin. With no task claimed, it stops the commit before it is made and tells Claude to claim the task and try again. Amends, fixups, reused messages and messages that already name a task are left as they are, and so is every repository outside the project.
+- **Through the task's tag in the commit message,** `[devspec:<task id>]`. In any of the project's repositories, the plugin adds the tag to Claude's commits itself when Claude has claimed exactly one task, however the message is written. It recognises the project's repositories by their remote address, or by a `.devspec/project.json` pin. With no task claimed, it stops the commit before it is made and tells Claude to claim the task and try again. Amends, fixups, reused messages and messages that already name a task are left as they are, and so is every repository outside the project. A tag Claude writes itself is checked with DevSpec before the commit is made: if it names no task in the project, the commit is stopped so Claude can correct it, and if DevSpec cannot be reached the commit goes ahead.
 - **When Claude records its implementation of the task.**
 
 Every report is written to `~/.devspec/git-observer/commits.log`, whether it was sent, refused or dropped. If DevSpec does not show one of Claude's commits, look there first.

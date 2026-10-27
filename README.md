@@ -64,6 +64,22 @@ To turn off automatic connection at startup, switch off **Make Claude Code avail
 
 ---
 
+## How It Works & Data Handling
+
+For transparency and security review, here is what the plugin runs, stores locally, and sends to DevSpec:
+
+- **MCP Server Connection:** Communicates over HTTPS with `https://api.devspec.ai/api/mcp` (or the URL configured in `devspec_mcp_url`) authenticated via your `devspec_token` from Claude Code's `userConfig`.
+- **Hooks & Modules (`hooks/hooks.json`, `hooks/terminal-status.ts`, `hooks/local-prompt.ts`, `hooks/devspec-control.ts`, `hooks/devspec-telemetry.ts`):**
+  - On `SessionStart` (`startup-listener.mjs`) and monitor startup (`devspec-remote-listen.mjs`), spawns a background Node poller (`devspec-remote-poll.mjs`) when `connect_at_startup` is enabled or when `/devspec:devspec.remote` is invoked.
+  - On `UserPromptSubmit` and `Stop` (`mirror-turn.mjs`), mirrors prompts and turn completion to the attached DevSpec session room so your web/phone transcript stays synchronized, and relays token usage telemetry (`agent-telemetry.mjs`) for the active DevSpec turn.
+  - On `PreToolUse` (`devspec-tool-input.mjs`, `git-observer.mjs`) and `PostToolUse` (`mark-explicit-reply.mjs`, `repo-link-nudge.mjs`), attaches the active connection/session identity to `mcp__devspec__*` tool calls and prepends a lightweight `git` wrapper (`git-shim.mjs`) on `Bash` commands so commits in linked project repositories are tagged with `[devspec:<id>]` and recorded against the claimed task.
+  - When a remote control action is triggered from the DevSpec Agents page, the status module (`terminal-status.ts`, `devspec-control.ts`) updates the terminal status line and runs `/devspec:devspec.remote` or `/devspec:devspec.remote-stop` on your behalf.
+- **Local Files Written:**
+  - `~/.devspec/remote-control/` (permissions `0600` / `0700`): stores per-connection state, session room transcript cache, and project instruction tiers.
+  - `.devspec/project.json`: written in the repository root only when you explicitly run `/devspec:devspec.project remember` to pin a default project for that folder.
+
+---
+
 ## Learn More
 
 - **Web & Sign Up:** [devspec.ai](https://devspec.ai)

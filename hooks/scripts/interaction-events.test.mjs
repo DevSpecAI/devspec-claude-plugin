@@ -67,6 +67,7 @@ const EVENT = '30000000-0000-4000-8000-000000000003'
 const RESPONSE = '40000000-0000-4000-8000-000000000004'
 const QUESTION = '50000000-0000-4000-8000-000000000005'
 const CLAIM = '60000000-0000-4000-8000-000000000006'
+const NEXT_CLAIM = CLAIM.replace('06', 'ff')
 const ATTEMPT = '70000000-0000-4000-8000-000000000007'
 const LOCAL_ID = '80000000-0000-4000-8000-000000000008'
 
@@ -131,9 +132,9 @@ function stateHome(state = {}) {
     session_id: SESSION,
     agent_name: 'Claude Code',
     local_id: LOCAL_ID,
-    token: 'dvs_test_token',
+    token: 'fixture-not-real',
     mcp_url: 'http://127.0.0.1:1/mcp',
-    connection_capability: 'dvsc_hidden',
+    connection_capability: 'fixture-capability',
     ...state,
   }), { mode: 0o600 })
   return { home, dir }
@@ -186,7 +187,7 @@ async function stubMcp(handler) {
 // Criterion 832d8e6c — advertise v1 only when the adapter is active.
 describe('interaction event negotiation', () => {
   it('negotiates only with the capability both the claim and the continuation need', () => {
-    const ready = { enabled: true, connection_id: CONNECTION, connection_capability: 'dvsc' }
+    const ready = { enabled: true, connection_id: CONNECTION, connection_capability: 'fixture-capability' }
     assert.equal(interactionEventsNegotiable(ready), true)
     assert.deepEqual(interactionNegotiationArguments(ready), { interaction_event_version: 1, question_dismissal_event_version: 1 })
 
@@ -195,8 +196,8 @@ describe('interaction event negotiation', () => {
       {},
       { enabled: true, connection_id: CONNECTION },
       { enabled: true, connection_id: CONNECTION, connection_capability: '' },
-      { enabled: false, connection_id: CONNECTION, connection_capability: 'dvsc' },
-      { enabled: true, connection_id: 'not-a-uuid', connection_capability: 'dvsc' },
+      { enabled: false, connection_id: CONNECTION, connection_capability: 'fixture-capability' },
+      { enabled: true, connection_id: 'not-a-uuid', connection_capability: 'fixture-capability' },
     ]) {
       assert.equal(interactionEventsNegotiable(unready), false)
       // Omitted, not falsified: an unaware poll neither wakes nor consumes an event.
@@ -416,9 +417,9 @@ describe('durable application and dedupe', () => {
       const polls = stub.requests.filter((e) => e.parsed.params?.name === 'poll_connection')
       const pickups = stub.requests.filter((e) => e.parsed.params?.name === 'report_pickup')
       assert.equal(polls[0].parsed.params.arguments.interaction_event_version, 1)
-      assert.equal(polls[0].capability, 'dvsc_hidden', 'the claim needs the capability header')
+      assert.equal(polls[0].capability, 'fixture-capability', 'the claim needs the capability header')
       assert.equal(pickups.length, 1, 'exactly one attempt per answer')
-      assert.equal(pickups[0].capability, 'dvsc_hidden')
+      assert.equal(pickups[0].capability, 'fixture-capability')
       assert.deepEqual(pickups[0].parsed.params.arguments, {
         connection_id: CONNECTION,
         interaction_event_version: 1,
@@ -517,9 +518,9 @@ describe('durable application and dedupe', () => {
       const polls = stub.requests.filter((e) => e.parsed.params?.name === 'poll_connection')
       const pickups = stub.requests.filter((e) => e.parsed.params?.name === 'report_pickup')
       assert.equal(polls[0].parsed.params.arguments.interaction_event_version, 1)
-      assert.equal(polls[0].capability, 'dvsc_hidden', 'the claim needs the capability header')
+      assert.equal(polls[0].capability, 'fixture-capability', 'the claim needs the capability header')
       assert.equal(pickups.length, 1, 'exactly one attempt per answer')
-      assert.equal(pickups[0].capability, 'dvsc_hidden')
+      assert.equal(pickups[0].capability, 'fixture-capability')
       assert.deepEqual(pickups[0].parsed.params.arguments, {
         connection_id: CONNECTION,
         question_dismissal_event_version: 1,
@@ -556,7 +557,7 @@ describe('durable application and dedupe', () => {
   it('acknowledges a redelivery after a crash without opening a second attempt', async () => {
     // The crash window: the record is durable, the ACK never went out. The server
     // redelivers with a FRESH claim token, and the host must settle it, not re-run it.
-    const redelivered = event({ claim_token: '60000000-0000-4000-8000-0000000000ff' })
+    const redelivered = event({ claim_token: NEXT_CLAIM })
     const stub = await stubMcp(async (parsed) => {
       const call = parsed.params ?? {}
       if (call.name !== 'poll_connection') return { content: [{ type: 'text', text: '{}' }] }
@@ -905,7 +906,7 @@ describe('question bridge', () => {
       ], { home })
       assert.equal(child.status, 0, child.stderr)
       assert.equal(stub.requests.length, 1)
-      assert.equal(stub.requests[0].capability, 'dvsc_hidden')
+      assert.equal(stub.requests[0].capability, 'fixture-capability')
       const call = stub.requests[0].parsed.params
       assert.equal(call.name, 'post_session_message')
       assert.deepEqual(call.arguments, {
@@ -922,7 +923,7 @@ describe('question bridge', () => {
       // Resolved: Stop must not then complete an attempt that is already done.
       const state = JSON.parse(fs.readFileSync(path.join(dir, `${CONNECTION}.json`), 'utf8'))
       assert.equal(state.interaction_continuation, null)
-      assert.equal(state.token, 'dvs_test_token', 'clearing must not drop other fields')
+      assert.equal(state.token, 'fixture-not-real', 'clearing must not drop other fields')
     } finally {
       await stub.close()
       fs.rmSync(home, { recursive: true, force: true })
@@ -945,7 +946,7 @@ describe('question bridge', () => {
       const parsed = JSON.parse(status.stdout)
       assert.equal(parsed.awaiting_reply, false)
       assert.equal(parsed.question_id, null)
-      assert.doesNotMatch(status.stdout, /dvs_test_token|dvsc_hidden/)
+      assert.doesNotMatch(status.stdout, /fixture-not-real|fixture-capability/)
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }
@@ -1002,7 +1003,7 @@ describe('turn end', () => {
     const completeRequest = requests.find(
       (entry) => entry.parsed.params.name === 'report_complete',
     )
-    assert.equal(completeRequest.capability, 'dvsc_hidden')
+    assert.equal(completeRequest.capability, 'fixture-capability')
     assert.equal(state.interaction_continuation, null)
   })
 
@@ -1024,7 +1025,7 @@ describe('turn end', () => {
     const completeRequest = requests.find(
       (entry) => entry.parsed.params.name === 'report_complete',
     )
-    assert.equal(completeRequest.capability, 'dvsc_hidden')
+    assert.equal(completeRequest.capability, 'fixture-capability')
     assert.equal(state.interaction_continuation, null)
   })
 

@@ -444,6 +444,37 @@ describe('denial is non-terminating and independently recoverable', () => {
   })
 })
 
+describe('the agent writes a tag only when it must choose between claims (item 3e24523e)', () => {
+  it('after no claim: claim, retry the same commit, and it is tagged for the agent', async () => {
+    const command = 'git commit -m "untracked work"'
+    const reason = (await bash(command)).hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /claim/)
+    assert.match(reason, /retry the same commit/)
+    assert.match(reason, /tag is added for you/)
+    assert.match(reason, /commit_provenance_contract/)
+    assert.equal(/<full-uuid>|<id>\] to the|in the message/.test(reason), false, 'never asks the agent to type an id')
+    claim(ITEM)
+    assert.equal(updated(await bash(command)), `git commit -m "untracked work [devspec:${ITEM}]"`, 'exactly as the refusal said')
+  })
+
+  it('with one claim and a bare message: quote it and retry, never type the id', async () => {
+    claim(ITEM)
+    const reason = (await bash('git commit -m bare')).hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /quotes/)
+    assert.match(reason, /added for you/)
+    assert.equal(reason.includes(ITEM) || /<full-uuid>/.test(reason), false)
+    assert.equal(updated(await bash('git commit -m "bare"')), `git commit -m "bare [devspec:${ITEM}]"`)
+  })
+
+  it('with several claims: the agent names the one, because the plugin never guesses', async () => {
+    claim(ITEM)
+    claim(OTHER)
+    const reason = (await bash('git commit -m "which one"')).hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /2 claims are active/)
+    assert.ok(reason.includes(`[devspec:${ITEM}]`) && reason.includes(`[devspec:${OTHER}]`))
+  })
+})
+
 describe('one nudge per session and repository, never more', () => {
   const editInput = () => input('Write', { file_path: path.join(repo, 'x.ts') })
 
@@ -473,7 +504,9 @@ describe('one nudge per session and repository, never more', () => {
     const { additionalContext: text } = (await handlePre(editInput(), { env })).hookSpecificOutput
     assert.match(text, /Claim one before you commit/i)
     assert.match(text, /create_task/)
-    assert.match(text, /\[devspec:<full-uuid>\]/)
+    // With one task claimed the plugin tags the commits itself (item 3e24523e).
+    assert.match(text, /tagged for you/)
+    assert.equal(/<full-uuid>|\[devspec:/.test(text), false, 'never asks the agent to write the tag')
     assert.equal(/refus/i.test(text), false, 'must not promise a refusal')
     assert.equal(/analy[sz]er|reconcil/i.test(text), false, 'must not name a backstop')
     assert.equal(/\bthin\b/i.test(text), false, 'must not advise a task the server refuses (item 9a4c0d6a)')
@@ -1062,7 +1095,7 @@ describe('the multi-line message forms, which is where almost every commit lives
     for (const command of [A('fix: subject'), B('fix: subject')]) {
       const result = await bash(command)
       assert.equal(decision(result), 'deny', command)
-      assert.match(result.hookSpecificOutput.permissionDecisionReason, /\[devspec:<full-uuid>\]/)
+      assert.match(result.hookSpecificOutput.permissionDecisionReason, /retry the same commit/)
     }
   })
 

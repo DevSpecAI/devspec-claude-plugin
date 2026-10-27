@@ -680,6 +680,7 @@ function nudge(message) {
  * is the served contract's work_entry_contract, so this points there instead.
  */
 function recoveryText(claims) {
+  // The one case the agent writes the tag itself: the plugin never guesses between claims.
   if (claims.length > 1) {
     return [
       `DevSpec: this commit has no [devspec:<id>] reference and ${claims.length} claims are active, so nothing was added automatically.`,
@@ -687,13 +688,24 @@ function recoveryText(claims) {
       'Then retry the commit. Nothing else is blocked.',
     ].join(' ')
   }
+  // With one claim, every commit shape this reads is tagged for the agent (item
+  // 3e24523e); the agent never types an id it could get wrong. The only one-claim
+  // commit that reaches here is a bare, unquoted -m word, which cannot take a tag.
+  if (claims.length === 1) {
+    return [
+      'DevSpec: this commit has no [devspec:<id>] reference, and its message is a bare word the tag cannot be added to.',
+      'Put the message in quotes (-m "…") and retry the commit: the tag for the task you have claimed is added for you.',
+      'Nothing else is blocked.',
+    ].join(' ')
+  }
   return [
     'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
     'Recover without leaving this turn: search_tasks for the task this work belongs to and claim it;',
-    'if none fits, create_task for the smallest adequate task, with a real description of the change',
-    'and the reason it is needed (DevSpec refuses a thin or title-only task). Then add',
-    '[devspec:<full-uuid>] to the commit message and retry. Whether to reuse, reopen or create is',
-    `the work_entry_contract in ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
+    'if none fits, create_task for the smallest adequate task, with a real description of the change and the reason it is needed',
+    '(DevSpec refuses a thin or title-only task), and claim that. Then retry the same commit:',
+    'with one task claimed, its tag is added for you. Whether to reuse, reopen or create is the',
+    `work_entry_contract, and how commits link to work the commit_provenance_contract, in ${CONTRACT_URI}.`,
+    'Nothing else is blocked, and no other command is affected.',
   ].join(' ')
 }
 
@@ -732,8 +744,8 @@ function unresolvedReferenceText(reference) {
     `DevSpec: [devspec:${reference}] is well formed but resolves to no item in this project,`,
     'so this commit would read as linked and link to nothing.',
     'That is usually a correct short code with a wrong uuid tail, or an item belonging to a different project.',
-    'Recover without leaving this turn: confirm the id (get_task, or search_tasks),',
-    'correct the reference in the commit message and retry.',
+    'Recover without leaving this turn: remove the reference and retry; with one task claimed, its tag is',
+    'added for you. Or confirm the id (get_task, or search_tasks), correct the reference and retry.',
     `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
 }
@@ -886,12 +898,13 @@ function maybeNudge(scope, { env, now, platform }) {
   // safety net. An agent that believes something will tidy up behind it has less
   // reason to do the right thing now, and the right thing now is cheap: claim an
   // existing task, or create one properly. "Write one thin item" was the old advice;
-  // the server now refuses thin creates (item 9a4c0d6a). State that, and nothing else.
+  // the server now refuses thin creates (item 9a4c0d6a). Once one task is claimed the
+  // plugin tags the commits itself, so the agent is not asked to (item 3e24523e).
   return nudge(
     'DevSpec: no task is claimed in this repository, so work done here has nothing to trace it to. ' +
     'Claim one before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
-    'with a real description and the reason it is needed. Put [devspec:<full-uuid>] in the commit message. ' +
-    `Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
+    'with a real description and the reason it is needed, and claim it. With one task claimed, your commits ' +
+    `here are tagged for you. Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }
 

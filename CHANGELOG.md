@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.3 - 2026-10-27
+
+- Overhauled `README.md` and `.claude-plugin` marketplace descriptions with a clear overview of DevSpec's capabilities for Claude Code users, a streamlined 3-step Quick Start, and complete `/devspec:*` command reference.
+- Added `.claude-plugin/icon.png` (512x512) and `privacyPolicyUrl` (`https://devspec.ai/privacy`) to `.claude-plugin/plugin.json` so `claude plugin validate` passes with zero directory warnings.
+
 ## 0.51.2 - 2026-10-27
 
 - The plugin's simpler commit check now uses DevSpec's rule for which repositories belong to your project: a repository whose remote address is one of the project's repositories, or one with a `.devspec/project.json` pin. That check reads Claude's commit commands where the plugin's stand-in for `git` does not run, and it also shows the reminder when Claude edits with no task claimed. A DevSpec server listed in a folder's MCP configuration no longer counts: it says DevSpec is used there, not that the repository is your project's. So a commit in a repository your project does not track is never stopped or tagged because of that entry, and one your project does track is checked by its remote even without a pin. The plugin still reads DevSpec credentials from the MCP configuration as before.

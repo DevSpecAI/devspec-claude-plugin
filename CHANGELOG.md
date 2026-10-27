@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.2 - 2026-10-27
+
+- The plugin's simpler commit check now uses DevSpec's rule for which repositories belong to your project: a repository whose remote address is one of the project's repositories, or one with a `.devspec/project.json` pin. That check reads Claude's commit commands where the plugin's stand-in for `git` does not run, and it also shows the reminder when Claude edits with no task claimed. A DevSpec server listed in a folder's MCP configuration no longer counts: it says DevSpec is used there, not that the repository is your project's. So a commit in a repository your project does not track is never stopped or tagged because of that entry, and one your project does track is checked by its remote even without a pin. The plugin still reads DevSpec credentials from the MCP configuration as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.1 - 2026-10-27
 
 - The plugin's instructions now match DevSpec's current rules for commits. Claude writes a task's tag into a commit message itself only when the plugin did not add it. That happens when Claude has to choose between several claimed tasks, or when it commits where the plugin does not see the commit, such as Claude Code's PowerShell tool on native Windows. When the plugin adds the tag, it now tells Claude as well as showing it in the terminal.

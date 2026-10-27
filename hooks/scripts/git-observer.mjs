@@ -38,8 +38,11 @@ import { isEntryPoint } from './entry-point.mjs'
 import { McpToolRefusalError, isRetryableHttpFailure, mcpToolsCall } from './mcp-call.mjs'
 import { findProjectPin } from './devspec-scope.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { stateDir } from './commit-provenance.mjs'
 
 const SHIM_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'git-shim.mjs')
+// The stand-in imports this, so it is copied beside it (item e597bc18).
+const STAMP_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'commit-stamp.mjs')
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const FULL_SHA = /^[0-9a-f]{40}$/
@@ -138,6 +141,8 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
     const shim = path.join(dir, 'git-shim.mjs')
     fs.copyFileSync(SHIM_SOURCE, shim)
     fs.chmodSync(shim, 0o600)
+    fs.copyFileSync(STAMP_SOURCE, path.join(dir, 'commit-stamp.mjs'))
+    fs.chmodSync(path.join(dir, 'commit-stamp.mjs'), 0o600)
     const journal = path.join(dir, 'journal.jsonl')
     if (!fs.existsSync(journal)) fs.writeFileSync(journal, '', { mode: 0o600 })
     const previous = readPrivateJson(path.join(dir, 'observer.json'))
@@ -151,6 +156,8 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
       real_git: realGit,
       // git's builtins, which run straight through the stand-in unless one is commit.
       builtins: gitBuiltins(realGit),
+      // Where the plugin's hooks keep this conversation's claims (commit-provenance.mjs).
+      claims_dir: stateDir(env),
       started_at: new Date(now).toISOString(),
     })
     // If node or the copy goes missing, git still runs.

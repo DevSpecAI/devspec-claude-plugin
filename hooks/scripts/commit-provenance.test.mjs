@@ -1175,3 +1175,44 @@ describe('the multi-line message forms, which is where almost every commit lives
     fs.rmSync(scratch, { recursive: true, force: true })
   })
 })
+
+describe('with the git stand-in (item e597bc18)', () => {
+  const PROJECT = '22222222-2222-4222-8222-222222222222'
+  const CONNECTION = '11111111-1111-4111-8111-111111111111'
+  /** A home where this conversation is connected to a project tracking fixture/project. */
+  function connectedHome() {
+    const home = path.join(sandbox, 'home')
+    const connections = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(connections, { recursive: true })
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.json`), JSON.stringify({ enabled: true, connection_id: CONNECTION, local_id: SESSION }), { mode: 0o600 })
+    const facts = { project_id: PROJECT, status: 'available', repositories: [{ id: 'r', full_name: 'fixture/project', provider: 'github', git_url: 'https://github.com/fixture/project.git', target_branch: 'staging', default_branch: 'main' }] }
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.repositories.json`), JSON.stringify({ project_id: PROJECT, hash: 'x', text: `<devspec-repository-data>\n${JSON.stringify(facts)}\n</devspec-repository-data>` }), { mode: 0o600 })
+    return home
+  }
+
+  it('leaves Bash commits to the stand-in where it runs, and reads the command only where it does not', async () => {
+    assert.equal(await bash('git commit -m "untracked work"', undefined, { observerActive: () => true }), null)
+    assert.equal(decision(await bash('git commit -m "untracked work"', undefined, { observerActive: () => false })), 'deny')
+  })
+
+  it('nudges an edit in one of the project\'s repositories by its remote, with no marker in the folder', async () => {
+    fs.rmSync(path.join(repo, '.mcp.json'))
+    spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'])
+    const edit = input('Write', { file_path: path.join(repo, 'x.ts') })
+    assert.equal(await handlePre(edit, { env }), null, 'not connected: no jurisdiction')
+    const home = connectedHome()
+    const first = await handlePre(edit, { env: { ...env, HOME: home } })
+    assert.match(first.hookSpecificOutput.additionalContext, /no task is claimed in this conversation/)
+    assert.match(first.hookSpecificOutput.additionalContext, /in the project's repositories are tagged for you/)
+  })
+
+  it('is silent once the conversation holds a claim, in any repository', async () => {
+    fs.rmSync(path.join(repo, '.mcp.json'))
+    spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/fixture/project.git'])
+    const elsewhere = path.join(sandbox, 'elsewhere')
+    gitInit(elsewhere)
+    claim(ITEM, elsewhere)
+    const home = connectedHome()
+    assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env: { ...env, HOME: home } }), null)
+  })
+})

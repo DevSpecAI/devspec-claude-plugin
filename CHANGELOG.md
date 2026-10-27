@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.50.0 - 2026-10-27
+
+- In any of your project's repositories, Claude's commits now carry their task's tag automatically when Claude has claimed one task, however the commit message is written. That includes the multi-line forms the plugin used to miss: a heredoc piped into `git commit -F -`, `-m "$(cat <<'EOF' … EOF)"`, and a message file given with `-F`. The plugin's private stand-in for `git` adds the tag to the message's subject before git runs. Your own message file is never edited; the stand-in uses a private copy.
+- A repository counts as the project's when its remote address is one of the project's repositories, or when it has a `.devspec/project.json` pin. It no longer needs a pin or a DevSpec `.mcp.json` entry, so tagging now works in an ordinary clone or worktree.
+- With no task claimed, a commit in the project's repositories is stopped before git runs, and Claude is told to claim the task and retry the same commit. With several tasks claimed, Claude is asked to name the right one, because the plugin never guesses. Nothing in the repository changes when a commit is stopped.
+- Amends, fixups, squashes, reused messages, `--no-edit`, messages that already name a task, and every repository outside the project are left exactly as they are.
+- The plugin's older reader of Claude's shell commands now runs only where the stand-in cannot: on Windows, and in conversations started before 0.49.0. The reminder shown when Claude edits with no task claimed now also appears in the project's repositories without a pin, and stops once the conversation has claimed a task anywhere.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.49.1 - 2026-10-27
 
 - When a commit is stopped because no task is claimed, Claude is now told to claim the right task and retry the same commit. The task's tag is added to the commit automatically, so Claude no longer has to type a task id it could get wrong. The reminder shown when Claude edits with no task claimed says the same.

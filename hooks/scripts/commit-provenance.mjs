@@ -728,7 +728,7 @@ function resolveAuth(cwd, mainWorktree, env) {
  * message names the cause that actually produces this: the reference is well formed, so
  * the mistake is in its VALUE, not its syntax.
  */
-function unresolvedReferenceText(reference) {
+export function unresolvedReferenceText(reference) {
   return [
     `DevSpec: [devspec:${reference}] is well formed but resolves to no item in this project,`,
     'so this commit would read as linked and link to nothing.',

@@ -21,17 +21,20 @@
  * Before git runs, a plain `git commit` in one of the connected project's
  * repositories gets the task tag added, or is stopped with what to do instead
  * (commit-stamp.mjs, item e597bc18). It works on git's own arguments, after the shell
- * has evaluated them, so every way of writing the message is the same here.
+ * has evaluated them, so every way of writing the message is the same here. A
+ * reference the model wrote itself is confirmed online first, as decided in 6fa0241e.
  *
  * Imports only Node built-ins and commit-stamp.mjs, copied beside it: this file runs
- * as a copy, outside the plugin.
+ * as a copy, outside the plugin. The online check alone loads the plugin's own
+ * scripts from where it is installed, and is skipped if they are not there.
  */
 
 import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, appendFileSync, constants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
-import { delimiter, join, resolve, sep } from 'node:path'
+import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
 import {
   ANY_REFERENCE, boundConnectionId, conversationClaims, gitIn, noClaimText, parseCommitArgs, projectScope,
@@ -289,7 +292,34 @@ function inspectCommit(realGit, worktree, previousHead, amend, startedAt, endedA
  * else runs exactly as written, and a message read from standard input is passed on
  * byte for byte. Never throws.
  */
-function planCommit(realGit, args, config, dir) {
+/**
+ * Is a reference the model wrote to a task that exists? (6fa0241e, kept by item
+ * e597bc18.) The plugin's own check from 0.17.0, run from where the plugin is
+ * installed: the same transport and credentials (mcp-call.mjs, resolve-mcp-auth.mjs,
+ * credentials following the repository's main working tree), the same project hints
+ * and the same 2.5 second bound. Only a definitive answer that it resolves to nothing
+ * stops the commit; anything else, including the plugin not being where it was, lets
+ * it through. Returns the text to stop with, or null.
+ */
+async function unresolvedReference(text, { cwd, git, config }) {
+  try {
+    const scripts = join(config.plugin_root, 'hooks', 'scripts')
+    const provenance = await import(pathToFileURL(join(scripts, 'commit-provenance.mjs')).href)
+    const reference = provenance.referenceIn(text)
+    if (!reference) return null // not a well-formed reference: nothing to look up
+    const { devspecFolderMarker } = await import(pathToFileURL(join(scripts, 'devspec-scope.mjs')).href)
+    const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    const mainWorktree = common && basename(resolve(common)) === '.git' ? dirname(resolve(common)) : null
+    let marker = null
+    try { marker = devspecFolderMarker(cwd, { home: homedir(), mainWorktree }) } catch { marker = null }
+    const outcome = await provenance.confirmReferenceOnline(text, { cwd, mainWorktree, marker, localId: config.session_id })
+    return outcome === 'not_found' ? provenance.unresolvedReferenceText(reference) : null
+  } catch {
+    return null
+  }
+}
+
+async function planCommit(realGit, args, config, dir) {
   let input = null
   try {
     if (typeof config.claims_dir !== 'string') return { args } // claims cannot be read: leave it to git
@@ -326,7 +356,13 @@ function planCommit(realGit, args, config, dir) {
       text = commit.messages.map((message) => message.value).join('\n\n')
     }
     // Unreadable, or it already names a task: git gets exactly what it was given.
-    if (text === null || ANY_REFERENCE.test(text)) return { args, input }
+    if (text === null) return { args, input }
+    // A reference the model wrote is never replaced, and is confirmed online before git
+    // runs. A commit without one makes no network call.
+    if (ANY_REFERENCE.test(text)) {
+      const stop = typeof config.plugin_root === 'string' ? await unresolvedReference(text, { cwd, git, config }) : null
+      return stop ? { stop } : { args, input }
+    }
 
     const claims = conversationClaims({ sessionId: config.session_id, stateDir: config.claims_dir })
     if (claims.length === 0) return { stop: noClaimText() }
@@ -372,7 +408,7 @@ if (config && session && session !== config.session_id) {
 }
 const eligible = Boolean(config && !process.env.GIT_TRACE2_EVENT && !process.env.GIT_TRACE2)
 const builtins = new Set(Array.isArray(config?.builtins) ? config.builtins : [])
-const plan = eligible ? planCommit(realGit, args, config, dir) : { args }
+const plan = eligible ? await planCommit(realGit, args, config, dir) : { args }
 if (plan.stop) {
   // Stopped before git runs: the repository is exactly as it was.
   process.stderr.write(`${plan.stop}\n`)

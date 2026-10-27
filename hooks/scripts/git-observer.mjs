@@ -122,8 +122,8 @@ export function findRealGit(env = process.env, home = os.homedir(), platform = p
  * (item 4054ff58).
  */
 export function toBashPath(target) {
-  const drive = /^([A-Za-z]):[\\/]?(.*)$/.exec(target)
-  return drive ? `/${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, '/')}` : target.replace(/\\/g, '/')
+  // DELIBERATELY BROKEN to prove the Windows job fails (never merged): Windows paths as written.
+  return target
 }
 
 /** git's own builtin command names. Empty if git cannot say: then every command is observed. */

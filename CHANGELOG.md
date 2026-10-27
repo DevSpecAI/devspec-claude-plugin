@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.49.1 - 2026-10-27
+
+- When a commit is stopped because no task is claimed, Claude is now told to claim the right task and retry the same commit. The task's tag is added to the commit automatically, so Claude no longer has to type a task id it could get wrong. The reminder shown when Claude edits with no task claimed says the same.
+- Claude writes a task's tag itself only when it holds several claims and must say which one a commit belongs to, because the plugin never guesses. A commit stopped for a bare, unquoted message just needs the message quoted. A tag that names no task can be removed, and with one task claimed the right one is added.
+- The README now describes commit credit accurately. While Claude is connected, each commit it makes is credited to Claude. A commit reaches a task through the task's tag, which the plugin adds when exactly one task is claimed in a folder linked to the project, or when Claude records its implementation.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.49.0 - 2026-10-27
 
 - Every commit Claude makes is now reported to DevSpec by git itself, so it is credited to Claude and the work it was doing. Before, only some commits were reported, and only in a folder with a DevSpec project pin.

@@ -79,9 +79,14 @@ When a repository belongs to more than one DevSpec project, or you open Claude C
 
 ## Commits Claude makes
 
-DevSpec credits each commit Claude makes to Claude and to the task it was working on. The plugin reports every commit made through `git` in Claude's shell commands, including commits from its subagents and background commands, with the commit's full id, its branch and the repository's address. DevSpec then works out which project the repository belongs to.
+While a Claude Code conversation is connected to DevSpec, each commit Claude makes is credited to Claude. On macOS and Linux this covers every commit made through `git` in Claude's shell commands, including commits from its subagents and background commands. The plugin reports each one with the commit's full id, its branch and the repository's address. DevSpec then works out which project the repository belongs to.
 
 The plugin does this with a private stand-in for `git` that it puts on the path of Claude's commands for that conversation. Nothing is installed in your repositories, and your git configuration and hooks are not changed.
+
+A commit reaches a task in one of two ways:
+
+- **Through the task's tag in the commit message,** `[devspec:<task id>]`. When Claude has claimed exactly one task, the plugin adds that task's tag to Claude's commits itself. This happens in a folder linked to your project by a `.devspec/project.json` pin (`/devspec:devspec.project remember` writes one) or by DevSpec in the folder's `.mcp.json`.
+- **When Claude records its implementation of the task.**
 
 Every report is written to `~/.devspec/git-observer/commits.log`, whether it was sent, refused or dropped. If DevSpec does not show one of Claude's commits, look there first.
 

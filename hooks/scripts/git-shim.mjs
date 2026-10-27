@@ -145,7 +145,8 @@ async function delegate(realGit, args, childEnv, input = null) {
  * where Git for Windows writes Trace2 only to a file, a file in a private directory.
  */
 async function startTraceCapture() {
-  if (WINDOWS) {
+  // DELIBERATELY BROKEN to prove the Windows job fails (never merged): the socket everywhere.
+  if (false) {
     const dir = mkdtempSync(join(tmpdir(), 'dsg-'))
     const file = join(dir, 't.json')
     writeFileSync(file, '', { mode: 0o600 })

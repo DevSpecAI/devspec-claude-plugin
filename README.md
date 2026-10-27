@@ -68,4 +68,5 @@ To turn off automatic connection at startup, switch off **Make Claude Code avail
 
 - **Web & Sign Up:** [devspec.ai](https://devspec.ai)
 - **App & Agent Setup:** [app.devspec.ai/settings/agents](https://app.devspec.ai/settings/agents)
+- **Privacy Policy:** [devspec.ai/privacy](https://devspec.ai/privacy)
 - **Changelog:** [CHANGELOG.md](./CHANGELOG.md)

@@ -3,6 +3,7 @@
 ## 0.51.3 - 2026-10-27
 
 - Overhauled `README.md` and `.claude-plugin` marketplace descriptions with a clear overview of DevSpec's capabilities for Claude Code users, a streamlined 3-step Quick Start, and complete `/devspec:*` command reference.
+- Added `.claude-plugin/icon.png` (512x512) and `privacyPolicyUrl` (`https://devspec.ai/privacy`) to `.claude-plugin/plugin.json` so `claude plugin validate` passes with zero directory warnings.
 
 ## 0.51.2 - 2026-10-27
 

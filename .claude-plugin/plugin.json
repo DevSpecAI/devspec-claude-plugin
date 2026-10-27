@@ -9,6 +9,8 @@
   },
   "homepage": "https://devspec.ai",
   "repository": "https://github.com/DevSpecAI/devspec-claude-plugin",
+  "privacyPolicyUrl": "https://devspec.ai/privacy",
+  "icon": ".claude-plugin/icon.png",
   "license": "MIT",
   "keywords": [
     "devspec",

@@ -48,7 +48,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { devspecFolderMarker, gitRemoteOrigin } from './devspec-scope.mjs'
+import { findProjectPin, gitRemoteOrigin, workTreeRootFrom } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { readConversationProject } from './conversation-project.mjs'
 import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
@@ -714,7 +714,7 @@ function recoveryText(claims) {
  * contract *requires* work to happen in one. Looking only at the cwd would leave this
  * check silently inert for exactly the workflow it exists to protect, which is the same
  * mistake 0.16.0 made about the commit shape. Jurisdiction already consults the main
- * worktree for the same reason (`devspecFolderMarker`).
+ * worktree for the same reason (`repositoryJurisdiction`).
  */
 function resolveAuth(cwd, mainWorktree, env) {
   const hostToken = hostTokenFromEnv(env)
@@ -811,6 +811,31 @@ function claimedItemIdFrom(input) {
   return null
 }
 
+/**
+ * Whether this repository is the connected project's, as implementation contract 5.4.0
+ * `commit_provenance_contract.project_association` puts it: it carries a project pin,
+ * or its remote is one of the connected project's repositories (item f7f12de1). The
+ * pin is looked for from the folder up to the repository's top and then in its main
+ * working tree, because a linked worktree carries none (convention 182fc97f). A
+ * DevSpec server declared in the folder's MCP configuration is not jurisdiction: it
+ * says DevSpec is used here, not that this repository is the project's. Returns
+ * `{ kind: 'pin', project_id }`, `{ kind: 'remote' }` or null.
+ */
+function repositoryJurisdiction(scope, env) {
+  const home = env.USERPROFILE || env.HOME || os.homedir()
+  const pin = findProjectPin(scope.cwd, {
+    home,
+    root: workTreeRootFrom(scope.cwd, { home }),
+    mainWorktree: scope.mainWorktree ?? null,
+  })
+  if (pin) return { kind: 'pin', project_id: pin.project_id }
+  const git = gitIn('git', scope.cwd)
+  const top = git(['rev-parse', '--show-toplevel'])
+  if (!top) return null
+  const project = projectScope({ cwd: scope.cwd, worktree: fs.realpathSync(top), sessionId: scope.sessionId, home, git })
+  return project?.inScope && project.via === 'remote' ? { kind: 'remote' } : null
+}
+
 export async function handlePre(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
   const tool = input?.tool_name ?? input?.toolName
@@ -824,24 +849,23 @@ export async function handlePre(input, options = {}) {
   // only the fallback for a conversation it cannot reach.
   if (tool === 'Bash' && (options.observerActive ?? observerActive)(scope.sessionId)) return null
 
-  // Jurisdiction is positive: a DevSpec marker in the folder, or, for an edit, one of
-  // the connected project's repositories by remote. Uncertain jurisdiction allows,
-  // so a throwing lookup is an allow too.
+  // Only a commit this can read is worth a jurisdiction lookup: every other command is
+  // allowed untouched, by design, and costs no git call.
+  let command = ''
+  let commit = null
+  if (tool === 'Bash') {
+    command = typeof input?.tool_input?.command === 'string' ? input.tool_input.command : ''
+    commit = command ? simpleGitCommit(command) ?? heredocGitCommit(command) : null
+    if (!commit) return null
+  }
+
+  // Jurisdiction is positive, and a property of the repository: a project pin, or the
+  // repository's remote being one of the connected project's. Uncertain jurisdiction
+  // allows, so a throwing lookup is an allow too.
   let marker = null
   try {
-    marker = devspecFolderMarker(scope.cwd, {
-      home: env.USERPROFILE || env.HOME || os.homedir(),
-      mainWorktree: scope.mainWorktree,
-    })
+    marker = repositoryJurisdiction(scope, env)
   } catch { return null }
-  if (!marker && EDIT_TOOLS.has(tool)) {
-    try {
-      const git = gitIn('git', scope.cwd)
-      const top = git(['rev-parse', '--show-toplevel'])
-      const project = top ? projectScope({ cwd: scope.cwd, worktree: fs.realpathSync(top), sessionId: scope.sessionId, home: env.HOME || os.homedir(), git }) : null
-      if (project?.inScope) marker = { kind: project.via }
-    } catch { /* not the project's */ }
-  }
   if (!marker) return null
 
   const claims = readClaims(scope, { env, now, platform })
@@ -851,15 +875,6 @@ export async function handlePre(input, options = {}) {
   if (EDIT_TOOLS.has(tool)) {
     if (claims.length > 0 || conversationClaims({ sessionId: scope.sessionId, stateDir: stateDir(env), now, platform }).length > 0) return null
     return maybeNudge(scope, { env, now, platform })
-  }
-
-  const command = typeof input?.tool_input?.command === 'string' ? input.tool_input.command : ''
-  if (!command) return null
-
-  const commit = simpleGitCommit(command) ?? heredocGitCommit(command)
-  if (!commit) {
-    // Not a shape we can read: allowed untouched, by design.
-    return null
   }
 
   const reference = referenceIn(commit.message)

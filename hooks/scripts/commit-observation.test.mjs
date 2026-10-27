@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { afterEach, beforeEach, test } from 'node:test'
-import { boundConnection, commitRepoDir, handleBashPre, handleBashPost, inJurisdiction } from './commit-observation.mjs'
+import { boundConnection, commitRepoDir, handleBashPre, handleBashPost } from './commit-observation.mjs'
 
 const SESSION = 'observation-session-1'
 const PROJECT = '22222222-2222-4222-8222-222222222222'
@@ -148,7 +148,6 @@ test('markers do not retain credentials, command text, or arbitrary output', asy
 test('a repository needs no DevSpec pin or MCP entry: its origin is sent, and with neither nothing is', async () => {
   // DevSpec decides from the origin whether it tracks the repository (item 604c360a).
   fs.rmSync(path.join(repo, '.devspec'), { recursive: true })
-  assert.equal(inJurisdiction(repo), false)
   assert.equal((await run('git commit --allow-empty -q -m "no origin, no pin"')).length, 0)
   git(['remote', 'add', 'origin', 'git@github.com:fixture/unpinned.git'])
   const calls = await run('git commit --allow-empty -q -m "unpinned"')

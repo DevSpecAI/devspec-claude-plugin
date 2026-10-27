@@ -46,13 +46,16 @@ function gitInit(dir) {
   assert.equal(result.status, 0, result.stderr)
 }
 
-/** A folder DevSpec has positive local jurisdiction over. Normally untracked. */
+const PINNED_PROJECT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+/**
+ * A repository DevSpec has jurisdiction over: it carries a project pin (contract 5.4.0
+ * project_association; the other way in is its remote, below). Normally untracked.
+ */
 function markDevspecProject(dir) {
-  fs.writeFileSync(
-    path.join(dir, '.mcp.json'),
-    JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }),
-  )
+  fs.mkdirSync(path.join(dir, '.devspec'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.devspec', 'project.json'), JSON.stringify({ project_id: PINNED_PROJECT }))
 }
+const unmark = (dir) => fs.rmSync(path.join(dir, '.devspec'), { recursive: true, force: true })
 
 function input(toolName, toolInput, overrides = {}) {
   return {
@@ -106,8 +109,8 @@ beforeEach(() => {
   // Real credentials in the developer's shell would otherwise send these tests at the
   // live server. The online block below supplies its own endpoint explicitly. Run from
   // inside a Claude Code session, the plugin's exported settings file
-  // (DEVSPEC_PLUGIN_SETTINGS_SESSION) and option pairs would win over the test's own
-  // .mcp.json, so they go too (item 9a4c0d6a).
+  // (DEVSPEC_PLUGIN_SETTINGS_SESSION) and option pairs would win over the credentials a
+  // test supplies itself, so they go too (item 9a4c0d6a).
   const {
     DEVSPEC_MCP_TOKEN: _t, DEVSPEC_TOKEN: _t2, DEVSPEC_MCP_URL: _u,
     CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: _p, CLAUDE_PLUGIN_OPTION_devspec_token: _p2,
@@ -521,7 +524,7 @@ describe('one nudge per session and repository, never more', () => {
   })
 
   it('says nothing outside a DevSpec project', async () => {
-    fs.rmSync(path.join(repo, '.mcp.json'))
+    unmark(repo)
     assert.equal(await handlePre(editInput(), { env }), null)
   })
 })
@@ -549,7 +552,7 @@ describe('jurisdiction is positive and local', () => {
     const worktree = path.join(sandbox, 'wt')
     const added = spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', '--detach', worktree], { encoding: 'utf8' })
     assert.equal(added.status, 0, added.stderr)
-    assert.equal(fs.existsSync(path.join(worktree, '.mcp.json')), false, 'marker genuinely absent')
+    assert.equal(fs.existsSync(path.join(worktree, '.devspec')), false, 'pin genuinely absent')
     assert.equal(
       decision(await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: worktree }), { env })),
       'deny',
@@ -565,6 +568,18 @@ describe('jurisdiction is positive and local', () => {
       await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: plain }), { env: { ...env, HOME: home, USERPROFILE: home } }),
       null,
     )
+  })
+
+  it('takes no jurisdiction from a DevSpec server declared in the folder\'s MCP configuration (item f7f12de1)', async () => {
+    // It says DevSpec is used here, not that this repository is the project's.
+    unmark(repo)
+    fs.writeFileSync(path.join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }))
+    fs.mkdirSync(path.join(repo, '.claude'))
+    fs.writeFileSync(path.join(repo, '.claude', 'settings.local.json'), JSON.stringify({ enabledMcpjsonServers: ['devspec'], enabledPlugins: { 'devspec@devspec': true } }))
+    assert.equal(await bash('git commit -m "not the project\'s"'), null, 'no claim: not stopped')
+    assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env }), null, 'no reminder')
+    claim()
+    assert.equal(await bash('git commit -m "still not the project\'s"'), null, 'one claim: not tagged')
   })
 
   it('writes no pin and touches no folder of its own accord', async () => {
@@ -1198,7 +1213,7 @@ describe('with the git stand-in (item e597bc18)', () => {
   })
 
   it('nudges an edit in one of the project\'s repositories by its remote, with no marker in the folder', async () => {
-    fs.rmSync(path.join(repo, '.mcp.json'))
+    unmark(repo)
     spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'])
     const edit = input('Write', { file_path: path.join(repo, 'x.ts') })
     assert.equal(await handlePre(edit, { env }), null, 'not connected: no jurisdiction')
@@ -1208,8 +1223,21 @@ describe('with the git stand-in (item e597bc18)', () => {
     assert.match(first.hookSpecificOutput.additionalContext, /in the project's repositories are tagged for you/)
   })
 
+  it('checks and tags a commit in one of the project\'s repositories by its remote, with no pin (item f7f12de1)', async () => {
+    unmark(repo)
+    spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'])
+    assert.equal(await bash('git commit -m "untracked work"'), null, 'not connected: no jurisdiction')
+    const connected = { ...env, HOME: connectedHome() }
+    assert.equal(decision(await handlePre(input('Bash', { command: 'git commit -m "untracked work"' }), { env: connected })), 'deny')
+    claim()
+    assert.equal(
+      updated(await handlePre(input('Bash', { command: 'git commit -m "tracked work"' }), { env: connected })),
+      `git commit -m "tracked work [devspec:${ITEM}]"`,
+    )
+  })
+
   it('is silent once the conversation holds a claim, in any repository', async () => {
-    fs.rmSync(path.join(repo, '.mcp.json'))
+    unmark(repo)
     spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/fixture/project.git'])
     const elsewhere = path.join(sandbox, 'elsewhere')
     gitInit(elsewhere)

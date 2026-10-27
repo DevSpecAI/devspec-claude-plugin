@@ -344,11 +344,15 @@ async function unresolvedReference(text, { cwd, git, config }) {
     const provenance = await import(pathToFileURL(join(scripts, 'commit-provenance.mjs')).href)
     const reference = provenance.referenceIn(text)
     if (!reference) return null // not a well-formed reference: nothing to look up
-    const { devspecFolderMarker } = await import(pathToFileURL(join(scripts, 'devspec-scope.mjs')).href)
+    const { findProjectPin } = await import(pathToFileURL(join(scripts, 'devspec-scope.mjs')).href)
     const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'])
     const mainWorktree = common && basename(resolve(common)) === '.git' ? dirname(resolve(common)) : null
     let marker = null
-    try { marker = devspecFolderMarker(cwd, { home: homedir(), mainWorktree }) } catch { marker = null }
+    // The pin, as a hint for which project to ask about (pinned_project_id).
+    try {
+      const pin = findProjectPin(cwd, { home: homedir(), mainWorktree })
+      marker = pin ? { kind: 'pin', project_id: pin.project_id } : null
+    } catch { marker = null }
     const outcome = await provenance.confirmReferenceOnline(text, { cwd, mainWorktree, marker, localId: config.session_id })
     return outcome === 'not_found' ? provenance.unresolvedReferenceText(reference) : null
   } catch {

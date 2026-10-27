@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { LIMITS, drainObserver, endObserver, logPath, observerActive, observerDir, reportArguments, startObserver } from './git-observer.mjs'
+import { LIMITS, drainObserver, endObserver, findRealGit, logPath, observerActive, observerDir, reportArguments, startObserver, toBashPath } from './git-observer.mjs'
 import { McpToolRefusalError } from './mcp-call.mjs'
 
 const SESSION = 'conversation-604c360a'
@@ -80,9 +80,28 @@ describe('session start', () => {
   })
 
   it('does not start where it cannot run', () => {
-    assert.deepEqual(startObserver({ sessionId: 'other', envFile, home, platform: 'win32' }), { ok: false, reason: 'windows' })
     assert.deepEqual(startObserver({ sessionId: 'other', envFile: undefined, home }), { ok: false, reason: 'no CLAUDE_ENV_FILE' })
+    assert.deepEqual(startObserver({ sessionId: 'other', envFile, home, env: { PATH: path.join(home, 'nothing here') } }), { ok: false, reason: 'git not found' })
     assert.equal(observerActive('other', home), false)
+  })
+
+  it('on Windows, runs git.exe and names every path the way Git Bash does (item 4054ff58)', () => {
+    assert.equal(toBashPath('C:\\Users\\run ner\\.devspec\\git-observer\\x\\bin'), '/c/Users/run ner/.devspec/git-observer/x/bin')
+    assert.equal(toBashPath('d:/Program Files/nodejs/node.exe'), '/d/Program Files/nodejs/node.exe')
+    assert.equal(toBashPath('/home/x/bin'), '/home/x/bin')
+    // A git.exe on PATH, and an extensionless git beside it that Windows would not run.
+    const gitDir = path.join(home, 'Program Files', 'Git', 'cmd')
+    fs.mkdirSync(gitDir, { recursive: true })
+    fs.writeFileSync(path.join(gitDir, 'git'), '', { mode: 0o755 })
+    fs.writeFileSync(path.join(gitDir, 'git.exe'), '', { mode: 0o755 })
+    assert.equal(findRealGit({ PATH: gitDir }, home, 'win32'), path.join(gitDir, 'git.exe'))
+    const windowsEnv = path.join(home, 'windows-env.sh')
+    fs.writeFileSync(windowsEnv, '')
+    const started = startObserver({ sessionId: 'windows', envFile: windowsEnv, home, env: { PATH: gitDir }, platform: 'win32', nodePath: process.execPath })
+    assert.equal(started.ok, true, started.reason)
+    const wrapper = fs.readFileSync(path.join(started.dir, 'bin', 'git'), 'utf8')
+    assert.ok(wrapper.includes(`exec '${path.join(gitDir, 'git.exe')}' "$@"`), wrapper)
+    assert.equal(fs.readFileSync(windowsEnv, 'utf8'), `export PATH='${toBashPath(path.join(started.dir, 'bin'))}':"$PATH"\n`)
   })
 })
 

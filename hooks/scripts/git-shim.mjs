@@ -30,7 +30,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { accessSync, appendFileSync, constants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { accessSync, appendFileSync, constants, mkdtempSync, readFileSync, realpathSync as realpathJs, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
@@ -46,6 +46,17 @@ const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/u
 const MAX_TRACE_BYTES = 1024 * 1024
 const TRACE_CLOSE_GRACE_MS = 250
 const MAX_JOURNAL_LINE = 8192
+const WINDOWS = process.platform === 'win32'
+
+/**
+ * A path as the file system names it. On Windows the native form also settles the
+ * letter case and the separators, so two spellings of one folder (git's C:/Users/…,
+ * Node's C:\users\…) compare equal (item 4054ff58).
+ */
+function realpathSync(target) {
+  return typeof realpathJs.native === 'function' ? realpathJs.native(target) : realpathJs(target)
+}
+const comparable = (target) => (WINDOWS ? target.toLowerCase() : target)
 
 function readConfig(dir) {
   try {
@@ -59,7 +70,9 @@ function readConfig(dir) {
 }
 
 function inside(child, parent) {
-  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+  const c = comparable(child)
+  const p = comparable(parent)
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
 }
 
 function executable(file) {
@@ -78,7 +91,9 @@ function executable(file) {
 function realGitFor(config) {
   let base = null
   try { base = realpathSync(config.base) } catch { base = config.base }
-  const candidates = [...String(process.env.PATH || '').split(delimiter).filter(Boolean).map((dir) => join(dir, 'git')), config.real_git]
+  // Windows runs git.exe; the extensionless stand-in there is for Git Bash only.
+  const name = WINDOWS ? 'git.exe' : 'git'
+  const candidates = [...String(process.env.PATH || '').split(delimiter).filter(Boolean).map((dir) => join(dir, name)), config.real_git]
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || !executable(candidate)) continue
     let real
@@ -112,8 +127,10 @@ async function delegate(realGit, args, childEnv, input = null) {
     const handler = () => {
       try { child.kill(signal) } catch { /* best-effort forwarding */ }
     }
-    process.on(signal, handler)
-    forwarded.push([signal, handler])
+    try {
+      process.on(signal, handler)
+      forwarded.push([signal, handler])
+    } catch { /* a signal this platform does not have */ }
   }
   const result = await new Promise((resolve) => {
     child.once('error', (error) => resolve({ code: 126, signal: null, error }))
@@ -123,7 +140,27 @@ async function delegate(realGit, args, childEnv, input = null) {
   return result
 }
 
+/**
+ * Git's Trace2 events for this invocation. A Unix socket where there is one; on Windows,
+ * where Git for Windows writes Trace2 only to a file, a file in a private directory.
+ */
 async function startTraceCapture() {
+  if (WINDOWS) {
+    const dir = mkdtempSync(join(tmpdir(), 'dsg-'))
+    const file = join(dir, 't.json')
+    writeFileSync(file, '', { mode: 0o600 })
+    return {
+      target: file,
+      async finish() {
+        try {
+          if (statSync(file).size > MAX_TRACE_BYTES) return null
+          return readFileSync(file, 'utf8')
+        } finally {
+          try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+        }
+      },
+    }
+  }
   // A socket path is limited to about 100 bytes, which a home directory can exceed:
   // a private (0700) directory under the system temp directory keeps it short.
   const socketDir = mkdtempSync(join(tmpdir(), 'dsg-'))
@@ -438,7 +475,7 @@ try {
     const found = directCommit(readTrace(trace))
     let worktree = null
     try { worktree = found ? realpathSync(found.worktree) : null } catch { worktree = null }
-    const commit = found && worktree === before.worktree
+    const commit = found && worktree && comparable(worktree) === comparable(before.worktree)
       ? inspectCommit(realGit, worktree, before.previousHead, found.amend, startedAt, endedAt)
       : null
     if (commit) {

@@ -18,7 +18,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, dirname, basename, resolve } from 'node:path'
+import path, { join, dirname, basename, resolve } from 'node:path'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -234,7 +234,8 @@ function readPin(dir) {
 
 /** The pin for this worktree: from where git runs up to the worktree's top, then the main worktree. */
 function pinFor(cwd, worktree, commonDir) {
-  const start = cwd === worktree || cwd.startsWith(worktree + '/') ? cwd : worktree
+  const relative = path.relative(worktree, cwd)
+  const start = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)) ? cwd : worktree
   for (let dir = start; ; dir = dirname(dir)) {
     const pin = readPin(dir)
     if (pin) return pin

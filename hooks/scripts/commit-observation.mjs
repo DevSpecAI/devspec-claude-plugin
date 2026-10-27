@@ -16,6 +16,7 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { stateDir, simpleGitCommit, heredocGitCommit } from './commit-provenance.mjs'
 import { devspecFolderMarker, findProjectPin, gitRemoteOrigin, mainWorkTreeFrom } from './devspec-scope.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const REPORT_TIMEOUT_MS = 2_500
@@ -235,4 +236,4 @@ async function main() {
     else if (process.argv[2] === 'post') await handleBashPost(input)
   } catch { /* malformed envelopes and every observation failure fail open */ }
 }
-if (import.meta.url === `file://${process.argv[1]}`) main().catch(() => {})
+if (isEntryPoint(import.meta.url)) main().catch(() => {})

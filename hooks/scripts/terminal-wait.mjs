@@ -37,12 +37,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { loadState, resolveHookConversationId } from './mirror-turn.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 
@@ -189,5 +189,5 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) main().finally(() => process.exit(0))

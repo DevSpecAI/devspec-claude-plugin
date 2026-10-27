@@ -33,6 +33,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pluginSettingsFromEnv } from './plugin-settings.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
 const DEFAULT_APP_ORIGIN = 'https://app.devspec.ai'
@@ -399,7 +400,7 @@ export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
 }
 
 // CLI
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('resolve-mcp-auth.mjs')) {
+if (isEntryPoint(import.meta.url)) {
   // Reflect the same host-token preference the write path uses, for diagnostics.
   const result = resolveDevspecMcpAuth(process.cwd(), { hostToken: hostTokenFromEnv(process.env) })
   process.stdout.write(JSON.stringify(result) + '\n')

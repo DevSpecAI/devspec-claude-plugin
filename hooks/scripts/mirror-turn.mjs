@@ -17,7 +17,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { fitRoomMessage } from './room-message.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
@@ -75,6 +74,7 @@ import {
 } from './delegation-trail.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
 import { readTurnActivity, turnActivityPath, turnIsLive } from './turn-liveness.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 // `background_launch` is the PostToolUse hook that records a background job a turn
 // started (item beb0e005); everything else is a turn boundary.
@@ -1428,5 +1428,5 @@ async function main() {
   process.exit(0)
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) main()

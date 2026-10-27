@@ -75,7 +75,6 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import {
   firstValue,
   PLUGIN_SETTINGS_SESSION_VAR,
@@ -91,6 +90,7 @@ import {
 } from './plugin-settings.mjs'
 import { readPrivateJsonResult, STATE_OK } from './private-state.mjs'
 import { pidAlive, processStartTime, resolveClaudePid } from './startup-listener.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 /**
  * Set to `missing` in the session environment when the plugin's own settings hold no
@@ -325,7 +325,7 @@ function readPayload() {
   }
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) {
   // SessionStart stdout is parsed as hook JSON. The only thing this hook ever says is
   // the missing-key notice, as a systemMessage, which Claude Code shows the person:

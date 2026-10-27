@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.48.1 - 2026-10-27
+
+- Fixed: when the plugin's folder path contains a space, the commits Claude makes are reported to DevSpec again, so they are credited to Claude and the task it was working on. Until now none were reported from such a path, and no error was shown. The check that let a script run only when Claude Code started it compared two spellings of the same path, and they differ when the path contains a space.
+- Every plugin script now makes that check the same way, comparing real paths. A script reached through a symlinked folder, such as a linked `~/.claude`, also runs as it should. A test fails if any script makes the check another way, and another test reports a commit from a plugin folder whose name contains a space.
+- The project-scope test runs again on current Claude Code, which loads DevSpec tools through tool search before using them. The plugin keeps a conversation to its own project either way.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.48.0 - 2026-10-27
 
 - When DevSpec tells Claude about its own work (a finding, or what happened to a change), Claude now tells you in the room as a reply to that notice. Until now, that message was filed as a late answer to whatever someone last asked Claude to do, or not stored at all. Every notice Claude is handed includes the exact call to make, with that notice's id, so Claude never has to remember it.

@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 /**
+ * The fallback: the git stand-in (git-observer.mjs, item 604c360a) reports every
+ * commit in a conversation where it runs, and this stands down there. It covers only
+ * a conversation the stand-in cannot reach (Windows, or a Claude Code without
+ * CLAUDE_ENV_FILE), by reading the Bash command it is given.
+ *
  * Best-effort direct-commit observations, never a Git gate (P4 / 3d1f5f9d).
  * A summary line or a changed HEAD alone does not prove creation. Require a
  * bounded readable direct invocation, its own pre/post pair, one new commit
@@ -17,6 +22,7 @@ import { stateDir, simpleGitCommit, heredocGitCommit } from './commit-provenance
 import { devspecFolderMarker, findProjectPin, gitRemoteOrigin, mainWorkTreeFrom } from './devspec-scope.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import { isEntryPoint } from './entry-point.mjs'
+import { observerActive } from './git-observer.mjs'
 
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 const REPORT_TIMEOUT_MS = 2_500
@@ -83,8 +89,12 @@ function safeRemote(raw) {
   } catch { return null }
 }
 
+/**
+ * The repository as DevSpec is told it: its credential-free origin, or, with no
+ * origin, its project pin. DevSpec decides whether it tracks the repository (item
+ * 604c360a); a folder pin or MCP entry is no longer required.
+ */
 function repositoryBinding(repoDir) {
-  if (!inJurisdiction(repoDir)) return null
   const rawRemote = gitRemoteOrigin(repoDir)
   const remote = safeRemote(rawRemote)
   if (rawRemote && !remote) return null
@@ -147,6 +157,7 @@ function reflog(repoDir, count) {
 export function handleBashPre(input, options = {}) {
   try {
     if (!input?.session_id) return null
+    if ((options.observerActive ?? observerActive)(input.session_id)) return null
     const invocation = directInvocation(input?.tool_input?.command, input.cwd)
     if (!invocation) return null
     const { repoDir, subjectHash } = invocation
@@ -200,6 +211,7 @@ function createdSha(repoDir, before, now) {
 export async function handleBashPost(input, options = {}) {
   try {
     if (!input?.session_id) return null
+    if ((options.observerActive ?? observerActive)(input.session_id)) return null
     const invocation = directInvocation(input?.tool_input?.command, input.cwd)
     if (!invocation) return null
     const { repoDir } = invocation

@@ -145,12 +145,26 @@ test('markers do not retain credentials, command text, or arbitrary output', asy
   assert.equal(fs.statSync(path.join(process.env.DEVSPEC_CLAUDE_STATE_DIR, file)).mode & 0o777, 0o600)
 })
 
-test('unmarked repository and config-only unknown scope do not report', async () => {
+test('a repository needs no DevSpec pin or MCP entry: its origin is sent, and with neither nothing is', async () => {
+  // DevSpec decides from the origin whether it tracks the repository (item 604c360a).
   fs.rmSync(path.join(repo, '.devspec'), { recursive: true })
   assert.equal(inJurisdiction(repo), false)
-  assert.equal((await run('git commit --allow-empty -q -m "unmarked"')).length, 0)
-  fs.writeFileSync(path.join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { devspec: { url: state.mcp_url } } }))
-  assert.equal((await run('git commit --allow-empty -q -m "unscoped"')).length, 0)
+  assert.equal((await run('git commit --allow-empty -q -m "no origin, no pin"')).length, 0)
+  git(['remote', 'add', 'origin', 'git@github.com:fixture/unpinned.git'])
+  const calls = await run('git commit --allow-empty -q -m "unpinned"')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].arguments.git_remote, 'git@github.com:fixture/unpinned.git')
+  assert.equal(calls[0].arguments.pinned_project_id, undefined)
+})
+
+test('stands down where the git stand-in observes the conversation', async () => {
+  const input = event('git commit --allow-empty -q -m "observed by the stand-in"')
+  handleBashPre(input, { boundConnection: connection, observerActive: () => true })
+  const markers = () => (fs.existsSync(process.env.DEVSPEC_CLAUDE_STATE_DIR) ? fs.readdirSync(process.env.DEVSPEC_CLAUDE_STATE_DIR) : []).filter((name) => name.endsWith('.observation-v1.json'))
+  assert.deepEqual(markers(), [])
+  pre(input) // as if the stand-in started after this command's pre hook
+  git(['commit', '--allow-empty', '-qm', 'observed by the stand-in'])
+  assert.equal((await post(input, { observerActive: () => true })).length, 0)
 })
 
 for (const command of ['git commit --allow-empty --amend -m "rewrite"', 'git commit --allow-empty -m "new" && git commit --allow-empty -m "second"', 'git -c alias.save=commit save --allow-empty -m "alias"', 'git commit --allow-empty -m "new" & wait']) {

@@ -62,9 +62,9 @@ function respondModel(res, body, block, stop, n) {
  */
 async function conversation({ name, powershellTool, steps, check }) {
   const home = mkdtempSync(join(tmpdir(), `claude ${name} `))
-  const repo = join(home, 'project repo'), other = join(home, 'elsewhere repo')
+  const repo = join(home, 'project repo'), other = join(home, 'elsewhere repo'), otherMonitor = join(home, 'elsewhere monitor repo')
   const localId = randomUUID(), connectionId = randomUUID(), projectId = randomUUID(), task = randomUUID()
-  const state = { results: {}, tools: new Set(), calls: [], reports: [], requests: 0, task, localId, home, repo, other }
+  const state = { results: {}, tools: new Set(), calls: [], reports: [], requests: 0, task, localId, home, repo, other, otherMonitor }
   const plan = steps(state)
   const server = createServer(async (req, res) => {
     try {
@@ -120,14 +120,17 @@ async function conversation({ name, powershellTool, steps, check }) {
     CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'fixture-not-real', CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: endpoint,
     CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DEVSPEC_CLAUDE_STATE_DIR: join(home, 'provenance state'),
+    PATH: String(process.env.PATH || '').split(WINDOWS ? ';' : ':').filter((dir) => !dir.includes('git-observer')).join(WINDOWS ? ';' : ':'),
     NO_PROXY: '127.0.0.1,localhost', NODE_OPTIONS: '' }
   for (const key of ['ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
     'CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID', 'DEVSPEC_REMOTE_LOCAL_ID_CLAUDE_CODE', 'CLAUDE_ENV_FILE', 'CLAUDE_CODE_USE_POWERSHELL_TOOL']) delete env[key]
   try {
-    for (const [dir, url] of [[repo, 'git@github.com:Fixture/Project.git'], [other, 'https://github.com/fixture/elsewhere.git']]) {
+    for (const [dir, url] of [[repo, 'git@github.com:Fixture/Project.git'], [other, 'https://github.com/fixture/elsewhere.git'], [otherMonitor, 'https://github.com/fixture/elsewhere.git']]) {
       mkdirSync(dir); git(['init', '-q', '-b', 'main'], dir); git(['commit', '--allow-empty', '-qm', 'base'], dir); git(['remote', 'add', 'origin', url], dir)
     }
+    const journalFile = join(home, '.devspec', 'git-observer', localId, 'journal.jsonl')
     writeFileSync(join(home, 'commit script.sh'), '#!/bin/sh\ngit commit --allow-empty -q -m script\n', { mode: 0o755 })
+    writeFileSync(join(home, 'settle script.sh'), `#!/bin/sh\nfor i in $(seq 1 60); do [ $(git -C '${inBash(other)}' rev-list --count main) -ge 2 ] && [ $(git -C '${inBash(otherMonitor)}' rev-list --count main) -ge 2 ] && [ -f '${inBash(journalFile)}' ] && [ $(wc -l < '${inBash(journalFile)}') -ge 6 ] && break; sleep 1; done; sleep 1\n`, { mode: 0o755 })
     const connections = join(home, '.devspec', 'remote-control', 'connections'); mkdirSync(connections, { recursive: true })
     writeFileSync(join(connections, `${connectionId}.json`), JSON.stringify({ enabled: true, agent_name: 'Claude Code', local_id: localId, connection_id: connectionId,
       session_id: null, mcp_url: endpoint, token: 'fixture-not-real', connection_capability: 'fixture-capability', cwd: repo }), { mode: 0o600 })
@@ -157,12 +160,16 @@ async function conversation({ name, powershellTool, steps, check }) {
     state.envFiles = existsSync(sessionEnv)
       ? readdirSync(sessionEnv).flatMap((dir) => readdirSync(join(sessionEnv, dir)).map((file) => readFileSync(join(sessionEnv, dir, file), 'utf8'))).join('\n')
       : null
-    const log = join(home, '.devspec', 'git-observer', 'commits.log')
-    state.observerLog = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
     const messages = (dir) => git(['log', '--format=%B%x00', 'main'], dir).split('\0').map((message) => message.trim()).filter(Boolean)
     const commits = (dir) => git(['rev-list', '--reverse', 'main'], dir).split('\n').slice(1) // every commit after the base
-    state.messages = messages(repo); state.otherMessages = messages(other)
-    state.commits = commits(repo); state.otherCommits = commits(other)
+    state.messages = messages(repo)
+    state.otherMessages = ['base', ...messages(other).filter((m) => m !== 'base'), ...messages(otherMonitor).filter((m) => m !== 'base')]
+    state.commits = commits(repo); state.otherCommits = [...commits(other), ...commits(otherMonitor)]
+    for (let i = 0; i < 50 && state.reports.length < state.commits.length + state.otherCommits.length; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    const log = join(home, '.devspec', 'git-observer', 'commits.log')
+    state.observerLog = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
     check(state)
     return state
   } finally {
@@ -190,9 +197,9 @@ summary.powershellOff = await conversation({
     ['background', 'Bash', bash(`sleep 1; git -C '${inBash(state.other)}' commit --allow-empty -q -m background`, { run_in_background: true })],
     ['subagent', 'Agent', { description: 'Commit in a subagent', prompt: 'SUBAGENT-COMMIT: make one empty commit', subagent_type: 'general-purpose' }],
     ['load_monitor', 'ToolSearch', { query: 'select:Monitor', max_results: 1 }, (names) => names.includes('Monitor')],
-    ['monitor', 'Monitor', { command: `git -C '${inBash(state.other)}' commit --allow-empty -q -m monitor`, description: 'Commit from a monitor', timeout_ms: 20000 }],
+    ['monitor', 'Monitor', { command: `git -C '${inBash(state.otherMonitor)}' commit --allow-empty -q -m monitor`, description: 'Commit from a monitor', timeout_ms: 20000 }],
     // Until the background and Monitor commits have both been made, then a moment for their journal lines.
-    ['settle', 'Bash', bash(`for i in $(seq 1 60); do [ "$(git -C '${inBash(state.other)}' rev-list --count main)" -ge 3 ] && break; sleep 1; done; sleep 2`)],
+    ['settle', 'Bash', bash(`'${inBash(join(state.home, 'settle script.sh'))}'`)],
   ],
   check(state) {
     assert.equal(state.tools.has('PowerShell'), false, `the setting turned the PowerShell tool off: ${[...state.tools]}`)
@@ -208,6 +215,7 @@ summary.powershellOff = await conversation({
     assert.ok(state.messages.includes(`through bash ${tag}`), JSON.stringify(state.messages))
     assert.ok(state.messages.includes(`script ${tag}`), `a script's commit is tagged: ${JSON.stringify(state.messages)}`)
     assert.ok(state.messages.includes(`subagent ${tag}`), `a subagent's commit is tagged: ${JSON.stringify(state.messages)}`)
+    assert.equal(state.results.settle.error, false, `settle ran cleanly: ${state.results.settle.text}`)
     assert.deepEqual([...state.otherMessages].sort(), ['background', 'base', 'monitor'], 'background and Monitor commits outside the project are made and left untagged')
     for (const id of ['heredoc', 'plain']) assert.match(state.results[id].text, /DevSpec: added \[devspec:/, `the ${id} result says the tag was added`)
     const remotes = new Map(state.reports.map((report) => [report.commit_sha, report.git_remote]))

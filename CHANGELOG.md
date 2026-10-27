@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.4 - 2026-10-27
+
+- Resolved Anthropic plugin directory portal validation findings in unit test fixtures (`hooks/scripts/interaction-events.test.mjs` and `hooks/scripts/devspec-remote-poll.test.mjs`).
+- Added a "How It Works & Data Handling" disclosure section to `README.md` detailing the plugin's hooks, modules, local state files, and network calls for Anthropic directory security review.
+
 ## 0.51.3 - 2026-10-27
 
 - Overhauled `README.md` and `.claude-plugin` marketplace descriptions with a clear overview of DevSpec's capabilities for Claude Code users, a streamlined 3-step Quick Start, and complete `/devspec:*` command reference.

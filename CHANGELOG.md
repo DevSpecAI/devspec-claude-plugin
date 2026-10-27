@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.51.0 - 2026-10-27
+
+- Full commit tracking now works on native Windows when Claude Code's PowerShell tool is turned off. Add `"CLAUDE_CODE_USE_POWERSHELL_TOOL": "0"` to the `env` section of `%USERPROFILE%\.claude\settings.json` and start a new conversation. Claude then runs its commands in Git Bash, which needs [Git for Windows](https://git-scm.com/downloads/win), and every commit is reported to DevSpec and tagged with its task, as on macOS and Linux. That includes commits made by scripts, in background commands, in Monitor commands and by subagents.
+- Tested with real Claude Code on a Windows machine, in GitHub Actions, on every change to the plugin's hooks.
+- While the PowerShell tool is on, which is the default on native Windows, nothing changes. The plugin adds nothing to the session's environment file, so the plugin's own settings still reach PowerShell commands. Commits made in PowerShell are not checked or tagged automatically. Commits made through the Bash tool get the simpler check, which covers plain commit commands only.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.50.3 - 2026-10-27
 
 - Corrected the README about native Windows. Claude Code's PowerShell tool is on by default there, and commits Claude makes through it are not checked or tagged automatically. Commits made through Claude's Bash tool get the simpler check, which covers plain commit commands only. For full commit tracking, use WSL. The sentence about which setups get full commit tracking is unchanged.

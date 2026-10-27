@@ -1,16 +1,19 @@
 # The git stand-in on every platform Claude Code runs it on (item 4054ff58):
-# Git Bash on Windows, sh on Linux. Only the stand-in's own tests, so it stays cheap.
+# Git Bash on Windows, sh on Linux. Only the stand-in's own tests, so it stays cheap,
+# plus real Claude Code on Windows with its PowerShell tool off and on.
 name: Stand-in
 
 on:
   pull_request:
     paths:
-      - 'hooks/scripts/**'
+      - 'hooks/**'
+      - 'tests/runtime/windows-powershell-runtime.mjs'
       - '.github/workflows/stand-in.yml'
   push:
     branches: [staging, main]
     paths:
-      - 'hooks/scripts/**'
+      - 'hooks/**'
+      - 'tests/runtime/windows-powershell-runtime.mjs'
       - '.github/workflows/stand-in.yml'
   workflow_dispatch:
 
@@ -38,6 +41,26 @@ jobs:
           echo "CLAUDE_CODE_GIT_BASH_PATH=C:\\Program Files\\Git\\bin\\bash.exe" >> "$GITHUB_ENV"
           git --version
       - run: node --test hooks/scripts/stand-in-platform.test.mjs
+
+  # Real Claude Code, scripted loopback provider: no login, no secrets, no paid inference.
+  windows-claude-code:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Claude Code, pinned
+        run: |
+          npm install -g --no-fund --no-audit @anthropic-ai/claude-code@2.1.311
+          echo "CLAUDE_BIN=$(npm root -g)/@anthropic-ai/claude-code/bin/claude.exe" >> "$GITHUB_ENV"
+          echo "CLAUDE_CODE_GIT_BASH_PATH=C:\\Program Files\\Git\\bin\\bash.exe" >> "$GITHUB_ENV"
+      - run: '"$CLAUDE_BIN" --version'
+      - run: node tests/runtime/windows-powershell-runtime.mjs
 
   linux:
     runs-on: ubuntu-latest

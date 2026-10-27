@@ -26,9 +26,9 @@
  *
  * On Windows, Claude Code runs Bash commands in Git Bash, so the stand-in and the
  * PATH line name paths the way Git Bash does, and the stand-in runs git.exe (item
- * 4054ff58). The session-start hook does not start it on native Windows yet (see
- * standInAllowed). Where it does not run, the older command recogniser in
- * commit-observation.mjs reports what it can.
+ * 4054ff58). On native Windows the session-start hook starts it only while Claude
+ * Code's PowerShell tool is turned off (standInAllowed). Where it does not run, the
+ * older command recogniser in commit-observation.mjs reports what it can.
  */
 
 import crypto from 'node:crypto'
@@ -138,15 +138,24 @@ function gitBuiltins(realGit) {
 }
 
 /**
- * Whether the session-start hook starts the stand-in. Not on native Windows yet (item
- * 4054ff58): there Claude Code's PowerShell tool, on by default, never applies the
- * environment file, so its commits would not meet the stand-in, and a PATH line that
- * is not a plain assignment stops every other variable in that file from reaching
- * PowerShell commands, the plugin's own settings session among them (item 4d40407b).
- * startObserver itself works under Git Bash, and the Windows CI job runs it.
+ * Whether the session-start hook starts the stand-in (item 4054ff58). On native Windows
+ * only when Claude Code's PowerShell tool is turned off, which the person does with
+ * CLAUDE_CODE_USE_POWERSHELL_TOOL=0 in their environment or the env of settings.json.
+ * The tool is on by default there, and while it is on Claude routes shell commands
+ * through it: PowerShell never applies the environment file, so those commits would not
+ * meet the stand-in, and a PATH line that is not a plain assignment stops every other
+ * variable in that file from reaching PowerShell commands, the plugin's own settings
+ * session among them (item 4d40407b). Then nothing is written, and the older command
+ * recogniser covers what it can.
  */
-export function standInAllowed({ platform = process.platform } = {}) {
-  return platform === 'win32' ? { ok: false, reason: 'windows' } : { ok: true }
+export function standInAllowed({ platform = process.platform, env = process.env } = {}) {
+  if (platform !== 'win32') return { ok: true }
+  return powerShellToolOff(env) ? { ok: true } : { ok: false, reason: 'windows: the PowerShell tool is not turned off (CLAUDE_CODE_USE_POWERSHELL_TOOL=0)' }
+}
+
+/** Claude Code's own reading of a variable set to off. */
+function powerShellToolOff(env) {
+  return ['0', 'false', 'no', 'off'].includes(String(env.CLAUDE_CODE_USE_POWERSHELL_TOOL ?? '').trim().toLowerCase())
 }
 
 /**
@@ -445,7 +454,7 @@ async function main(command) {
   const sessionId = typeof input.session_id === 'string' ? input.session_id : null
   if (!sessionId) return
   if (command === 'session-start') {
-    const allowed = standInAllowed()
+    const allowed = standInAllowed({ env: process.env })
     const result = allowed.ok ? startObserver({ sessionId, envFile: process.env.CLAUDE_ENV_FILE }) : allowed
     if (!result.ok) logOutcome({ outcome: 'not observing', reason: result.reason, session: sessionId })
     return

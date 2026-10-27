@@ -85,10 +85,16 @@ describe('session start', () => {
     assert.equal(observerActive('other', home), false)
   })
 
-  it('is not started by the session-start hook on native Windows yet (item 4054ff58)', () => {
-    assert.deepEqual(standInAllowed({ platform: 'win32' }), { ok: false, reason: 'windows' })
-    assert.deepEqual(standInAllowed({ platform: 'linux' }), { ok: true })
-    assert.deepEqual(standInAllowed({ platform: 'darwin' }), { ok: true })
+  it('is started on native Windows only while Claude Code\'s PowerShell tool is turned off (item 4054ff58)', () => {
+    for (const off of ['0', 'false', ' FALSE ', 'no', 'off']) {
+      assert.deepEqual(standInAllowed({ platform: 'win32', env: { CLAUDE_CODE_USE_POWERSHELL_TOOL: off } }), { ok: true }, off)
+    }
+    for (const on of [undefined, '', '1', 'true', 'yes']) {
+      const decision = standInAllowed({ platform: 'win32', env: on === undefined ? {} : { CLAUDE_CODE_USE_POWERSHELL_TOOL: on } })
+      assert.equal(decision.ok, false, String(on))
+      assert.match(decision.reason, /PowerShell tool/)
+    }
+    for (const platform of ['linux', 'darwin']) assert.deepEqual(standInAllowed({ platform, env: {} }), { ok: true })
   })
 
   it('on Windows, runs git.exe and names every path the way Git Bash does (item 4054ff58)', () => {

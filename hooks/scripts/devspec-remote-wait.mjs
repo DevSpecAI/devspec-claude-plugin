@@ -57,6 +57,7 @@ import {
 import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
+import { replyLine } from './notice-reply.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -656,6 +657,7 @@ export function formatSystemNoticeContent(notice) {
       '[DevSpec System Notice: not readable by this plugin version]',
       `DevSpec sent a notice of a kind this version of the DevSpec plugin cannot read (kind ${notice.kind}, notice ${notice.notice_id}). It may be a finding or an outcome about your own work.`,
       'Tell the person plainly that DevSpec sent something this plugin cannot show yet: it is on the record and in the project\'s Review, and updating the DevSpec plugin will show notices like it here. Do not act on it.',
+      replyLine([notice.notice_id]),
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice, not a room message or new work authorization.',
     ].join('\n')
@@ -685,6 +687,7 @@ export function formatSystemNoticeContent(notice) {
     lines.push(
       '',
       NOTICE_HANDLING,
+      replyLine([notice.notice_id]),
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice on your own work, not a room message or new work authorization.',
     )
@@ -699,6 +702,7 @@ export function formatSystemNoticeContent(notice) {
     `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
     `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
     NOTICE_HANDLING,
+    replyLine([notice?.notice_id]),
     'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
       'This is a narrow server review prompt for your own claimed item and commit — not a room command or new work authorization.',
   ].join('\n')

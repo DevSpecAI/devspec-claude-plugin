@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.48.0 - 2026-10-27
+
+- When DevSpec tells Claude about its own work (a finding, or what happened to a change), Claude now tells you in the room as a reply to that notice. Until now, that message was filed as a late answer to whatever someone last asked Claude to do, or not stored at all. Every notice Claude is handed includes the exact call to make, with that notice's id, so Claude never has to remember it.
+- A reply to a notice never answers or ends a command. If a notice arrives while Claude is working on something you asked for, it can tell you about the notice in a separate message, and your request still gets its own answer. Even if that reply passes `complete_turn`, your request stays open and Claude still shows as working.
+- A conversation that started before DevSpec accepted notice replies sends the notice ids as the list DevSpec expects. Before, DevSpec refused them as text.
+- If DevSpec refuses a notice reply, Claude sees DevSpec's reason. When Claude isn't in a room, it tells you at the terminal instead.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.47.8 - 2026-10-26
 
 - Uses DevSpec's new settings page names: the personal settings page where you create or reveal your token is now **Agent setup**, and the project settings page for agent execution rules is now **Agent rules**. The token prompt, the two-keys warning and the README link to Agent setup, and the token prompt names the real **Create your token** button.

@@ -2,10 +2,12 @@
  *
  * Two conversations, each with the PowerShell tool set in settings.json, as a person sets it:
  *  - CLAUDE_CODE_USE_POWERSHELL_TOOL=0: Claude has no PowerShell tool, the plugin's
- *    session-start hook sees the setting and starts the git stand-in, and through
- *    Claude's Bash tool (Git Bash) a commit before any claim is stopped, and after
- *    claim_work_item a heredoc into -F - and a plain -m commit, in a path with a space,
- *    are tagged and reported to DevSpec.
+ *    session-start hook sees the setting and starts the git stand-in. Through Claude's
+ *    Bash tool (Git Bash), a commit before any claim is stopped. After claim_work_item,
+ *    a heredoc into -F -, a plain -m commit, a script's commit and a subagent's commit
+ *    in the project's repository are tagged. A background command's and a Monitor
+ *    command's commits in a repository outside the project are left untagged. Every
+ *    commit is reported to DevSpec once. Every path has a space in it.
  *  - CLAUDE_CODE_USE_POWERSHELL_TOOL=1: Claude has the PowerShell tool, the hook writes
  *    nothing to the environment file, the Bash tool runs the real git, and a PowerShell
  *    command still receives the plugin's own session variables (item 4d40407b).
@@ -29,6 +31,12 @@ const root = fileURLToPath(new URL('../..', import.meta.url))
 const IDENTITY = { GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' }
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...IDENTITY }, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const textResult = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data) }] })
+const firstText = (body) => {
+  const first = body.messages?.[0]?.content
+  return typeof first === 'string' ? first : Array.isArray(first) ? first.map((part) => part.text ?? '').join('\n') : ''
+}
+/** A path as a Git Bash command line writes it. */
+const inBash = (target) => (WINDOWS ? target.replace(/\\/g, '/') : target)
 const resultText = (block) => typeof block.content === 'string' ? block.content
   : (Array.isArray(block.content) ? block.content.map((part) => part.text ?? '').join('\n') : '')
 
@@ -47,14 +55,16 @@ function respondModel(res, body, block, stop, n) {
 }
 
 /**
- * One conversation: `steps` are [id, tool, input] the scripted model asks for in turn.
+ * One conversation: `steps` are [id, tool, input, skip?] the scripted model asks for in
+ * turn; `skip(names)` passes over a step the offered tools make unnecessary. A
+ * subagent asked to SUBAGENT-COMMIT makes one commit through Bash.
  * Returns what the conversation produced; `check` runs before its home is removed.
  */
 async function conversation({ name, powershellTool, steps, check }) {
   const home = mkdtempSync(join(tmpdir(), `claude ${name} `))
-  const repo = join(home, 'project repo')
+  const repo = join(home, 'project repo'), other = join(home, 'elsewhere repo')
   const localId = randomUUID(), connectionId = randomUUID(), projectId = randomUUID(), task = randomUUID()
-  const state = { results: {}, tools: new Set(), calls: [], reports: [], requests: 0, task, localId, home, repo }
+  const state = { results: {}, tools: new Set(), calls: [], reports: [], requests: 0, task, localId, home, repo, other }
   const plan = steps(state)
   const server = createServer(async (req, res) => {
     try {
@@ -71,7 +81,12 @@ async function conversation({ name, powershellTool, steps, check }) {
           if (block.type === 'tool_result') done.set(block.tool_use_id, block)
         }
         for (const [id, block] of done) state.results[id] ??= { error: block.is_error === true, text: resultText(block) }
-        const next = plan.find(([id]) => !done.has(id))
+        if (firstText(body).includes('SUBAGENT-COMMIT')) {
+          if (!done.has('sub_commit')) respondModel(res, body, { type: 'tool_use', id: 'sub_commit', name: 'Bash', input: SUBAGENT_COMMIT }, 'tool_use', state.requests)
+          else respondModel(res, body, { type: 'text', text: 'committed' }, 'end_turn', state.requests)
+          return
+        }
+        const next = plan.find(([id, , , skip]) => !done.has(id) && !(skip && skip(names)))
         if (!next) respondModel(res, body, { type: 'text', text: 'WINDOWS-RUNTIME-DONE' }, 'end_turn', state.requests)
         else respondModel(res, body, { type: 'tool_use', id: next[0], name: next[1], input: next[2] }, 'tool_use', state.requests)
         return
@@ -109,8 +124,10 @@ async function conversation({ name, powershellTool, steps, check }) {
   for (const key of ['ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
     'CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID', 'DEVSPEC_REMOTE_LOCAL_ID_CLAUDE_CODE', 'CLAUDE_ENV_FILE', 'CLAUDE_CODE_USE_POWERSHELL_TOOL']) delete env[key]
   try {
-    mkdirSync(repo); git(['init', '-q', '-b', 'main'], repo); git(['commit', '--allow-empty', '-qm', 'base'], repo)
-    git(['remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'], repo)
+    for (const [dir, url] of [[repo, 'git@github.com:Fixture/Project.git'], [other, 'https://github.com/fixture/elsewhere.git']]) {
+      mkdirSync(dir); git(['init', '-q', '-b', 'main'], dir); git(['commit', '--allow-empty', '-qm', 'base'], dir); git(['remote', 'add', 'origin', url], dir)
+    }
+    writeFileSync(join(home, 'commit script.sh'), '#!/bin/sh\ngit commit --allow-empty -q -m script\n', { mode: 0o755 })
     const connections = join(home, '.devspec', 'remote-control', 'connections'); mkdirSync(connections, { recursive: true })
     writeFileSync(join(connections, `${connectionId}.json`), JSON.stringify({ enabled: true, agent_name: 'Claude Code', local_id: localId, connection_id: connectionId,
       session_id: null, mcp_url: endpoint, token: 'fixture-not-real', connection_capability: 'fixture-capability', cwd: repo }), { mode: 0o600 })
@@ -122,7 +139,7 @@ async function conversation({ name, powershellTool, steps, check }) {
     writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_USE_POWERSHELL_TOOL: powershellTool } }, null, 2))
     const mcpConfig = join(home, 'mcp.json')
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { devspec: { type: 'http', url: endpoint, headers: { Authorization: 'Bearer fixture-not-real' } } } }))
-    const grants = [...new Set(plan.map(([, toolName, input]) => toolName === 'Bash' ? `Bash(${input.command})` : toolName))]
+    const grants = [...new Set([...plan, ['sub_commit', 'Bash', SUBAGENT_COMMIT]].map(([, toolName, input]) => toolName === 'Bash' ? `Bash(${input.command})` : toolName))]
     // Exact Bash grants in normal manual permission mode, not bypass permissions.
     const output = await new Promise((resolve, reject) => {
       const child = spawn(CLAUDE, ['-p', `Run the disposable ${name} fixture.`, '--plugin-dir', root,
@@ -142,8 +159,10 @@ async function conversation({ name, powershellTool, steps, check }) {
       : null
     const log = join(home, '.devspec', 'git-observer', 'commits.log')
     state.observerLog = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
-    state.messages = git(['log', '--format=%B%x00', 'main'], repo).split('\0').map((message) => message.trim()).filter(Boolean)
-    state.commits = git(['rev-list', '--reverse', 'main'], repo).split('\n').slice(1) // every commit after the base
+    const messages = (dir) => git(['log', '--format=%B%x00', 'main'], dir).split('\0').map((message) => message.trim()).filter(Boolean)
+    const commits = (dir) => git(['rev-list', '--reverse', 'main'], dir).split('\n').slice(1) // every commit after the base
+    state.messages = messages(repo); state.otherMessages = messages(other)
+    state.commits = commits(repo); state.otherCommits = commits(other)
     check(state)
     return state
   } finally {
@@ -152,7 +171,8 @@ async function conversation({ name, powershellTool, steps, check }) {
   }
 }
 
-const bash = (command) => ({ command, description: 'Run the disposable git fixture step' })
+const bash = (command, extra = {}) => ({ command, description: 'Run the disposable git fixture step', ...extra })
+const SUBAGENT_COMMIT = bash('git commit --allow-empty -q -m subagent')
 const summary = { result: 'PASS', platform: process.platform, host: execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim(),
   pluginVersion: JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8')).version, paidInference: 0, liveDevspecRecords: 0 }
 
@@ -165,6 +185,13 @@ summary.powershellOff = await conversation({
     ['claim', 'mcp__devspec__claim_work_item', { task_id: state.task }],
     ['heredoc', 'Bash', bash(`git commit --allow-empty -q -F - <<'EOF'\nheredoc subject\n\nheredoc body\nEOF`)],
     ['plain', 'Bash', bash('git commit --allow-empty -q -m "through bash"')],
+    ['script', 'Bash', bash(`'${inBash(join(state.home, 'commit script.sh'))}'`)],
+    // Outside the project, so it never contends with a commit on the project's main.
+    ['background', 'Bash', bash(`sleep 1; git -C '${inBash(state.other)}' commit --allow-empty -q -m background`, { run_in_background: true })],
+    ['subagent', 'Agent', { description: 'Commit in a subagent', prompt: 'SUBAGENT-COMMIT: make one empty commit', subagent_type: 'general-purpose' }],
+    ['load_monitor', 'ToolSearch', { query: 'select:Monitor', max_results: 1 }, (names) => names.includes('Monitor')],
+    ['monitor', 'Monitor', { command: `git -C '${inBash(state.other)}' commit --allow-empty -q -m monitor`, description: 'Commit from a monitor', timeout_ms: 20000 }],
+    ['settle', 'Bash', bash('sleep 5')],
   ],
   check(state) {
     assert.equal(state.tools.has('PowerShell'), false, `the setting turned the PowerShell tool off: ${[...state.tools]}`)
@@ -178,13 +205,17 @@ summary.powershellOff = await conversation({
     const tag = `[devspec:${state.task}]`
     assert.ok(state.messages.includes(`heredoc subject ${tag}\n\nheredoc body`), JSON.stringify(state.messages))
     assert.ok(state.messages.includes(`through bash ${tag}`), JSON.stringify(state.messages))
+    assert.ok(state.messages.includes(`script ${tag}`), `a script's commit is tagged: ${JSON.stringify(state.messages)}`)
+    assert.ok(state.messages.includes(`subagent ${tag}`), `a subagent's commit is tagged: ${JSON.stringify(state.messages)}`)
+    assert.deepEqual([...state.otherMessages].sort(), ['background', 'base', 'monitor'], 'background and Monitor commits outside the project are made and left untagged')
     for (const id of ['heredoc', 'plain']) assert.match(state.results[id].text, /DevSpec: added \[devspec:/, `the ${id} result says the tag was added`)
-    const reported = new Set(state.reports.map((report) => report.commit_sha))
-    for (const sha of state.commits) assert.ok(reported.has(sha), `commit ${sha} was reported: ${JSON.stringify(state.reports)}`)
-    assert.equal(state.reports.length, state.commits.length, 'each commit reported once')
-    for (const report of state.reports) assert.equal(report.git_remote, 'git@github.com:Fixture/Project.git')
+    const remotes = new Map(state.reports.map((report) => [report.commit_sha, report.git_remote]))
+    for (const sha of state.commits) assert.equal(remotes.get(sha), 'git@github.com:Fixture/Project.git', `commit ${sha} was reported: ${JSON.stringify(state.reports)}`)
+    for (const sha of state.otherCommits) assert.equal(remotes.get(sha), 'https://github.com/fixture/elsewhere.git', `commit ${sha} was reported: ${JSON.stringify(state.reports)}`)
+    assert.equal(state.reports.length, state.commits.length + state.otherCommits.length, 'each commit reported once')
   },
-}).then((state) => ({ powershellTool: false, standIn: true, stopped: true, tagged: ['heredoc -F -', '-m'], reported: state.reports.length, scriptedRequests: state.requests }))
+}).then((state) => ({ powershellTool: false, standIn: true, stopped: true, tagged: ['heredoc -F -', '-m', 'script', 'subagent'],
+  untaggedOutside: ['background', 'monitor'], reported: state.reports.length, scriptedRequests: state.requests }))
 
 if (WINDOWS) {
   summary.powershellOn = await conversation({

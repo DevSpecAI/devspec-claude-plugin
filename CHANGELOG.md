@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.50.1 - 2026-10-27
+
+- The README now says which setups get full commit tracking: "Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, or Windows through WSL." On native Windows, the plugin uses a simpler check that reads the commit command Claude runs. It catches plain commit commands, but not commits made by scripts, in background work or by subagents.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.50.0 - 2026-10-27
 
 - In any of your project's repositories, Claude's commits now carry their task's tag automatically when Claude has claimed one task, however the commit message is written. That includes the multi-line forms the plugin used to miss: a heredoc piped into `git commit -F -`, `-m "$(cat <<'EOF' … EOF)"`, and a message file given with `-F`. The plugin's private stand-in for `git` adds the tag to the message's subject before git runs. Your own message file is never edited; the stand-in uses a private copy.

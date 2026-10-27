@@ -6,6 +6,7 @@ Connect [Claude Code](https://code.claude.com) to [DevSpec](https://devspec.ai) 
 
 - [Claude Code](https://code.claude.com)
 - Node.js 18 or later (`node --version` — install from [nodejs.org](https://nodejs.org/en/download) if needed)
+- Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, or Windows through WSL. On native Windows, the plugin uses a simpler check that reads the commit command Claude runs: it catches plain commit commands, but not commits made by scripts, in background work or by subagents. See [Commits Claude makes](#commits-claude-makes).
 
 ## Setup
 
@@ -79,7 +80,9 @@ When a repository belongs to more than one DevSpec project, or you open Claude C
 
 ## Commits Claude makes
 
-While a Claude Code conversation is connected to DevSpec, each commit Claude makes is credited to Claude. On macOS and Linux this covers every commit made through `git` in Claude's shell commands, including commits from its subagents and background commands. The plugin reports each one with the commit's full id, its branch and the repository's address. DevSpec then works out which project the repository belongs to.
+Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, or Windows through WSL. On native Windows, the plugin uses a simpler check that reads the commit command Claude runs: it catches plain commit commands, but not commits made by scripts, in background work or by subagents.
+
+While a Claude Code conversation is connected to DevSpec, each commit Claude makes is credited to Claude. With full commit tracking this covers every commit made through `git` in Claude's shell commands, including commits from its subagents and background commands. The plugin reports each one with the commit's full id, its branch and the repository's address. DevSpec then works out which project the repository belongs to.
 
 The plugin does this with a private stand-in for `git` that it puts on the path of Claude's commands for that conversation. Nothing is installed in your repositories, and your git configuration and hooks are not changed.
 

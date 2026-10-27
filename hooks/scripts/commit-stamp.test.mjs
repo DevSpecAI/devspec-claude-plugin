@@ -9,7 +9,8 @@
  * substitutions are the shell's own. Nothing here parses them.
  */
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -212,5 +213,70 @@ describe('what is not the project\'s', () => {
     const result = shell('git commit --allow-empty -q -m "disconnected"')
     assert.equal(result.status, 0, result.stderr)
     assert.equal(subject(), 'disconnected')
+  })
+})
+
+describe('a reference the model wrote is confirmed online before git runs (6fa0241e)', () => {
+  // The commit runs while this process answers as DevSpec, so the shell is not waited on synchronously.
+  const shellAsync = (command, extraEnv = {}) => new Promise((resolve) => {
+    execFile('sh', ['-c', `. "$ENV_FILE"; ${command}`], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, HOME: home, ENV_FILE: envFile, CLAUDE_CODE_SESSION_ID: SESSION, ...IDENTITY, ...extraEnv },
+    }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }))
+  })
+  let server, calls, answer
+  beforeEach(async () => {
+    calls = []
+    answer = 'not_found'
+    server = createServer(async (req, res) => {
+      let raw = ''
+      for await (const part of req) raw += part
+      const body = raw ? JSON.parse(raw) : {}
+      if (body.method === 'tools/call') calls.push(body.params)
+      const result = body.method === 'tools/call'
+        ? { content: [{ type: 'text', text: JSON.stringify({ shape: 'well_formed', online: { status: answer } }) }] }
+        : { protocolVersion: '2025-03-26', serverInfo: { name: 'fixture', version: '1' }, capabilities: { tools: {} } }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }))
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  })
+  afterEach(() => { server.closeAllConnections(); server.close() })
+  const devspec = () => ({ DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: `http://127.0.0.1:${server.address().port}/api/mcp` })
+
+  it('stops a commit whose reference resolves to nothing, naming the likely causes, and leaves the repository as it was', async () => {
+    const head = git(['rev-parse', 'HEAD'])
+    const result = await shellAsync(`git commit --allow-empty -q -F - <<'EOF'\nmistyped [devspec:${OTHER_TASK}]\n\nbody\nEOF`, devspec())
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /resolves to no item in this project/)
+    assert.match(result.stderr, /wrong uuid tail|different project/)
+    assert.equal(git(['rev-parse', 'HEAD']), head)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].name, 'validate_commit_reference')
+    assert.equal(calls[0].arguments.git_remote, 'git@github.com:Fixture/Project.git', 'the same jurisdiction hints as the 0.17.0 check')
+  })
+
+  it('lets it through when DevSpec confirms it, and when DevSpec cannot be reached', async () => {
+    answer = 'valid'
+    let result = await shellAsync(`git commit --allow-empty -q -m "confirmed [devspec:${OTHER_TASK}]"`, devspec())
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(subject(), `confirmed [devspec:${OTHER_TASK}]`)
+    // Offline work is never blocked: an endpoint nothing listens on.
+    result = await shellAsync(`git commit --allow-empty -q -m "offline [devspec:${OTHER_TASK}]"`, { DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: 'http://127.0.0.1:9/api/mcp' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(subject(), `offline [devspec:${OTHER_TASK}]`)
+    // ...and an unreadable reply, and no credentials at all.
+    answer = 'something-else'
+    assert.equal((await shellAsync(`git commit --allow-empty -q -m "unreadable [devspec:${OTHER_TASK}]"`, devspec())).status, 0)
+    assert.equal((await shellAsync(`git commit --allow-empty -q -m "no credentials [devspec:${OTHER_TASK}]"`)).status, 0)
+  })
+
+  it('makes no network call for a commit without a reference, whether it tags it or stops it', async () => {
+    assert.equal((await shellAsync('git commit --allow-empty -q -m "no claim, no reference"', devspec())).status, 1)
+    claim(TASK)
+    assert.equal((await shellAsync('git commit --allow-empty -q -m "tagged by the stand-in"', devspec())).status, 0)
+    assert.equal(subject(), `tagged by the stand-in [devspec:${TASK}]`)
+    assert.deepEqual(calls, [])
   })
 })

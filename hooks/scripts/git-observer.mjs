@@ -154,6 +154,8 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
       base: observerBase(home),
       journal,
       real_git: realGit,
+      // The plugin's own scripts, for the online check of a reference the model wrote (6fa0241e).
+      plugin_root: path.resolve(path.dirname(SHIM_SOURCE), '..', '..'),
       // git's builtins, which run straight through the stand-in unless one is commit.
       builtins: gitBuiltins(realGit),
       // Where the plugin's hooks keep this conversation's claims (commit-provenance.mjs).

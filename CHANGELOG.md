@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.50.1 - 2026-10-27
+
+- Restored: a task tag Claude writes into a commit message itself is checked with DevSpec again before the commit is made, now inside the plugin's stand-in for `git`. Since 0.17.0 a tag that names no task in the project, usually a correct short code with a wrong ending, stopped the commit with the likely cause. 0.50.0 had dropped that check wherever the stand-in runs, so such a commit would have linked to nothing.
+- Only a definitive answer that the tag names nothing stops the commit. If DevSpec cannot be reached, or does not answer clearly within 2.5 seconds, the commit goes ahead. A commit without a tag still makes no network call, whether the stand-in adds the tag for Claude or stops the commit because no task is claimed.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.50.0 - 2026-10-27
 
 - In any of your project's repositories, Claude's commits now carry their task's tag automatically when Claude has claimed one task, however the commit message is written. That includes the multi-line forms the plugin used to miss: a heredoc piped into `git commit -F -`, `-m "$(cat <<'EOF' … EOF)"`, and a message file given with `-F`. The plugin's private stand-in for `git` adds the tag to the message's subject before git runs. Your own message file is never edited; the stand-in uses a private copy.

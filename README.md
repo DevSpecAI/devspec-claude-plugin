@@ -77,6 +77,14 @@ When a repository belongs to more than one DevSpec project, or you open Claude C
 - `/devspec:devspec.project remember` saves the current project to `.devspec/project.json` in the folder after showing the file path and asking for confirmation.
 - `/devspec:devspec.project forget` removes the `.devspec/project.json` folder default after confirmation without disconnecting active conversations.
 
+## Commits Claude makes
+
+DevSpec credits each commit Claude makes to Claude and to the task it was working on. The plugin reports every commit made through `git` in Claude's shell commands, including commits from its subagents and background commands, with the commit's full id, its branch and the repository's address. DevSpec then works out which project the repository belongs to.
+
+The plugin does this with a private stand-in for `git` that it puts on the path of Claude's commands for that conversation. Nothing is installed in your repositories, and your git configuration and hooks are not changed.
+
+Every report is written to `~/.devspec/git-observer/commits.log`, whether it was sent, refused or dropped. If DevSpec does not show one of Claude's commits, look there first.
+
 ## Updating
 
 Inside Claude Code, run:

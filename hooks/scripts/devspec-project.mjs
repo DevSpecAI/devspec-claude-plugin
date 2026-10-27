@@ -4,12 +4,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
 import { detectLocalId } from './remote-control-state.mjs'
 import { findProjectPin, gitRoot } from './devspec-scope.mjs'
 import { readConversationProject, saveConversationProject, projectCandidate, matchingProjects } from './conversation-project.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 function fingerprint(file) {
   try { return createHash('sha256').update(fs.readFileSync(file)).digest('hex') }
@@ -82,6 +82,6 @@ async function main() {
   const state = readConversationProject(localId, { endpoint: auth.mcp_url })
   process.stdout.write(JSON.stringify(manageProjectDefault(action, { ...options, state })) + '\n')
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   main().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1 })
 }

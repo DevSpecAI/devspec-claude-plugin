@@ -29,7 +29,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { openRequest } from './requests.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
@@ -101,6 +100,7 @@ import {
   commandOfferNegotiable,
   parseCommandOfferResponse,
 } from './command-offer.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 export const DELEGATED_SCOPE_VERSION = 1
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
@@ -2616,9 +2616,7 @@ async function main() {
 }
 
 // Run the loop only when executed directly (skipped when imported for tests).
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   main().catch((e) => {

@@ -18,8 +18,6 @@
  */
 
 import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { pluginSettingsFromHookEnv } from './plugin-settings.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
@@ -31,6 +29,7 @@ import {
   resolveClaudePid,
   writeListenerMarker,
 } from './startup-listener.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 function readPayload(stdin = 0) {
   try {
@@ -100,9 +99,7 @@ export function startupNote({ env = process.env, cwd = process.cwd(), localId = 
   )
 }
 
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   try {

@@ -83,6 +83,7 @@ import {
 } from './startup-listener.mjs'
 import { takeTiersFor, CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -1146,9 +1147,7 @@ export function knownInstructionTiersFor(connectionId) {
 }
 
 // --- CLI entry (skipped when imported for tests) ---
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   void (async () => {

@@ -50,6 +50,7 @@ import { CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
 import { readPrivateJson, writePrivateJson, writePrivateText } from './private-state.mjs'
 import { transcriptPaths } from './room-transcript.mjs'
 import { bondPath, connectionStatePath } from './terminal-status.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 export const READ_STATE_VERSION = 1
 const SCRIPT_PATH = fileURLToPath(import.meta.url)
@@ -505,6 +506,6 @@ function main(argv) {
   return 2
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
+if (isEntryPoint(import.meta.url)) {
   process.exitCode = main(process.argv.slice(2))
 }

@@ -48,6 +48,7 @@ import {
   writeConnectionState,
   knownInstructionTiersFor,
 } from './remote-control-state.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 /**
  * Connect is a one-shot command, so a transient failure is the whole command
@@ -701,9 +702,7 @@ async function main() {
   process.exit(0)
 }
 
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   main().catch((e) => {

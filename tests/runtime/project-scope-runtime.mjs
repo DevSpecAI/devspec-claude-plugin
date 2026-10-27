@@ -15,7 +15,7 @@ let localId=randomUUID()
 const connectionId=randomUUID(), mcpCalls=[]
 const questionMode=process.argv.includes('--question'), cancelMode=process.argv.includes('--cancel')
 const expectedAnswer=cancelMode?'Continue without connecting':'Website — Client'
-let modelCalls=0, commandLoaded=false, statusScoped=false, questionAnswered=false, questionResultObserved=false, repositoryContextObserved=false, statusResult=''
+let modelCalls=0, toolDeferred=false, commandLoaded=false, statusScoped=false, questionAnswered=false, questionResultObserved=false, repositoryContextObserved=false, statusResult=''
 const textResult=data=>({content:[{type:'text',text:JSON.stringify(data)}]})
 function modelResponse(res,body,block,stop) {
  const message={id:'msg_fixture_'+modelCalls,type:'message',role:'assistant',content:[block],model:body.model,stop_reason:stop,stop_sequence:null,usage:{input_tokens:10,output_tokens:10}}
@@ -35,8 +35,11 @@ const server=createServer(async(req,res)=>{
   const body=raw?JSON.parse(raw):{}
   if(req.url.startsWith('/v1/messages/count_tokens')){res.writeHead(200,{'Content-Type':'application/json'});res.end('{"input_tokens":100}');return}
   if(req.url.startsWith('/v1/messages')){
-   const tool=body.tools?.find(t=>t.name?.endsWith('get_project_summary'))?.name
-   if(!tool){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({id:'aux',type:'message',role:'assistant',content:[{type:'text',text:'fixture'}],model:body.model,stop_reason:'end_turn',usage:{input_tokens:1,output_tokens:1}}));return}
+   // The conversation's own requests carry the host's tools; side requests (titles and
+   // the like) carry none. A host may list the DevSpec tool outright, or defer it: Claude
+   // Code 2.1.311 only names MCP tools until ToolSearch loads one (item c7e9e18a). This
+   // fixture used to wait for the tool in the list, so on such a host it never ran.
+   if(!body.tools?.some(t=>t.name==='Bash')){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({id:'aux',type:'message',role:'assistant',content:[{type:'text',text:'fixture'}],model:body.model,stop_reason:'end_turn',usage:{input_tokens:1,output_tokens:1}}));return}
    modelCalls++
    commandLoaded ||= JSON.stringify(body.messages).includes('Project choice belongs to the firing')
    repositoryContextObserved ||= JSON.stringify(body.messages).includes('https://example.test/project-b/repo-24.git')
@@ -46,15 +49,22 @@ const server=createServer(async(req,res)=>{
     if(block.type==='tool_result' && block.tool_use_id==='tool_fixture_1') { statusResult=JSON.stringify(block.content);statusScoped ||= statusResult.includes(B.id) }
     if(block.type==='tool_result' && block.tool_use_id==='tool_question') questionResultObserved ||= JSON.stringify(block.content).includes(expectedAnswer)
    }
+   const tool='mcp__devspec__get_project_summary'
+   const deferred=!body.tools.some(t=>t.name===tool) && body.tools.some(t=>t.name==='ToolSearch') && !completedTools.has('tool_search')
+   toolDeferred ||= deferred
+   // Call the DevSpec tool the way a model does: load it first when the host deferred it.
+   const callTool=(id,input)=>deferred
+    ? modelResponse(res,body,{type:'tool_use',id:'tool_search',name:'ToolSearch',input:{query:`select:${tool}`,max_results:1}},'tool_use')
+    : modelResponse(res,body,{type:'tool_use',id,name:tool,input},'tool_use')
    // Request count is not workflow progress: retries/cache warming may repeat an
    // identical request. Advance only from tool results in this request's transcript.
    if(questionMode && !completedTools.has('tool_question'))modelResponse(res,body,{type:'tool_use',id:'tool_question',name:'AskUserQuestion',input:{questions:[{question:'Which project should this conversation use?',header:'Project',options:[{label:'Website — Agency',description:A.id},{label:'Website — Client',description:B.id},{label:'Continue without connecting',description:'Cancel this choice'}],multiSelect:false}]}},'tool_use')
    else if(questionMode && cancelMode)modelResponse(res,body,{type:'text',text:'PROJECT-HOOK-RUNTIME-PASS'},'end_turn')
-   else if(questionMode && !completedTools.has('tool_after_question'))modelResponse(res,body,{type:'tool_use',id:'tool_after_question',name:tool,input:{}},'tool_use')
+   else if(questionMode && !completedTools.has('tool_after_question'))callTool('tool_after_question',{})
    else if(questionMode)modelResponse(res,body,{type:'text',text:'PROJECT-HOOK-RUNTIME-PASS'},'end_turn')
    else if(!completedTools.has('tool_fixture_1'))modelResponse(res,body,{type:'tool_use',id:'tool_fixture_1',name:'Bash',input:{command:`node ${JSON.stringify(join(root,'hooks/scripts/devspec-project.mjs'))} status`,description:'Read the selected project for this test conversation'}},'tool_use')
-   else if(!completedTools.has('tool_fixture_2'))modelResponse(res,body,{type:'tool_use',id:'tool_fixture_2',name:tool,input:{project_id:A.id}},'tool_use')
-   else if(!completedTools.has('tool_fixture_3'))modelResponse(res,body,{type:'tool_use',id:'tool_fixture_3',name:tool,input:{}},'tool_use')
+   else if(!completedTools.has('tool_fixture_2'))callTool('tool_fixture_2',{project_id:A.id})
+   else if(!completedTools.has('tool_fixture_3'))callTool('tool_fixture_3',{})
    else modelResponse(res,body,{type:'text',text:'PROJECT-HOOK-RUNTIME-PASS'},'end_turn')
    return
   }
@@ -140,5 +150,5 @@ try {
  if(questionMode){assert(questionAnswered,'the native AskUserQuestion must request an answer through the host protocol');assert(questionResultObserved,'the selected native answer must return to the workflow')}
  else {assert(statusScoped,'the Bash management helper must receive the firing host conversation identity: '+statusResult.slice(0,2000));assert(modelCalls>=4,'status, both tool attempts and a final answer must run; the host may make an additional completion request')}
  assert.equal(JSON.parse(readFileSync(join(root,'.claude-plugin/plugin.json'),'utf8')).name,'devspec')
- console.log(JSON.stringify({result:'PASS',host:version,pluginRoot:root,configuredConversation:localId,nativeCommandDiscovered:commandLoaded,repositoryContextObserved,...(questionMode?{nativeQuestionAnswered:questionAnswered,answerReturnedToWorkflow:questionResultObserved}:{managementHelperScoped:statusScoped,wrongProjectDenied:true}),ordinaryToolScoped:!cancelMode,cancelLeftUnconnected:cancelMode,scriptedProviderRequests:modelCalls,paidInference:0,liveDevspecRecords:0}))
+ console.log(JSON.stringify({result:'PASS',host:version,pluginRoot:root,configuredConversation:localId,nativeCommandDiscovered:commandLoaded,repositoryContextObserved,...(questionMode?{nativeQuestionAnswered:questionAnswered,answerReturnedToWorkflow:questionResultObserved}:{managementHelperScoped:statusScoped,wrongProjectDenied:true}),ordinaryToolScoped:!cancelMode,hostDeferredTool:toolDeferred,cancelLeftUnconnected:cancelMode,scriptedProviderRequests:modelCalls,paidInference:0,liveDevspecRecords:0}))
 } finally {server.closeAllConnections();await new Promise(r=>server.close(r));rmSync(home,{recursive:true,force:true})}

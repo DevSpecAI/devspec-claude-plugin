@@ -34,11 +34,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 import { CONVERSATION_ID_ENV_VARS, LOCAL_ID_OVERRIDE_ENV_VAR } from './agent-identity.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import { bondPath } from './terminal-status.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 /**
  * How long a running turn may go with no sign of life before its end is taken as
@@ -144,7 +144,7 @@ export function touch(raw, { env = process.env, home = os.homedir(), now = Date.
   return recordTurnActivity(connectionId, { dir: connectionsDir(home), now })
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryPoint(import.meta.url)) {
   if (process.argv[2] === 'touch') {
     let raw = ''
     try {

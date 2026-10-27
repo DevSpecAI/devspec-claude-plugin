@@ -27,7 +27,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import {
   attachmentDirFor,
   describeAttachment,
@@ -58,6 +57,7 @@ import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
 import { replyLine } from './notice-reply.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -1314,8 +1314,7 @@ async function main() {
 // Run the CLI only when executed directly (skipped when imported for tests —
 // this module used to call main() unconditionally on import, which killed any
 // test file that imported its exports with "missing --connection-id").
-const isMain =
-  Boolean(process.argv[1]) && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   main().catch((e) => {

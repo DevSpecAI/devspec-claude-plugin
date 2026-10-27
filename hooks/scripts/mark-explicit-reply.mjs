@@ -21,7 +21,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { devspecToolVerb } from './devspec-tool-name.mjs'
 import { appendRequestEvent, commandsAnsweredNow, readRequestState } from './requests.mjs'
 import { isNoticeReply } from './notice-reply.mjs'
@@ -31,6 +30,7 @@ import {
   explicitReplyMarkerPath,
   clearTurnMarker,
 } from './mirror-turn.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 // A verb, not a tool name: this plugin's own server delivers the tool as
 // mcp__plugin_devspec_devspec__post_session_message, and matching only
@@ -129,5 +129,5 @@ async function main() {
   process.exit(0)
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) main()

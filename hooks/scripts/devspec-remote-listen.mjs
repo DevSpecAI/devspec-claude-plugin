@@ -83,6 +83,7 @@ import {
   writeListenerMarker,
   writeOwnerListenerStatus,
 } from './startup-listener.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 export { resolveClaudePid }
 
@@ -592,9 +593,7 @@ async function main() {
   return serve({ ...serveContext, connectionId, cursorFlag: summary.cursor_flag })
 }
 
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   main().catch((e) => {

@@ -6,6 +6,7 @@ import { conversationScopeHook } from './conversation-project.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { ownConnectionId, withOwnConnection } from './own-connection.mjs'
 import { stampRequest } from './request-ref.mjs'
+import { isNoticeReply, prepareNoticeReply } from './notice-reply.mjs'
 
 export function prepareDevspecToolInput(input, { env = process.env, home } = {}) {
   const match = /^mcp__(?:plugin_devspec_)?devspec__(.+)$/.exec(input?.tool_name ?? '')
@@ -20,9 +21,13 @@ export function prepareDevspecToolInput(input, { env = process.env, home } = {})
   // This conversation's own connection, so the write says where it came from (item 718825fc).
   const connectionId = ownConnectionId(input.session_id, { ...(home ? { home } : {}), env })
   const withConnection = withOwnConnection(match[1], prepared, connectionId)
-  // ...and the request it serves, so two people's work on this agent is never
-  // credited to each other (item 7a4d04fd, request-ref.mjs).
-  const request = stampRequest(match[1], withConnection, connectionId, input.agent_id, { ...(home ? { home } : {}) })
+  // A reply to a DevSpec notice serves no request: it is posted as the ids the
+  // server takes, and nothing else is added to it (item 8ad9f857, notice-reply.mjs).
+  const request = match[1] === 'post_session_message' && isNoticeReply(withConnection)
+    ? { args: prepareNoticeReply(withConnection) }
+    // ...and the request it serves, so two people's work on this agent is never
+    // credited to each other (item 7a4d04fd, request-ref.mjs).
+    : stampRequest(match[1], withConnection, connectionId, input.agent_id, { ...(home ? { home } : {}) })
   if (request.deny) {
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: request.deny } }
   }

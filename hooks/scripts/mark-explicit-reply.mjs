@@ -24,6 +24,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { devspecToolVerb } from './devspec-tool-name.mjs'
 import { appendRequestEvent, commandsAnsweredNow, readRequestState } from './requests.mjs'
+import { isNoticeReply } from './notice-reply.mjs'
 import {
   resolveHookConversationId,
   loadState,
@@ -70,6 +71,20 @@ export function declaresCompleteTurn(raw) {
 }
 
 /**
+ * Is this post a reply to DevSpec notices (notice-reply.mjs)? It is no turn's
+ * reply: it ends no turn and answers no command, `complete_turn` or not, so this
+ * hook leaves the turn as it is (item 8ad9f857). Exported for tests.
+ */
+export function isNoticeReplyPost(raw) {
+  try {
+    const data = JSON.parse(raw || '{}')
+    return isNoticeReply(data.tool_input || data.toolInput || {})
+  } catch {
+    return false
+  }
+}
+
+/**
  * Record that the turn's room commands were answered. Exported for tests;
  * `dir` defaults to where the request log lives.
  */
@@ -86,6 +101,7 @@ export function markCommandsAnswered(connectionId, { dir = path.join(os.homedir(
 async function main() {
   const raw = readStdin()
   if (devspecToolVerb(toolNameFrom(raw)) !== TARGET_VERB) process.exit(0)
+  if (isNoticeReplyPost(raw)) process.exit(0)
 
   const conversationId = resolveHookConversationId(raw)
   const state = loadState(conversationId)

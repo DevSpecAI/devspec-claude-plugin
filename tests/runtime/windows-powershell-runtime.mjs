@@ -191,7 +191,8 @@ summary.powershellOff = await conversation({
     ['subagent', 'Agent', { description: 'Commit in a subagent', prompt: 'SUBAGENT-COMMIT: make one empty commit', subagent_type: 'general-purpose' }],
     ['load_monitor', 'ToolSearch', { query: 'select:Monitor', max_results: 1 }, (names) => names.includes('Monitor')],
     ['monitor', 'Monitor', { command: `git -C '${inBash(state.other)}' commit --allow-empty -q -m monitor`, description: 'Commit from a monitor', timeout_ms: 20000 }],
-    ['settle', 'Bash', bash('sleep 5')],
+    // Until the background and Monitor commits have both been made, then a moment for their journal lines.
+    ['settle', 'Bash', bash(`for i in $(seq 1 60); do [ "$(git -C '${inBash(state.other)}' rev-list --count main)" -ge 3 ] && break; sleep 1; done; sleep 2`)],
   ],
   check(state) {
     assert.equal(state.tools.has('PowerShell'), false, `the setting turned the PowerShell tool off: ${[...state.tools]}`)
@@ -210,8 +211,9 @@ summary.powershellOff = await conversation({
     assert.deepEqual([...state.otherMessages].sort(), ['background', 'base', 'monitor'], 'background and Monitor commits outside the project are made and left untagged')
     for (const id of ['heredoc', 'plain']) assert.match(state.results[id].text, /DevSpec: added \[devspec:/, `the ${id} result says the tag was added`)
     const remotes = new Map(state.reports.map((report) => [report.commit_sha, report.git_remote]))
-    for (const sha of state.commits) assert.equal(remotes.get(sha), 'git@github.com:Fixture/Project.git', `commit ${sha} was reported: ${JSON.stringify(state.reports)}`)
-    for (const sha of state.otherCommits) assert.equal(remotes.get(sha), 'https://github.com/fixture/elsewhere.git', `commit ${sha} was reported: ${JSON.stringify(state.reports)}`)
+    const why = (sha) => `commit ${sha} was reported: ${JSON.stringify(state.reports)}; plugin log: ${JSON.stringify(state.observerLog)}; settle: ${state.results.settle?.text}`
+    for (const sha of state.commits) assert.equal(remotes.get(sha), 'git@github.com:Fixture/Project.git', why(sha))
+    for (const sha of state.otherCommits) assert.equal(remotes.get(sha), 'https://github.com/fixture/elsewhere.git', why(sha))
     assert.equal(state.reports.length, state.commits.length + state.otherCommits.length, 'each commit reported once')
   },
 }).then((state) => ({ powershellTool: false, standIn: true, stopped: true, tagged: ['heredoc -F -', '-m', 'script', 'subagent'],

@@ -348,7 +348,9 @@ describe('stamping, only when exactly one claim is unambiguous', () => {
     const result = await bash('git commit -m "fix: the thing"')
     assert.equal(decision(result), null, 'stamping is not a denial')
     assert.equal(updated(result), `git commit -m "fix: the thing [devspec:${ITEM}]"`)
-    assert.match(result.systemMessage, new RegExp(`stamped \\[devspec:${ITEM}\\]`))
+    assert.match(result.systemMessage, new RegExp(`added \\[devspec:${ITEM}\\]`))
+    // The agent is told too, not only the terminal: it writes a tag itself only where none was added.
+    assert.equal(result.hookSpecificOutput.additionalContext, result.systemMessage)
   })
 
   it('preserves the rest of the command exactly', async () => {

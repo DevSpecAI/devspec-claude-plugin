@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.51.1 - 2026-10-27
+
+- The plugin's instructions now match DevSpec's current rules for commits. Claude writes a task's tag into a commit message itself only when the plugin did not add it. That happens when Claude has to choose between several claimed tasks, or when it commits where the plugin does not see the commit, such as Claude Code's PowerShell tool on native Windows. When the plugin adds the tag, it now tells Claude as well as showing it in the terminal.
+- Recording an implementation no longer suggests naming the commit: DevSpec links the commits itself.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.0 - 2026-10-27
 
 - Full commit tracking now works on native Windows when Claude Code's PowerShell tool is turned off. Add `"CLAUDE_CODE_USE_POWERSHELL_TOOL": "0"` to the `env` section of `%USERPROFILE%\.claude\settings.json` and start a new conversation. Claude then runs its commands in Git Bash, which needs [Git for Windows](https://git-scm.com/downloads/win), and every commit is reported to DevSpec and tagged with its task, as on macOS and Linux. That includes commits made by scripts, in background commands, in Monitor commands and by subagents.

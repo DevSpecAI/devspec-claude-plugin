@@ -645,12 +645,19 @@ function deny(reason) {
   }
 }
 
+/**
+ * The agent is told as well as the terminal: the contract asks a host that adds the
+ * reference to say so, and the agent writes one itself only where nothing was added
+ * (implementation contract 5.4.0, commit_provenance_contract.stamping; item cc92aa54).
+ */
 function stamp(updatedCommand, toolInput, itemId) {
+  const message = `DevSpec: added [devspec:${itemId}] to this commit's message, for the one task claimed in this conversation.`
   return {
-    systemMessage: `DevSpec stamped [devspec:${itemId}] onto this commit message (one active claim).`,
+    systemMessage: message,
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       updatedInput: { ...toolInput, command: updatedCommand },
+      additionalContext: message,
     },
   }
 }

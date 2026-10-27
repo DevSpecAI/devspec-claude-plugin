@@ -53,6 +53,8 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { readConversationProject } from './conversation-project.mjs'
 import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
+import { conversationClaims, gitIn, noClaimText, projectScope, severalClaimsText } from './commit-stamp.mjs'
+import { observerActive } from './git-observer.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
 export const CLAIM_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -681,13 +683,8 @@ function nudge(message) {
  */
 function recoveryText(claims) {
   // The one case the agent writes the tag itself: the plugin never guesses between claims.
-  if (claims.length > 1) {
-    return [
-      `DevSpec: this commit has no [devspec:<id>] reference and ${claims.length} claims are active, so nothing was added automatically.`,
-      `Pick the one this commit belongs to and put it in the message: ${claims.map((id) => `[devspec:${id}]`).join(' or ')}`,
-      'Then retry the commit. Nothing else is blocked.',
-    ].join(' ')
-  }
+  // The same words as the git stand-in's (commit-stamp.mjs).
+  if (claims.length > 1) return severalClaimsText(claims)
   // With one claim, every commit shape this reads is tagged for the agent (item
   // 3e24523e); the agent never types an id it could get wrong. The only one-claim
   // commit that reaches here is a bare, unquoted -m word, which cannot take a tag.
@@ -698,15 +695,7 @@ function recoveryText(claims) {
       'Nothing else is blocked.',
     ].join(' ')
   }
-  return [
-    'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
-    'Recover without leaving this turn: search_tasks for the task this work belongs to and claim it;',
-    'if none fits, create_task for the smallest adequate task, with a real description of the change and the reason it is needed',
-    '(DevSpec refuses a thin or title-only task), and claim that. Then retry the same commit:',
-    'with one task claimed, its tag is added for you. Whether to reuse, reopen or create is the',
-    `work_entry_contract, and how commits link to work the commit_provenance_contract, in ${CONTRACT_URI}.`,
-    'Nothing else is blocked, and no other command is affected.',
-  ].join(' ')
+  return noClaimText()
 }
 
 /**
@@ -823,8 +812,14 @@ export async function handlePre(input, options = {}) {
   let scope
   try { scope = scopeFrom(input) } catch { return null }
 
-  // Jurisdiction is positive and local: without a marker this folder is not ours.
-  // Uncertain jurisdiction allows, so a throwing marker lookup is an allow too.
+  // Where the git stand-in runs (git-observer.mjs), it tags and checks every commit
+  // itself, from git's own arguments (item e597bc18): reading the command here is
+  // only the fallback for a conversation it cannot reach.
+  if (tool === 'Bash' && (options.observerActive ?? observerActive)(scope.sessionId)) return null
+
+  // Jurisdiction is positive: a DevSpec marker in the folder, or, for an edit, one of
+  // the connected project's repositories by remote. Uncertain jurisdiction allows,
+  // so a throwing lookup is an allow too.
   let marker = null
   try {
     marker = devspecFolderMarker(scope.cwd, {
@@ -832,13 +827,22 @@ export async function handlePre(input, options = {}) {
       mainWorktree: scope.mainWorktree,
     })
   } catch { return null }
+  if (!marker && EDIT_TOOLS.has(tool)) {
+    try {
+      const git = gitIn('git', scope.cwd)
+      const top = git(['rev-parse', '--show-toplevel'])
+      const project = top ? projectScope({ cwd: scope.cwd, worktree: fs.realpathSync(top), sessionId: scope.sessionId, home: env.HOME || os.homedir(), git }) : null
+      if (project?.inScope) marker = { kind: project.via }
+    } catch { /* not the project's */ }
+  }
   if (!marker) return null
 
   const claims = readClaims(scope, { env, now, platform })
 
-  // Edits are never denied. At most one reminder per session+repository.
+  // Edits are never denied. At most one reminder per session+repository, and none
+  // once this conversation holds a claim anywhere: commits are tagged with it.
   if (EDIT_TOOLS.has(tool)) {
-    if (claims.length > 0) return null
+    if (claims.length > 0 || conversationClaims({ sessionId: scope.sessionId, stateDir: stateDir(env), now, platform }).length > 0) return null
     return maybeNudge(scope, { env, now, platform })
   }
 
@@ -901,10 +905,10 @@ function maybeNudge(scope, { env, now, platform }) {
   // the server now refuses thin creates (item 9a4c0d6a). Once one task is claimed the
   // plugin tags the commits itself, so the agent is not asked to (item 3e24523e).
   return nudge(
-    'DevSpec: no task is claimed in this repository, so work done here has nothing to trace it to. ' +
+    'DevSpec: no task is claimed in this conversation, so work done here has nothing to trace it to. ' +
     'Claim one before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
     'with a real description and the reason it is needed, and claim it. With one task claimed, your commits ' +
-    `here are tagged for you. Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
+    `in the project's repositories are tagged for you. Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }
 

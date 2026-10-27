@@ -18,18 +18,27 @@
  * and the connection this conversation was bound to at that moment. The model's
  * command is never read. Observation failing never changes what git does.
  *
- * Imports only Node built-ins: this file runs as a copy, outside the plugin.
+ * Before git runs, a plain `git commit` in one of the connected project's
+ * repositories gets the task tag added, or is stopped with what to do instead
+ * (commit-stamp.mjs, item e597bc18). It works on git's own arguments, after the shell
+ * has evaluated them, so every way of writing the message is the same here.
+ *
+ * Imports only Node built-ins and commit-stamp.mjs, copied beside it: this file runs
+ * as a copy, outside the plugin.
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { accessSync, appendFileSync, constants, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { accessSync, appendFileSync, constants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
-import { delimiter, join, sep } from 'node:path'
+import { delimiter, join, resolve, sep } from 'node:path'
 import { createServer } from 'node:net'
+import {
+  ANY_REFERENCE, boundConnectionId, conversationClaims, gitIn, noClaimText, parseCommitArgs, projectScope,
+  severalClaimsText, stampedText, tagMessage,
+} from './commit-stamp.mjs'
 
 const FULL_SHA = /^[0-9a-f]{40}$/u
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/u
 const MAX_TRACE_BYTES = 1024 * 1024
 const TRACE_CLOSE_GRACE_MS = 250
@@ -88,8 +97,13 @@ function run(realGit, args, options = {}) {
   })
 }
 
-async function delegate(realGit, args, childEnv) {
-  const child = spawn(realGit, args, { cwd: process.cwd(), env: childEnv, stdio: 'inherit', windowsHide: true })
+async function delegate(realGit, args, childEnv, input = null) {
+  // Standard input this read (a message for -F -) goes to git byte for byte.
+  const child = spawn(realGit, args, { cwd: process.cwd(), env: childEnv, stdio: [input ? 'pipe' : 'inherit', 'inherit', 'inherit'], windowsHide: true })
+  if (input) {
+    child.stdin.on('error', () => {})
+    child.stdin.end(input)
+  }
   const forwarded = []
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']) {
     const handler = () => {
@@ -269,25 +283,72 @@ function inspectCommit(realGit, worktree, previousHead, amend, startedAt, endedA
 }
 
 /**
- * The connection this conversation is bound to now, by the rule the plugin's hooks
- * use (commit-observation.mjs boundConnection): exactly one enabled connection whose
- * conversation is this one. Attribution only; nothing else is read from the file.
+ * What to run for this invocation. A plain `git commit` in the connected project's
+ * repositories, with no reference in its message, gets the tag of the one task this
+ * conversation has claimed, or is stopped: with no claim, and with several. Anything
+ * else runs exactly as written, and a message read from standard input is passed on
+ * byte for byte. Never throws.
  */
-function boundConnection(sessionId) {
-  const dir = join(homedir(), '.devspec', 'remote-control', 'connections')
-  const found = new Set()
-  let names = []
-  try { names = readdirSync(dir) } catch { return null }
-  for (const name of names) {
-    if (!/^[0-9a-f-]{36}\.json$/iu.test(name)) continue
-    try {
-      const text = readFileSync(join(dir, name), 'utf8')
-      if (!text.includes(sessionId)) continue
-      const state = JSON.parse(text)
-      if (state?.enabled === true && state.local_id === sessionId && UUID.test(state.connection_id ?? '')) found.add(state.connection_id.toLowerCase())
-    } catch { /* a file being rewritten is not a bond */ }
+function planCommit(realGit, args, config, dir) {
+  let input = null
+  try {
+    if (typeof config.claims_dir !== 'string') return { args } // claims cannot be read: leave it to git
+    const parsed = gitGlobals(args)
+    if (!parsed || parsed.command !== 'commit') return { args }
+    const at = parsed.globals.length + 1
+    const commit = parseCommitArgs(args.slice(at))
+    if (!commit.known || commit.reuse || commit.amend || commit.noEdit || commit.edit || commit.dryRun) return { args }
+    const sources = commit.messages.length + commit.files.length
+    if (sources === 0 || (commit.messages.length > 0 && commit.files.length > 0) || commit.files.length > 1) return { args }
+    let cwd = process.cwd()
+    for (let i = 0; i < parsed.globals.length; i += 1) {
+      if (parsed.globals[i] === '-C') { cwd = resolve(cwd, parsed.globals[i + 1]); i += 1 } else if (parsed.globals[i].startsWith('-C')) cwd = resolve(cwd, parsed.globals[i].slice(2))
+    }
+    const git = gitIn(realGit, cwd)
+    const top = git(['rev-parse', '--show-toplevel'])
+    if (!top) return { args }
+    const scope = projectScope({ cwd: realpathSync(cwd), worktree: realpathSync(top), sessionId: config.session_id, home: homedir(), git })
+    if (!scope.inScope) return { args }
+
+    const file = commit.files[0] ?? null
+    let text = null
+    if (file) {
+      let bytes = null
+      if (file.value === '-') {
+        bytes = readFileSync(0)
+        input = bytes
+      } else {
+        try { bytes = readFileSync(resolve(cwd, file.value)) } catch { bytes = null }
+      }
+      const decoded = bytes ? bytes.toString('utf8') : null
+      text = decoded !== null && Buffer.from(decoded, 'utf8').equals(bytes) ? decoded : null
+    } else {
+      text = commit.messages.map((message) => message.value).join('\n\n')
+    }
+    // Unreadable, or it already names a task: git gets exactly what it was given.
+    if (text === null || ANY_REFERENCE.test(text)) return { args, input }
+
+    const claims = conversationClaims({ sessionId: config.session_id, stateDir: config.claims_dir })
+    if (claims.length === 0) return { stop: noClaimText() }
+    if (claims.length > 1) return { stop: severalClaimsText(claims) }
+    const id = claims[0]
+    const next = [...args]
+    if (file) {
+      const tagged = tagMessage(text, id)
+      if (tagged === null) return { args, input }
+      // A private copy: the person's own file is never edited.
+      const copy = join(dir, `commit-message-${randomUUID()}.txt`)
+      writeFileSync(copy, tagged, { mode: 0o600 })
+      next[at + file.index] = `${file.prefix}${copy}`
+      return { args: next, copy, stamped: id }
+    }
+    const part = commit.messages.find((message) => tagMessage(message.value, id) !== null)
+    if (!part) return { args }
+    next[at + part.index] = `${part.prefix}${tagMessage(part.value, id)}`
+    return { args: next, stamped: id }
+  } catch {
+    return { args, input }
   }
-  return found.size === 1 ? [...found][0] : null
 }
 
 let dir = process.env.DEVSPEC_CLAUDE_GIT_OBSERVER
@@ -311,7 +372,13 @@ if (config && session && session !== config.session_id) {
 }
 const eligible = Boolean(config && !process.env.GIT_TRACE2_EVENT && !process.env.GIT_TRACE2)
 const builtins = new Set(Array.isArray(config?.builtins) ? config.builtins : [])
-const before = eligible ? preflight(realGit, args, builtins) : null
+const plan = eligible ? planCommit(realGit, args, config, dir) : { args }
+if (plan.stop) {
+  // Stopped before git runs: the repository is exactly as it was.
+  process.stderr.write(`${plan.stop}\n`)
+  process.exit(1)
+}
+const before = eligible ? preflight(realGit, plan.args, builtins) : null
 let capture = null
 let childEnv = process.env
 if (before) {
@@ -324,8 +391,10 @@ if (before) {
 }
 
 const startedAt = Date.now()
-const result = await delegate(realGit, args, childEnv)
+const result = await delegate(realGit, plan.args, childEnv, plan.input ?? null)
 const endedAt = Date.now()
+if (plan.copy) { try { rmSync(plan.copy, { force: true }) } catch { /* removed with the conversation */ } }
+if (plan.stamped && result.code === 0 && !result.signal) process.stderr.write(`${stampedText(plan.stamped)}\n`)
 const trace = capture ? await capture.finish().catch(() => null) : null
 
 try {
@@ -341,7 +410,7 @@ try {
         v: 1,
         generation: config.generation,
         session_id: config.session_id,
-        connection_id: boundConnection(config.session_id),
+        connection_id: boundConnectionId(config.session_id, homedir()),
         observation_id: randomUUID(),
         sha: commit.sha,
         branch: commit.branch,

@@ -33,7 +33,11 @@ import path from 'node:path'
 
 export const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 
-/** Small text payloads are cheap and immediately useful, so they stay inline. */
+/**
+ * Small text payloads are cheap and immediately useful, so they stay inline. This
+ * routes, it never cuts: longer text is written to a file whole and the descriptor
+ * names that file, so nothing is lost either way.
+ */
 export const MAX_INLINE_ATTACHMENT_CHARS = 2048
 
 /** Where this connection's decoded attachments land. */
@@ -53,7 +57,11 @@ export function isMaterialisedDescriptor(a) {
   return !!a && typeof a === 'object' && DELIVERY_KINDS.has(a.delivery)
 }
 
-/** Filesystem-safe leaf name; never lets a filename escape the attachment dir. */
+/**
+ * Filesystem-safe leaf name; never lets a filename escape the attachment dir. Bounded
+ * because it becomes a file name (with a short message-id prefix), which most
+ * filesystems cap at 255 bytes. Only the name is shortened, never the content.
+ */
 function safeAttachmentName(filename) {
   const base = path.basename(String(filename || 'attachment'))
   const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '')

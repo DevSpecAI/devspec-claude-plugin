@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PostToolUse hook (matcher: mcp__devspec__post_session_message) — records that
+ * PostToolUse hook (matcher: post_session_message, under either DevSpec server name) — records that
  * the agent already posted an explicit reply into the session THIS turn, so the
  * Stop hook (mirror-turn.mjs) knows to skip mirroring the turn's own end-of-turn
  * narration as a second, redundant session message (item b9fb49a9).
@@ -19,16 +19,23 @@
  */
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { devspecToolVerb } from './devspec-tool-name.mjs'
+import { appendRequestEvent, commandsAnsweredNow, readRequestState } from './requests.mjs'
+import { isNoticeReply } from './notice-reply.mjs'
 import {
   resolveHookConversationId,
   loadState,
   explicitReplyMarkerPath,
   clearTurnMarker,
 } from './mirror-turn.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
-const TARGET_TOOL = 'mcp__devspec__post_session_message'
+// A verb, not a tool name: this plugin's own server delivers the tool as
+// mcp__plugin_devspec_devspec__post_session_message, and matching only
+// mcp__devspec__… meant this never ran on a plugin install (ddc40cc8).
+const TARGET_VERB = 'post_session_message'
 
 function readStdin() {
   try {
@@ -63,9 +70,38 @@ export function declaresCompleteTurn(raw) {
   }
 }
 
+/**
+ * Is this post a reply to DevSpec notices (notice-reply.mjs)? It is no turn's
+ * reply: it ends no turn and answers no command, `complete_turn` or not, so this
+ * hook leaves the turn as it is (item 8ad9f857). Exported for tests.
+ */
+export function isNoticeReplyPost(raw) {
+  try {
+    const data = JSON.parse(raw || '{}')
+    return isNoticeReply(data.tool_input || data.toolInput || {})
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Record that the turn's room commands were answered. Exported for tests;
+ * `dir` defaults to where the request log lives.
+ */
+export function markCommandsAnswered(connectionId, { dir = path.join(os.homedir(), '.devspec', 'remote-control', 'connections') } = {}) {
+  try {
+    const ids = commandsAnsweredNow(readRequestState(connectionId, { dir }))
+    for (const id of ids) appendRequestEvent(connectionId, { op: 'answered', id }, { dir })
+    return ids
+  } catch {
+    return [] // never fails the post: an unmarked command only stays open longer
+  }
+}
+
 async function main() {
   const raw = readStdin()
-  if (toolNameFrom(raw) !== TARGET_TOOL) process.exit(0)
+  if (devspecToolVerb(toolNameFrom(raw)) !== TARGET_VERB) process.exit(0)
+  if (isNoticeReplyPost(raw)) process.exit(0)
 
   const conversationId = resolveHookConversationId(raw)
   const state = loadState(conversationId)
@@ -82,10 +118,16 @@ async function main() {
   // The agent said this turn is over, so stop the poller re-asserting that it is
   // not. Deliberately AFTER the explicit-reply marker: that one must be written
   // even if this throws, since Stop depends on it.
-  if (declaresCompleteTurn(raw)) clearTurnMarker(connectionId)
+  if (declaresCompleteTurn(raw)) {
+    clearTurnMarker(connectionId)
+    // ...and the room commands this turn carries have their final answer, so the
+    // next Stop may finish them once their work is done (item 984ca8b4). Until
+    // then a command stays open: work it still owes is still that person's.
+    markCommandsAnswered(connectionId)
+  }
 
   process.exit(0)
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) main()

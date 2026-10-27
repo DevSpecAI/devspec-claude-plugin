@@ -1,218 +1,117 @@
 # DevSpec for Claude Code
 
-Bring your team's DevSpec work into Claude Code — and drive Claude from your browser or phone.
+Connect [Claude Code](https://code.claude.com) to [DevSpec](https://devspec.ai) with one plugin. Once installed, Claude Code connects to your DevSpec project automatically when you start it in a repository linked to that project, appears on your project's **Agents** page, works from your tasks, decisions, and documents, and can be steered live from your phone or the web.
 
-[DevSpec](https://devspec.ai) tracks your team's tasks, bugs, and features — called **action items** — against your git repositories, along with the context, decisions, and history around them. This plugin connects [Claude Code](https://code.claude.com) to your DevSpec account so Claude can implement the action-item work you request and report back — and so you can steer a Claude Code session running on your machine from anywhere.
+## Requirements
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+- [Claude Code](https://code.claude.com)
+- Node.js 18 or later (`node --version` — install from [nodejs.org](https://nodejs.org/en/download) if needed)
+- Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, Windows through WSL, or native Windows with [Git for Windows](https://git-scm.com/downloads/win) and Claude Code's PowerShell tool turned off. See [Commits Claude makes](#commits-claude-makes) for how to turn it off, and what you get while it is on.
 
-## What you can do with it
+## Setup
 
-- **⭐ Drive Claude from your browser or phone.** Connect a Claude Code session to DevSpec and send it instructions from the **Agents page** — no need to be at your terminal. Start a fresh session, or attach Claude to a DevSpec conversation you already have open. Teammates can follow along and add context in the same thread; only the owner or a server-authorized delegate can send an exactly addressed command. → [Remote control](#-drive-a-session-from-devspec-remote-control)
-- **Work a task end to end.** Point Claude at an action item and it implements the change on an isolated branch, runs your project's tests, commits, and hands it back for a human to review — all tracked in DevSpec.
-- **Work an explicit batch in order.** Ask Claude in a conversation to work named action items; it reserves the requested order, then claims and implements them one by one.
-- **Share material progress in the room.** For genuinely multi-phase work, Claude can maintain one revisioned session plan that every attached participant can follow and a reconnecting agent can resume. Routine read-only investigation stays plan-free.
-- **Small conveniences.** Create tasks, make tracked commits, and ask DevSpec's docs questions without leaving the terminal.
+### 1. Install the DevSpec plugin
 
-Everything runs against your own DevSpec account and repositories, using an API token you control.
+Inside Claude Code, run these three commands one by one:
 
-## Before you start
-
-You'll need:
-
-- **Claude Code** with plugin support (run `/plugin` to check it's available).
-- A **[DevSpec](https://devspec.ai)** account with at least one project that's connected to your git repo(s).
-- A **DevSpec API token** with `read_write` scope. Create one in DevSpec under **You → Connections** → **Connect a tool** (pick **Read & write**); it starts with `dvs_`. It's **account-wide** — one token covers all of your projects, so use the **same** token in every tool and on every machine (don't mint one per machine). Need it again? Reveal and copy it any time from **You → Connections**.
-- **Node.js 18+** on your `PATH` (check with `node --version`). Remote control — the headline feature — needs it, as does setting up isolated work branches. Most other commands work without it, but you'll want it installed.
-
-> **Heads up:** Claude Code's native installer sometimes ships without a system `node`. If `node --version` fails, install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH`.
-
-## Install
-
-Inside Claude Code:
-
-```
+```text
 /plugin marketplace add DevSpecAI/devspec-claude-plugin
 /plugin install devspec@devspec
 /reload-plugins
 ```
 
-When you enable the plugin, Claude Code asks for your **DevSpec API token**. Paste your `dvs_…` token — it's stored securely on your machine (your OS keychain on macOS, an encrypted credentials file on Linux/Windows). The plugin bundles the DevSpec MCP server and wires it to your token for you, so **you don't need to add anything to `.mcp.json` or configure any URLs**.
+### 2. Paste your DevSpec token
 
-<details>
-<summary>Installing from a local clone (for contributors)</summary>
+When Claude Code installs the plugin, it prompts you for your DevSpec API token. Create a token with **Read & write** access on your [Agent setup](https://app.devspec.ai/settings/agents) page and paste your `dvs_…` token when asked.
+
+To change your token later, open `/plugin` → **Installed** → **DevSpec** in Claude Code.
+
+### 3. Optional — recommended for phone and voice control: skip permission prompts
+
+By default, Claude Code pauses in the terminal and waits for your approval before editing files or running commands. When you are driving Claude Code remotely from your phone or by voice, skipping permission prompts keeps work from stalling at your computer while Claude Code's built-in safety checks remain in place.
+
+Either start Claude Code with:
 
 ```bash
-git clone https://github.com/DevSpecAI/devspec-claude-plugin.git
+claude --dangerously-skip-permissions
 ```
 
-Then, in Claude Code (use the absolute path):
+or add `"defaultMode": "bypassPermissions"` to `~/.claude/settings.json` (`%USERPROFILE%\.claude\settings.json` on Windows):
 
-```
-/plugin marketplace add /absolute/path/to/devspec-claude-plugin
-/plugin install devspec@devspec
-/reload-plugins
-```
-
-To update: `git pull` in the clone, then `/reload-plugins`. See [DEVELOPMENT.md](./DEVELOPMENT.md) for pointing the plugin at a staging or self-hosted DevSpec instance.
-
-</details>
-
-### Check the connection
-
-Ask Claude:
-
-```
-Run the DevSpec connection check
+```json
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}
 ```
 
-You should see confirmation that you're connected as your DevSpec user. (If you're following DevSpec's setup wizard, this step turns green once the check passes.)
+### 4. Start Claude Code and connect to your project
 
-Two commands appear in Claude Code's `/` menu after install, namespaced under the plugin: `/devspec:devspec.remote` and `/devspec:devspec.remote-stop`. Everything else you might want is a sentence — see [Other workflows](#other-workflows).
+- **Inside a linked repository:** Start `claude` (or `claude --dangerously-skip-permissions`) in the folder where you cloned the Git repository linked to your DevSpec project. Claude Code connects to that project automatically and appears on the project's **Agents** page.
+- **In any other folder, or when switching projects:** Start Claude Code and run `/devspec:devspec.project` to choose which project this conversation belongs to.
 
-## ⭐ Drive a session from DevSpec (remote control)
+Waiting on the **Agents** page costs nothing — Claude Code only runs when you or an authorized teammate asks it to do something.
 
-This is the feature most people come for. You run a real Claude Code session on your machine, but steer it from DevSpec — the **Agents page** in your browser, or your phone. Kick off work, answer its questions, and watch it go while you're away from your desk.
+## Commands
 
-### Two ways to connect
-
-**Register available capacity** — in Claude Code, from the repo you want Claude to work in:
-
-```
-/devspec:devspec.remote
-```
-
-This lists the connection on DevSpec's Agents page without inventing a chat transcript. Sessionless means available; it does not receive action-item assignments. Separately typed owner-scoped automation runs may still target the connection through their own validated claim/report path.
-
-**Attach to a session you already have open** — in DevSpec, open the session, and from its **settings panel copy the ready-made connect command** (a `/devspec:devspec.remote --session …` line). Paste it into Claude Code in the target repo. That DevSpec conversation is now wired to your local agent. Use `/devspec:devspec.remote --new` when you explicitly want Claude to create and attach a new shared session.
-
-When attached, canonical commands and Claude's direct answers use the DevSpec conversation, so the transcript stays two-sided and you can read it back from anywhere. Waiting for your next instruction is a lightweight background check — it does **not** spend Claude usage while idle. Disconnect this connection (others stay connected) with `/devspec:devspec.remote-stop`.
-
-### Shared session plans
-
-Claude keeps routine read-only investigation and quick answers plan-free. When work has material multi-phase progress that others in the room need to follow or resume, it creates one shared plan, advances it atomically at meaningful boundaries, and explicitly completes or abandons it. Reconnecting agents receive the latest revision.
-
-Everyone attached to the room can read active plans, but visibility is not mutation authority. Cross-plan changes and adoption require explicit revisioned targeting, and adoption is restricted to an orphaned plan belonging to the same owner. Plans coordinate progress only: they do not claim action-item work, create provenance, or replace the reserve/claim/record implementation lifecycle.
-
-### Who can talk to it
-
-The collaboration is safe by design. DevSpec decides owner/delegated command authority
-and exact addressing on the server. Delegated commands include a server-owned project
-scope object and instruction; owner commands carry null scope and receive no injected
-instruction. Requester provenance is preserved end to
-end, and room, system, AI and agent messages remain advisory model context. Typed host
-controls are not conversation messages. The mutable runtime policy is published at
-`devspec://product/remote-ingress-contract` rather than duplicated in this plugin.
-
-> This is **not** Claude Code's built-in `/remote-control` for mobile/desktop. DevSpec's remote control is a separate feature and lives under `/devspec:devspec.remote`.
-
-## Other workflows
-
-**There is no command for these, and that is the point.** The plugin ships two
-commands because connecting and disconnecting run a real setup script. Working
-on an item does not — your agent already has the DevSpec tools, so you ask for
-what you want in plain language.
-
-### Work on a single task
-
-```
-Work on DevSpec action item 4f2a
-```
-
-Because the conversation explicitly asked for action-item work, Claude reserves it
-so no other agent takes it mid-run, then claims it. The served
-`devspec://product/implementation-contract` supplies the current lifecycle rules for
-isolation, implementation, verification, commits and reporting; the plugin does not
-keep a second copy of those rules.
-
-Ask it to "also connect to the Agents page" and it will open a remote-control
-channel while it works, so you can watch and steer from your browser.
-
-### Work several tasks in order
-
-```
-Work these DevSpec items in order: 4f2a, 9c1b, 2e7d
-```
-
-Claude reserves all three in the requested order — that is what stops a second
-agent picking up the third while the first is still in progress — then claims and
-works each reserved item as it reaches it. DevSpec's web app has a copy button that
-writes this line for you from a multi-select.
-
-### Everything else
-
-Ask for it. "Log a DevSpec item for the login bug." "I just finished the caching
-fix — record it." "Write the commit message for 4f2a." "Link commit a1b2c3d to
-4f2a." "How do I set up a deployment target?" Each maps to a DevSpec MCP tool
-your agent can already see.
-
-There used to be nine more commands here. Every one was a page of prose telling
-a model to call a tool it already had, kept in six repositories with no way to
-notice when one drifted out of date.
-
-## All commands
-
-Both commands are in Claude Code's `/` menu after install, under the `/devspec:` prefix.
+Everything in DevSpec can be asked in plain words ("Work on DevSpec task 4f2a", "What did we decide about caching?", "Create a task for the login redirect bug"). The plugin also adds three slash commands:
 
 | Command | What it does |
 |---|---|
-| `/devspec:devspec.remote` | ⭐ Connect this session to DevSpec's Agents page (see above) |
-| `/devspec:devspec.remote-stop` | Disconnect this session from the Agents page |
+| `/devspec:devspec.remote` | Connects this Claude Code conversation to DevSpec and waits on the **Agents** page outside any session. |
+| `/devspec:devspec.remote --project "Client Website"` | Connects and selects a project for this conversation without changing the folder default. |
+| `/devspec:devspec.remote --session <id>` | Connects and joins an existing DevSpec session. |
+| `/devspec:devspec.remote --new` | Creates a new shared DevSpec session and joins it (`--new --private` creates a private session). |
+| `/devspec:devspec.remote --name "Night Owl"` | Connects under the codename you choose instead of one DevSpec picks. |
+| `/devspec:devspec.remote-stop` | Disconnects this conversation from DevSpec while leaving other Claude Code terminals running. |
+| `/devspec:devspec.project` | Shows the current project and folder default, or lets you `choose`, `remember`, or `forget` a project. |
 
-## How it finds the right project
+To turn off automatic connection at startup, switch off **Make Claude Code available on DevSpec when it starts** under `/plugin` → **Installed** → **DevSpec**. You can still connect on demand with `/devspec:devspec.remote`.
 
-You don't pass a project id in most cases. The plugin matches the git remote of the repo you're in to the DevSpec project that tracks it. If a single repo is tracked by more than one project, add `--project-id=<id>` to point at the one you mean.
+## Choosing and remembering a project
 
-**No repo yet?** A folder with no git remote can still say which project it belongs to: put
+When a repository belongs to more than one DevSpec project, or you open Claude Code in a folder without a Git remote, run `/devspec:devspec.project`:
+
+- `/devspec:devspec.project` (or `/devspec:devspec.project status`) shows the selected project, organization, full project ID, how it was selected, and any folder default.
+- `/devspec:devspec.project choose` selects a project for this conversation. Switching away from a project you have already been working in gives you a command to start a fresh Claude Code conversation so context from one project never leaks into another.
+- `/devspec:devspec.project remember` saves the current project to `.devspec/project.json` in the folder after showing the file path and asking for confirmation.
+- `/devspec:devspec.project forget` removes the `.devspec/project.json` folder default after confirmation without disconnecting active conversations.
+
+## Commits Claude makes
+
+Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, Windows through WSL, or native Windows with [Git for Windows](https://git-scm.com/downloads/win) and Claude Code's PowerShell tool turned off.
+
+On native Windows, Claude Code's PowerShell tool is on by default. While it is on, Claude runs most of its commands in PowerShell, and commits made there are not checked or tagged automatically. Commits made through Claude's Bash tool get a simpler check that reads the commit command: it covers plain commit commands only, not commits made by scripts, in background work or by subagents. To get full commit tracking, turn the PowerShell tool off in your Claude Code settings (`%USERPROFILE%\.claude\settings.json`), then start a new conversation:
 
 ```json
-{ "project_id": "<your project uuid>" }
+{
+  "env": {
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "0"
+  }
+}
 ```
 
-in `.devspec/project.json` at the root of that folder — agents look there and in any subdirectory beneath it, stopping at the repository root. That's useful when you're starting a project in DevSpec before the code exists — plan the work, let your agent write it, then create the repo and connect it later.
+Claude then runs its commands in Git Bash.
 
-Two things worth knowing. It holds a project id and **no file paths**, so moving or renaming the folder never breaks it. And it isn't a secret, so you can commit it — then anyone who clones the repo is pointed at the right project with no setup at all.
+While a Claude Code conversation is connected to DevSpec, each commit Claude makes is credited to Claude. With full commit tracking this covers every commit made through `git` in Claude's shell commands, including commits from its subagents and background commands. The plugin reports each one with the commit's full id, its branch and the repository's address. DevSpec then works out which project the repository belongs to.
 
-A real git remote always wins over the pin. So if you pin a folder and later connect its repo to a different project, the repo is believed — and a pin that arrives by copying a template quietly stops mattering instead of hijacking your folder.
+The plugin does this with a private stand-in for `git` that it puts on the path of Claude's commands for that conversation. Nothing is installed in your repositories, and your git configuration and hooks are not changed.
 
-## Settings that live in DevSpec
+A commit reaches a task in one of two ways:
 
-How Claude branches, commits, tests, and merges is controlled per project in DevSpec (**Settings → Execution**), so it stays consistent whether you work one item by hand or a batch you were asked to take:
+- **Through the task's tag in the commit message,** `[devspec:<task id>]`. In any of the project's repositories, the plugin adds the tag to Claude's commits itself when Claude has claimed exactly one task, however the message is written. It recognises the project's repositories by their remote address, or by a `.devspec/project.json` pin. With no task claimed, it stops the commit before it is made and tells Claude to claim the task and try again. Amends, fixups, reused messages and messages that already name a task are left as they are, and so is every repository outside the project. A tag Claude writes itself is checked with DevSpec before the commit is made: if it names no task in the project, the commit is stopped so Claude can correct it, and if DevSpec cannot be reached the commit goes ahead.
+- **When Claude records its implementation of the task.**
 
-| Setting | Controls |
-|---|---|
-| Auto-push / Auto-merge | Whether branches are pushed, and merged into the target branch |
-| Target branch (per repo) | The branch Claude's work lands on |
-| Branch / commit prefixes | How Claude names branches and commits |
-| Agent rules | The execution mechanics Claude follows — including what it runs to check a change before pushing |
-| Protected paths | Files and folders Claude must not touch |
-| Custom instructions | Extra project rules Claude follows |
+Every report is written to `~/.devspec/git-observer/commits.log`, whether it was sent, refused or dropped. If DevSpec does not show one of Claude's commits, look there first.
 
-## What it will and won't do
+## Updating
 
-- Changes are made on an **isolated branch** — your working checkout stays clean.
-- It **never force-pushes**, and it respects the protected paths you set.
-- **Nothing is marked done on its own.** Claude does the work and records it; a human reviews and verifies in DevSpec.
-- It won't stall on a question nobody may be reading: a task too ambiguous to do safely is failed with a reason, not guessed at.
-- Commits it makes for a tracked task carry a small `[devspec:…]` tag so DevSpec can link the commit — and later the deployment — back to the task.
+Inside Claude Code, run:
 
-## Troubleshooting
+```text
+/plugin marketplace update devspec
+/plugin update devspec@devspec
+```
 
-| Problem | Fix |
-|---|---|
-| Commands don't appear in `/` | Reinstall with `/plugin install devspec@devspec`, then `/reload-plugins` |
-| Plugin won't load, or hook errors | Update to the latest version (`git pull` for local installs) and `/reload-plugins` |
-| Never asked for a token, or need to change it | Run `/plugin` → **Installed** → **DevSpec**, press Enter, and enter/update your `dvs_…` token there (the prompt fires when you *enable* the plugin) |
-| Connection check fails | Confirm your token has `read_write` scope; regenerate it under DevSpec **You → Connections**, then re-enter it via `/plugin` → **Installed** → **DevSpec** |
-| Remote control won't start / `node: command not found` | Install [Node.js 18+](https://nodejs.org) and make sure `node` is on your `PATH` |
-| "No matching project" | Make sure the repo is tracked in DevSpec, or pass `--project-id=<id>` |
-| A batch you asked for isn't being worked | Nothing routes work — an agent only holds what it reserved. Check the Agents page: it shows which agents are connected and what each is holding, so an unheld item means nobody was asked, not that delivery failed |
-| "Claim failed" in a batch | Another connection claimed that task first — this is normal; the batch continues |
-
-## Contributing
-
-The plugin is Markdown commands and skills plus a few dependency-free Node scripts — no build step. See [DEVELOPMENT.md](./DEVELOPMENT.md) for how it's structured, how to run the tests, and how to develop against a non-production DevSpec instance. Release notes are in [CHANGELOG.md](./CHANGELOG.md).
-
-## License
-
-[MIT](./LICENSE)
+Then start a new Claude Code conversation so the updated plugin is loaded. Release notes are in [CHANGELOG.md](./CHANGELOG.md).

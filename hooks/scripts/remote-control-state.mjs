@@ -13,6 +13,7 @@
  * Per-connection files (one per live connection):
  *   ~/.devspec/remote-control/connections/<connection_id>.json
  *   ~/.devspec/remote-control/connections/<connection_id>.poll.pid | .poll.log | .inbox.jsonl
+ *   ~/.devspec/remote-control/connections/<connection_id>.room.json | .<session_id>.transcript.jsonl
  *
  * Per-local-conversation bonds (create / soft-reconnect / already-live):
  *   ~/.devspec/remote-control/local/<agent-slug>/<local_id>.json
@@ -37,7 +38,6 @@
  *   node remote-control-state.mjs ensure-poller --connection-id <uuid> [--session <uuid>] [--owner-pid <pid>]
  *   node remote-control-state.mjs disable --connection-id <uuid>
  *   node remote-control-state.mjs disable-local [--agent "Claude Code"] [--local-id <id>]
- *   node remote-control-state.mjs reap [--agent "Claude Code"] [--except-connection <uuid>]
  *   node remote-control-state.mjs read [--connection-id <uuid>]
  *   node remote-control-state.mjs list
  *   node remote-control-state.mjs mint-codename
@@ -48,6 +48,7 @@
  *     → action: already_live | reconnect | register | create_and_attach
  *   node remote-control-state.mjs stop-poller --connection-id <uuid>
  *   node remote-control-state.mjs resolve-auth
+ *   node remote-control-state.mjs orient [--agent "Claude Code"] [--local-id <id>] [--connection-id <uuid>]
  */
 
 import crypto from 'node:crypto'
@@ -62,6 +63,7 @@ import {
   hostTokenFromEnv,
   proveCredentialPair,
   resolveDevspecMcpAuth,
+  tokensWarningFix,
 } from './resolve-mcp-auth.mjs'
 import {
   AGENT_NAME,
@@ -69,6 +71,19 @@ import {
   LOCAL_ID_OVERRIDE_ENV_VAR,
 } from './agent-identity.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
+import { inheritConversationProject, readConversationProject } from './conversation-project.mjs'
+import { takeRepositoryContext, repositoryContextProject } from './repository-context.mjs'
+import {
+  claudeProcessOf,
+  CONVERSATION_SWITCH_REASONS,
+  ownedByAnotherProcess,
+  resolveClaudePid,
+  startupListenerAlive,
+  writeOwnedConnectionPointer,
+} from './startup-listener.mjs'
+import { takeTiersFor, CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
+import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -170,6 +185,7 @@ function parseArgs(argv) {
     else if (a === '--connection-id' || a === '--connection_id' || a === '--connection') {
       out['connection-id'] = argv[++i]
     } else if (a === '--agent' || a === '--agent_name') out.agent = argv[++i]
+    else if (a === '--event') out.event = argv[++i]
     else if (a === '--cwd') out.cwd = argv[++i]
     else if (a === '--url') out.url = argv[++i]
     else if (a === '--codename' || a === '--session_codename') out.codename = argv[++i]
@@ -182,8 +198,6 @@ function parseArgs(argv) {
       out['owner-pid'] = argv[++i]
     } else if (a === '--host-token' || a === '--host_token') {
       out['host-token'] = argv[++i]
-    } else if (a === '--except-connection' || a === '--except-session') {
-      out['except-connection'] = argv[++i]
     } else if (a === '--no-poller' || a === '--skip-poller') {
       out.noPoller = true
     } else if (a === '--force-new' || a === '--new') {
@@ -210,7 +224,15 @@ function findPollerPidsForConnection(connectionId) {
       if (Number.isFinite(n) && n > 0) {
         try {
           process.kill(n, 0)
-          pids.add(n)
+          // A stale pidfile's number can belong to an unrelated process by now. Where
+          // the arguments can be read, they decide; elsewhere a live pid is all there is.
+          let argv = null
+          try {
+            argv = fs.readFileSync(`/proc/${n}/cmdline`).toString().split('\0').filter(Boolean)
+          } catch {
+            /* no /proc */
+          }
+          if (argv === null || isPollerArgv(argv, connectionId)) pids.add(n)
         } catch {
           /* stale pid file */
         }
@@ -220,26 +242,40 @@ function findPollerPidsForConnection(connectionId) {
     /* ignore */
   }
 
-  // /proc scan (Linux) — require the poller script AND connection id in the cmdline.
+  // /proc scan (Linux) — a poller is recognised by its ARGUMENTS, never by substrings
+  // of a command line. A substring match also matched any shell or editor whose
+  // command happened to mention the script, the connection id and "node" — and this
+  // list is what gets SIGTERM'd (found by item 7e35d818's own test killing the shell
+  // that ran it).
   try {
     for (const name of fs.readdirSync('/proc')) {
       if (!/^\d+$/.test(name)) continue
-      let cmd
+      let argv
       try {
-        cmd = fs.readFileSync(`/proc/${name}/cmdline`).toString().replace(/\0/g, ' ')
+        argv = fs.readFileSync(`/proc/${name}/cmdline`).toString().split('\0').filter(Boolean)
       } catch {
         continue
       }
-      if (!cmd.includes('devspec-remote-poll')) continue
-      if (!cmd.includes(connectionId)) continue
-      if (!/\bnode\b/.test(cmd) && !cmd.includes('node ')) continue
-      pids.add(Number(name))
+      if (isPollerArgv(argv, connectionId)) pids.add(Number(name))
     }
   } catch {
     /* non-Linux or no /proc */
   }
 
   return [...pids]
+}
+
+/**
+ * Is this argv the poller for this connection? `node …/devspec-remote-poll.mjs
+ * --connection-id <id> …` exactly: node as the executable, the poller script as its
+ * first argument, and the id as the value of `--connection-id`.
+ */
+export function isPollerArgv(argv, connectionId) {
+  if (!Array.isArray(argv) || argv.length < 4 || !connectionId) return false
+  if (!/^node(\.exe)?$/i.test(path.basename(String(argv[0])))) return false
+  if (path.basename(String(argv[1])) !== 'devspec-remote-poll.mjs') return false
+  const at = argv.indexOf('--connection-id', 2)
+  return at !== -1 && argv[at + 1] === connectionId
 }
 
 /**
@@ -353,13 +389,12 @@ export function ensurePollerForConnection(connectionId, opts = {}) {
     }
   }
 
-  // Owner-process anchor — REQUIRED before we spawn anything. A poller with no
-  // recorded owner_pid can never be proven dead by the reaper (owner-death is the
-  // liveness proof it keys on), so it lingers as a zombie "Live" agent
-  // (item 00bd4f6e). We refuse rather than fall back to process.ppid: inside this
-  // short-lived state-writer subprocess ppid is the ephemeral invoking shell, not
-  // the owning agent — recording it would make the reaper SIGTERM a LIVE agent's
-  // poller the instant that shell exits. Callers pass the agent explicitly as
+  // Owner-process anchor — REQUIRED before we spawn anything. The poller ends itself
+  // when its owner process goes; a poller with no owner to watch would outlive the
+  // agent as a zombie "Live" connection (item 00bd4f6e). We refuse rather than fall
+  // back to process.ppid: inside this short-lived state-writer subprocess ppid is the
+  // ephemeral invoking shell, not the owning agent — anchoring to it would end a LIVE
+  // agent's poller the instant that shell exits. Callers pass the agent explicitly as
   // --owner-pid "$PPID" (POSIX: correct and cheap). On win32 that shell-reported
   // pid is commonly unusable (Git Bash's MSYS pid space isn't a real Win32 pid —
   // see resolveOwnerPidAutoWindows), so there we self-resolve by walking THIS
@@ -373,7 +408,7 @@ export function ensurePollerForConnection(connectionId, opts = {}) {
     return {
       ok: false,
       error:
-        'refusing to spawn a poller without a valid --owner-pid (no trustworthy owner anchor → the reaper could never prove it dead → zombie "Live" agent). Pass --owner-pid "$PPID" (POSIX) — on Windows this is normally self-resolved automatically; if you see this, the automatic walk to claude.exe failed too.',
+        'refusing to spawn a poller without a valid --owner-pid (no trustworthy owner anchor → the poller could never tell its agent had gone → zombie "Live" agent). Pass --owner-pid "$PPID" (POSIX) — on Windows this is normally self-resolved automatically; if you see this, the automatic walk to claude.exe failed too.',
     }
   }
 
@@ -503,6 +538,57 @@ function disableConnectionState(
   }
 }
 
+/**
+ * Tell the server a connection has ended because this Claude Code exited
+ * (item 58e2a19f). Best effort, bounded by `timeoutMs`, and it never throws.
+ *
+ * Why it lives here. When Claude Code exits it signals its children, and the
+ * poller's signal handlers exit silently on purpose: a superseded poller must
+ * never stamp state (b9e02835). The poller's own goodbye (`offlineAndExit`)
+ * only runs when the poll loop sees the owner die first, and on a normal exit
+ * the signal wins that race. So SessionEnd's `disable-local` is the one step
+ * that runs on every real exit. Before this it only rewrote local state, and
+ * the server kept the connection open (`ended_at` null) with nothing behind
+ * it. The liveness sweep only ends session-attached connections, so a
+ * sessionless one stayed open for good.
+ *
+ * It uses the credential pair `write` proved and cached for this connection,
+ * and only when both halves are there: the key and the server address travel
+ * together or not at all (8bb707fd). Guessing a default address would send
+ * this key to a server it was never proven against. Same call and end reason
+ * as `/devspec:devspec.remote-stop`. `local_stop` is a recoverable end, so a
+ * later reconnect from the same conversation can still pick the id back up.
+ *
+ * Every outcome is audited on the connection's poll log, so "did the server
+ * hear about this exit?" has an answer.
+ */
+export async function reportConnectionEnded(connectionId, { call = mcpToolsCall, timeoutMs = 5_000 } = {}) {
+  if (!connectionId) return { sent: false, reason: 'no_connection' }
+  const state = readJson(connectionPath(connectionId)) || {}
+  const token = typeof state.token === 'string' && state.token ? state.token : null
+  const mcpUrl = typeof state.mcp_url === 'string' && state.mcp_url ? state.mcp_url : null
+  if (!token || !mcpUrl) {
+    const outcome = { sent: false, reason: 'no_credential_pair' }
+    appendConnectionAudit(connectionId, 'connection_end_not_reported', outcome)
+    return outcome
+  }
+  try {
+    await call({
+      mcpUrl,
+      token,
+      name: 'heartbeat_connection',
+      arguments: { connection_id: connectionId, status: 'offline', end_reason: 'local_stop' },
+      timeoutMs,
+    })
+    appendConnectionAudit(connectionId, 'connection_end_reported', { end_reason: 'local_stop' })
+    return { sent: true, end_reason: 'local_stop' }
+  } catch (err) {
+    const outcome = { sent: false, reason: String(err?.message || err).slice(0, 300) }
+    appendConnectionAudit(connectionId, 'connection_end_not_reported', outcome)
+    return outcome
+  }
+}
+
 /** Owner (agent) process liveness — see devspec-remote-poll.mjs. EPERM = alive. */
 export function ownerAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false
@@ -514,98 +600,44 @@ export function ownerAlive(pid) {
   }
 }
 
-/** Every per-connection state object on disk (raw). */
-function scanConnectionStates() {
-  const out = []
+/**
+ * Is a poller running for this connection right now? Proved by a live process, never
+ * by the pidfile alone (see findPollerPidsForConnection).
+ *
+ * There is deliberately no "reap other connections' pollers" pass any more (item
+ * 7e35d818). It used to run on every connect, and it judged other connections from
+ * whatever JSON files sat beside them: from 0.31.0 the room-transcript copy
+ * (`<id>.<session>.transcript-state.json`, with a `connection_id` and an `updated_at`
+ * but no owner) looked to it like a pre-July ownerless connection, so every new
+ * Claude Code window SIGTERM'd any attached poller whose room had been quiet for an
+ * hour. A poller already ends itself when its owning process goes, when its state is
+ * disabled and when it is ended from DevSpec; nothing else may end it.
+ */
+export function pollerRunning(connectionId, { findPids = findPollerPidsForConnection } = {}) {
+  // The pidfile answers almost every time, so a full process scan only runs when it
+  // does not (this is asked every few seconds by every serving listener).
+  if (!connectionId) return false
   try {
-    if (!fs.existsSync(CONNECTIONS_DIR)) return out
-    for (const f of fs.readdirSync(CONNECTIONS_DIR)) {
-      if (!f.endsWith('.json')) continue
-      const s = readJson(path.join(CONNECTIONS_DIR, f))
-      if (s && s.connection_id) out.push(s)
+    const n = Number(fs.readFileSync(pollerPidPath(connectionId), 'utf8').trim())
+    if (Number.isInteger(n) && n > 1) {
+      process.kill(n, 0)
+      let argv = null
+      try {
+        argv = fs.readFileSync(`/proc/${n}/cmdline`).toString().split('\0').filter(Boolean)
+      } catch {
+        /* no /proc */
+      }
+      if (argv === null || isPollerArgv(argv, connectionId)) return true
     }
   } catch {
-    /* ignore */
+    /* no pidfile, or its pid is gone */
   }
-  return out
+  return findPids(connectionId).length > 0
 }
 
-/**
- * Legacy backstop threshold. A still-running poller whose connection state carries
- * NO recorded owner_pid can't be proven dead by owner-death — this was the exact
- * zombie gap (item 00bd4f6e). New pollers always record an owner_pid
- * (ensurePollerForConnection refuses to spawn without one), so a live no-owner_pid
- * state is a pre-fix artifact. We reap it only once its local state has been
- * untouched this long, so a freshly-active legacy poller is never killed.
- */
-const STALE_NO_OWNER_REAP_MS = 60 * 60 * 1000 // 1h
-
-/**
- * Reap PROVABLY-DEAD pollers — the connect-time / SessionStart backstop for the
- * self-terminating poller. A poller is reaped when its connection is provably dead
- * (state disabled, ended-from-UI, or its recorded owner process is gone), so a live
- * sibling terminal's poller is NEVER touched. As a legacy safety net, a poller with
- * NO recorded owner_pid (pre-owner-pid-contract artifact — new spawns always record
- * one) is reaped only once its local state has gone stale beyond STALE_NO_OWNER_REAP_MS,
- * so a freshly-active one is left alone. Injectable for tests.
- */
-export function reapDeadPollers({
-  agent = AGENT_NAME,
-  exceptConnectionId = null,
-  now = Date.now(),
-  staleNoOwnerReapMs = STALE_NO_OWNER_REAP_MS,
-  listStates = scanConnectionStates,
-  findPids = findPollerPidsForConnection,
-  isOwnerAlive = ownerAlive,
-  kill = (pid) => {
-    try {
-      process.kill(pid, 'SIGTERM')
-      return true
-    } catch {
-      return false
-    }
-  },
-} = {}) {
-  const reaped = []
-  for (const s of listStates()) {
-    if (!s || !s.connection_id) continue
-    if (exceptConnectionId && s.connection_id === exceptConnectionId) continue
-    if (agent && s.agent_name && String(s.agent_name).toLowerCase() !== String(agent).toLowerCase()) {
-      continue
-    }
-    const pids = findPids(s.connection_id)
-    if (!pids.length) continue
-    const ownerPid = Number.isInteger(s.owner_pid) && s.owner_pid > 1 ? s.owner_pid : null
-    const ownerGone = ownerPid !== null && !isOwnerAlive(ownerPid)
-    const provablyDead = s.enabled === false || s.ended_from_ui === true || ownerGone
-
-    // Legacy backstop: with no owner_pid there is nothing to prove death by, so
-    // reap only when the connection is still nominally enabled but its local state
-    // has been untouched beyond the stale threshold (never a freshly-active one; a
-    // missing/unparsable updated_at is treated as "unknown → leave alone").
-    let staleNoOwner = false
-    if (!provablyDead && ownerPid === null && s.enabled !== false && s.ended_from_ui !== true) {
-      const t = Date.parse(s.updated_at || '')
-      if (Number.isFinite(t) && now - t >= staleNoOwnerReapMs) staleNoOwner = true
-    }
-
-    if (!provablyDead && !staleNoOwner) continue
-    const killed = pids.filter((pid) => kill(pid))
-    reaped.push({
-      connection_id: s.connection_id,
-      agent_name: s.agent_name || null,
-      killed,
-      reason:
-        s.enabled === false
-          ? 'disabled'
-          : s.ended_from_ui
-            ? 'ended_from_ui'
-            : ownerGone
-              ? 'owner_gone'
-              : 'stale_no_owner',
-    })
-  }
-  return reaped
+/** Append a line to a connection's audit trail (its poll log). Never throws. */
+export function recordConnectionEvent(connectionId, event, detail = {}) {
+  appendConnectionAudit(connectionId, event, detail)
 }
 
 function agentSlug(name) {
@@ -938,7 +970,7 @@ export async function writeConnectionState({
         source: fallback.source || fallback.error || null,
         error:
           proven.error === 'no_proven_pair'
-            ? 'No reachable DevSpec key owns this connection. Open You → Connections and make the plugin key and the project .mcp.json key the same.'
+            ? `No reachable DevSpec key owns this connection. ${tokensWarningFix(fallback.mcp_url)}`
             : proven.error === 'unproven'
               ? 'This machine has more than one DevSpec key; the poller will not start until one is proven to own this connection.'
               : fallback.error,
@@ -990,6 +1022,10 @@ export async function writeConnectionState({
   writeJson(perPath, state)
   // Legacy pointer = most recently connected connection (backward compatible).
   writeJson(LEGACY_PATH, state)
+  // The Claude Code process that just connected owns this connection now (item
+  // 7e35d818): its startup listener keeps it alive, and a window this conversation was
+  // resumed away from stands back. Keyed by that process, not by a wrapper shell.
+  if (ownerPid) writeOwnedConnectionPointer(claudeProcessOf(ownerPid) ?? ownerPid, connectionId)
 
   let bond = null
   if (localId) {
@@ -1031,12 +1067,7 @@ export async function writeConnectionState({
 
   const wantPoller = state.auth_ok && !noPoller
   if (wantPoller) {
-    try {
-      const reaped = reapDeadPollers({ agent: agentName, exceptConnectionId: connectionId })
-      if (reaped.length) result.reaped = reaped
-    } catch {
-      /* non-fatal */
-    }
+    // Only THIS connection's poller is touched here — never another's (item 7e35d818).
     // Same token/url/owner → the live poller keeps serving this connection
     // (session attach/detach reaches it via the server heartbeat echo), so a
     // `write --session` never restarts it. Only a real identity change takes
@@ -1062,6 +1093,51 @@ export async function writeConnectionState({
   return result
 }
 
+/**
+ * Move a live connection onto a new conversation of the SAME Claude Code process —
+ * what `/clear` and `/resume` do underneath a startup listener (item b7ef1fe2).
+ *
+ * The turn hooks find their connection through the conversation's bond, and a new
+ * conversation has none; without this, Stop could not report the end of a turn and the
+ * room would show the agent Working after it had answered. The old bond is left alone:
+ * it points at the same connection, and a later `/resume` back to that conversation
+ * should find it.
+ *
+ * Deliberately NOT a registration. The connection, its codename, its session and its
+ * poller are unchanged; only which conversation speaks for it moves.
+ */
+export function rebondConnectionToConversation({ agent = AGENT_NAME, connectionId, localId } = {}) {
+  const id = sanitizeLocalId(localId)
+  if (!connectionId || !id) return { ok: false, reason: 'missing_ids' }
+  const perPath = connectionPath(connectionId)
+  const state = readJson(perPath)
+  if (!state || state.enabled === false) return { ok: false, reason: 'connection_not_live' }
+  const agentName = agent || state.agent_name || AGENT_NAME
+  try {
+    inheritConversationProject(state.local_id, id, state.mcp_url)
+  } catch (error) {
+    disableConnectionState(connectionId, { agent: agentName, localId: state.local_id, via: 'project_scope_mismatch' })
+    return { ok: false, reason: 'project_scope_mismatch', connection_id: connectionId, message: error.message }
+  }
+  const bond = writeLocalBond(agentName, id, {
+    status: 'live',
+    connection_id: connectionId,
+    session_id: state.session_id ?? null,
+    session_codename: state.session_codename ?? null,
+    title: state.title ?? null,
+    cwd: state.cwd ?? null,
+    end_reason: null,
+    cursor_after_message_id: state.cursor_after_message_id || null,
+  })
+  writeJson(perPath, { ...state, local_id: id, updated_at: new Date().toISOString() })
+  appendConnectionAudit(connectionId, 'conversation_rebonded', {
+    agent: agentName,
+    from_local_id: state.local_id ?? null,
+    to_local_id: id,
+  })
+  return { ok: true, connection_id: connectionId, local_id: id, bond_path: localBondPath(agentName, id), bond }
+}
+
 /** The tier fingerprint previously retained for this conversation's connection. */
 export function knownInstructionTiersFor(connectionId) {
   if (!connectionId) return null
@@ -1071,9 +1147,7 @@ export function knownInstructionTiersFor(connectionId) {
 }
 
 // --- CLI entry (skipped when imported for tests) ---
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   void (async () => {
@@ -1329,19 +1403,6 @@ if (isMain) {
     process.exit(s ? 0 : 1)
   }
 
-  if (cmd === 'reap') {
-    // Connect-time / SessionStart backstop: SIGTERM provably-dead pollers only.
-    const agentName = args.agent || AGENT_NAME
-    const reaped = reapDeadPollers({
-      agent: agentName,
-      exceptConnectionId: args['except-connection'] || args['connection-id'] || null,
-    })
-    process.stdout.write(
-      JSON.stringify({ ok: true, agent: agentName, count: reaped.length, reaped }) + '\n',
-    )
-    process.exit(0)
-  }
-
   if (cmd === 'ensure-poller' || cmd === 'start-poller') {
     const connectionId = args['connection-id']
     if (!connectionId) {
@@ -1386,6 +1447,72 @@ if (isMain) {
     process.exit(0)
   }
 
+  if (cmd === 'orient' || cmd === 'context') {
+    // What a conversation needs before it answers its first DevSpec command, when the
+    // connection was made by the listener Claude Code started (item b7ef1fe2) and the
+    // model therefore never saw connect's status block: which connection it speaks
+    // for, which room, and the instruction tiers filed at connect. Redacted — the
+    // bearer and the hidden capability never reach stdout.
+    const agentName = args.agent || AGENT_NAME
+    const payload = cmd === 'context' ? JSON.parse(fs.readFileSync(0, 'utf8') || '{}') : null
+    const detected = detectLocalId(payload?.session_id ? { ...args, 'local-id': payload.session_id } : args, process.env)
+    const bond = detected.local_id ? readLocalBond(agentName, detected.local_id) : null
+    const connectionId = args['connection-id'] || bond?.connection_id || null
+    const state = connectionId ? readJson(connectionPath(connectionId)) : null
+    if (!connectionId || !state) {
+      if (cmd === 'context') process.exit(0)
+      process.stdout.write(
+        'This conversation is not connected to DevSpec. Nothing to orient on.\n',
+      )
+      process.exit(1)
+    }
+    const view = redactConnectionState(state)
+    const choice = readConversationProject(detected.local_id)
+    const contextProject = repositoryContextProject(connectionId)
+    if (choice?.status === 'blocked' || (choice?.status === 'selected' && contextProject && contextProject !== choice.project.id)) {
+      if (cmd === 'context') process.exit(0)
+      throw new Error('Choose a project before reading connection context.')
+    }
+    // Rules first, then repository facts in whatever room is left: a block the host
+    // cuts short keeps its head, and the head must be the rules (item 1dbb6d5c).
+    const force = cmd === 'context' && args.event === 'SessionStart'
+    const room = (cmd === 'context' ? CHANNEL_LIMITS.hookContext : CHANNEL_LIMITS.bashResult) - CHANNEL_RESERVE
+    const tiers = takeTiersFor(connectionId, detected.local_id, { force })
+    const tierText = tiers.status === 'pointer' ? tiers.text : ''
+    const repositories = takeRepositoryContext(connectionId, detected.local_id, {
+      projectId: choice?.status === 'selected' ? choice.project.id : undefined,
+      force,
+      inlineLimit: room - tierText.length,
+    })
+    if (cmd === 'context') {
+      const additionalContext = [tierText || (tiers.status === 'absent'
+        ? 'DevSpec instruction context is unavailable locally. get_project_summary can retrieve current project and owner rules before project work.' : ''), repositories].filter(Boolean).join('\n\n')
+      if (additionalContext) process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+        hookEventName: args.event === 'SessionStart' ? 'SessionStart' : 'UserPromptSubmit', additionalContext,
+      } }) + '\n')
+      process.exit(0)
+    }
+    const lines = [
+      `connection_id: ${connectionId}`,
+      `codename: ${view.session_codename || '—'}`,
+      `session_id: ${view.session_id || 'none (sessionless — there is no room to answer in)'}`,
+      // Where the room is (item 7fe8e3d1): the full transcript, and the room file
+      // that says how complete it is and holds the current polls, plans and activity.
+      ...(view.session_id ? [`transcript: ${transcriptPaths(connectionId, view.session_id, CONNECTIONS_DIR).transcript}`] : []),
+      `room_state: ${roomStatePath(connectionId, CONNECTIONS_DIR)}`,
+    ]
+    if (tierText) lines.push(tierText.trimEnd())
+    // Orient restates where the rules are, so the model can always go back to them
+    // (decision 86111641); the hooks above stay quiet once a conversation was pointed.
+    else if (tiers.status === 'unchanged') lines.push(tiers.pointer.trimEnd())
+    else {
+      lines.push('\nInstruction context is unavailable locally. Use get_project_summary for current project and owner rules before project work.')
+    }
+    if (repositories) lines.push('', repositories)
+    process.stdout.write(lines.join('\n') + '\n')
+    process.exit(0)
+  }
+
   if (cmd === 'disable-local') {
     // SessionEnd teardown: resolve THIS conversation's bound connection (no
     // --connection-id needed) and disable it.
@@ -1396,12 +1523,15 @@ if (isMain) {
     // 2026-09-19 kill could not be explained precisely because nothing
     // recorded this (item 37d6e6e0).
     let idSource = detected.source
-    // SessionEnd hook delivers the conversation id on stdin as { session_id }.
-    if (!localId && !process.stdin.isTTY) {
+    // SessionEnd hook delivers { session_id, reason } on stdin. The id is only a
+    // fallback for the environment; the reason is read whenever a payload exists.
+    let endReason = null
+    if (!process.stdin.isTTY) {
       try {
         const raw = fs.readFileSync(0, 'utf8')
         const j = JSON.parse(raw || '{}')
-        if (typeof j.session_id === 'string') {
+        if (typeof j.reason === 'string') endReason = j.reason
+        if (!localId && typeof j.session_id === 'string') {
           localId = sanitizeLocalId(j.session_id)
           if (localId) idSource = 'stdin:session_id'
         }
@@ -1422,13 +1552,68 @@ if (isMain) {
       )
       process.exit(0)
     }
+    // This conversation was resumed in another window, which now owns the connection
+    // (item 7e35d818). Closing the window it moved away from must not end it: the
+    // conversation id is shared, so without this the old window's SessionEnd ended the
+    // new window's connection permanently (`local_stop`).
+    const owned = readJson(connectionPath(connectionId))
+    if (ownedByAnotherProcess(owned, resolveClaudePid(process.env))) {
+      appendConnectionAudit(connectionId, 'connection_kept_for_owner', {
+        via: 'disable-local',
+        agent: agentName,
+        local_id: localId,
+        id_source: idSource,
+        end_reason: endReason,
+        owner_pid: Number(owned?.owner_pid) || null,
+      })
+      process.stdout.write(
+        JSON.stringify({
+          ok: true,
+          skipped: 'another window owns this connection now',
+          connection_id: connectionId,
+          local_id: localId,
+          end_reason: endReason,
+        }) + '\n',
+      )
+      process.exit(0)
+    }
+    // `/clear` and `/resume` end a conversation, not the process. When the listener
+    // Claude Code started with the session is still alive it keeps serving this
+    // connection, and SessionStart hands the bond to the next conversation. Disabling
+    // here is what used to leave that listener on the Agents page, deaf (b7ef1fe2).
+    if (endReason && CONVERSATION_SWITCH_REASONS.has(endReason) && startupListenerAlive(connectionId)) {
+      appendConnectionAudit(connectionId, 'connection_kept_for_listener', {
+        via: 'disable-local',
+        agent: agentName,
+        local_id: localId,
+        id_source: idSource,
+        end_reason: endReason,
+      })
+      process.stdout.write(
+        JSON.stringify({
+          ok: true,
+          skipped: 'conversation switched; the startup listener keeps this connection',
+          connection_id: connectionId,
+          local_id: localId,
+          end_reason: endReason,
+        }) + '\n',
+      )
+      process.exit(0)
+    }
     const result = disableConnectionState(connectionId, {
       agent: agentName,
       localId,
       via: 'disable-local',
       idSource,
     })
-    process.stdout.write(JSON.stringify({ ...result, local_id: localId }) + '\n')
+    // A real exit ends the connection on the server too (item 58e2a19f). A
+    // conversation switch never does: the Claude Code process is still running,
+    // and a connection lives as long as its host process (8a12f116).
+    const serverEnd =
+      endReason && CONVERSATION_SWITCH_REASONS.has(endReason)
+        ? { sent: false, reason: 'conversation_switch' }
+        : await reportConnectionEnded(connectionId)
+    process.stdout.write(JSON.stringify({ ...result, local_id: localId, server_end: serverEnd }) + '\n')
     process.exit(0)
   }
 

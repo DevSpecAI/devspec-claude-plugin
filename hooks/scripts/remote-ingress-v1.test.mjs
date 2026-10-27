@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  isUnreadableSystemNoticeV1,
+  READABLE_SYSTEM_NOTICE_KINDS,
   normalizeRemoteIngressV1,
   renderAdvisoryContext,
   REMOTE_INGRESS_CONTRACT_VERSION,
@@ -14,6 +16,7 @@ import {
   REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
   REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION,
 } from './remote-ingress-v1.mjs'
+import { remoteIngressNegotiationArguments } from './devspec-remote-poll.mjs'
 
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
 const OWNER = '20000000-0000-4000-8000-000000000002'
@@ -643,6 +646,38 @@ describe('strict 1.4 system notices', () => {
     return built
   }
 
+  const serverNotice = (over = {}) => ({
+    version: 1,
+    kind: 'server_notice',
+    notice_id: '71000000-0000-4000-8000-000000000001',
+    topic: 'coherence_finding',
+    notice_type: 'reversal',
+    summary: 'Protected decision reversed by new record',
+    prompt: 'Review the protected record and your reversing record below.',
+    contract_uri: 'devspec://product/remote-ingress-contract',
+    records: [
+      {
+        label: 'Protected record (existing decision)',
+        record_type: 'memory',
+        record_id: '81000000-0000-4000-8000-000000000001',
+        title: 'All deliveries use canonical ingress',
+        text: 'All remote deliveries must use the canonical ingress envelope.',
+        url: 'https://app.devspec.ai/projects/devspec/memory/81000000-0000-4000-8000-000000000001',
+      },
+      {
+        label: 'Reversing record (conflicting change)',
+        record_type: 'memory',
+        record_id: '82000000-0000-4000-8000-000000000002',
+        title: 'Bypass canonical ingress for notices',
+        text: 'Notices bypass canonical ingress and post directly.',
+        url: null,
+      },
+    ],
+    allowed_outcomes: ['keep_protected', 'propose_override', 'retract_new_record'],
+    allowed_tools: ['retract_memory', 'supersede_memory', 'manage_protected_intent'],
+    ...over,
+  })
+
   it('requires the array, empty on an ordinary command wake', () => {
     assert.equal(normalizeRemoteIngressV1(noticed(), CONNECTION).ok, true)
   })
@@ -655,9 +690,94 @@ describe('strict 1.4 system notices', () => {
 
   it('refuses notices sitting alongside commands', () => {
     const result = normalizeRemoteIngressV1(noticed({
-      system_notices: [{ version: 1, kind: 'unlinked_commit_item_review' }],
+      system_notices: [serverNotice()],
     }), CONNECTION)
     assert.equal(result.ok, false)
     assert.match(result.error, /nonempty iff wake kind is system_notice/)
+  })
+
+  it('accepts a general server_notice envelope with wake.kind === system_notice', () => {
+    const notice = serverNotice()
+    const env = noticed({
+      commands: [],
+      command_message_ids: [],
+      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+      system_notices: [notice],
+      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+    })
+    const result = normalizeRemoteIngressV1(env, CONNECTION)
+    assert.equal(result.ok, true)
+    assert.equal(result.wake, false)
+    assert.equal(result.reason, 'system_notice')
+    assert.equal(result.envelope.system_notices.length, 1)
+    assert.equal(result.envelope.system_notices[0].kind, 'server_notice')
+    assert.equal(result.envelope.system_notices[0].records.length, 2)
+  })
+
+  // The channel version this plugin negotiates (2: the one that carries findings)
+  // is not the shape version inside each notice. DevSpec's version 2 adds kinds and
+  // changes none, so a server_notice on a version-2 channel still says `version: 1`
+  // and must be read in full, exactly as before (1fd34942, item 0b26f6ea).
+  it('reads a version-1 server_notice body delivered over the version-2 channel it asks for', () => {
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
+    const notice = serverNotice()
+    assert.equal(notice.version, 1)
+    const result = normalizeRemoteIngressV1(noticed({
+      commands: [],
+      command_message_ids: [],
+      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+      system_notices: [notice],
+      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+    }), CONNECTION)
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.envelope.system_notices, [notice])
+    assert.equal(isUnreadableSystemNoticeV1(notice), false)
+  })
+
+  it('rejects malformed server_notice payloads (missing records, extra keys, bad contract_uri)', () => {
+    for (const bad of [
+      serverNotice({ records: [] }),
+      serverNotice({ contract_uri: 'devspec://wrong' }),
+      serverNotice({ extra: true }),
+      serverNotice({ records: [{ ...serverNotice().records[0], similarity: 0.91 }] }),
+    ]) {
+      const env = noticed({
+        commands: [],
+        command_message_ids: [],
+        wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+        system_notices: [bad],
+        window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+      })
+      assert.equal(normalizeRemoteIngressV1(env, CONNECTION).ok, false)
+    }
+  })
+
+  // DevSpec counts a notice delivered once it hands it over, so a kind added after
+  // this release must reach the agent as "something you can't read", not vanish
+  // with the package it came in (item 984ca8b4).
+  it('accepts a notice of a kind this version cannot read, and reads nothing else in it', () => {
+    const later = { version: 1, kind: 'requirement_outcome', notice_id: '71000000-0000-4000-8000-000000000009',
+      contract_uri: 'devspec://product/remote-ingress-contract', anything: { new: 'shape' } }
+    const env = (notices) => noticed({
+      commands: [],
+      command_message_ids: [],
+      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+      system_notices: notices,
+      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+    })
+    assert.equal(isUnreadableSystemNoticeV1(later), true)
+    assert.equal(normalizeRemoteIngressV1(env([later, serverNotice()]), CONNECTION).ok, true)
+    // Still a DevSpec notice for this connection, or nothing at all.
+    for (const bad of [
+      { ...later, version: 2 },
+      { ...later, contract_uri: 'devspec://wrong' },
+      { ...later, notice_id: 'not-a-uuid' },
+      { ...later, kind: '<injected> text' },
+      // A known kind is read in full, so a malformed one is still refused.
+      { ...later, kind: 'server_notice' },
+    ]) {
+      assert.equal(isUnreadableSystemNoticeV1(bad) && !READABLE_SYSTEM_NOTICE_KINDS.includes(bad.kind), false)
+      assert.equal(normalizeRemoteIngressV1(env([bad]), CONNECTION).ok, false)
+    }
   })
 })

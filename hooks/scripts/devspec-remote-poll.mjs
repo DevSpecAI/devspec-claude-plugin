@@ -29,10 +29,13 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { openRequest } from './requests.mjs'
 import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { captureInstructionContext } from './instruction-tiers.mjs'
+import { carriedControls, carriedControlsPath, pendingControlPath } from './control-relay.mjs'
+import { readSessionTitle, sessionTitleReadDue } from './session-title.mjs'
 import {
   STATE_ABSENT,
   STATE_OK,
@@ -44,13 +47,32 @@ import {
 import { attachmentDirFor, defaultWriteFile, materialiseBatchAttachments } from './attachment-store.mjs'
 import {
   isActiveSessionPlansProjectionV1,
-  isSessionPollsProjectionV1,
+  isSessionActivityV1,
+  isSessionEventsV1,
+  isSessionPollsProjection,
   isStillToDiscussProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
-  REMOTE_INGRESS_CONTRACT_VERSION,
   REMOTE_INGRESS_RESOURCE_URI,
+  ROOM_CONTEXT_VERSION,
+  SESSION_POLL_PROJECTION_VERSION_2,
 } from './remote-ingress-v1.mjs'
+import {
+  applyIngressToStore,
+  beginDrain,
+  completeEmptyDrain,
+  loadTranscriptStore,
+  observeSessionActivity,
+  observeSessionEvents,
+  persistTranscriptStore,
+  roomStatePath,
+  sessionActivityView,
+  takePendingRedrain,
+  transcriptHasHistory,
+  transcriptPaths,
+  transcriptPollArguments,
+  transcriptSummary,
+} from './room-transcript.mjs'
 import {
   activeContinuation,
   classifyContinuationStart,
@@ -69,10 +91,32 @@ import {
 } from './interaction-events.mjs'
 
 import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
+import { attachmentFromPoll } from './local-turn.mjs'
+import { readTurnActivity, turnIsLive } from './turn-liveness.mjs'
+import {
+  commandHandoffDecision,
+  commandHandoffKey,
+  commandOfferArguments,
+  commandOfferNegotiable,
+  parseCommandOfferResponse,
+} from './command-offer.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 export const DELEGATED_SCOPE_VERSION = 1
 export const ACTIVE_PLAN_PROJECTION_VERSION = 1
-export const SYSTEM_NOTICE_VERSION = 1
+/**
+ * The notice CHANNEL version this poller negotiates — which notice kinds DevSpec
+ * may send it — not the shape version each notice carries inside it.
+ *
+ * 1 carries `unlinked_commit_item_review`; 2 also carries `server_notice`
+ * (confirmed findings and pending-edit outcomes about this agent's own work).
+ * DevSpec sends a `server_notice` only to a channel that asked for 2, and records
+ * the version on the connection, so a poller still asking for 1 never receives a
+ * finding and the Agents page shows it "Not receiving findings" (1fd34942, item
+ * 0b26f6ea). Version 2 adds kinds and changes none: every notice still arrives with
+ * its own `version: 1` body, validated by `isSystemNoticeV1` in remote-ingress-v1.mjs.
+ */
+export const SYSTEM_NOTICE_CHANNEL_VERSION = 2
 export const SENDER_STYLE_VERSION = 1
 
 /**
@@ -81,9 +125,8 @@ export const SENDER_STYLE_VERSION = 1
  *
  * `sender_style_version` is what makes the person who SENT a command decide how
  * they get answered, rather than whoever happens to own this connection
- * (item af5e3d6c). The server refuses it without `system_notice_version`, so
- * notices come along for the ride; we accept them and treat them as advisory —
- * they never carry commands or authority.
+ * (item af5e3d6c). The server refuses it without `system_notice_version`.
+ * Notices are advisory: they never carry commands or authority.
  */
 /**
  * Echo the instruction tiers this connection already holds, so the server can
@@ -106,8 +149,14 @@ export function remoteIngressNegotiationArguments() {
     ingress_version: 1,
     delegated_scope_version: DELEGATED_SCOPE_VERSION,
     active_plan_projection_version: ACTIVE_PLAN_PROJECTION_VERSION,
-    system_notice_version: SYSTEM_NOTICE_VERSION,
+    system_notice_version: SYSTEM_NOTICE_CHANNEL_VERSION,
     sender_style_version: SENDER_STYLE_VERSION,
+    // Remote-ingress 1.6.0 (item 1a4f0246): room context for the local transcript.
+    // The server refuses it without every rung below, which is why it sits last.
+    room_context_version: ROOM_CONTEXT_VERSION,
+    // Item bba35976: the poll inventory that is never dropped when the room has more
+    // polls than fit; it says how many there are and where to read the rest.
+    session_polls_projection_version: SESSION_POLL_PROJECTION_VERSION_2,
   }
 }
 
@@ -273,19 +322,6 @@ const IDLE_CADENCE = { waitMs: 30_000, tier: 'idle', checkTier: 'responsive' }
 // Client-side ceiling on a held request. fetch() has NO default timeout, so a
 // silently-dropped TCP connection would wedge the poller forever with no heartbeat.
 const POLL_HTTP_GRACE_MS = 15_000
-const MAX_TURN_MS = 60 * 60 * 1000
-
-/**
- * How much advisory room context is carried forward and attached to the next owner
- * command. Per tier (owner-ambient and everyone-else are budgeted separately so a
- * noisy room can never starve out the owner's own untargeted messages, which are the
- * higher-signal tier). Newest wins: when the budget is exceeded the OLDEST context is
- * dropped, and the count of what was dropped is reported to the model rather than
- * silently hidden.
- */
-const ADVISORY_CARRY_MAX_COUNT = 20
-const ADVISORY_CARRY_MAX_CHARS = 12_000
-const CONTEXT_BUCKET_NAMES = ['human_context', 'agent_context', 'ai_context', 'system_context']
 
 function turnMarkerPath(connectionId) {
   return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
@@ -374,22 +410,7 @@ function connectionStatePath(connectionId, dir = CONNECTIONS_DIR) {
   return path.join(dir, `${connectionId}.json`)
 }
 
-/**
- * Where the room's CURRENT advisory state lives (item 62f132c9).
- *
- * The inbox is a log: it says what was true when each command arrived. This file
- * is the opposite — one small document, overwritten in place, that always says
- * what is true NOW. An agent that has been working for an hour reads this before
- * it writes its reply, and gets the room as it stands rather than as it was when
- * somebody last spoke to it.
- *
- * Deliberately not on the wake stream. A poll cannot wait on an agent — there is
- * no vote action on manage_poll — so nothing here is ever worth interrupting a
- * turn for (decision 2ccf65d1). It is a file to read, not a message to receive.
- */
-export function roomStatePath(connectionId, dir = CONNECTIONS_DIR) {
-  return path.join(dir, `${connectionId}.room.json`)
-}
+export { roomStatePath }
 
 /**
  * Prefer per-connection state so concurrent remotes do not clobber each other,
@@ -593,6 +614,7 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
     envelopeIds: new Set(),
     commandMessageIds: new Set(),
     controlIds: new Set(),
+    systemNoticeIds: new Set(),
     dispatchIds: new Set(),
     // Durable interaction-event identity, so a poller that died between the inbox
     // append and the ACK acknowledges the redelivery instead of applying it twice.
@@ -600,7 +622,6 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
     // Separately, because an announcement is not an application: these ids must NOT
     // reach the dedupe/ACK path, only stop the same answer being announced twice.
     queuedInteractionEventIds: scanQueuedInteractionEventIds(text),
-    latestActiveSessionPlans: null,
   }
   const persisted = String(text || '')
   const finalNewline = persisted.lastIndexOf('\n')
@@ -619,25 +640,17 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
             ? record.ingress.commands.map((command) => command?.message_id)
             : []
         for (const id of ids) if (typeof id === 'string') index.commandMessageIds.add(id)
-        // Any carried projection is attached to this durable command record and has
-        // therefore been consumed from the reconnect carry, even if the process dies
-        // before its in-memory state advances.
-        if (activeSessionId === undefined || record.session_id === activeSessionId) {
-          index.latestActiveSessionPlans = null
-        }
-      } else if (record?.type === 'canonical_context' &&
-          record.ingress?.contract_version === REMOTE_INGRESS_CONTRACT_VERSION &&
-          (activeSessionId === undefined || record.session_id === activeSessionId)) {
-        const parsedContext = normalizeRemoteIngressV1(record.ingress, record.connection_id)
-        if (parsedContext.ok) {
-          index.latestActiveSessionPlans =
-            isActiveSessionPlansProjectionV1(record.ingress.active_session_plans)
-              ? record.ingress.active_session_plans
-              : null
-        }
       }
       if (record?.type === 'canonical_control' && typeof record.ingress?.control?.id === 'string') {
         index.controlIds.add(record.ingress.control.id)
+      }
+      if (record?.type === 'canonical_system_notices') {
+        const ids = Array.isArray(record.execute_notice_ids)
+          ? record.execute_notice_ids
+          : Array.isArray(record.ingress?.system_notices)
+            ? record.ingress.system_notices.map((notice) => notice?.notice_id)
+            : []
+        for (const id of ids) if (typeof id === 'string') index.systemNoticeIds.add(id)
       }
       if (record?.type === 'automation_run' && typeof record.dispatch?.id === 'string') {
         index.dispatchIds.add(record.dispatch.id)
@@ -712,11 +725,10 @@ export function appendCanonicalInbox(
   index,
   {
     sessionId = null,
-    carriedContext = null,
-    carriedActiveSessionPlans = null,
-    carriedSessionPolls = null,
-    carriedStillToDiscuss = null,
+    wakeContext = null,
+    instructionContextFile = null,
     channel = 'context',
+    questionHandoff = null,
     writeRecord = appendDurableRecord,
   } = {},
 ) {
@@ -730,6 +742,12 @@ export function appendCanonicalInbox(
         .map((command) => command.message_id)
         .filter((id) => !index.commandMessageIds.has(id))
     : []
+  const systemNoticesSeen = index.systemNoticeIds instanceof Set ? index.systemNoticeIds : new Set()
+  const executeNoticeIds = channel === 'system_notice' && Array.isArray(ingress.system_notices)
+    ? ingress.system_notices
+        .map((notice) => notice.notice_id)
+        .filter((id) => !systemNoticesSeen.has(id))
+    : []
   if (channel === 'command' && executeMessageIds.length === 0) {
     index.envelopeIds.add(ingress.envelope_id)
     return { ok: true, appended: false }
@@ -738,12 +756,18 @@ export function appendCanonicalInbox(
     index.envelopeIds.add(ingress.envelope_id)
     return { ok: true, appended: false }
   }
+  if (channel === 'system_notice' && executeNoticeIds.length === 0) {
+    index.envelopeIds.add(ingress.envelope_id)
+    return { ok: true, appended: false }
+  }
 
   const type = channel === 'command'
     ? 'canonical_commands'
     : channel === 'control'
       ? 'canonical_control'
-      : 'canonical_context'
+      : channel === 'system_notice'
+        ? 'canonical_system_notices'
+        : 'canonical_context'
   const record = {
     type,
     connection_id: connectionId,
@@ -752,22 +776,32 @@ export function appendCanonicalInbox(
     authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
     ingress,
     ...(channel === 'command' ? { execute_message_ids: executeMessageIds } : {}),
-    ...(carriedContext ? { carried_context: carriedContext } : {}),
-    ...(carriedActiveSessionPlans
-      ? { carried_active_session_plans: carriedActiveSessionPlans }
+    ...(channel === 'system_notice' ? { execute_notice_ids: executeNoticeIds } : {}),
+    // Where the room is, for the wake (item 7fe8e3d1): the transcript and room file
+    // paths, each command's count since this agent's last reply, and which parts of
+    // the room file moved since the last command. Pointers, never the room itself.
+    ...(channel === 'command' && wakeContext ? { wake_context: wakeContext } : {}),
+    ...(channel === 'command' && instructionContextFile ? { instruction_context_file: instructionContextFile } : {}),
+    // This message took over the turn an answered question had open (item a11d27fa).
+    // The wait stream tells the model so, just before the message itself.
+    ...(channel === 'command' && questionHandoff && executeMessageIds.includes(questionHandoff.source_message_id)
+      ? { question_handoff: questionHandoff }
       : {}),
-    // Room awareness that arrives beside the envelope rather than inside it
-    // (item b1e26146). Only attached when it CHANGED since the last record that
-    // carried it — an unchanged inventory repeated on every command trains the
-    // reader to skip the field, which is the same as not sending it.
-    ...(carriedSessionPolls ? { carried_session_polls: carriedSessionPolls } : {}),
-    ...(carriedStillToDiscuss ? { carried_still_to_discuss: carriedStillToDiscuss } : {}),
   }
   if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
   index.envelopeIds.add(ingress.envelope_id)
   for (const id of executeMessageIds) index.commandMessageIds.add(id)
   if (channel === 'control') index.controlIds.add(ingress.control.id)
-  return { ok: true, appended: true, executeMessageIds }
+  if (channel === 'system_notice' && index.systemNoticeIds instanceof Set) {
+    for (const id of executeNoticeIds) index.systemNoticeIds.add(id)
+  }
+  return {
+    ok: true,
+    appended: true,
+    executeMessageIds,
+    ...(channel === 'system_notice' ? { executeNoticeIds } : {}),
+    handedOff: Object.hasOwn(record, 'question_handoff'),
+  }
 }
 
 export function appendAutomationDispatches(
@@ -804,18 +838,26 @@ export function appendAutomationDispatches(
   return { ok: true, appended }
 }
 
+/**
+ * What a connection's state records when it stops. Also what the terminal's DevSpec
+ * line reads to say "ended from DevSpec" (terminal-status.mjs).
+ */
+export function disabledStatePatch(reason) {
+  return {
+    enabled: false,
+    // The server's real word for an Agents-page End is 'ui'; 'ended_from_ui' is
+    // this poller's own legacy label. Both must set the flag, or a genuine UI
+    // End would stop stamping it the moment the server started telling the
+    // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
+    ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
+    end_reason: reason,
+  }
+}
+
 /** Disable THIS connection only — never other remotes on the machine. */
 function disableLocalState({ connectionId, reason }) {
   try {
-    patchConnectionState(connectionId, {
-      enabled: false,
-      // The server's real word for an Agents-page End is 'ui'; 'ended_from_ui' is
-      // this poller's own legacy label. Both must set the flag, or a genuine UI
-      // End would stop stamping it the moment the server started telling the
-      // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
-      ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
-      end_reason: reason,
-    })
+    patchConnectionState(connectionId, disabledStatePatch(reason))
   } catch (e) {
     process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
   }
@@ -857,297 +899,133 @@ export function advancePollCursors(
       : current.liveCursorV2
   const legacyCursor =
     typeof response?.cursor === 'string' && response.cursor ? response.cursor : current.legacyCursor
-  const catchUpCursor = ingress?.window?.has_more === true && ingress.window.next_cursor
-    ? ingress.window.next_cursor
-    : null
+  // A page the server is holding back (`delivery_retry`: a command waiting behind an
+  // answered question, say) also says has_more, but its next_cursor continues the
+  // LIVE read from where it was, forwards. It is never a history page to drain: sent
+  // back as catch_up_cursor, the server refuses it as the wrong direction on every
+  // poll that follows, and nothing is delivered again (found live on item a11d27fa).
+  // A drain already under way keeps its own cursor; the held page is simply re-read.
+  const catchUpCursor = ingress?.window?.omission_reason === 'delivery_retry'
+    ? current.catchUpCursor ?? null
+    : ingress?.window?.has_more === true && ingress.window.next_cursor
+      ? ingress.window.next_cursor
+      : null
   return { liveCursorV2, legacyCursor, catchUpCursor }
 }
 
 /**
- * Trim an advisory carry buffer to its budget, newest-first.
- *
- * The buffer exists because a long-poll answers the instant anything lands, so room
- * context and the command that needs it almost never arrive in the same response.
- * Dropping is by AGE (oldest first) because the messages nearest the command are the
- * ones it is most likely to refer to. An individually over-budget advisory entry is
- * omitted and counted rather than making the supposedly bounded carry unbounded. A
- * normal row that cannot fit ends selection, so no older row can backfill past it.
- *
- * @returns {{ kept: any[], dropped: number }}
+ * The server refused the catch-up cursor itself. That cursor can never become valid,
+ * so retrying it only repeats the refusal; the poller drops it and re-reads the room
+ * instead. This is how a copy written by a poller that mistook a held page for a
+ * history page (before 0.32.5) recovers without anyone touching its state file.
  */
-export function trimAdvisoryCarry(
-  list,
-  { maxCount = ADVISORY_CARRY_MAX_COUNT, maxChars = ADVISORY_CARRY_MAX_CHARS } = {},
-) {
-  const items = Array.isArray(list) ? list : []
-  const kept = []
-  let chars = 0
-  for (let i = items.length - 1; i >= 0 && kept.length < maxCount; i--) {
-    const m = items[i]
-    const size = typeof m?.content === 'string' ? m.content.length : 0
-    if (size > maxChars) continue
-    if (size > maxChars - chars) break
-    chars += size
-    kept.push(m)
-  }
-  kept.reverse()
-  return { kept, dropped: items.length - kept.length }
-}
-
-function emptyTypedContext() {
-  return Object.fromEntries(CONTEXT_BUCKET_NAMES.map((bucket) => [bucket, []]))
-}
-
-/** Apply one combined newest-prefix budget after merging every actor bucket by identity. */
-export function trimTypedAdvisoryCarry(
-  current,
-  incoming,
-  {
-    maxCount = ADVISORY_CARRY_MAX_COUNT,
-    maxChars = ADVISORY_CARRY_MAX_CHARS,
-    normalCutoff = null,
-  } = {},
-) {
-  const byId = new Map()
-  for (const source of [current, incoming]) {
-    for (const bucket of CONTEXT_BUCKET_NAMES) {
-      for (const entry of Array.isArray(source?.[bucket]) ? source[bucket] : []) {
-        byId.set(entry.message_id, { bucket, entry })
-      }
-    }
-  }
-  const ordered = [...byId.values()].sort((a, b) =>
-    a.entry.order.sequence - b.entry.order.sequence ||
-    a.entry.message_id.localeCompare(b.entry.message_id))
-  const kept = []
-  let chars = 0
-  let cutoff = normalCutoff
-  for (let index = ordered.length - 1; index >= 0; index--) {
-    const { entry } = ordered[index]
-    const atOrOlderThanCutoff = cutoff && (
-      entry.order.sequence < cutoff.sequence ||
-      (entry.order.sequence === cutoff.sequence && entry.message_id.localeCompare(cutoff.message_id) <= 0)
-    )
-    if (atOrOlderThanCutoff) break
-    const size = entry.content.length
-    if (size > maxChars) continue
-    if (kept.length >= maxCount || size > maxChars - chars) {
-      cutoff = { sequence: entry.order.sequence, message_id: entry.message_id }
-      break
-    }
-    chars += size
-    kept.push(entry)
-  }
-  kept.reverse()
-  const keptIds = new Set(kept.map((entry) => entry.message_id))
-  const context = emptyTypedContext()
-  for (const entry of kept) context[byId.get(entry.message_id).bucket].push(entry)
-  return {
-    context,
-    normalCutoff: cutoff,
-    droppedEntries: ordered.filter(({ entry }) => !keptIds.has(entry.message_id)),
-  }
-}
-
-function carryWindowCovers(candidate, entry) {
-  const start = candidate?.window?.source_window?.start
-  const end = candidate?.window?.source_window?.end
-  return Boolean(start && end &&
-    entry.order.sequence >= start.sequence && entry.order.sequence <= end.sequence)
-}
-
-function compareCarryWindows(a, b) {
-  const aEnd = a.window.source_window.end?.sequence ?? -1
-  const bEnd = b.window.source_window.end?.sequence ?? -1
-  const aStart = a.window.source_window.start?.sequence ?? -1
-  const bStart = b.window.source_window.start?.sequence ?? -1
-  return bEnd - aEnd || bStart - aStart || a.envelope_id.localeCompare(b.envelope_id)
-}
-
-/** Select deterministic, necessary windows that disclose every retained row. */
-function selectCarryWindows(entries, candidates, maxCount = ADVISORY_CARRY_MAX_COUNT) {
-  const newestFirst = [...entries].sort((a, b) =>
-    b.order.sequence - a.order.sequence || b.message_id.localeCompare(a.message_id))
-  const orderedCandidates = [...candidates].sort(compareCarryWindows)
-  const selected = []
-  for (const entry of newestFirst) {
-    if (selected.some((candidate) => carryWindowCovers(candidate, entry))) continue
-    const candidate = orderedCandidates.find((item) => carryWindowCovers(item, entry))
-    if (candidate && selected.length < maxCount) selected.push(candidate)
-  }
-  for (let index = selected.length - 1; index >= 0; index--) {
-    const others = selected.filter((_, otherIndex) => otherIndex !== index)
-    if (entries.every((entry) => others.some((candidate) => carryWindowCovers(candidate, entry)))) {
-      selected.splice(index, 1)
-    }
-  }
-  return selected.sort(compareCarryWindows)
-}
-
-/** Poll-lifetime carry state; omission identity sets make retries idempotent. */
-export function createCanonicalCarryState() {
-  return {
-    context: emptyTypedContext(),
-    windows: new Map(),
-    omittedContextBuckets: new Map(),
-    omittedWindowIds: new Set(),
-    // First normal row excluded by count/characters; later older catch-up cannot
-    // backfill past this canonical prefix boundary after the row itself is omitted.
-    normalCutoff: null,
-  }
-}
-
-/** Merge one validated page using canonical sequence, not poll arrival order. */
-export function accumulateCanonicalCarry(
-  state,
-  ingress,
-  { maxCount = ADVISORY_CARRY_MAX_COUNT, maxChars = ADVISORY_CARRY_MAX_CHARS } = {},
-) {
-  const next = trimTypedAdvisoryCarry(state.context, ingress.context, {
-    maxCount,
-    maxChars,
-    normalCutoff: state.normalCutoff,
-  })
-  state.context = next.context
-  state.normalCutoff = next.normalCutoff
-  for (const { bucket, entry } of next.droppedEntries) {
-    if (!state.omittedContextBuckets.has(entry.message_id)) {
-      state.omittedContextBuckets.set(entry.message_id, bucket)
-    }
-  }
-
-  if (CONTEXT_BUCKET_NAMES.some((bucket) => ingress.context[bucket].length > 0)) {
-    state.windows.set(ingress.envelope_id, {
-      envelope_id: ingress.envelope_id,
-      window: ingress.window,
-    })
-  }
-
-  let entries = CONTEXT_BUCKET_NAMES.flatMap((bucket) => state.context[bucket])
-  let selected = selectCarryWindows(entries, state.windows.values(), maxCount)
-  const coveredIds = new Set(entries
-    .filter((entry) => selected.some((candidate) => carryWindowCovers(candidate, entry)))
-    .map((entry) => entry.message_id))
-  if (coveredIds.size !== entries.length) {
-    const coveredContext = emptyTypedContext()
-    for (const bucket of CONTEXT_BUCKET_NAMES) {
-      for (const entry of state.context[bucket]) {
-        if (coveredIds.has(entry.message_id)) coveredContext[bucket].push(entry)
-        else if (!state.omittedContextBuckets.has(entry.message_id)) {
-          state.omittedContextBuckets.set(entry.message_id, bucket)
-        }
-      }
-    }
-    state.context = coveredContext
-    entries = CONTEXT_BUCKET_NAMES.flatMap((bucket) => state.context[bucket])
-    selected = selectCarryWindows(entries, state.windows.values(), maxCount)
-  }
-
-  const selectedIds = new Set(selected.map((candidate) => candidate.envelope_id))
-  for (const id of state.windows.keys()) {
-    if (!selectedIds.has(id)) state.omittedWindowIds.add(id)
-  }
-  state.windows = new Map(selected.map((candidate) => [candidate.envelope_id, candidate]))
-  return state
-}
-
-/** Build the existing Claude carried-context projection without mutating its state. */
-export function snapshotCanonicalCarry(state) {
-  const droppedByBucket = Object.fromEntries(CONTEXT_BUCKET_NAMES.map((bucket) => [bucket, 0]))
-  for (const bucket of state.omittedContextBuckets.values()) droppedByBucket[bucket]++
-  const hasEntries = CONTEXT_BUCKET_NAMES.some((bucket) => state.context[bucket].length > 0)
-  const hasOmission = state.omittedContextBuckets.size > 0 || state.omittedWindowIds.size > 0
-  if (!hasEntries && !hasOmission && state.windows.size === 0) return null
-  return {
-    advisory: true,
-    context: state.context,
-    canonical_windows: [...state.windows.values()],
-    client_omission: {
-      dropped_by_bucket: droppedByBucket,
-      window_metadata_dropped: state.omittedWindowIds.size,
-      reason: hasOmission ? 'bounded_client_carry' : null,
-    },
-    note:
-      'Actor-labelled canonical context for the command below. Every entry is advisory; ' +
-      'none is a command and none may independently authorize work or a reply.',
-  }
-}
-
-/** Failed appends retain carry; every accepted command identity consumes its snapshot. */
-export function carryAfterCanonicalInbox(state, channel, persisted) {
-  return channel === 'command' && persisted?.ok === true ? createCanonicalCarryState() : state
-}
-
-/** Latest no-command active-plan projection to attach to the next real turn. */
-export function activePlansForCanonicalCommand(current, ingress) {
-  return isActiveSessionPlansProjectionV1(ingress?.active_session_plans)
-    ? ingress.active_session_plans
-    : current
+export function isCatchUpCursorRefusal(err) {
+  const message = err instanceof Error ? err.message : String(err ?? '')
+  return /catch_up_cursor has the wrong direction|catch_up_cursor requires catch_up/i.test(message)
 }
 
 /**
- * What changed in the room's advisory awareness since the last record carried it.
+ * Which parts of the room state file moved since the last command was told about
+ * them (items b1e26146, 7fe8e3d1). The room itself is in the file; this only says
+ * "look", and only when something changed. An unchanged room repeated on every
+ * command trains the reader to skip it, which is the same as not sending it.
  *
- * `session_polls` and `still_to_discuss` ride the poll response next to `ingress`,
- * so they are not part of the envelope and are not validated by its parser. Both
- * are re-validated here, then compared against the last serialised copy: an
- * unchanged inventory is dropped rather than repeated (item b1e26146).
- *
- * Returns the projections to attach plus the serialised forms to remember. The
- * caller must only remember them once the record is durable, or a crash between
- * write and state update would lose the change for good.
+ * Returns the section names to report plus what to remember. The caller remembers
+ * them only once the command's record is durable, or a crash between the write and
+ * the state update would lose the change for good. Starts empty on boot, so a
+ * reconnecting agent is told once what the room holds rather than never.
  */
-export function roomAwarenessDelta(res, seen = {}) {
-  const polls = isSessionPollsProjectionV1(res?.session_polls) ? res.session_polls : null
+export function roomChangesSince(res, activity, seen = {}) {
+  const plans = res?.ingress?.active_session_plans
+  const current = {
+    session_polls: isSessionPollsProjection(res?.session_polls) ? JSON.stringify(res.session_polls) : null,
+    still_to_discuss: isStillToDiscussProjectionV1(res?.still_to_discuss) ? JSON.stringify(res.still_to_discuss) : null,
+    active_session_plans: isActiveSessionPlansProjectionV1(plans) ? JSON.stringify(plans) : null,
+    // The references and how many events are held: a new event is a change.
+    session_activity: activity ? JSON.stringify({ items: activity.items, events: activity.events.length }) : null,
+  }
+  return {
+    changed: Object.keys(current).filter((section) => current[section] !== (seen[section] ?? null)),
+    seen: current,
+  }
+}
+
+/**
+ * The pointers a command's wake carries (item 7fe8e3d1). No transcript path is given
+ * for a copy that holds nothing (a lane without room context never fills one). What
+ * the agent has not read is counted by the wait script as it emits the wake, from
+ * the reader's own record (room-unread.mjs, item 55feedd7), not here.
+ */
+export function commandWakeContext(store, ingress, { connectionId, roomChanged = [], dir = CONNECTIONS_DIR } = {}) {
+  const hasCopy = Boolean(store && (store.rows.size > 0 || transcriptHasHistory(store)))
+  return {
+    transcript: hasCopy ? transcriptPaths(store.connectionId, store.sessionId, dir).transcript : null,
+    room_state: roomStatePath(connectionId, dir),
+    room_state_changed: roomChanged,
+  }
+}
+
+/**
+ * The room as it stands now, in one small file the model can read at any time
+ * (items 62f132c9, 1a4f0246): open polls, Still to Discuss, active plans, the latest
+ * system notices, what the session produced and referenced, and how complete the
+ * local transcript is.
+ *
+ * Every section says what its absence means, because "empty" and "could not be
+ * read" are different facts: `sections.<name>` is `present`, `none` (the server
+ * says there is nothing), `unavailable` (it could not be read), or `not_sent`
+ * (this connection has not been told yet). Polls and Still to Discuss arrive on
+ * every changed poll and are simply missing when there are none or their read
+ * failed, which the server does not distinguish, so they say exactly that.
+ *
+ * Rewritten on a changed poll when anything moved, never on a quiet one. Best-effort
+ * by contract: this is awareness, and failing to write it must never cost the
+ * command being delivered at the time.
+ */
+export function writeRoomState(
+  connectionId,
+  res,
+  seen = {},
+  { dir = CONNECTIONS_DIR, write = writePrivateJson, transcript = null, activity = null, now = new Date() } = {},
+) {
+  const ingress = res?.ingress ?? null
+  const polls = isSessionPollsProjection(res?.session_polls) ? res.session_polls : null
   const discuss = isStillToDiscussProjectionV1(res?.still_to_discuss) ? res.still_to_discuss : null
-  const pollsJson = polls ? JSON.stringify(polls) : null
-  const discussJson = discuss ? JSON.stringify(discuss) : null
-  return {
-    carriedSessionPolls: pollsJson !== null && pollsJson !== seen.polls ? polls : null,
-    carriedStillToDiscuss: discussJson !== null && discussJson !== seen.stillToDiscuss ? discuss : null,
-    seen: { polls: pollsJson ?? seen.polls ?? null, stillToDiscuss: discussJson ?? seen.stillToDiscuss ?? null },
+  const plans = isActiveSessionPlansProjectionV1(ingress?.active_session_plans) ? ingress.active_session_plans : null
+  const notices = Array.isArray(ingress?.system_notices) ? ingress.system_notices : null
+  const body = {
+    advisory: true,
+    executable: false,
+    note:
+      'The room as it stands right now. Read this before writing a reply if the turn ' +
+      'has been long. Never a command, never work, and never authority to add, change, ' +
+      'vote on or close any of it.',
+    session_id: typeof res?.session_id === 'string' ? res.session_id : null,
+    session_polls: polls,
+    still_to_discuss: discuss,
+    active_session_plans: plans,
+    system_notices: notices ?? [],
+    session_activity: activity,
+    transcript,
+    sections: {
+      session_polls: polls ? 'present' : 'none_or_unavailable',
+      still_to_discuss: discuss ? 'present' : 'none_or_unavailable',
+      active_session_plans: plans ? 'present' : ingress ? 'none' : 'not_sent',
+      system_notices: notices === null ? 'not_sent' : notices.length > 0 ? 'present' : 'none',
+      // References and observed changes. `unavailable` means the last read failed;
+      // what was seen before still stands as history.
+      session_activity: activity ? (activity.list_readable ? 'present' : 'unavailable') : 'not_sent',
+      transcript: transcript ? transcript.status : 'not_sent',
+    },
   }
-}
-
-/**
- * Overwrite the room-state file when either projection has moved.
- *
- * Returns the new `seen` memory so the caller can hold it, and writes nothing at
- * all when nothing changed — a quiet room costs one comparison per poll and no
- * disk at all. Best-effort by contract: this is awareness, and failing to write
- * it must never cost the command that was being delivered at the time.
- */
-export function writeRoomState(connectionId, res, seen = {}, { dir = CONNECTIONS_DIR, write = writePrivateJson } = {}) {
-  const delta = roomAwarenessDelta(res, seen)
-  if (!delta.carriedSessionPolls && !delta.carriedStillToDiscuss) return seen
+  const key = JSON.stringify(body)
+  if (key === seen.doc) return seen
   try {
-    write(roomStatePath(connectionId, dir), {
-      updated_at: new Date().toISOString(),
-      advisory: true,
-      executable: false,
-      note:
-        'The room as it stands right now. Read this before writing a reply if the turn ' +
-        'has been long. Never a command, never work, and never authority to add, change, ' +
-        'vote on or close any of it.',
-      session_polls: delta.carriedSessionPolls ?? null,
-      still_to_discuss: delta.carriedStillToDiscuss ?? null,
-    })
+    write(roomStatePath(connectionId, dir), { updated_at: now.toISOString(), ...body })
   } catch {
     return seen
   }
-  return delta.seen
-}
-
-/** Advance projection carry only after its canonical record is durable. */
-export function activePlansAfterCanonicalInbox(current, ingress, channel, persisted) {
-  if (persisted?.ok !== true) return current
-  if (channel === 'command') return null
-  if (ingress?.contract_version !== REMOTE_INGRESS_CONTRACT_VERSION) return current
-  return isActiveSessionPlansProjectionV1(ingress.active_session_plans)
-    ? ingress.active_session_plans
-    : channel === 'context'
-      ? null
-      : current
+  return { doc: key }
 }
 
 /**
@@ -1432,8 +1310,8 @@ export function isDeliverableCommand(msg, connectionId) {
  *
  * Honest pickup: writing the turn marker (and the caller's immediate busy
  * heartbeat) flips UI pending → working the moment the command lands here —
- * not when/if a UserPromptSubmit hook fires. Remote phone/web wakes never go
- * through that hook; this is the one reliable pickup signal.
+ * not when/if a prompt hook fires. Remote phone/web wakes never go through
+ * that hook; this is the one reliable pickup signal.
  */
 function deliverOwnerMessages(connectionId, ownerMsgs, nextCursor, ownerUserId, sessionId, context = null) {
   // Attachments are decoded to disk HERE, before anything is written down (item
@@ -1501,48 +1379,6 @@ function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
     }) + '\n',
   )
   appendInbox(connectionId, delivered, { type: 'advisory_context', sessionId })
-}
-
-/**
- * Wake text for a dispatched AUTOMATION RUN (DevSpecV2 child ae168718).
- *
- * An automation is not an action item — it is a job the owner saved to run again and
- * again, and it never completes. It stays on the separate automation run tools and
- * never enters action-item reserve/claim acquisition.
- *
- * The permission line matters: a look-only automation must not be "helpfully" fixed
- * while the agent is in there.
- *
- * Always pass provider on claim (hard match against preferred_provider). Omitting
- * it fails even when this agent is the named one — same habit as claim_work_item.
- */
-function automationRunCommandText(d) {
-  const permission =
-    d.permission === 'can_push'
-      ? 'You MAY edit, commit and push.'
-      : d.permission === 'can_commit'
-        ? 'You MAY edit and commit locally, but MUST NOT push.'
-        : 'This automation is LOOK ONLY — investigate and report, do not edit, commit or push anything.'
-
-  const started =
-    d.trigger_kind === 'pressed'
-      ? 'Someone pressed Run.'
-      : d.trigger_kind === 'scheduled'
-        ? 'This run started on a schedule.'
-        : 'This run started because of an event.'
-  const ownerName = d.owner?.display_name || 'the owner'
-  return [
-    `▶️ Automation run dispatched to this connection: "${d.automation_name}" (run ${d.run_id}).`,
-    started,
-    `Owner: ${ownerName}`,
-    '',
-    'What to do:',
-    `1. claim_automation_run({ run_id: "${d.run_id}", provider: "claude_code" }) — always pass provider (and model if the automation names one). If claimed:false the run was already taken by another of your agents, which is normal; stop there.`,
-    '2. Follow the instruction returned by that claim, in this repo.',
-    '3. record_automation_run — report status, a verdict for EACH acceptance criterion WITH evidence, and whatever the run produced as artifacts.',
-    '',
-    `Permission: ${permission}`,
-  ].join('\n')
 }
 
 async function main() {
@@ -1685,7 +1521,7 @@ async function main() {
       // The server has no working attempt for us, so our turn marker is stale —
       // something already completed this turn (typically the agent's own
       // complete_turn). Keep re-asserting busy and the indicator flickers between
-      // our keepalive and that completion for up to MAX_TURN_MS. Drop the marker
+      // our keepalive and that completion until the turn stops looking live. Drop the marker
       // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
       if (isNoWorkingAttemptRefusal(e)) {
         clearTurnMarker(connectionId)
@@ -1756,21 +1592,22 @@ async function main() {
   const persistedInbox = readInboxDeliveryIndex(connectionId, sessionId)
   let lastTier = null
   let lastBusySent = null
-  // Canonical typed advisory context carried forward since the last accepted
-  // command. One combined budget and canonical order apply across actor buckets.
-  let canonicalCarry = createCanonicalCarryState()
-  // Rebuild no-command/reseed plan awareness from newline-terminated durable
-  // canonical_context records, so a poller restart cannot skip the projection.
-  let activePlanCarry = persistedInbox.latestActiveSessionPlans
-  // Last room awareness this poller put on a record, as serialised JSON. Starts
-  // empty on boot so a reconnecting agent is told the current state once rather
-  // than never — the cost is one repeat per process, the alternative is silence.
-  let roomAwarenessSeen = { polls: null, stillToDiscuss: null }
+  // Which room-file sections the last delivered command was told had changed, as
+  // serialised JSON (roomChangesSince). Empty on boot, so a reconnecting agent is
+  // told once what the room holds rather than never.
+  let roomAnnounced = {}
   // The room-state FILE keeps its own memory (item 62f132c9). It moves on every
-  // changed poll, the record carry only on a delivered command, and tying them
+  // changed poll, the announcement only on a delivered command, and tying them
   // together would mean a context-channel write silently robbing the next
-  // command of its carry.
-  let roomFileSeen = { polls: null, stillToDiscuss: null }
+  // command of its "look".
+  let roomFileSeen = {}
+  // The local room transcript (item 1a4f0246): one copy per connection and room,
+  // opened for the room this connection is attached to. A page from any other room
+  // is refused by it, so a late response cannot write one room into another.
+  let transcriptStore = sessionId ? loadTranscriptStore(connectionId, sessionId) : null
+  // The copy asked to be re-read (a real mismatch, within its daily budget). Taken
+  // where the seed flag is decided, so the next poll re-drains the room's history.
+  let redrainRequested = false
 
   /**
    * Persist a state patch without clobbering concurrent fields. Best-effort — and
@@ -1784,6 +1621,23 @@ async function main() {
     }
   }
 
+  // --- The attached room's title, for the terminal's DevSpec line (item c6dcb524) --
+  // Read beside the poll, never inside it: a slow or failed read only delays the
+  // name, and a reattach while it is in flight discards what it brings back.
+  let titleReadAt = 0
+  let titleReadInFlight = false
+  function refreshSessionTitle(liveState) {
+    if (titleReadInFlight || !sessionTitleReadDue({ sessionId, state: liveState, lastAttemptAt: titleReadAt })) return
+    const forSession = sessionId
+    titleReadInFlight = true
+    titleReadAt = Date.now()
+    readSessionTitle({ call: mcpToolsCall, mcpUrl, token, sessionId: forSession })
+      .then((title) => {
+        if (title !== null && sessionId === forSession) patchState({ session_title: title, session_title_for: forSession })
+      })
+      .finally(() => { titleReadInFlight = false })
+  }
+
   // --- Directed-question answers (item 54b63e47) -------------------------------
   // The open continuation, if any. Held in memory for this loop's decisions and in
   // state so the Stop hook and the model-facing bridge can find the same one.
@@ -1792,6 +1646,67 @@ async function main() {
   // delivery `continue`s straight back into the loop. Never sent before the inbox
   // record is on disk.
   let pendingInteractionAck = null
+  // Owner controls (item cbf3d758): what the plugin's module last said it carries
+  // out, and a control nothing here carries out, handed back on the next poll so the
+  // connection's one control slot is never held.
+  let lastCarriedControls = []
+  let pendingControlAck = null
+
+  // --- Command handoff (item a11d27fa) ------------------------------------------
+  // The attachment the server names on every poll response. An offer must name this
+  // one, and the handoff echoes it.
+  let speechAttachmentId = null
+  // The readiness exchange to carry on the next poll, if the last offer earned one.
+  let pendingCommandHandoff = null
+  // The last exchange actually sent, with its question, until the message it names
+  // arrives or the question stops being ours. Kept past a thrown poll: the server may
+  // have handed over anyway, and the message then arrives through the ordinary path.
+  let sentCommandHandoff = null
+  // A readiness the server did not act on (its answer not yet acknowledged there, say)
+  // is retried with the ordinary backoff rather than at once.
+  let lastSentHandoffKey = null
+  // The last reason an offer was held, so the log says it once rather than every lap.
+  let lastOfferHold = null
+
+  function forgetCommandHandoff() {
+    pendingCommandHandoff = null
+    sentCommandHandoff = null
+  }
+
+  /**
+   * Read the offer sidecar and decide. Returns true when a fresh readiness should go
+   * out on an immediate poll. Offers are availability only: nothing here delivers,
+   * acknowledges or advances a cursor, and a malformed one costs only the early
+   * handoff (the message still arrives once the question's work ends).
+   */
+  function considerCommandOffer(res) {
+    let parsed
+    try {
+      parsed = parseCommandOfferResponse(res, { connectionId, sessionId, attachmentId: speechAttachmentId })
+    } catch (error) {
+      process.stderr.write(`devspec-remote-poll: ignored command offer (${error.message})\n`)
+      return false
+    }
+    if (!parsed.supported) return false
+    if (parsed.stale && sentCommandHandoff) {
+      process.stderr.write('devspec-remote-poll: command handoff was stale; waiting for a fresh offer\n')
+      sentCommandHandoff = null
+    }
+    const decision = commandHandoffDecision({
+      offer: parsed.offer,
+      continuation: interactionContinuation,
+      ackPending: pendingInteractionAck !== null,
+      inboxByteOffset: readState(connectionId)?.inbox_byte_offset ?? null,
+    })
+    const hold = decision.action === 'wait' ? `${parsed.offer.source_message_id}:${decision.reason}` : null
+    if (hold && hold !== lastOfferHold) {
+      process.stderr.write(`devspec-remote-poll: command offer held (${decision.reason})\n`)
+    }
+    lastOfferHold = hold
+    if (decision.action !== 'ready') return false
+    pendingCommandHandoff = decision.ready
+    return commandHandoffKey(decision.ready) !== lastSentHandoffKey
+  }
 
   function clearInteractionContinuation(reason) {
     if (!interactionContinuation) return
@@ -2053,18 +1968,39 @@ async function main() {
     })
     const negotiatesInteraction = Object.keys(interactionArgs).length > 0
     const ack = negotiatesInteraction ? pendingInteractionAck : null
+    const controlAck = pendingControlAck
+    // Offers ride the same capability. A readiness never shares a poll with an answer's
+    // ACK: the server hands over only an answer it has already recorded as applied.
+    const offersNegotiable = commandOfferNegotiable({
+      connectionCapability,
+      sessionId,
+      attachmentId: speechAttachmentId,
+      catchUp,
+    })
+    const handoff = offersNegotiable && !ack ? pendingCommandHandoff : null
+    if (handoff) {
+      sentCommandHandoff = { ready: handoff, question_id: interactionContinuation?.question_id ?? null }
+      lastSentHandoffKey = commandHandoffKey(handoff)
+      process.stderr.write(
+        `devspec-remote-poll: ${nowStamp()} handing the question's turn to message ${handoff.source_message_id}\n`,
+      )
+    }
     const response = await mcpToolsCall({
       mcpUrl,
       token,
-      ...(negotiatesInteraction ? { connectionCapability } : {}),
+      ...(negotiatesInteraction || offersNegotiable ? { connectionCapability } : {}),
       name: 'poll_connection',
       arguments: {
         connection_id: connectionId,
         agent_name: agentName,
         ...remoteIngressNegotiationArguments(),
+        ...(transcriptStore ? transcriptPollArguments(transcriptStore) : {}),
         ...knownInstructionTierArguments(listenerState),
         ...interactionArgs,
         ...(ack ? questionEventAckArguments(ack) : {}),
+        ...commandOfferArguments({ negotiable: offersNegotiable, ready: handoff }),
+        control_verbs: carriedControlsNow(),
+        ...(controlAck ? { control_ack: controlAck } : {}),
         wait_ms: waitMs,
         ...pollCursorArguments({ liveCursorV2, legacyCursor, catchUpCursor, needsSeed: catchUp }),
         ...(dispatchCursor ? { dispatch_cursor: dispatchCursor } : {}),
@@ -2086,20 +2022,14 @@ async function main() {
     // queued, and a lost ACK is recovered by the dedupe path on redelivery anyway —
     // at-least-once means the answer is never the thing that gets lost.
     if (ack && pendingInteractionAck === ack) pendingInteractionAck = null
+    if (controlAck && pendingControlAck === controlAck) pendingControlAck = null
+    // A readiness is one exchange. What the server made of it is read from this
+    // response (the message delivered, or stale); a fresh offer earns the next one.
+    if (handoff && pendingCommandHandoff === handoff) pendingCommandHandoff = null
     return response
   }
 
-  /** Merge a validated page without letting arrival order redefine canonical age. */
-  function carryCanonicalContext(ingress) {
-    accumulateCanonicalCarry(canonicalCarry, ingress)
-  }
-
-  /** Snapshot only; append acceptance decides whether this exact carry is consumed. */
-  function takeCanonicalContext() {
-    return snapshotCanonicalCarry(canonicalCarry)
-  }
-
-  function persistCanonicalCursorState(res, ingress, drainingContinuation) {
+  function persistCanonicalCursorState(res, ingress, drainingContinuation, instructionContextDelivered = false) {
     const next = advancePollCursors(
       { liveCursorV2, legacyCursor, catchUpCursor },
       res,
@@ -2115,11 +2045,72 @@ async function main() {
       catch_up_cursor: catchUpCursor,
       canonical_window: ingress.window,
       canonical_envelope_id: ingress.envelope_id,
+      ...(instructionContextDelivered && res.instruction_tiers_version === 1 && typeof res.instruction_tiers_hash === 'string' ? {
+        instruction_tiers_version: res.instruction_tiers_version, instruction_tiers_hash: res.instruction_tiers_hash,
+      } : {}),
     })
   }
 
+  /** What the module carries out now, keeping the last answer through a write in progress. */
+  function carriedControlsNow() {
+    let text = ''
+    try {
+      text = fs.readFileSync(carriedControlsPath(os.homedir(), connectionId), 'utf8')
+    } catch {
+      /* no report: the module is not loaded here */
+    }
+    const carried = carriedControls(text, Date.now())
+    if (carried !== null) lastCarriedControls = carried
+    return lastCarriedControls
+  }
+
+  /**
+   * Give a control to the module when it carries that verb out, or hand it back on
+   * the next poll when nothing here does: an older Claude Code, a `-p` run, a module
+   * that stopped, or a verb this plugin does not carry out. Either way the slot is freed.
+   */
+  function handOverControl(control) {
+    if (carriedControlsNow().includes(control.verb)) {
+      writePrivateJson(pendingControlPath(os.homedir(), connectionId), {
+        id: control.id,
+        verb: control.verb,
+        ...(control.args ? { args: control.args } : {}),
+        received_at: new Date().toISOString(),
+      })
+      process.stderr.write(`devspec-remote-poll: ${nowStamp()} owner control ${control.verb} handed to Claude Code\n`)
+      return
+    }
+    pendingControlAck = control.id
+    process.stderr.write(`devspec-remote-poll: ${nowStamp()} owner control ${control.verb} is not carried out here; handing it back\n`)
+  }
+
+  async function openCommandRequests(commands) {
+    const call = (args) => mcpToolsCall({
+      mcpUrl,
+      token,
+      connectionCapability,
+      name: 'report_request',
+      arguments: args,
+      timeoutMs: 5_000,
+    })
+    for (const command of Array.isArray(commands) ? commands : []) {
+      try {
+        await openRequest({
+          connectionId,
+          kind: 'command',
+          provenanceRef: command?.delivery?.provenance_ref,
+          messageId: command?.message_id,
+          call,
+          dir: CONNECTIONS_DIR,
+        })
+      } catch {
+        /* see above: an unopened request changes nothing that worked before */
+      }
+    }
+  }
+
   /** Canonical transcript/control channel. Legacy conversational arrays stay inert. */
-  function consumeCanonicalIngress(res) {
+  async function consumeCanonicalIngress(res) {
     const normalized = normalizeRemoteIngressV1(res?.ingress, connectionId)
     if (!normalized.ok) {
       process.stderr.write(
@@ -2131,47 +2122,75 @@ async function main() {
 
     const ingress = normalized.envelope
     const drainingContinuation = Boolean(catchUpCursor || (needsSeed && liveCursorV2))
-    carryCanonicalContext(ingress)
+    // The request was part of the history drain: the seed poll or a catch-up page.
+    const drainPoll = Boolean(needsSeed || catchUpCursor)
 
+    // The local transcript FIRST, then the room file, then the inbox record, then
+    // the cursor (items 1a4f0246, 7fe8e3d1). A wake points the agent at the
+    // command's line in the transcript, so that line must be on disk before the
+    // inbox record that wakes anybody. A crash anywhere re-polls the same page, and
+    // applying a page twice is a no-op. A failed transcript write never holds the
+    // cursor or a command back: the copy says it is incomplete, and a restart
+    // re-drains it from the server.
+    if (transcriptStore && typeof res?.session_id === 'string') {
+      const applied = applyIngressToStore(transcriptStore, ingress, { sessionId: res.session_id, drainPoll })
+      if (applied.applied) {
+        observeSessionActivity(transcriptStore, isSessionActivityV1(ingress.session_activity) ? ingress.session_activity : null)
+        observeSessionEvents(transcriptStore, isSessionEventsV1(ingress.session_events) ? ingress.session_events : null)
+        if (!persistTranscriptStore(transcriptStore)) {
+          process.stderr.write('devspec-remote-poll: transcript write failed; the copy is marked incomplete\n')
+        }
+        if (takePendingRedrain(transcriptStore)) {
+          process.stderr.write('devspec-remote-poll: transcript disagrees with the room; re-reading its history\n')
+          redrainRequested = true
+        }
+      }
+    }
     // Refresh the room-state file on ANY changed poll, not only on one that
     // carries a command (item 62f132c9). This is the half that makes a long turn
-    // safe: the command told the agent how the room looked an hour ago, and this
-    // is what lets it find out how the room looks when it actually replies.
-    roomFileSeen = writeRoomState(connectionId, res, roomFileSeen)
+    // safe: the command says how the room looked when it was sent, and this is
+    // what lets the agent find out how the room looks when it actually replies.
+    const activity = sessionActivityView(transcriptStore)
+    roomFileSeen = writeRoomState(connectionId, res, roomFileSeen, {
+      transcript: transcriptSummary(transcriptStore),
+      activity,
+    })
 
     let channel = 'context'
-    let carriedContext = null
-    let carriedActiveSessionPlans = null
     if (normalized.wake) {
       channel = 'command'
-      carriedContext = takeCanonicalContext()
-      carriedActiveSessionPlans = activePlansForCanonicalCommand(activePlanCarry, ingress)
     } else if (ingress.wake.kind === 'control' && ingress.wake.active && ingress.delivery_state === 'live') {
       channel = 'control'
+    } else if (ingress.wake.kind === 'system_notice' && ingress.wake.active && ingress.delivery_state === 'live') {
+      channel = 'system_notice'
     }
+    const roomChanges = channel === 'command' ? roomChangesSince(res, activity, roomAnnounced) : null
 
-    // Polls and Still to Discuss ride WITH a command, never on their own. They are
-    // room awareness, not something to wake anybody about, and a command is the
-    // moment the agent is about to act and actually needs to know (item b1e26146).
-    const awareness = channel === 'command'
-      ? roomAwarenessDelta(res, roomAwarenessSeen)
-      : { carriedSessionPolls: null, carriedStillToDiscuss: null, seen: roomAwarenessSeen }
-
+    const instructionContextFile = channel === 'command' ? captureInstructionContext(connectionId, res) : null
+    // Each command is a request this agent now carries (item 7a4d04fd), opened
+    // BEFORE the inbox record that wakes anybody, so the wake finds it and every
+    // write the work makes names whose request it serves, even after a background
+    // task or a wait wakes the agent again. It joins a turn only once Claude Code
+    // delivers it (mirror-turn.mjs). A request that cannot be opened (an older
+    // server, a closed command) only leaves DevSpec to resolve who asked itself.
+    if (channel === 'command' && connectionCapability) await openCommandRequests(ingress.commands)
     const persisted = appendCanonicalInbox(connectionId, ingress, persistedInbox, {
       sessionId,
-      carriedContext,
-      carriedActiveSessionPlans,
-      carriedSessionPolls: awareness.carriedSessionPolls,
-      carriedStillToDiscuss: awareness.carriedStillToDiscuss,
+      instructionContextFile,
+      wakeContext: roomChanges
+        ? commandWakeContext(transcriptStore, ingress, { connectionId, roomChanged: roomChanges.changed })
+        : null,
       channel,
+      questionHandoff: sentCommandHandoff?.question_id
+        ? { question_id: sentCommandHandoff.question_id, source_message_id: sentCommandHandoff.ready.source_message_id }
+        : null,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
-    // Only remember what we sent once the record is on disk. A crash between the
-    // write and this line replays the change; the other order loses it silently.
-    if (persisted.appended) roomAwarenessSeen = awareness.seen
-    canonicalCarry = carryAfterCanonicalInbox(canonicalCarry, channel, persisted)
-    activePlanCarry = activePlansAfterCanonicalInbox(activePlanCarry, ingress, channel, persisted)
-    persistCanonicalCursorState(res, ingress, drainingContinuation)
+
+    // Only remember what we announced once the record is on disk. A crash between
+    // the write and this line repeats the announcement; the other order loses it.
+    if (persisted.appended && roomChanges) roomAnnounced = roomChanges.seen
+    persistCanonicalCursorState(res, ingress, drainingContinuation, Boolean(persisted.appended && instructionContextFile))
 
     if (normalized.reason === 'unavailable_attachment') {
       process.stderr.write(
@@ -2201,15 +2220,32 @@ async function main() {
       }) + '\n')
       writeTurnMarker(connectionId)
       patchState({ last_owner_wake_at: new Date().toISOString() })
+      if (persisted.handedOff) {
+        // The server retired the question's attempt in the same transaction that opened
+        // this message, so the continuation is no longer ours to keep alive or complete.
+        // The turn marker just written carries Working on for the message instead.
+        clearInteractionContinuation('command_handoff')
+        forgetCommandHandoff()
+      }
     } else if (channel === 'control') {
-      // Claude has no safe script-level implementation for these lifecycle verbs.
-      // Surface a typed host-control event through Monitor, but never turn it into
-      // chat and never send control_ack merely because it was observed/persisted.
+      // An owner control is carried out by the plugin's module, never by the model,
+      // so it wakes nobody (item cbf3d758, control-relay.mjs).
+      handOverControl(ingress.control)
+    } else if (channel === 'system_notice') {
+      process.stdout.write(JSON.stringify({
+        type: 'canonical_system_notices_persisted',
+        authoritative: false,
+        executable: false,
+        envelope_id: ingress.envelope_id,
+        notice_ids: persisted.executeNoticeIds,
+        note: 'Poller stdout is notification only; read the canonical inbox record.',
+      }) + '\n')
       process.stdout.write(JSON.stringify({
         type: 'wake',
-        reason: 'canonical_host_control',
-        control_id: ingress.control.id,
+        reason: 'exact_connection_system_notice',
+        count: persisted.executeNoticeIds.length,
         inbox: inboxPathForConnection(connectionId),
+        continuous: true,
         authoritative: false,
         executable: false,
       }) + '\n')
@@ -2217,7 +2253,7 @@ async function main() {
     return { ok: true, delivered: true }
   }
 
-  /** Independent explicit automation channel; action-item assignments are rejected. */
+  /** Independent explicit automation channel; task assignments are rejected. */
   function consumeAutomationDispatches(res) {
     if (!Array.isArray(res?.dispatches)) {
       process.stderr.write('devspec-remote-poll: rejected malformed dispatches channel\n')
@@ -2240,6 +2276,8 @@ async function main() {
     dispatchCursor = nextDispatchCursor
     patchState({
       dispatch_cursor: dispatchCursor,
+      // Diagnostic only: nothing reads this back, and dedupe uses the inbox index
+      // itself. The newest 200 keep a state file that is rewritten on every poll small.
       delivered_dispatch_ids: [...persistedInbox.dispatchIds].slice(-200),
     })
     if (persisted.appended > 0) {
@@ -2281,6 +2319,7 @@ async function main() {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
       process.exit(1)
     }
+    refreshSessionTitle(liveState)
     // A reconnect may rotate the capability, and the Stop hook or the model-facing
     // bridge may have resolved the continuation since the last tick. Both facts live
     // in state and are owned by whoever wrote them, so re-read rather than cache.
@@ -2300,6 +2339,11 @@ async function main() {
       patchState({ interaction_continuation: null })
       pendingInteractionAck = null
     }
+    // A handoff belongs to the exact question attempt it names. If that attempt ended
+    // some other way (the reply was posted, or the turn ended), the held message now
+    // arrives through the ordinary path and nothing was handed over.
+    const handoffAttempt = (pendingCommandHandoff ?? sentCommandHandoff?.ready)?.attempt_id
+    if (handoffAttempt && interactionContinuation?.attempt_id !== handoffAttempt) forgetCommandHandoff()
     // NOTE: local state is read ONLY to observe a local stop (enabled === false).
     // Attachment is NOT adopted from it — the server (now the poll response's
     // session_id, read from the live markers) is the sole authority for which session
@@ -2317,9 +2361,11 @@ async function main() {
       return
     }
 
-    // Agent-authoritative "working": re-assert busy while a fresh turn marker exists.
+    // Agent-authoritative "working": re-assert busy while the turn is live. Live is what
+    // Claude Code shows (held for this command's own background work, or a tool call
+    // recently), never a clock from pickup (turn-liveness.mjs, item 9e8dda57).
     const marker = readTurnMarker(connectionId)
-    const turnActive = !!marker && Date.now() - marker.startedAt < MAX_TURN_MS
+    const turnActive = turnIsLive(marker, { activity: readTurnActivity(connectionId, CONNECTIONS_DIR) })
     let busyArg = null
     if (turnActive) busyArg = true
     else if (lastBusySent === true) busyArg = false
@@ -2345,6 +2391,10 @@ async function main() {
     }
 
     // --- ONE held call: heartbeat + dispatches + room, in one response ---------
+    // A seed poll starts a history drain of the transcript copy; everything the
+    // drain re-emits is kept, and anything it no longer finds is not the room's.
+    if (needsSeed && transcriptStore && !transcriptStore.backfill.draining) beginDrain(transcriptStore)
+
     let res = null
     try {
       res = await pollOnce({
@@ -2366,6 +2416,13 @@ async function main() {
         )
         await offlineAndExit('owner_gone', 1)
         return
+      }
+      if (catchUpCursor && isCatchUpCursorRefusal(e)) {
+        process.stderr.write('devspec-remote-poll: server refused the catch-up cursor; re-reading the room\n')
+        catchUpCursor = null
+        needsSeed = true
+        patchState({ catch_up_cursor: null })
+        continue
       }
       consecutiveErrors++
       const rateLimited = /rate limit/i.test(e?.message || '')
@@ -2452,15 +2509,45 @@ async function main() {
       liveCursorV2 = null
       catchUpCursor = null
       needsSeed = true
-      canonicalCarry = createCanonicalCarryState()
-      activePlanCarry = null
+      // A different room gets its own copy; the old one is left as it was.
+      transcriptStore = sessionId ? loadTranscriptStore(connectionId, sessionId) : null
+      redrainRequested = false
+      roomAnnounced = {}
+      speechAttachmentId = null
+      forgetCommandHandoff()
+      // The new room's title is read on the next tick; the old one's name goes now.
+      titleReadAt = 0
       patchState({
         session_id: sessionId,
         cursor_after_message_id: null,
         cursor_v2: null,
         catch_up_cursor: null,
+        // The old room's attachment admits no terminal turn in the new one.
+        speech_attachment_id: null,
+        attached_at: null,
+        session_title: null,
+        session_title_for: null,
       })
       continue
+    }
+
+    // The attachment this connection holds now. A different one is a different
+    // attachment generation, and no offer or readiness from the old one carries over.
+    const attachmentNow = typeof res.speech_attachment_id === 'string' && res.speech_attachment_id
+      ? res.speech_attachment_id
+      : null
+    if (attachmentNow !== speechAttachmentId) {
+      speechAttachmentId = attachmentNow
+      forgetCommandHandoff()
+    }
+    // The prompt hook admits the owner's terminal turns against this exact
+    // attachment (item 718825fc, local-turn.mjs). Compared with the FILE rather than
+    // memory, so a record lost to a concurrent hook write is put back on the next poll.
+    const attachmentRecord = attachmentFromPoll(res)
+    const recorded = readState(connectionId)
+    if (recorded && ((recorded.speech_attachment_id ?? null) !== attachmentRecord.speech_attachment_id ||
+        (recorded.attached_at ?? null) !== attachmentRecord.attached_at)) {
+      patchState(attachmentRecord)
     }
 
     if (res.changed === true) {
@@ -2483,12 +2570,19 @@ async function main() {
       // Conversational commands/context come only from canonical ingress. Explicit
       // automation runs remain an independent top-level channel with their own clock.
       const automations = consumeAutomationDispatches(res)
-      const canonical = consumeCanonicalIngress(res)
-      if (canonical.ok) needsSeed = false
+      const canonical = await consumeCanonicalIngress(res)
+      if (canonical.ok) {
+        needsSeed = redrainRequested
+        redrainRequested = false
+      }
+      // A message held behind our answered question: when the answer is settled, the
+      // next poll carries the readiness, and that is worth making at once.
+      const handOverNow = considerCommandOffer(res)
       if (automations.delivered || canonical.delivered) {
         consecutiveEmpty = 0
         continue // something real landed — go straight back to holding
       }
+      if (handOverNow) continue
       // Changed but nothing to deliver. An independent cursor keeps a persistent
       // automation marker from staying hot, and this backoff keeps ANY future marker
       // of that shape from hot-looping.
@@ -2511,15 +2605,18 @@ async function main() {
     }
     if (typeof res.cursor === 'string' && res.cursor) legacyCursor = res.cursor
     patchState({ cursor_v2: liveCursorV2, cursor_after_message_id: legacyCursor })
+    // A seed with nothing to catch up is an empty room: its drain is complete.
+    if (needsSeed && transcriptStore?.backfill.draining) {
+      completeEmptyDrain(transcriptStore)
+      persistTranscriptStore(transcriptStore)
+    }
     needsSeed = false
     consecutiveEmpty = 0
   }
 }
 
 // Run the loop only when executed directly (skipped when imported for tests).
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   main().catch((e) => {

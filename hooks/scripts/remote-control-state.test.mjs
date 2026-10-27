@@ -4,14 +4,20 @@
  * Run: node --test hooks/scripts/remote-control-state.test.mjs
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import {
   detectLocalId,
   ensurePollerForConnection,
+  isPollerArgv,
   isRecoverableEndReason,
   mintLocalId,
   ownerAlive,
-  reapDeadPollers,
   redactConnectionState,
   resolveLocalAction,
   resolveOwnerPid,
@@ -382,124 +388,88 @@ describe('ownerAlive', () => {
   })
 })
 
-describe('reapDeadPollers (connection-native)', () => {
-  const agent = 'Claude Code'
-  // A poller "runs" for every connection by default in these tests.
-  const findPidsAll = (cid) => [`pid-${cid}`]
-  const noneAlive = () => false
-  const allAlive = () => true
+describe('a connect never touches another connection (item 7e35d818)', () => {
+  // The incident, reproduced with real processes: window 1's attached poller is live,
+  // its room has been quiet for over an hour (so the room-transcript copy beside it is
+  // stale and carries no owner), and window 2 connects. Up to 0.32.23 the connect-time
+  // reaper read that transcript file as an ownerless pre-July connection and SIGTERM'd
+  // the live poller. Nothing may stop another connection's poller now.
+  const OTHER = 'bbbbbbbb-1111-4222-8333-444444444444'
+  const MINE = 'cccccccc-5555-4666-8777-888888888888'
+  const STATE_SCRIPT = fileURLToPath(new URL('./remote-control-state.mjs', import.meta.url))
 
-  function run(states, opts = {}) {
-    const killed = []
-    const reaped = reapDeadPollers({
-      agent,
-      listStates: () => states,
-      findPids: opts.findPids || findPidsAll,
-      isOwnerAlive: opts.isOwnerAlive || allAlive,
-      kill: (pid) => {
-        killed.push(pid)
-        return true
-      },
-      ...opts.args,
+  it("leaves a quiet attached connection's live poller running", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-no-reap-'))
+    const dir = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(dir, { recursive: true })
+    const server = http.createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        const parsed = JSON.parse(body)
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result: { content: [{ type: 'text', text: '{"ok":true}' }] } }))
+      })
     })
-    return { reaped, killed }
-  }
-
-  it('reaps a disabled connection', () => {
-    const { reaped, killed } = run([
-      { connection_id: 'c-disabled', agent_name: agent, enabled: false },
-    ])
-    assert.equal(reaped.length, 1)
-    assert.equal(reaped[0].reason, 'disabled')
-    assert.deepEqual(killed, ['pid-c-disabled'])
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const mcpUrl = `http://127.0.0.1:${server.address().port}/api/mcp`
+    const stale = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+    // Window 1: live, attached, owned by a live process, room quiet for three hours.
+    fs.writeFileSync(path.join(dir, `${OTHER}.json`), JSON.stringify({
+      connection_id: OTHER, enabled: true, agent_name: 'Claude Code', owner_pid: process.pid,
+      session_id: 'dddddddd-0000-4000-8000-000000000000', token: 'dvs_other', mcp_url: mcpUrl, updated_at: stale,
+    }), { mode: 0o600 })
+    fs.writeFileSync(path.join(dir, `${OTHER}.dddddddd-0000-4000-8000-000000000000.transcript-state.json`),
+      JSON.stringify({ connection_id: OTHER, updated_at: stale }), { mode: 0o600 })
+    // A stand-in for window 1's poller, recognisable the way a poller is: by its argv.
+    const fakePoller = path.join(home, 'devspec-remote-poll.mjs')
+    fs.writeFileSync(fakePoller, 'setInterval(() => {}, 1000)\n')
+    const otherPoller = spawn(process.execPath, [fakePoller, '--connection-id', OTHER], { stdio: 'ignore' })
+    let minePollerPid = null
+    try {
+      // Window 2 connects.
+      await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [STATE_SCRIPT, 'write', '--connection-id', MINE, '--agent', 'Claude Code', '--owner-pid', String(process.pid), '--cwd', home], {
+          env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, DEVSPEC_MCP_TOKEN: 'dvs_mine', DEVSPEC_MCP_URL: mcpUrl },
+        })
+        child.on('error', reject)
+        child.on('close', resolve)
+      })
+      try { minePollerPid = Number(fs.readFileSync(path.join(dir, `${MINE}.poll.pid`), 'utf8').trim()) } catch { /* no poller */ }
+      assert.ok(minePollerPid, 'the connecting window got its own poller')
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      assert.equal(otherPoller.exitCode, null, "window 1's poller must still be running")
+      assert.equal(otherPoller.signalCode, null, "window 1's poller must not have been signalled")
+    } finally {
+      otherPoller.kill('SIGKILL')
+      if (minePollerPid) { try { process.kill(minePollerPid, 'SIGKILL') } catch { /* gone */ } }
+      await new Promise((resolve) => server.close(resolve))
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
-  it('reaps an owner-gone connection (owner_pid recorded but dead)', () => {
-    const { reaped } = run(
-      [{ connection_id: 'c-orphan', agent_name: agent, enabled: true, owner_pid: 4242 }],
-      { isOwnerAlive: noneAlive },
-    )
-    assert.equal(reaped.length, 1)
-    assert.equal(reaped[0].reason, 'owner_gone')
+  it('has no reap command any more', async () => {
+    const mod = await import('./remote-control-state.mjs')
+    assert.equal(mod.reapDeadPollers, undefined)
   })
+})
 
-  it('reaps an ended-from-ui connection', () => {
-    const { reaped } = run([
-      { connection_id: 'c-ui', agent_name: agent, enabled: true, ended_from_ui: true, owner_pid: 10 },
-    ])
-    assert.equal(reaped.length, 1)
-    assert.equal(reaped[0].reason, 'ended_from_ui')
+describe('a poller is recognised by its arguments, not by words in a command line', () => {
+  const ID = 'cccccccc-5555-4666-8777-888888888888'
+  it('matches the poller the plugin spawns', () => {
+    assert.equal(isPollerArgv(['/usr/bin/node', '/x/hooks/scripts/devspec-remote-poll.mjs', '--connection-id', ID, '--owner-pid', '42'], ID), true)
+    assert.equal(isPollerArgv(['node', 'devspec-remote-poll.mjs', '--session', 's', '--connection-id', ID], ID), true)
   })
-
-  it('NEVER reaps a live connection (enabled + owner alive)', () => {
-    const { reaped, killed } = run(
-      [{ connection_id: 'c-live', agent_name: agent, enabled: true, owner_pid: 999 }],
-      { isOwnerAlive: allAlive },
-    )
-    assert.equal(reaped.length, 0)
-    assert.deepEqual(killed, [])
+  it('never matches a shell or editor that merely mentions it', () => {
+    // The shape that killed the shell running this suite: one argv element holding a
+    // whole script that names the poller, the id and node.
+    assert.equal(isPollerArgv(['/usr/bin/zsh', '-c', `node --test devspec-remote-poll.mjs --connection-id ${ID}`], ID), false)
+    assert.equal(isPollerArgv(['vim', 'devspec-remote-poll.mjs', '--connection-id', ID], ID), false)
+    assert.equal(isPollerArgv(['node', '/x/devspec-remote-wait.mjs', '--connection-id', ID], ID), false)
   })
-
-  it('does NOT reap a no-owner_pid connection with no/fresh timestamp (unknown → leave alone)', () => {
-    // No updated_at → staleness unknown → not reaped.
-    const noStamp = run([{ connection_id: 'c-legacy', agent_name: agent, enabled: true }])
-    assert.equal(noStamp.reaped.length, 0)
-    // Fresh updated_at → clearly active → not reaped.
-    const fresh = run(
-      [
-        {
-          connection_id: 'c-legacy-fresh',
-          agent_name: agent,
-          enabled: true,
-          updated_at: '2026-07-20T11:59:00.000Z',
-        },
-      ],
-      { args: { now: Date.parse('2026-07-20T12:00:00.000Z') } },
-    )
-    assert.equal(fresh.reaped.length, 0)
-  })
-
-  it('reaps a STALE no-owner_pid connection (legacy backstop — zombie gap 00bd4f6e)', () => {
-    const { reaped, killed } = run(
-      [
-        {
-          connection_id: 'c-legacy-stale',
-          agent_name: agent,
-          enabled: true,
-          updated_at: '2026-07-20T10:00:00.000Z', // 2h before `now`, threshold 1h
-        },
-      ],
-      { args: { now: Date.parse('2026-07-20T12:00:00.000Z') } },
-    )
-    assert.equal(reaped.length, 1)
-    assert.equal(reaped[0].reason, 'stale_no_owner')
-    assert.deepEqual(killed, ['pid-c-legacy-stale'])
-  })
-
-  it('skips the exceptConnectionId (the one we are about to (re)use)', () => {
-    const { reaped } = run(
-      [{ connection_id: 'c-keep', agent_name: agent, enabled: false }],
-      { args: { exceptConnectionId: 'c-keep' } },
-    )
-    assert.equal(reaped.length, 0)
-  })
-
-  it('only reaps this agent — a different agent is left alone', () => {
-    const { reaped } = run([
-      { connection_id: 'c-other', agent_name: 'Grok Build', enabled: false },
-      { connection_id: 'c-mine', agent_name: agent, enabled: false },
-    ])
-    assert.deepEqual(
-      reaped.map((r) => r.connection_id),
-      ['c-mine'],
-    )
-  })
-
-  it('skips connections with no running poller', () => {
-    const { reaped } = run([{ connection_id: 'c-nopoller', agent_name: agent, enabled: false }], {
-      findPids: () => [],
-    })
-    assert.equal(reaped.length, 0)
+  it("never matches another connection's poller", () => {
+    assert.equal(isPollerArgv(['node', 'devspec-remote-poll.mjs', '--connection-id', `${ID}0`], ID), false)
+    assert.equal(isPollerArgv(['node', 'devspec-remote-poll.mjs', '--connection-id', 'bbbbbbbb-1111-4222-8333-444444444444'], ID), false)
   })
 })
 

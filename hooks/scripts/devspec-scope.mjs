@@ -7,39 +7,22 @@
  * runs before every mutation and a connect script that must work offline:
  *
  *  - WHICH project does this folder belong to?      → `findProjectPin`
- *  - Is this folder part of a DevSpec project AT ALL? → `devspecFolderMarker`
+ *  - Where is the repository, and its main working tree? → `gitRoot`, `mainWorkTreeFrom`
  *
- * The second question is why this module exists. The claim guard used to answer it
- * "yes, everywhere": it derived a session/repository scope from any cwd and gated
- * every Write, Edit and Bash on a DevSpec claim. Installed at user scope — which is
- * how the plugin is normally installed — that gates every unrelated project on the
- * machine on a claim that can never arrive there, because nothing in that folder
- * has anything to do with DevSpec (devspec:7be7469f).
- *
- * So jurisdiction is POSITIVE and local: the folder must carry a DevSpec marker.
- * Absence of a marker is not "unknown, therefore deny" — it is "not ours".
+ * Whether a repository is the connected project's at all is the implementation
+ * contract's `commit_provenance_contract.project_association`: a project pin, or a
+ * remote that is one of the connected project's repositories. The pin half is
+ * answered here; the remote half needs the connection (commit-stamp.mjs
+ * `projectScope`). A DevSpec server declared in a folder's MCP configuration says
+ * DevSpec is used there, not that the repository is the project's, so it gives no
+ * jurisdiction (item f7f12de1). Absence of both is not "unknown, therefore deny": it
+ * is "not ours" (devspec:7be7469f).
  */
 
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-
-/** Names that identify DevSpec in an MCP server / plugin registration. */
-const DEVSPEC_NAME = /devspec/i
-
-/**
- * Per-directory config files that can declare a project-scoped DevSpec
- * registration. `.mcp.json` is the neutral, shared form every host reads;
- * the `.claude/` pair is Claude Code's own, and `settings.local.json` matters
- * because that is where an untracked, machine-local registration lands.
- */
-const MCP_CONFIG_FILES = [
-  ['.mcp.json'],
-  ['.claude', 'settings.json'],
-  ['.claude', 'settings.local.json'],
-  ['.claude', 'mcp.json'],
-]
 
 /** `git remote get-url origin`, or null when there is no repo / no origin. */
 export function gitRemoteOrigin(cwd) {
@@ -131,45 +114,6 @@ function readPin(dir) {
   return null
 }
 
-/** Object keys, but only for a real plain object — `Object.keys('ab')` is `['0','1']`. */
-function keysOf(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : []
-}
-
-function namesDevSpec(values) {
-  return values.some((value) => typeof value === 'string' && DEVSPEC_NAME.test(value))
-}
-
-/**
- * Does this parsed config register DevSpec for the folder it sits in?
- *
- * Deliberately keyed on the specific registration fields rather than searching the
- * document for the word: a settings file that merely mentions a devspec path is not
- * a declaration that this folder is a DevSpec project.
- */
-function declaresDevSpec(parsed) {
-  if (namesDevSpec(keysOf(parsed?.mcpServers))) return true
-  if (Array.isArray(parsed?.enabledMcpjsonServers) && namesDevSpec(parsed.enabledMcpjsonServers)) return true
-  if (namesDevSpec(keysOf(parsed?.enabledPlugins))) return true
-  return false
-}
-
-/** The first config file in `dir` that registers DevSpec, or null. */
-function readMcpDeclaration(dir) {
-  for (const relative of MCP_CONFIG_FILES) {
-    const candidate = path.join(dir, ...relative)
-    try {
-      if (!fs.existsSync(candidate)) continue
-      if (declaresDevSpec(JSON.parse(fs.readFileSync(candidate, 'utf8')))) {
-        return { kind: 'mcp-config', path: candidate }
-      }
-    } catch {
-      /* an unreadable or malformed config declares nothing */
-    }
-  }
-  return null
-}
-
 /**
  * The repository's MAIN working tree for `cwd`, or null when there is no repository.
  *
@@ -192,6 +136,78 @@ export function mainWorkTreeFrom(cwd) {
   }
 }
 
+/** A stat signature for one path: absent, a directory, or a file's mtime and size. */
+function statKey(candidate) {
+  try {
+    const stat = fs.statSync(candidate)
+    // A directory's mtime moves whenever git writes a lock file inside `.git`, which is
+    // most commands. Only its presence can change what the folder is linked to.
+    return stat.isDirectory() ? 'd' : `f:${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return '-'
+  }
+}
+
+/**
+ * The files behind a `.git` entry that decide `origin` and the main worktree's pin.
+ * A plain repository keeps its remotes in `.git/config`. A linked worktree's `.git` is
+ * a file naming its private gitdir, whose `commondir` leads to the shared config — and
+ * `findProjectPin` also reads the main working tree's pin, which sits beside it.
+ */
+function gitIdentityPaths(gitEntry) {
+  try {
+    if (fs.statSync(gitEntry).isDirectory()) return [path.join(gitEntry, 'config')]
+    const pointer = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(gitEntry, 'utf8'))
+    if (!pointer) return []
+    const gitdir = path.resolve(path.dirname(gitEntry), pointer[1].trim())
+    let common = gitdir
+    try {
+      common = path.resolve(gitdir, fs.readFileSync(path.join(gitdir, 'commondir'), 'utf8').trim())
+    } catch {
+      /* no commondir: the gitdir is the repository itself */
+    }
+    const paths = [path.join(common, 'config')]
+    if (path.basename(common) === '.git') {
+      paths.push(path.join(path.dirname(common), '.devspec', 'project.json'))
+    }
+    return paths
+  } catch {
+    return []
+  }
+}
+
+/**
+ * A cheap signature of everything that could make `cwd` name a DevSpec project: the
+ * pin files `findProjectPin` reads and the git config that holds `origin`. Stat calls
+ * only, never a git process, because the startup listener recomputes it every few
+ * seconds while it waits in a folder that is not linked yet (item fa9b809b). When the
+ * signature changes, the caller runs the real lookups; when it doesn't, nothing that
+ * decides the folder's project can have changed.
+ *
+ * Walks the same chain as `findProjectPin`: from `cwd` up to the nearest `.git`
+ * (the repository root), never at or above the home directory.
+ */
+export function folderLinkFingerprint(cwd, { home = os.homedir() } = {}) {
+  const homeResolved = path.resolve(home)
+  const parts = []
+  let dir = path.resolve(cwd)
+  for (;;) {
+    if (atOrAboveHome(dir, homeResolved)) break
+    parts.push(statKey(path.join(dir, '.devspec', 'project.json')))
+    const gitEntry = path.join(dir, '.git')
+    const gitKey = statKey(gitEntry)
+    parts.push(gitKey)
+    if (gitKey !== '-') {
+      for (const identity of gitIdentityPaths(gitEntry)) parts.push(statKey(identity))
+      break
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return parts.join('|')
+}
+
 /**
  * The repository's `.devspec/project.json` pin: `{ "project_id": "<uuid>" }`.
  *
@@ -203,8 +219,7 @@ export function mainWorkTreeFrom(cwd) {
  * normally untracked, so a linked worktree carries none — and the implementation
  * contract requires work to happen in one, which would leave every isolated session
  * unable to name its own project. Jurisdiction is a property of the repository, not
- * of the directory (contract 4.1.0, `commit_provenance_contract.project_association`);
- * `devspecFolderMarker` has always answered it that way and this now matches.
+ * of the directory (`commit_provenance_contract.project_association`).
  */
 export function findProjectPin(cwd, { home = os.homedir(), root = undefined, mainWorktree = undefined } = {}) {
   const stopAt = root === undefined ? gitRoot(cwd) : root
@@ -217,35 +232,4 @@ export function findProjectPin(cwd, { home = os.homedir(), root = undefined, mai
   if (atOrAboveHome(resolvedMain, path.resolve(home))) return null
   const fromMain = readPin(resolvedMain)
   return fromMain ? { project_id: fromMain.project_id, path: fromMain.path } : null
-}
-
-/**
- * The marker that gives the claim guard jurisdiction over this folder, or null.
- *
- * Either marker is enough, because either one means a person deliberately pointed
- * this folder at DevSpec:
- *  - a `.devspec/project.json` pin — the folder naming its project outright;
- *  - a project-scoped config registering a DevSpec MCP server or this plugin.
- *
- * `mainWorktree` is checked in addition to the cwd chain, and it is the reason this
- * function is not just a pin lookup. The implementation contract asks agents to work
- * in a linked worktree, worktrees are routinely created OUTSIDE the repository root,
- * and `.mcp.json` / `.claude/settings.local.json` are typically untracked — so the
- * worktree's own checkout carries no marker even though its repository plainly is a
- * DevSpec project. Keying jurisdiction on the cwd chain alone would quietly switch
- * the guard off for exactly the isolation it tells agents to use.
- */
-export function devspecFolderMarker(cwd, {
-  home = os.homedir(),
-  root = undefined,
-  mainWorktree = undefined,
-} = {}) {
-  const stopAt = root === undefined ? workTreeRootFrom(cwd, { home }) : root
-  const inChain = walkUp(cwd, { home, root: stopAt }, (dir) => readPin(dir) ?? readMcpDeclaration(dir))
-  if (inChain) return inChain
-
-  if (!mainWorktree) return null
-  const main = path.resolve(mainWorktree)
-  if (atOrAboveHome(main, path.resolve(home))) return null
-  return readPin(main) ?? readMcpDeclaration(main)
 }

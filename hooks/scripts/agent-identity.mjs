@@ -11,6 +11,17 @@
 export const AGENT_NAME = 'Claude Code'
 
 /**
+ * The id this plugin names itself by on every MCP request, as
+ * `x-devspec-plugin: claude_code/<version>` (item 984ca8b4). DevSpec reads it to
+ * tell a plugin client from one without a plugin, for agent health, and to say
+ * "update your plugin" when a release genuinely breaks a tool's contract. It is
+ * identification, never authority: the server runs every authority check itself.
+ * The same value is written into `.claude-plugin/plugin.json`'s MCP headers for
+ * the host's own client; connection-version.test.mjs keeps the two in step.
+ */
+export const PLUGIN_ID = 'claude_code'
+
+/**
  * The environment variables THIS host uses for its own conversation id.
  *
  * Own host only. Another host's id is a real id for a real conversation — just

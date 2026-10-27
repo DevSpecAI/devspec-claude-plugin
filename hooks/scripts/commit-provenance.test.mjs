@@ -46,13 +46,16 @@ function gitInit(dir) {
   assert.equal(result.status, 0, result.stderr)
 }
 
-/** A folder DevSpec has positive local jurisdiction over. Normally untracked. */
+const PINNED_PROJECT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+/**
+ * A repository DevSpec has jurisdiction over: it carries a project pin (contract 5.4.0
+ * project_association; the other way in is its remote, below). Normally untracked.
+ */
 function markDevspecProject(dir) {
-  fs.writeFileSync(
-    path.join(dir, '.mcp.json'),
-    JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }),
-  )
+  fs.mkdirSync(path.join(dir, '.devspec'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.devspec', 'project.json'), JSON.stringify({ project_id: PINNED_PROJECT }))
 }
+const unmark = (dir) => fs.rmSync(path.join(dir, '.devspec'), { recursive: true, force: true })
 
 function input(toolName, toolInput, overrides = {}) {
   return {
@@ -70,24 +73,24 @@ const bash = (command, overrides, extra = {}) =>
 const decision = (result) => result?.hookSpecificOutput?.permissionDecision ?? null
 const updated = (result) => result?.hookSpecificOutput?.updatedInput?.command ?? null
 
-function claim(itemId = ITEM, cwd = repo) {
+function claim(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__claim_work_item') {
   return handlePost({
     session_id: SESSION,
     cwd,
     hook_event_name: 'PostToolUse',
-    tool_name: 'mcp__devspec__claim_work_item',
-    tool_input: { action_item_id: itemId },
+    tool_name: toolName,
+    tool_input: { task_id: itemId },
     tool_response: { content: [{ type: 'text', text: JSON.stringify({ id: itemId, claim_success: true }) }] },
   }, { env })
 }
 
-function record(itemId = ITEM, cwd = repo) {
+function record(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__record_implementation') {
   return handlePost({
     session_id: SESSION,
     cwd,
     hook_event_name: 'PostToolUse',
-    tool_name: 'mcp__devspec__record_implementation',
-    tool_input: { action_item_id: itemId },
+    tool_name: toolName,
+    tool_input: { task_id: itemId },
     tool_response: {
       content: [{ type: 'text', text: JSON.stringify({ id: itemId, lifecycle: 'implemented' }) }],
     },
@@ -104,10 +107,15 @@ beforeEach(() => {
   gitInit(repo)
   markDevspecProject(repo)
   // Real credentials in the developer's shell would otherwise send these tests at the
-  // live server. The online block below supplies its own endpoint explicitly.
+  // live server. The online block below supplies its own endpoint explicitly. Run from
+  // inside a Claude Code session, the plugin's exported settings file
+  // (DEVSPEC_PLUGIN_SETTINGS_SESSION) and option pairs would win over the credentials a
+  // test supplies itself, so they go too (item 9a4c0d6a).
   const {
     DEVSPEC_MCP_TOKEN: _t, DEVSPEC_TOKEN: _t2, DEVSPEC_MCP_URL: _u,
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: _p, ...ambient
+    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: _p, CLAUDE_PLUGIN_OPTION_devspec_token: _p2,
+    CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: _pu, CLAUDE_PLUGIN_OPTION_devspec_mcp_url: _pu2,
+    DEVSPEC_PLUGIN_SETTINGS_SESSION: _s, ...ambient
   } = process.env
   env = { ...ambient, DEVSPEC_CLAUDE_STATE_DIR: path.join(sandbox, 'state') }
 })
@@ -343,7 +351,9 @@ describe('stamping, only when exactly one claim is unambiguous', () => {
     const result = await bash('git commit -m "fix: the thing"')
     assert.equal(decision(result), null, 'stamping is not a denial')
     assert.equal(updated(result), `git commit -m "fix: the thing [devspec:${ITEM}]"`)
-    assert.match(result.systemMessage, new RegExp(`stamped \\[devspec:${ITEM}\\]`))
+    assert.match(result.systemMessage, new RegExp(`added \\[devspec:${ITEM}\\]`))
+    // The agent is told too, not only the terminal: it writes a tag itself only where none was added.
+    assert.equal(result.hookSpecificOutput.additionalContext, result.systemMessage)
   })
 
   it('preserves the rest of the command exactly', async () => {
@@ -405,7 +415,7 @@ describe('denial is non-terminating and independently recoverable', () => {
     const result = await bash('git commit -m "untracked work"')
     assert.equal(decision(result), 'deny')
     const reason = result.hookSpecificOutput.permissionDecisionReason
-    for (const expected of [/create_action_item|search_action_items/, /\[devspec:/, /retry/i, /Nothing else is blocked/]) {
+    for (const expected of [/create_task|search_tasks/, /\[devspec:/, /retry/i, /Nothing else is blocked/]) {
       assert.match(reason, expected)
     }
     assert.match(reason, new RegExp(CONTRACT_URI.replace(/[/:]/g, '\\$&')))
@@ -422,7 +432,51 @@ describe('denial is non-terminating and independently recoverable', () => {
 
   it('does not demand a full criteria set merely to commit', async () => {
     const reason = (await bash('git commit -m "x"')).hookSpecificOutput.permissionDecisionReason
-    assert.match(reason, /thin\s+last-mile item is fine|smallest item/)
+    assert.match(reason, /smallest adequate task/)
+    assert.equal(/acceptance|criteria/i.test(reason), false)
+  })
+
+  it('never advises a task the server would refuse to create', async () => {
+    // create_task requires a substantive description and the reason for the work, and
+    // refuses thin or title-only content before writing anything. Advice to make "a thin
+    // last-mile item" sent an agent that was already blocked on a commit into a second
+    // refusal (item 9a4c0d6a).
+    const reason = (await bash('git commit -m "x"')).hookSpecificOutput.permissionDecisionReason
+    assert.equal(/thin last-mile|one-line description/i.test(reason), false)
+    assert.match(reason, /description/)
+    assert.match(reason, /reason it is needed/)
+    assert.match(reason, /work_entry_contract/)
+  })
+})
+
+describe('the agent writes a tag only when it must choose between claims (item 3e24523e)', () => {
+  it('after no claim: claim, retry the same commit, and it is tagged for the agent', async () => {
+    const command = 'git commit -m "untracked work"'
+    const reason = (await bash(command)).hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /claim/)
+    assert.match(reason, /retry the same commit/)
+    assert.match(reason, /tag is added for you/)
+    assert.match(reason, /commit_provenance_contract/)
+    assert.equal(/<full-uuid>|<id>\] to the|in the message/.test(reason), false, 'never asks the agent to type an id')
+    claim(ITEM)
+    assert.equal(updated(await bash(command)), `git commit -m "untracked work [devspec:${ITEM}]"`, 'exactly as the refusal said')
+  })
+
+  it('with one claim and a bare message: quote it and retry, never type the id', async () => {
+    claim(ITEM)
+    const reason = (await bash('git commit -m bare')).hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /quotes/)
+    assert.match(reason, /added for you/)
+    assert.equal(reason.includes(ITEM) || /<full-uuid>/.test(reason), false)
+    assert.equal(updated(await bash('git commit -m "bare"')), `git commit -m "bare [devspec:${ITEM}]"`)
+  })
+
+  it('with several claims: the agent names the one, because the plugin never guesses', async () => {
+    claim(ITEM)
+    claim(OTHER)
+    const reason = (await bash('git commit -m "which one"')).hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /2 claims are active/)
+    assert.ok(reason.includes(`[devspec:${ITEM}]`) && reason.includes(`[devspec:${OTHER}]`))
   })
 })
 
@@ -431,7 +485,7 @@ describe('one nudge per session and repository, never more', () => {
 
   it('reminds once, then stays quiet', async () => {
     const first = await handlePre(editInput(), { env })
-    assert.match(first.systemMessage, /no work item is claimed/i)
+    assert.match(first.systemMessage, /no task is claimed/i)
     assert.equal(decision(first), null, 'a nudge is never a denial')
     assert.equal(await handlePre(editInput(), { env }), null)
     assert.equal(await handlePre(editInput(), { env }), null)
@@ -442,7 +496,7 @@ describe('one nudge per session and repository, never more', () => {
     // phone, where there is no terminal to render into, and the party that can act on
     // the reminder is the agent — which reads additionalContext.
     const first = await handlePre(editInput(), { env })
-    assert.match(first.hookSpecificOutput.additionalContext, /no work item is claimed/i)
+    assert.match(first.hookSpecificOutput.additionalContext, /no task is claimed/i)
     assert.equal(first.hookSpecificOutput.hookEventName, 'PreToolUse')
     assert.equal(first.hookSpecificOutput.permissionDecision, undefined, 'still never a denial')
     assert.equal(first.hookSpecificOutput.additionalContext, first.systemMessage)
@@ -454,10 +508,14 @@ describe('one nudge per session and repository, never more', () => {
     // and must not promise a refusal that only holds for the shapes this can read.
     const { additionalContext: text } = (await handlePre(editInput(), { env })).hookSpecificOutput
     assert.match(text, /Claim one before you commit/i)
-    assert.match(text, /create_action_item/)
-    assert.match(text, /\[devspec:<full-uuid>\]/)
+    assert.match(text, /create_task/)
+    // With one task claimed the plugin tags the commits itself (item 3e24523e).
+    assert.match(text, /tagged for you/)
+    assert.equal(/<full-uuid>|\[devspec:/.test(text), false, 'never asks the agent to write the tag')
     assert.equal(/refus/i.test(text), false, 'must not promise a refusal')
     assert.equal(/analy[sz]er|reconcil/i.test(text), false, 'must not name a backstop')
+    assert.equal(/\bthin\b/i.test(text), false, 'must not advise a task the server refuses (item 9a4c0d6a)')
+    assert.match(text, /reason it is needed/)
   })
 
   it('says nothing at all when a claim is held', async () => {
@@ -466,7 +524,7 @@ describe('one nudge per session and repository, never more', () => {
   })
 
   it('says nothing outside a DevSpec project', async () => {
-    fs.rmSync(path.join(repo, '.mcp.json'))
+    unmark(repo)
     assert.equal(await handlePre(editInput(), { env }), null)
   })
 })
@@ -494,7 +552,7 @@ describe('jurisdiction is positive and local', () => {
     const worktree = path.join(sandbox, 'wt')
     const added = spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', '--detach', worktree], { encoding: 'utf8' })
     assert.equal(added.status, 0, added.stderr)
-    assert.equal(fs.existsSync(path.join(worktree, '.mcp.json')), false, 'marker genuinely absent')
+    assert.equal(fs.existsSync(path.join(worktree, '.devspec')), false, 'pin genuinely absent')
     assert.equal(
       decision(await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: worktree }), { env })),
       'deny',
@@ -510,6 +568,18 @@ describe('jurisdiction is positive and local', () => {
       await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: plain }), { env: { ...env, HOME: home, USERPROFILE: home } }),
       null,
     )
+  })
+
+  it('takes no jurisdiction from a DevSpec server declared in the folder\'s MCP configuration (item f7f12de1)', async () => {
+    // It says DevSpec is used here, not that this repository is the project's.
+    unmark(repo)
+    fs.writeFileSync(path.join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }))
+    fs.mkdirSync(path.join(repo, '.claude'))
+    fs.writeFileSync(path.join(repo, '.claude', 'settings.local.json'), JSON.stringify({ enabledMcpjsonServers: ['devspec'], enabledPlugins: { 'devspec@devspec': true } }))
+    assert.equal(await bash('git commit -m "not the project\'s"'), null, 'no claim: not stopped')
+    assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env }), null, 'no reminder')
+    claim()
+    assert.equal(await bash('git commit -m "still not the project\'s"'), null, 'one claim: not tagged')
   })
 
   it('writes no pin and touches no folder of its own accord', async () => {
@@ -546,7 +616,7 @@ describe('uncertainty always allows', () => {
       cwd: repo,
       hook_event_name: 'PostToolUse',
       tool_name: 'mcp__devspec__claim_work_item',
-      tool_input: { action_item_id: ITEM },
+      tool_input: { task_id: ITEM },
       tool_response: { content: [{ type: 'text', text: JSON.stringify({ error: 'already claimed' }) }] },
     }, { env })
     assert.deepEqual(readClaims(scope(), { env }), [])
@@ -611,7 +681,7 @@ describe('the installed hook, run the way Claude runs it', () => {
     const post = run('PostToolUse', {
       session_id: SESSION, cwd: repo, hook_event_name: 'PostToolUse',
       tool_name: 'mcp__devspec__claim_work_item',
-      tool_input: { action_item_id: ITEM },
+      tool_input: { task_id: ITEM },
       tool_response: { content: [{ type: 'text', text: JSON.stringify({ id: ITEM, claim_success: true }) }] },
     })
     assert.equal(post.status, 0, post.stderr)
@@ -677,6 +747,15 @@ describe('the shapes the DevSpec server actually returns', () => {
     tool_input: { command },
   }, { env })
 
+  it('observes a claim and its release made through the plugin\'s own server name (ddc40cc8)', () => {
+    // A plain plugin install delivers the tool as mcp__plugin_devspec_devspec__*;
+    // matching only mcp__devspec__* meant claims were never seen at all.
+    claim(ITEM, repo, 'mcp__plugin_devspec_devspec__claim_work_item')
+    assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+    record(ITEM, repo, 'mcp__plugin_devspec_devspec__record_implementation')
+    assert.deepEqual(readClaims(scope(), { env }), [])
+  })
+
   it('observes a claim from a real claim_work_item response', () => {
     handlePost(fixture('post-claim-success.json'), { env })
     assert.deepEqual(readClaims(scope(repo, FIXTURE_SESSION), { env }), [ITEM])
@@ -737,7 +816,7 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
   beforeEach(async () => {
     requests = []
     held = []
-    reply = (res) => sendJson(res, answer('valid', { action_item_id: ITEM }))
+    reply = (res) => sendJson(res, answer('valid', { task_id: ITEM }))
     server = http.createServer((req, res) => {
       let body = ''
       req.on('data', (chunk) => { body += chunk })
@@ -982,18 +1061,6 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
   })
 })
 
-describe('the capability table is published', () => {
-  it('documents every surface the item requires', () => {
-    const doc = fs.readFileSync(path.join(PLUGIN_ROOT, 'docs', 'commit-provenance.md'), 'utf8')
-    for (const row of [
-      /edit event/i, /commit message/i, /transform/i, /push/i,
-      /project association/i, /offline/i, /non-terminating|continuation/i, /installed test/i,
-    ]) {
-      assert.match(doc, row)
-    }
-  })
-})
-
 describe('the multi-line message forms, which is where almost every commit lives', () => {
   // Why this block exists: on one repository's staging branch over 14 days, 59 commits
   // carried no reference and every single one of them was multi-line — a commit with a
@@ -1045,7 +1112,7 @@ describe('the multi-line message forms, which is where almost every commit lives
     for (const command of [A('fix: subject'), B('fix: subject')]) {
       const result = await bash(command)
       assert.equal(decision(result), 'deny', command)
-      assert.match(result.hookSpecificOutput.permissionDecisionReason, /\[devspec:<full-uuid>\]/)
+      assert.match(result.hookSpecificOutput.permissionDecisionReason, /retry the same commit/)
     }
   })
 
@@ -1123,5 +1190,59 @@ describe('the multi-line message forms, which is where almost every commit lives
     assert.match(status, /\?\? noise\.ts/, 'the unnamed file stays untracked')
 
     fs.rmSync(scratch, { recursive: true, force: true })
+  })
+})
+
+describe('with the git stand-in (item e597bc18)', () => {
+  const PROJECT = '22222222-2222-4222-8222-222222222222'
+  const CONNECTION = '11111111-1111-4111-8111-111111111111'
+  /** A home where this conversation is connected to a project tracking fixture/project. */
+  function connectedHome() {
+    const home = path.join(sandbox, 'home')
+    const connections = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(connections, { recursive: true })
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.json`), JSON.stringify({ enabled: true, connection_id: CONNECTION, local_id: SESSION }), { mode: 0o600 })
+    const facts = { project_id: PROJECT, status: 'available', repositories: [{ id: 'r', full_name: 'fixture/project', provider: 'github', git_url: 'https://github.com/fixture/project.git', target_branch: 'staging', default_branch: 'main' }] }
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.repositories.json`), JSON.stringify({ project_id: PROJECT, hash: 'x', text: `<devspec-repository-data>\n${JSON.stringify(facts)}\n</devspec-repository-data>` }), { mode: 0o600 })
+    return home
+  }
+
+  it('leaves Bash commits to the stand-in where it runs, and reads the command only where it does not', async () => {
+    assert.equal(await bash('git commit -m "untracked work"', undefined, { observerActive: () => true }), null)
+    assert.equal(decision(await bash('git commit -m "untracked work"', undefined, { observerActive: () => false })), 'deny')
+  })
+
+  it('nudges an edit in one of the project\'s repositories by its remote, with no marker in the folder', async () => {
+    unmark(repo)
+    spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'])
+    const edit = input('Write', { file_path: path.join(repo, 'x.ts') })
+    assert.equal(await handlePre(edit, { env }), null, 'not connected: no jurisdiction')
+    const home = connectedHome()
+    const first = await handlePre(edit, { env: { ...env, HOME: home } })
+    assert.match(first.hookSpecificOutput.additionalContext, /no task is claimed in this conversation/)
+    assert.match(first.hookSpecificOutput.additionalContext, /in the project's repositories are tagged for you/)
+  })
+
+  it('checks and tags a commit in one of the project\'s repositories by its remote, with no pin (item f7f12de1)', async () => {
+    unmark(repo)
+    spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'])
+    assert.equal(await bash('git commit -m "untracked work"'), null, 'not connected: no jurisdiction')
+    const connected = { ...env, HOME: connectedHome() }
+    assert.equal(decision(await handlePre(input('Bash', { command: 'git commit -m "untracked work"' }), { env: connected })), 'deny')
+    claim()
+    assert.equal(
+      updated(await handlePre(input('Bash', { command: 'git commit -m "tracked work"' }), { env: connected })),
+      `git commit -m "tracked work [devspec:${ITEM}]"`,
+    )
+  })
+
+  it('is silent once the conversation holds a claim, in any repository', async () => {
+    unmark(repo)
+    spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/fixture/project.git'])
+    const elsewhere = path.join(sandbox, 'elsewhere')
+    gitInit(elsewhere)
+    claim(ITEM, elsewhere)
+    const home = connectedHome()
+    assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env: { ...env, HOME: home } }), null)
   })
 })

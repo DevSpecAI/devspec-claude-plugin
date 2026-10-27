@@ -14,6 +14,22 @@
  * deliberate abort from a network failure. Omitting them keeps the original behaviour.
  */
 
+import { LOADED_PLUGIN_VERSION, versionedConnectionArguments } from './connection-version.mjs'
+import { PLUGIN_ID } from './agent-identity.mjs'
+
+/**
+ * Every request this plugin's scripts make says which plugin and version made it
+ * (item 984ca8b4; ADR "Protecting intent" §14). The host's own MCP client sends
+ * the same header from `.claude-plugin/plugin.json`. The version is the one in the
+ * manifest beside this executing copy, never cwd's, so a script always names the
+ * version that is actually running. Not a credential: nothing is unlocked by it.
+ */
+export const PLUGIN_HEADER = 'x-devspec-plugin'
+export function pluginHeaderValue(version = LOADED_PLUGIN_VERSION) {
+  return typeof version === 'string' && version ? `${PLUGIN_ID}/${version}` : null
+}
+const PLUGIN_HEADER_VALUE = pluginHeaderValue()
+
 /** HTTP statuses that describe a transient condition, not a verdict on the request. */
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 502, 503, 504])
 
@@ -74,6 +90,7 @@ export function readServerFailure(status, bodyText) {
 export function isRetryableHttpFailure(err) {
   if (!err || typeof err !== 'object') return false
   if (err.code === 'owner_gone' || err.code === 'timeout') return false
+  if (err.transport === true) return true
   if (err.retryable === false) return false
   if (err.retryable === true) return true
   return RETRYABLE_HTTP_STATUSES.has(err.status)
@@ -131,6 +148,7 @@ export async function mcpRequest({
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
+        ...(PLUGIN_HEADER_VALUE ? { [PLUGIN_HEADER]: PLUGIN_HEADER_VALUE } : {}),
         ...(connectionCapability
           ? { 'x-devspec-connection-capability': connectionCapability }
           : {}),
@@ -144,7 +162,13 @@ export async function mcpRequest({
       err.code = abortCode
       throw err
     }
-    throw e
+    // fetch threw before any response: DNS, refused, reset, TLS, no network. The server
+    // never saw the request, so this is no verdict on it. Marked so a caller can tell it
+    // from a refusal — without the mark it has no status and read as final, which put an
+    // agent started on an offline laptop to sleep for the whole session (item fa9b809b).
+    const err = e instanceof Error ? e : new Error(String(e))
+    err.transport = true
+    throw err
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer)
     if (aliveTimer) clearInterval(aliveTimer)
@@ -188,6 +212,10 @@ export async function mcpRequest({
   return payload.result ?? payload
 }
 
+export class McpToolRefusalError extends Error {
+  constructor(message, details = null) { super(message); this.name = 'McpToolRefusalError'; this.details = details }
+}
+
 export async function mcpToolsCall({
   mcpUrl,
   token,
@@ -203,7 +231,7 @@ export async function mcpToolsCall({
     mcpUrl,
     token,
     method: 'tools/call',
-    params: { name, arguments: toolArgs || {} },
+    params: { name, arguments: versionedConnectionArguments(name, toolArgs || {}) },
     connectionCapability,
     timeoutMs,
     isAlive,
@@ -219,7 +247,9 @@ export async function mcpToolsCall({
       .map((c) => c.text)
     const joined = textParts.join('\n')
     if (result?.isError) {
-      throw new Error(joined || 'MCP tool error')
+      let details = result.structuredContent ?? null
+      if (!details) { try { details = JSON.parse(joined) } catch { /* older plain refusal */ } }
+      throw new McpToolRefusalError(joined || 'MCP tool error', details)
     }
     try {
       return JSON.parse(joined)

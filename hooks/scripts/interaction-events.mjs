@@ -37,10 +37,15 @@ export const INTERACTION_EVENT_VERSION = 1
 export const INTERACTION_EVENT_KIND = 'devspec.interaction_event'
 export const INTERACTION_EVENT_CONTRACT_URI = 'devspec://product/interaction-event-contract'
 
-/** Server bounds, mirrored so a malformed payload fails here too (never widen them). */
-export const TEXT_MAX_CODE_POINTS = 4000
-export const SELECT_MAX_CODE_POINTS = 200
-export const MULTI_SELECT_MAX_ITEMS = 20
+/*
+ * No answer length or item-count limits here, deliberately. How long an answer may
+ * be is the server's policy: it refuses an oversized answer when the person submits
+ * it, and validates every event against the served contract before sending it. A
+ * copy of those numbers can only ever disagree with the server — which it did: the
+ * server raised typed-in answers to 1000 characters while this file still said 200,
+ * so every longer answer was rejected here and redelivered for ever (items 11c7f2cd,
+ * 86cf31d7). This file checks the SHAPE of an event, and that it is ours.
+ */
 
 export const INTERACTION_ANSWER_RECORD_TYPE = 'interaction_answer'
 
@@ -90,15 +95,8 @@ function isIsoInstant(value) {
   return typeof value === 'string' && value.length > 0 && !Number.isNaN(Date.parse(value))
 }
 
-/** PostgreSQL char_length and the server's JSON Schema both count code points. */
-export function codePointLength(value) {
-  return Array.from(String(value)).length
-}
-
-function boundedAnswerString(value, maxCodePoints) {
-  if (typeof value !== 'string' || !value.trim()) return false
-  const length = codePointLength(value)
-  return length >= 1 && length <= maxCodePoints
+function nonBlankAnswer(value) {
+  return typeof value === 'string' && value.trim().length > 0
 }
 
 /**
@@ -162,20 +160,16 @@ export function validateInteractionEvent(event, { connectionId, sessionId } = {}
     return { ok: false, error: 'lease_expires_at is not a timestamp' }
   }
   if (!RESPONSE_KINDS.has(event.response_kind)) return { ok: false, error: 'unknown response_kind' }
-  if (event.response_kind === 'text' && !boundedAnswerString(event.answer, TEXT_MAX_CODE_POINTS)) {
-    return { ok: false, error: 'text answer is empty or over the bound' }
-  }
-  if (event.response_kind === 'single_select' &&
-      !boundedAnswerString(event.answer, SELECT_MAX_CODE_POINTS)) {
-    return { ok: false, error: 'single_select answer is empty or over the bound' }
+  if ((event.response_kind === 'text' || event.response_kind === 'single_select') &&
+      !nonBlankAnswer(event.answer)) {
+    return { ok: false, error: `${event.response_kind} answer is not a non-blank string` }
   }
   if (event.response_kind === 'multi_select') {
-    if (!Array.isArray(event.answer) || event.answer.length < 1 ||
-        event.answer.length > MULTI_SELECT_MAX_ITEMS) {
-      return { ok: false, error: 'multi_select answer is not a bounded array' }
+    if (!Array.isArray(event.answer) || event.answer.length < 1) {
+      return { ok: false, error: 'multi_select answer is not a non-empty array' }
     }
-    if (event.answer.some((value) => !boundedAnswerString(value, SELECT_MAX_CODE_POINTS))) {
-      return { ok: false, error: 'multi_select answer contains an empty or oversized value' }
+    if (event.answer.some((value) => !nonBlankAnswer(value))) {
+      return { ok: false, error: 'multi_select answer contains a blank or non-string value' }
     }
     if (new Set(event.answer).size !== event.answer.length) {
       return { ok: false, error: 'multi_select answers must be distinct' }

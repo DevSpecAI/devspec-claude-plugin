@@ -25,6 +25,13 @@ import {
   decideStopBlock,
   listenerArmedWithGrace,
   stopBondDiagnostic,
+  backgroundHoldDecision,
+  parseTranscriptPath,
+  recordOwnedLaunch,
+  readOwnedIds,
+  recordBackgroundLaunch,
+  turnMarkerPath,
+  ownedWorkPath,
 } from './mirror-turn.mjs'
 
 /** A pid above any plausible pid_max — guaranteed ESRCH, i.e. provably dead. */
@@ -57,13 +64,26 @@ function withConnDir(fn) {
 }
 
 describe('resolveHookConversationId', () => {
-  it('prefers CLAUDE_CODE_SESSION_ID env (the value write stamps)', () => {
+  it("prefers the firing hook's own session_id over an inherited CLAUDE_CODE_SESSION_ID", () => {
+    // REVERSED from "prefers CLAUDE_CODE_SESSION_ID env (the value write stamps)"
+    // (item ffd6e767, 2026-10-10). The two agree whenever this Claude Code set the env
+    // itself. They differ when a Claude Code is started from inside another one's Bash
+    // tool: the child's own process env keeps the PARENT's id, and the hooks module
+    // runs this script through $.process.run with that env and the child's own id on
+    // stdin. Env-first resolved the parent's connection, and the child's prompt
+    // appeared in the parent's room as the owner's message. Third of its shape, after
+    // SHELL_SESSION_ID and a foreign host's id (both below).
     assert.equal(
-      resolveHookConversationId('{"session_id":"stdin-conv"}', {
-        CLAUDE_CODE_SESSION_ID: 'env-conv',
+      resolveHookConversationId('{"session_id":"child-conv"}', {
+        CLAUDE_CODE_SESSION_ID: 'parent-conv',
       }),
-      'env-conv',
+      'child-conv',
     )
+  })
+
+  it('uses CLAUDE_CODE_SESSION_ID when the hook input carries no session_id', () => {
+    assert.equal(resolveHookConversationId('{}', { CLAUDE_CODE_SESSION_ID: 'env-conv' }), 'env-conv')
+    assert.equal(resolveHookConversationId('', { CLAUDE_CODE_SESSION_ID: 'env-conv' }), 'env-conv')
   })
 
   it('falls back to CLAUDE_SESSION_ID', () => {
@@ -600,5 +620,205 @@ describe('stopBondDiagnostic — a turn that will not end says why (item 3b88955
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('backgroundHoldDecision — a Stop that only waits on background work keeps the command open (item f4a79327)', () => {
+  const NOW = Date.parse('2026-10-04T17:30:52.000Z')
+  const startedAt = NOW - 10_000
+  const job = { toolUseId: 'toolu_A', taskId: 'bxhtqls7l', tool: 'Bash', description: 'Sleep 40 seconds' }
+
+  it('holds while a job launched during this command is still running', () => {
+    const seen = []
+    const hold = backgroundHoldDecision({
+      marker: { startedAt },
+      transcriptPath: '/t.jsonl',
+      now: NOW,
+      readOutstanding: (file, since) => { seen.push([file, since]); return [job] },
+    })
+    assert.deepEqual(hold, [job])
+    // The window is the command's own start: earlier jobs belong to earlier work.
+    assert.deepEqual(seen, [['/t.jsonl', startedAt]])
+  })
+
+  it('ends the turn when nothing is left running', () => {
+    assert.equal(backgroundHoldDecision({ marker: { startedAt }, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [] }), null)
+  })
+
+  it('never holds once the agent closed the turn itself (no marker)', () => {
+    assert.equal(backgroundHoldDecision({ marker: null, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }), null)
+  })
+
+  it('never holds a turn the poller has already let go (no sign of life for an hour)', () => {
+    const hold = backgroundHoldDecision({
+      marker: { startedAt: NOW - 60 * 60 * 1000 },
+      transcriptPath: '/t.jsonl',
+      now: NOW,
+      readOutstanding: () => [job],
+    })
+    assert.equal(hold, null)
+  })
+
+  // Item 9e8dda57: on 2026-10-06 three commands were cut off at exactly 60 minutes
+  // from pickup while their own work was still running.
+  it('keeps holding a command older than an hour while it is still alive', () => {
+    const startedLongAgo = NOW - 3 * 60 * 60 * 1000
+    const recentToolCall = { turn: startedLongAgo, at: NOW - 5 * 60 * 1000 }
+    assert.deepEqual(
+      backgroundHoldDecision({ marker: { startedAt: startedLongAgo }, activity: recentToolCall, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }),
+      [job],
+    )
+    // Held by the previous Stop: nothing fires while Claude waits, and that is not death.
+    assert.deepEqual(
+      backgroundHoldDecision({ marker: { startedAt: startedLongAgo, held: true }, transcriptPath: '/t.jsonl', now: NOW, readOutstanding: () => [job] }),
+      [job],
+    )
+  })
+})
+
+describe('parseTranscriptPath', () => {
+  it('reads transcript_path from the hook input', () => {
+    assert.equal(parseTranscriptPath(JSON.stringify({ transcript_path: '/home/u/.claude/projects/p/s.jsonl' })), '/home/u/.claude/projects/p/s.jsonl')
+  })
+  it('returns null for missing or malformed input', () => {
+    assert.equal(parseTranscriptPath('{}'), null)
+    assert.equal(parseTranscriptPath('not json'), null)
+    assert.equal(parseTranscriptPath(''), null)
+  })
+})
+
+/**
+ * Item beb0e005: the host's own in-flight list decides. Shapes are the ones Claude Code
+ * 2.1.289 sent a probe on 2026-10-05, when one run started a background command and a
+ * subagent and then ended its turn. The DevSpec listener is in the list as `shell`.
+ */
+describe('backgroundHoldDecision — Claude Code says what is still running (item beb0e005)', () => {
+  const NOW = Date.parse('2026-10-05T15:30:00.000Z')
+  const marker = { startedAt: NOW - 30_000 }
+  const LISTENER = {
+    id: 'bjc8wt84h',
+    type: 'shell',
+    status: 'running',
+    description: 'DevSpec: messages sent to this agent (load the devspec-remote-command skill once per conversation, then answer each)',
+  }
+  const SHELL = { id: 'bvem1pf78', type: 'shell', status: 'running', description: 'Background sleep probe' }
+  const SUBAGENT = { id: 'a9f2b562e4a5fba8e', type: 'subagent', status: 'running', description: 'sleep probe' }
+  const neverTranscript = () => { throw new Error('the transcript must not be read when the host sends its list') }
+
+  it('holds while a subagent this command launched is running, which the transcript reader never saw', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER, SUBAGENT],
+      ownedIds: [SUBAGENT.id],
+      readOutstanding: neverTranscript,
+    })
+    assert.deepEqual(hold, [{ id: SUBAGENT.id, kind: 'subagent', description: 'sleep probe', status: 'running' }])
+  })
+
+  it('keeps holding after one job finishes while another is still running', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER, SUBAGENT],
+      ownedIds: [SHELL.id, SUBAGENT.id],
+      readOutstanding: neverTranscript,
+    })
+    assert.deepEqual(hold.map((job) => job.id), [SUBAGENT.id])
+  })
+
+  it('never holds for the DevSpec listener, which is always running and never launched by the turn', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER],
+      ownedIds: [SHELL.id, SUBAGENT.id],
+      readOutstanding: neverTranscript,
+    })
+    assert.equal(hold, null)
+  })
+
+  it('never holds for work an earlier command started', () => {
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: [LISTENER, SHELL, SUBAGENT],
+      ownedIds: [],
+      readOutstanding: neverTranscript,
+    })
+    assert.equal(hold, null)
+  })
+
+  it('falls back to the transcript only when the host sends no list', () => {
+    const job = { toolUseId: 'toolu_A', taskId: 'bxhtqls7l', tool: 'Bash', description: 'Sleep 40 seconds' }
+    const hold = backgroundHoldDecision({
+      marker,
+      now: NOW,
+      backgroundTasks: null,
+      ownedIds: [],
+      readOutstanding: () => [job],
+    })
+    assert.deepEqual(hold, [job])
+  })
+})
+
+describe('recordOwnedLaunch / readOwnedIds — a turn owns the background work its tool calls start (item beb0e005)', () => {
+  const CONNECTION = '11111111-2222-4333-8444-555555555555'
+  const NOW = Date.parse('2026-10-05T15:30:00.000Z')
+  function withDir(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-owned-'))
+    try {
+      return fn(dir)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const openTurn = (dir, startedAt) => fs.writeFileSync(turnMarkerPath(CONNECTION, dir), JSON.stringify({ startedAt }), { mode: 0o600 })
+
+  it('records nothing when no turn is open', () => withDir((dir) => {
+    assert.equal(recordOwnedLaunch(CONNECTION, { id: 'bx1', kind: 'shell' }, { dir, now: NOW }), false)
+    assert.equal(fs.existsSync(ownedWorkPath(CONNECTION, dir)), false)
+  }))
+
+  it('records launches against the open turn, and a new command does not inherit them', () => withDir((dir) => {
+    openTurn(dir, NOW - 5_000)
+    assert.equal(recordOwnedLaunch(CONNECTION, { id: 'bx1', kind: 'shell' }, { dir, now: NOW }), true)
+    assert.equal(recordOwnedLaunch(CONNECTION, { id: 'a1', kind: 'subagent' }, { dir, now: NOW }), true)
+    assert.deepEqual(readOwnedIds(CONNECTION, { startedAt: NOW - 5_000 }, dir), ['bx1', 'a1'])
+    // The poller picks up the next command by writing a new start.
+    openTurn(dir, NOW + 1_000)
+    assert.deepEqual(readOwnedIds(CONNECTION, { startedAt: NOW + 1_000 }, dir), [])
+  }))
+
+  it('keeps every id when launches finish together in separate processes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-owned-'))
+    try {
+      openTurn(dir, NOW - 5_000)
+      const { spawn } = await import('node:child_process')
+      const script = `import { recordOwnedLaunch } from ${JSON.stringify(new URL('./mirror-turn.mjs', import.meta.url).href)}
+        recordOwnedLaunch(process.argv[1], { id: process.argv[2], kind: 'shell' }, { dir: process.argv[3], now: ${NOW} })`
+      const ids = Array.from({ length: 12 }, (_, i) => `b${i}`)
+      await Promise.all(ids.map((id) => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['--input-type=module', '-e', script, CONNECTION, id, dir], { stdio: 'ignore' })
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))))
+      })))
+      assert.deepEqual(readOwnedIds(CONNECTION, { startedAt: NOW - 5_000 }, dir).sort(), [...ids].sort())
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('records the id from the tool result Claude Code hands PostToolUse', () => {
+    // The conversation is resolved the way every hook resolves it (resolveHookConversationId);
+    // which id that is depends on the environment the test runs in, so the stub accepts any.
+    const recorded = []
+    const load = () => ({ connection_id: CONNECTION })
+    const record = (connectionId, launch) => { recorded.push([connectionId, launch]); return true }
+    const post = (tool_name, tool_response) => JSON.stringify({ session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name, tool_response })
+    assert.ok(recordBackgroundLaunch(post('Agent', { agentId: 'a9f2b562e4a5fba8e', status: 'async_launched', isAsync: true }), { load, record }))
+    assert.equal(recordBackgroundLaunch(post('Bash', { stdout: '', stderr: '', interrupted: false }), { load, record }), false)
+    assert.deepEqual(recorded, [[CONNECTION, { id: 'a9f2b562e4a5fba8e', kind: 'subagent' }]])
+    // A conversation with no connection records nothing.
+    assert.equal(recordBackgroundLaunch(post('Bash', { backgroundTaskId: 'bx9' }), { load: () => null, record }), false)
   })
 })

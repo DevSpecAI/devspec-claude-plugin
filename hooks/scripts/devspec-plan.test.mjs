@@ -14,22 +14,6 @@ import {
 } from './devspec-plan.mjs'
 import { mcpToolsCall, mcpToolsList } from './mcp-call.mjs'
 
-/**
- * A BLOAT ceiling for one tool's discovery entry, not a budget to write up against.
- *
- * This was 2,100 against a real server `manage_plan` entry of 2,091 — nine
- * characters of headroom, so it would have failed on adding a word to the
- * description rather than on real bloat. Owner direction, 2026-09-05 (DevSpec item
- * 45588384, corrected in Pi first): an instruction should be sensible, not as short
- * as possible, and a hard test must not make it difficult or lossy to tell a model
- * something it genuinely needs. DevSpec's own aggregate cap was the cautionary case
- * — it sat at 123,498 of 123,500 and was silently cutting 49 instructions off
- * mid-sentence.
- *
- * What this still catches is the thing that actually costs: a pasted contract or a
- * dumped verb map arriving in one tool's schema.
- */
-const DISCOVERY_BLOAT_CEILING_CHARS = 4_000
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
@@ -42,12 +26,15 @@ function source(relative) {
 
 describe('Claude shared-plan policy surfaces', () => {
   const skill = source('skills/devspec-session-plan/SKILL.md')
-  const remote = source('commands/devspec.remote.md')
+  // What a remote agent is taught is the connect command plus the handling skill both
+  // wake paths share (item b7ef1fe2).
+  const handling = source('skills/devspec-remote-command/SKILL.md')
+  const remote = source('commands/devspec.remote.md') + '\n' + handling
 
   it('supports attended and remote use while routine read-only investigation never plans', () => {
     assert.match(skill, /Routine read-only investigation never warrants a plan/)
     assert.match(remote, /Routine read-only investigation never warrants a plan/)
-    assert.match(remote.match(/^allowed-tools: (.+)$/m)?.[1] ?? '', /mcp__devspec__manage_plan/)
+    assert.match(handling.match(/^allowed-tools: (.+)$/m)?.[1] ?? '', /mcp__devspec__manage_plan/)
     assert.match(skill, /describe\/use bridge/)
     assert.match(remote, /remote-control-state\.mjs" status/)
     assert.doesNotMatch(remote, /read `~\/\.devspec\/remote-control\/connections/)
@@ -67,40 +54,21 @@ describe('Claude shared-plan policy surfaces', () => {
   })
 
   it('does not let plans become claim or provenance evidence', () => {
-    assert.match(skill, /outside action-item mutation claim enforcement/)
+    assert.match(skill, /outside task mutation claim enforcement/)
     assert.match(skill, /cannot create claim\/provenance evidence/)
     for (const operation of ['reserve_work_items', 'claim_work_item', 'record_implementation']) {
       assert.match(skill, new RegExp(operation))
     }
   })
 
-  it('keeps idle discovery unchanged and bounds the on-demand skill footprint', () => {
+  it('keeps idle discovery unchanged', () => {
     const hooks = JSON.parse(source('hooks/hooks.json'))
     const sessionStart = JSON.stringify(hooks.hooks.SessionStart)
     assert.doesNotMatch(sessionStart, /manage_plan|active_session_plans/)
-    // BLOAT ceilings, not budgets to write up against. The idle-context concern is
-    // real — this command is always loaded — but the previous numbers were rations:
-    // 15,700 against a command that had already reached 15,970, so main was RED and
-    // the only way through was to delete something a model needs. 3,200 against a
-    // 2,755-byte skill was 445 bytes of room.
-    //
-    // Owner direction, 2026-09-05 (DevSpec item 45588384, corrected in Pi first):
-    // an instruction should be sensible, not as short as possible, and a hard test
-    // must not make it difficult or lossy to tell a model something it genuinely
-    // needs. The mechanics that keep this cheap are structural and unchanged —
-    // capability detail lives in an on-demand skill or in the server's own tool
-    // description, not here. If you are near these, move a section out to a skill
-    // or point at the served contract; do not raise the number.
-    const REMOTE_COMMAND_BLOAT_CEILING_BYTES = 24_000
-    const ON_DEMAND_SKILL_BLOAT_CEILING_BYTES = 6_000
-    assert.ok(
-      Buffer.byteLength(remote) < REMOTE_COMMAND_BLOAT_CEILING_BYTES,
-      `remote command bloated to ${Buffer.byteLength(remote)} bytes (ceiling ${REMOTE_COMMAND_BLOAT_CEILING_BYTES})`,
-    )
-    assert.ok(
-      Buffer.byteLength(skill) < ON_DEMAND_SKILL_BLOAT_CEILING_BYTES,
-      `on-demand skill bloated to ${Buffer.byteLength(skill)} bytes (ceiling ${ON_DEMAND_SKILL_BLOAT_CEILING_BYTES})`,
-    )
+    // The byte ceilings that used to follow (24,000 for the remote command, 18,000 for
+    // the handling skill, 6,000 for this one) were numbers no host imposes, and they
+    // failed on adding a sentence a model needs (item 9a4c0d6a). What Claude Code does
+    // cap is checked where it applies: skill-listing.test.mjs.
   })
 })
 
@@ -233,10 +201,6 @@ describe('schema-complete MCP describe/use reachability', () => {
       }
       const tools = await mcpToolsList(options)
       assert.deepEqual(tools.map((tool) => tool.name), ['manage_plan'])
-      assert.ok(
-        JSON.stringify(tools[0]).length < DISCOVERY_BLOAT_CEILING_CHARS,
-        `manage_plan discovery bloated to ${JSON.stringify(tools[0]).length} chars (ceiling ${DISCOVERY_BLOAT_CEILING_CHARS})`,
-      )
       const properties = tools[0].inputSchema.properties
       for (const property of ['expected_revision', 'current_step_id', 'next_step_id', 'retryable']) {
         assert.ok(Object.hasOwn(properties, property), `missing ${property}`)

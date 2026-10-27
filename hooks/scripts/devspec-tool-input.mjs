@@ -1,0 +1,47 @@
+/** One PreToolUse input writer: scope and version stamps must not race each other. */
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { versionedConnectionArguments, connectionVersionHook } from './connection-version.mjs'
+import { conversationScopeHook } from './conversation-project.mjs'
+import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { ownConnectionId, withOwnConnection } from './own-connection.mjs'
+import { stampRequest } from './request-ref.mjs'
+import { isNoticeReply, prepareNoticeReply } from './notice-reply.mjs'
+
+export function prepareDevspecToolInput(input, { env = process.env, home } = {}) {
+  const match = /^mcp__(?:plugin_devspec_)?devspec__(.+)$/.exec(input?.tool_name ?? '')
+  if (!match || !input.tool_input || typeof input.tool_input !== 'object' || Array.isArray(input.tool_input)) return {}
+  if (typeof input.session_id !== 'string' || !input.session_id) return connectionVersionHook(input)
+  const endpoint = input.tool_name.startsWith('mcp__plugin_devspec_') && env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL
+    ? env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL
+    : resolveDevspecMcpAuth(input.cwd || process.cwd(), { env }).mcp_url
+  const scoped = conversationScopeHook(input, { endpoint, home })
+  if (scoped?.hookSpecificOutput?.permissionDecision === 'deny') return scoped
+  const prepared = scoped?.hookSpecificOutput?.updatedInput ?? input.tool_input
+  // This conversation's own connection, so the write says where it came from (item 718825fc).
+  const connectionId = ownConnectionId(input.session_id, { ...(home ? { home } : {}), env })
+  const withConnection = withOwnConnection(match[1], prepared, connectionId)
+  // A reply to a DevSpec notice serves no request: it is posted as the ids the
+  // server takes, and nothing else is added to it (item 8ad9f857, notice-reply.mjs).
+  const request = match[1] === 'post_session_message' && isNoticeReply(withConnection)
+    ? { args: prepareNoticeReply(withConnection) }
+    // ...and the request it serves, so two people's work on this agent is never
+    // credited to each other (item 7a4d04fd, request-ref.mjs).
+    : stampRequest(match[1], withConnection, connectionId, input.agent_id, { ...(home ? { home } : {}) })
+  if (request.deny) {
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: request.deny } }
+  }
+  const stamped = request.args
+  if (!scoped && stamped === prepared && match[1] !== 'register_connection' && match[1] !== 'attach_connection') return {}
+  return { hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    updatedInput: versionedConnectionArguments(match[1], stamped),
+    // No allow decision: the host's ordinary permissions and other hooks still apply.
+  } }
+}
+let main = false
+try { main = !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
+if (main) {
+  try { process.stdout.write(JSON.stringify(prepareDevspecToolInput(JSON.parse(readFileSync(0, 'utf8'))))) }
+  catch { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'DevSpec could not safely read this conversation’s project scope. Reconnect or start a fresh conversation.' } })) }
+}

@@ -42,15 +42,19 @@
  * deployment safety and host sandboxing are independent and untouched).
  */
 
+import { devspecToolVerb } from './devspec-tool-name.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
-import { devspecFolderMarker, gitRemoteOrigin } from './devspec-scope.mjs'
+import { findProjectPin, gitRemoteOrigin, workTreeRootFrom } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { readConversationProject } from './conversation-project.mjs'
 import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { isEntryPoint } from './entry-point.mjs'
+import { conversationClaims, gitIn, noClaimText, projectScope, severalClaimsText } from './commit-stamp.mjs'
+import { observerActive } from './git-observer.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
 export const CLAIM_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -74,12 +78,11 @@ const UUID_RE = new RegExp(`^${UUID}$`, 'i')
  */
 const REFERENCE_RE = new RegExp(`\\[devspec:(${UUID})\\]`, 'i')
 
-const CLAIM_TOOL = 'mcp__devspec__claim_work_item'
-const RELEASE_TOOLS = new Set([
-  'mcp__devspec__record_implementation',
-  'mcp__devspec__fail_work_item',
-  'mcp__devspec__release_work_item',
-])
+// Verbs, not tool names: the same tool arrives as mcp__plugin_devspec_devspec__<verb>
+// from this plugin's own server and as mcp__devspec__<verb> from a hand-configured
+// one, and comparing raw names meant the plugin's own never matched (ddc40cc8).
+const CLAIM_VERB = 'claim_work_item'
+const RELEASE_VERBS = new Set(['record_implementation', 'fail_work_item', 'release_work_item'])
 
 /** Tools this hook is registered for. Edits are observed; only Bash can be denied. */
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit'])
@@ -242,7 +245,7 @@ function writeClaims(scope, claims, { env = process.env, now = Date.now(), platf
  * `--no-edit`) where appending text would be unsafe or would edit a message that is
  * not this commit's.
  */
-export function simpleGitCommit(command) {
+export function simpleGitCommit(command, { onInvocation } = {}) {
   if (typeof command !== 'string' || command.length === 0 || command.length > 8192) return null
 
   const segments = [[]]
@@ -331,11 +334,14 @@ export function simpleGitCommit(command) {
   if (words.length === 0) return null
   if (words[0].value !== 'git') return null
 
+  const directoryChanges = segments.length === 2 && segments[0][0]?.value === 'cd'
+    ? [segments[0][1].value] : []
   let index = 1
   while (index < words.length && words[index].value.startsWith('-')) {
     const option = words[index].value
     if (option === '-C') {
       if (!words[index + 1] || words[index + 1].value.startsWith('-')) return null
+      directoryChanges.push(words[index + 1].value)
       index += 2
       continue
     }
@@ -388,6 +394,8 @@ export function simpleGitCommit(command) {
   // reported unappendable and fall through to the recovery path instead.
   const closing = command[message.end - 1]
   const quoted = closing === '"' || closing === "'"
+  // Optional observation metadata reuses this reader; it never changes gate policy.
+  onInvocation?.({ directoryChanges, commitArgs: rest.map((entry) => entry.value) })
   return {
     message: message.value,
     insertOffset: message.end - 1,
@@ -472,7 +480,7 @@ const HEREDOC_DELIMITER = /^[A-Za-z_][A-Za-z0-9_]*$/
  * options, refused flags and duplicate messages applies here unchanged and cannot
  * drift away from it.
  */
-export function heredocGitCommit(command) {
+export function heredocGitCommit(command, options = {}) {
   if (typeof command !== 'string' || command.length === 0 || command.length > 8192) return null
   if (command.includes('`')) return null
 
@@ -530,7 +538,7 @@ export function heredocGitCommit(command) {
 
   // Every prefix, global-option, refused-flag and duplicate-message rule comes from
   // the existing reader, applied to the equivalent simple command.
-  const simple = simpleGitCommit(normalised)
+  const simple = simpleGitCommit(normalised, options)
   if (!simple || simple.message !== 'x') return null
 
   // Append to the SUBJECT line, inside the heredoc. Appending after the terminator
@@ -581,6 +589,8 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
     marker = null,
     env = process.env,
     timeoutMs = ONLINE_TIMEOUT_MS,
+    localId = null,
+    projectHome = os.homedir(),
     call = mcpToolsCall,
   } = options
 
@@ -591,6 +601,11 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
   // instead of guessing from an account-wide token. Both are best-effort: without them
   // an unresolvable project is an error, which is an allow.
   const args = { commit_message: commitMessage }
+  try {
+    const choice = readConversationProject(localId, { endpoint: auth.mcp_url, home: projectHome })
+    if (choice?.status === 'blocked') return 'indeterminate'
+    if (choice?.status === 'selected') args.project_id = choice.project.id
+  } catch { return 'indeterminate' } // uncertain scope never becomes a false not_found
   if (marker?.kind === 'pin' && typeof marker.project_id === 'string' && marker.project_id) {
     args.pinned_project_id = marker.project_id
   }
@@ -630,12 +645,19 @@ function deny(reason) {
   }
 }
 
+/**
+ * The agent is told as well as the terminal: the contract asks a host that adds the
+ * reference to say so, and the agent writes one itself only where nothing was added
+ * (implementation contract 5.4.0, commit_provenance_contract.stamping; item cc92aa54).
+ */
 function stamp(updatedCommand, toolInput, itemId) {
+  const message = `DevSpec: added [devspec:${itemId}] to this commit's message, for the one task claimed in this conversation.`
   return {
-    systemMessage: `DevSpec stamped [devspec:${itemId}] onto this commit message (one active claim).`,
+    systemMessage: message,
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       updatedInput: { ...toolInput, command: updatedCommand },
+      additionalContext: message,
     },
   }
 }
@@ -659,24 +681,28 @@ function nudge(message) {
 /**
  * How a denial reads matters as much as when it fires: the work is already written by
  * the time a commit is refused, so the message must be a complete recipe the agent can
- * follow alone. It never terminates the turn and never demands a full criteria set —
- * a thin last-mile item is a legitimate answer.
+ * follow alone. It never terminates the turn and never demands a full criteria set.
+ * It used to call "a thin last-mile item" with a one-line description fine; since the
+ * server requires a substantive description and a stated reason on every create_task
+ * (and refuses thin ones before writing), following that advice mid-commit got the
+ * agent refused a second time (item 9a4c0d6a). Which item to reuse, reopen or create
+ * is the served contract's work_entry_contract, so this points there instead.
  */
 function recoveryText(claims) {
-  if (claims.length > 1) {
+  // The one case the agent writes the tag itself: the plugin never guesses between claims.
+  // The same words as the git stand-in's (commit-stamp.mjs).
+  if (claims.length > 1) return severalClaimsText(claims)
+  // With one claim, every commit shape this reads is tagged for the agent (item
+  // 3e24523e); the agent never types an id it could get wrong. The only one-claim
+  // commit that reaches here is a bare, unquoted -m word, which cannot take a tag.
+  if (claims.length === 1) {
     return [
-      `DevSpec: this commit has no [devspec:<id>] reference and ${claims.length} claims are active, so nothing was added automatically.`,
-      `Pick the one this commit belongs to and put it in the message: ${claims.map((id) => `[devspec:${id}]`).join(' or ')}`,
-      'Then retry the commit. Nothing else is blocked.',
+      'DevSpec: this commit has no [devspec:<id>] reference, and its message is a bare word the tag cannot be added to.',
+      'Put the message in quotes (-m "…") and retry the commit: the tag for the task you have claimed is added for you.',
+      'Nothing else is blocked.',
     ].join(' ')
   }
-  return [
-    'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
-    'Recover without leaving this turn: reuse or create the smallest item that covers it',
-    '(search_action_items, or create_action_item with a one-line description — a thin',
-    'last-mile item is fine), then add [devspec:<full-uuid>] to the commit message and retry.',
-    `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
-  ].join(' ')
+  return noClaimText()
 }
 
 /**
@@ -688,7 +714,7 @@ function recoveryText(claims) {
  * contract *requires* work to happen in one. Looking only at the cwd would leave this
  * check silently inert for exactly the workflow it exists to protect, which is the same
  * mistake 0.16.0 made about the commit shape. Jurisdiction already consults the main
- * worktree for the same reason (`devspecFolderMarker`).
+ * worktree for the same reason (`repositoryJurisdiction`).
  */
 function resolveAuth(cwd, mainWorktree, env) {
   const hostToken = hostTokenFromEnv(env)
@@ -709,13 +735,13 @@ function resolveAuth(cwd, mainWorktree, env) {
  * message names the cause that actually produces this: the reference is well formed, so
  * the mistake is in its VALUE, not its syntax.
  */
-function unresolvedReferenceText(reference) {
+export function unresolvedReferenceText(reference) {
   return [
     `DevSpec: [devspec:${reference}] is well formed but resolves to no item in this project,`,
     'so this commit would read as linked and link to nothing.',
     'That is usually a correct short code with a wrong uuid tail, or an item belonging to a different project.',
-    'Recover without leaving this turn: confirm the id (get_action_item, or search_action_items),',
-    'correct the reference in the commit message and retry.',
+    'Recover without leaving this turn: remove the reference and retry; with one task claimed, its tag is',
+    'added for you. Or confirm the id (get_task, or search_tasks), correct the reference and retry.',
     `Authority: ${CONTRACT_URI}. Nothing else is blocked, and no other command is affected.`,
   ].join(' ')
 }
@@ -731,8 +757,8 @@ export function handleSessionStart() {
 
 export function handlePost(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
-  const tool = input?.tool_name ?? input?.toolName
-  if (tool !== CLAIM_TOOL && !RELEASE_TOOLS.has(tool)) return null
+  const verb = devspecToolVerb(input?.tool_name ?? input?.toolName)
+  if (verb !== CLAIM_VERB && !RELEASE_VERBS.has(verb)) return null
   let scope
   try { scope = scopeFrom(input) } catch { return null }
 
@@ -740,7 +766,7 @@ export function handlePost(input, options = {}) {
   if (!itemId) return null
   const current = readClaims(scope, { env, now, platform })
   try {
-    if (tool === CLAIM_TOOL) {
+    if (verb === CLAIM_VERB) {
       writeClaims(scope, [...current, itemId], { env, now, platform })
     } else {
       writeClaims(scope, current.filter((id) => id !== itemId), { env, now, platform })
@@ -765,7 +791,7 @@ function claimedItemIdFrom(input) {
     }
   }
   collect(response)
-  const requested = input?.tool_input?.action_item_id
+  const requested = input?.tool_input?.task_id
   for (const text of texts) {
     let parsed
     try { parsed = JSON.parse(text) } catch { continue }
@@ -785,6 +811,31 @@ function claimedItemIdFrom(input) {
   return null
 }
 
+/**
+ * Whether this repository is the connected project's, as implementation contract 5.4.0
+ * `commit_provenance_contract.project_association` puts it: it carries a project pin,
+ * or its remote is one of the connected project's repositories (item f7f12de1). The
+ * pin is looked for from the folder up to the repository's top and then in its main
+ * working tree, because a linked worktree carries none (convention 182fc97f). A
+ * DevSpec server declared in the folder's MCP configuration is not jurisdiction: it
+ * says DevSpec is used here, not that this repository is the project's. Returns
+ * `{ kind: 'pin', project_id }`, `{ kind: 'remote' }` or null.
+ */
+function repositoryJurisdiction(scope, env) {
+  const home = env.USERPROFILE || env.HOME || os.homedir()
+  const pin = findProjectPin(scope.cwd, {
+    home,
+    root: workTreeRootFrom(scope.cwd, { home }),
+    mainWorktree: scope.mainWorktree ?? null,
+  })
+  if (pin) return { kind: 'pin', project_id: pin.project_id }
+  const git = gitIn('git', scope.cwd)
+  const top = git(['rev-parse', '--show-toplevel'])
+  if (!top) return null
+  const project = projectScope({ cwd: scope.cwd, worktree: fs.realpathSync(top), sessionId: scope.sessionId, home, git })
+  return project?.inScope && project.via === 'remote' ? { kind: 'remote' } : null
+}
+
 export async function handlePre(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
   const tool = input?.tool_name ?? input?.toolName
@@ -793,32 +844,37 @@ export async function handlePre(input, options = {}) {
   let scope
   try { scope = scopeFrom(input) } catch { return null }
 
-  // Jurisdiction is positive and local: without a marker this folder is not ours.
-  // Uncertain jurisdiction allows, so a throwing marker lookup is an allow too.
+  // Where the git stand-in runs (git-observer.mjs), it tags and checks every commit
+  // itself, from git's own arguments (item e597bc18): reading the command here is
+  // only the fallback for a conversation it cannot reach.
+  if (tool === 'Bash' && (options.observerActive ?? observerActive)(scope.sessionId)) return null
+
+  // Only a commit this can read is worth a jurisdiction lookup: every other command is
+  // allowed untouched, by design, and costs no git call.
+  let command = ''
+  let commit = null
+  if (tool === 'Bash') {
+    command = typeof input?.tool_input?.command === 'string' ? input.tool_input.command : ''
+    commit = command ? simpleGitCommit(command) ?? heredocGitCommit(command) : null
+    if (!commit) return null
+  }
+
+  // Jurisdiction is positive, and a property of the repository: a project pin, or the
+  // repository's remote being one of the connected project's. Uncertain jurisdiction
+  // allows, so a throwing lookup is an allow too.
   let marker = null
   try {
-    marker = devspecFolderMarker(scope.cwd, {
-      home: env.USERPROFILE || env.HOME || os.homedir(),
-      mainWorktree: scope.mainWorktree,
-    })
+    marker = repositoryJurisdiction(scope, env)
   } catch { return null }
   if (!marker) return null
 
   const claims = readClaims(scope, { env, now, platform })
 
-  // Edits are never denied. At most one reminder per session+repository.
+  // Edits are never denied. At most one reminder per session+repository, and none
+  // once this conversation holds a claim anywhere: commits are tagged with it.
   if (EDIT_TOOLS.has(tool)) {
-    if (claims.length > 0) return null
+    if (claims.length > 0 || conversationClaims({ sessionId: scope.sessionId, stateDir: stateDir(env), now, platform }).length > 0) return null
     return maybeNudge(scope, { env, now, platform })
-  }
-
-  const command = typeof input?.tool_input?.command === 'string' ? input.tool_input.command : ''
-  if (!command) return null
-
-  const commit = simpleGitCommit(command) ?? heredocGitCommit(command)
-  if (!commit) {
-    // Not a shape we can read: allowed untouched, by design.
-    return null
   }
 
   const reference = referenceIn(commit.message)
@@ -834,6 +890,7 @@ export async function handlePre(input, options = {}) {
     const outcome = await confirmReferenceOnline(commit.message, {
       cwd: scope.cwd,
       mainWorktree: scope.mainWorktree,
+      localId: scope.sessionId,
       marker,
       env,
       timeoutMs: options.timeoutMs,
@@ -865,13 +922,15 @@ function maybeNudge(scope, { env, now, platform }) {
   // unreferenced commit "will be refused", which is true only of the shapes this can
   // read, and it named the reconciliation that happens afterwards — so it read as a
   // safety net. An agent that believes something will tidy up behind it has less
-  // reason to do the right thing now, and the right thing now is cheap: claim, or
-  // write one thin item. State that, and nothing else.
+  // reason to do the right thing now, and the right thing now is cheap: claim an
+  // existing task, or create one properly. "Write one thin item" was the old advice;
+  // the server now refuses thin creates (item 9a4c0d6a). Once one task is claimed the
+  // plugin tags the commits itself, so the agent is not asked to (item 3e24523e).
   return nudge(
-    'DevSpec: no work item is claimed in this repository, so work done here has nothing to trace it to. ' +
-    'Claim one before you commit — search_action_items for an existing item, or create_action_item for a ' +
-    'thin last-mile one — and put [devspec:<full-uuid>] in the commit message. Editing is never blocked. ' +
-    `Shown once per session. Authority: ${CONTRACT_URI}`,
+    'DevSpec: no task is claimed in this conversation, so work done here has nothing to trace it to. ' +
+    'Claim one before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
+    'with a real description and the reason it is needed, and claim it. With one task claimed, your commits ' +
+    `in the project's repositories are tagged for you. Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }
 
@@ -897,7 +956,7 @@ async function main() {
   throw new Error('usage: commit-provenance.mjs session-start|pre|post')
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) {
   main().catch((error) => {
     // Fail OPEN, always. A crash in provenance assistance must never stop work.

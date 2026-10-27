@@ -1,6 +1,625 @@
 # Changelog
 
+## 0.51.2 - 2026-10-27
+
+- The plugin's simpler commit check now uses DevSpec's rule for which repositories belong to your project: a repository whose remote address is one of the project's repositories, or one with a `.devspec/project.json` pin. That check reads Claude's commit commands where the plugin's stand-in for `git` does not run, and it also shows the reminder when Claude edits with no task claimed. A DevSpec server listed in a folder's MCP configuration no longer counts: it says DevSpec is used there, not that the repository is your project's. So a commit in a repository your project does not track is never stopped or tagged because of that entry, and one your project does track is checked by its remote even without a pin. The plugin still reads DevSpec credentials from the MCP configuration as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.1 - 2026-10-27
+
+- The plugin's instructions now match DevSpec's current rules for commits. Claude writes a task's tag into a commit message itself only when the plugin did not add it. That happens when Claude has to choose between several claimed tasks, or when it commits where the plugin does not see the commit, such as Claude Code's PowerShell tool on native Windows. When the plugin adds the tag, it now tells Claude as well as showing it in the terminal.
+- Recording an implementation no longer suggests naming the commit: DevSpec links the commits itself.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.0 - 2026-10-27
+
+- Full commit tracking now works on native Windows when Claude Code's PowerShell tool is turned off. Add `"CLAUDE_CODE_USE_POWERSHELL_TOOL": "0"` to the `env` section of `%USERPROFILE%\.claude\settings.json` and start a new conversation. Claude then runs its commands in Git Bash, which needs [Git for Windows](https://git-scm.com/downloads/win), and every commit is reported to DevSpec and tagged with its task, as on macOS and Linux. That includes commits made by scripts, in background commands, in Monitor commands and by subagents.
+- Tested with real Claude Code on a Windows machine, in GitHub Actions, on every change to the plugin's hooks.
+- While the PowerShell tool is on, which is the default on native Windows, nothing changes. The plugin adds nothing to the session's environment file, so the plugin's own settings still reach PowerShell commands. Commits made in PowerShell are not checked or tagged automatically. Commits made through the Bash tool get the simpler check, which covers plain commit commands only.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.50.3 - 2026-10-27
+
+- Corrected the README about native Windows. Claude Code's PowerShell tool is on by default there, and commits Claude makes through it are not checked or tagged automatically. Commits made through Claude's Bash tool get the simpler check, which covers plain commit commands only. For full commit tracking, use WSL. The sentence about which setups get full commit tracking is unchanged.
+- Groundwork for native Windows, not yet switched on: the plugin's stand-in for `git` now works under Git Bash. It handles Windows and Git Bash spellings of a path, spaces in paths, and the real `git.exe`. The plugin's check that a script was run directly now compares Windows paths correctly. Its tests run on Windows and Linux in GitHub Actions. The stand-in still does not start on native Windows: Claude Code's PowerShell tool never applies the setting that puts it in place, and turning it on would stop the plugin's other session settings from reaching PowerShell commands.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.50.2 - 2026-10-27
+
+- The README now says which setups get full commit tracking: "Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, or Windows through WSL." On native Windows, the plugin uses a simpler check that reads the commit command Claude runs. It catches plain commit commands, but not commits made by scripts, in background work or by subagents.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.50.1 - 2026-10-27
+
+- Restored: a task tag Claude writes into a commit message itself is checked with DevSpec again before the commit is made, now inside the plugin's stand-in for `git`. Since 0.17.0 a tag that names no task in the project, usually a correct short code with a wrong ending, stopped the commit with the likely cause. 0.50.0 had dropped that check wherever the stand-in runs, so such a commit would have linked to nothing.
+- Only a definitive answer that the tag names nothing stops the commit. If DevSpec cannot be reached, or does not answer clearly within 2.5 seconds, the commit goes ahead. A commit without a tag still makes no network call, whether the stand-in adds the tag for Claude or stops the commit because no task is claimed.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.50.0 - 2026-10-27
+
+- In any of your project's repositories, Claude's commits now carry their task's tag automatically when Claude has claimed one task, however the commit message is written. That includes the multi-line forms the plugin used to miss: a heredoc piped into `git commit -F -`, `-m "$(cat <<'EOF' … EOF)"`, and a message file given with `-F`. The plugin's private stand-in for `git` adds the tag to the message's subject before git runs. Your own message file is never edited; the stand-in uses a private copy.
+- A repository counts as the project's when its remote address is one of the project's repositories, or when it has a `.devspec/project.json` pin. It no longer needs a pin or a DevSpec `.mcp.json` entry, so tagging now works in an ordinary clone or worktree.
+- With no task claimed, a commit in the project's repositories is stopped before git runs, and Claude is told to claim the task and retry the same commit. With several tasks claimed, Claude is asked to name the right one, because the plugin never guesses. Nothing in the repository changes when a commit is stopped.
+- Amends, fixups, squashes, reused messages, `--no-edit`, messages that already name a task, and every repository outside the project are left exactly as they are.
+- The plugin's older reader of Claude's shell commands now runs only where the stand-in cannot: on Windows, and in conversations started before 0.49.0. The reminder shown when Claude edits with no task claimed now also appears in the project's repositories without a pin, and stops once the conversation has claimed a task anywhere.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.49.1 - 2026-10-27
+
+- When a commit is stopped because no task is claimed, Claude is now told to claim the right task and retry the same commit. The task's tag is added to the commit automatically, so Claude no longer has to type a task id it could get wrong. The reminder shown when Claude edits with no task claimed says the same.
+- Claude writes a task's tag itself only when it holds several claims and must say which one a commit belongs to, because the plugin never guesses. A commit stopped for a bare, unquoted message just needs the message quoted. A tag that names no task can be removed, and with one task claimed the right one is added.
+- The README now describes commit credit accurately. While Claude is connected, each commit it makes is credited to Claude. A commit reaches a task through the task's tag, which the plugin adds when exactly one task is claimed in a folder linked to the project, or when Claude records its implementation.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.49.0 - 2026-10-27
+
+- Every commit Claude makes is now reported to DevSpec by git itself, so it is credited to Claude and the work it was doing. Before, only some commits were reported, and only in a folder with a DevSpec project pin.
+- How it works: for each conversation, the plugin puts a private stand-in for `git` first on the `PATH` of the shell commands Claude Code runs, through the environment file Claude Code applies to every one of them. That covers Claude's own commands, its subagents, background commands and Monitor commands. The stand-in runs the real git unchanged. When git reports that it made a commit, the stand-in notes the full commit id, the branch and the repository's address. The plugin then reports the commit, and DevSpec decides which project the repository belongs to.
+- Commits are caught whether Claude runs `git -C`, a chained command, a script, an alias, an amend or a commit in a linked worktree. Claude's command text is never read to decide whether a commit happened.
+- Nothing is installed in your repositories, and your git configuration and hooks are untouched. A repository no longer needs a `.devspec/project.json` pin to be reported. The pin is used only when a repository has no remote address.
+- If a report can't be sent, Claude's git command still succeeds. The report is retried a few times, and every report, refusal and drop is written to `~/.devspec/git-observer/commits.log`. Commits made while Claude was not connected to DevSpec, and commits you make yourself outside Claude, are not reported as Claude's.
+- On Windows, where the stand-in does not run yet, the previous recogniser still reports the commits it can.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.48.1 - 2026-10-27
+
+- Fixed: when the plugin's folder path contains a space, the commits Claude makes are reported to DevSpec again, so they are credited to Claude and the task it was working on. Until now none were reported from such a path, and no error was shown. The check that let a script run only when Claude Code started it compared two spellings of the same path, and they differ when the path contains a space.
+- Every plugin script now makes that check the same way, comparing real paths. A script reached through a symlinked folder, such as a linked `~/.claude`, also runs as it should. A test fails if any script makes the check another way, and another test reports a commit from a plugin folder whose name contains a space.
+- The project-scope test runs again on current Claude Code, which loads DevSpec tools through tool search before using them. The plugin keeps a conversation to its own project either way.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.48.0 - 2026-10-27
+
+- When DevSpec tells Claude about its own work (a finding, or what happened to a change), Claude now tells you in the room as a reply to that notice. Until now, that message was filed as a late answer to whatever someone last asked Claude to do, or not stored at all. Every notice Claude is handed includes the exact call to make, with that notice's id, so Claude never has to remember it.
+- A reply to a notice never answers or ends a command. If a notice arrives while Claude is working on something you asked for, it can tell you about the notice in a separate message, and your request still gets its own answer. Even if that reply passes `complete_turn`, your request stays open and Claude still shows as working.
+- A conversation that started before DevSpec accepted notice replies sends the notice ids as the list DevSpec expects. Before, DevSpec refused them as text.
+- If DevSpec refuses a notice reply, Claude sees DevSpec's reason. When Claude isn't in a room, it tells you at the terminal instead.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.47.8 - 2026-10-26
+
+- Uses DevSpec's new settings page names: the personal settings page where you create or reveal your token is now **Agent setup**, and the project settings page for agent execution rules is now **Agent rules**. The token prompt, the two-keys warning and the README link to Agent setup, and the token prompt names the real **Create your token** button.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.47.7 - 2026-10-26
+
+- When a commit is stopped because it isn't linked to a task, the recovery message now asks the agent to find the right task, or to create one with a real description and the reason it is needed. It used to suggest a quick one-line task, which DevSpec now turns down, so following it left the commit stuck.
+- Work waiting for someone's OK is described correctly: it stays on its own branch until the OK is given, then merges and can be finished. The guidance also points to DevSpec's own rule on who can give the OK.
+- Corrected two tool hints: previewing a replacement applies to tasks, not memories, and accepting a proposal takes its revision as `revision`.
+- The reminder about an unlinked repository now points to the project's Settings → Repositories page.
+- The rules file an agent follows for the whole conversation no longer includes your personal reply style. Each message is answered in the style of the person who sent it.
+- Long messages are no longer cut short at 12,000 characters: a reply to an answered question and a prompt you type are sent whole. A prompt longer than a room message can hold (100,000 characters) is posted with a note saying how much is missing.
+- Removed the plugin's own size limits on its instruction files. The one limit Claude Code itself applies, the 1,536-character skill description, is now checked instead.
+
+## 0.47.5 - 2026-10-25
+
+- Updated the README with step-by-step installation, token configuration, permission-bypass guidance for remote phone and voice control, project selection, and command reference matching the in-app setup flow, and removed internal engineering notes from the published repository tree.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.47.4 - 2026-10-25
+
+- Updated task creation and editing guidance so task `intent` records synthesized rationale rather than conversational go-ahead quotes.
+
+## 0.47.3 - 2026-10-25
+
+- Enforced single-subject atomicity in task and memory guidance so distinct deliverables or decisions are recorded as separate linked records rather than bundled together.
+
+## 0.47.2 - 2026-10-25
+
+- Updated `skills/devspec-remote-command/SKILL.md` with task field partitioning guidance for `create_task` and `update_task`: place why the task exists, speaker attribution/quotes, and desired outcome in `intent`; write the complete product behaviour and architectural or technical mechanism in natural English in `description` (since duplicate and reversal screening reads `title`, `intent`, and `description`, never `ai_instructions`); keep `acceptance_criteria` as plain-prose checkable conditions; and place raw file paths, line numbers, code snippets, CSS classes, and edit recipes in `ai_instructions`.
+
+## 0.47.0 - 2026-10-22
+
+- Tool names, claim/result readers, remote instructions and status projections use the shared Tasks contract. Existing UUID claim records and `[devspec:<id>]` commit references are preserved.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.46.3 - 2026-10-17
+
+- Claude makes any decision you could make in DevSpec's Review for you, as soon as your request is clear: accepting or declining a proposed change (new: `decide_proposal`), answering on work that would undo a decision, saying a flagged record is still accurate, or resolving a duplicate. It warns you once, up front, only if you seem unaware of a significant consequence, and never asks you to confirm again. It then tells you what happened and what you can do next.
+- Claude no longer asks you to approve wording you gave it yourself before saving a rule or a decision, and saves a folder's default project straight away when you asked for exactly that.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.46.2 - 2026-10-17
+
+- Fixed: what DevSpec finds about Claude's own work now reaches Claude again: that a change would undo someone's decision, duplicates other work or breaks a requirement, and what happened to a change that was waiting on someone. Until now the plugin told DevSpec it couldn't read these, so they went only to your notifications and the Agents page showed the agent as "Not receiving findings".
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.46.1 - 2026-10-16
+
+- Security: your DevSpec key no longer appears on the command line of the commands Claude Code runs, where any other account on the same computer could read it. The plugin's own commands now read it from a file in `~/.devspec` that only your account can open, created for each Claude Code session and deleted when the session ends, or when the next session starts after a crash.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.46.0 - 2026-10-16
+
+- The plugin now tells DevSpec which plugin it is and which version, on every call, from Claude Code itself and from the plugin's own scripts. It only identifies the plugin and grants nothing; DevSpec uses it to know which agents have the plugin and, if a release ever breaks something, to ask you to update.
+- When your project's repositories are on GitHub and you haven't linked your GitHub account to DevSpec, Claude tells you once when it connects, with a link to open. Linking makes your pull requests and commits show as yours. It is one click, and DevSpec keeps no access to your GitHub account.
+- Claude tells you what DevSpec finds about its work while it is connected: that a change would undo someone's decision, duplicates other work, left a description out of date or breaks a requirement, and what happened to a change that was waiting on someone. A notice this version can't read is no longer dropped: Claude says one arrived.
+- Work that would undo someone else's decision, or an item marked as an experiment, is built on its own branch and not merged until it has the OK. Claude says who it is waiting for, and gives an OK, a no or any other answer on a decision only when the person it belongs to asks it to.
+- Claude records a decision only when it was a real choice, made for a reason, that will steer later work, and only once you've confirmed it was deliberate. A "related" link is just a link: it never settles anything.
+- Sessions you drive from DevSpec can answer for a person on a decision, resolve a duplicate, or record that two records are not duplicates, without stopping to ask for permission.
+- Fixed: once Claude had said which request a change was for, it could not change its mind, so work could end up credited to nobody. It can now name another request at any time, including a room message it has started on and not yet answered, even after something else woke it. A room message now stays open until Claude has given its final answer to it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.45.5 - 2026-10-16
+
+- When Claude has several independent questions for you, it now asks them together instead of one at a time, so you can answer them in one go and in any order. A question that depends on an earlier answer still waits for it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.45.3 - 2026-10-11
+
+- When Claude has to say which request a change is for, it's no longer offered "nobody's request" while a teammate's request is open, since DevSpec won't accept that. It can say it couldn't identify the request instead, and DevSpec takes it from there.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.45.2 - 2026-10-11
+
+- Fixed: a message that reaches Claude while it is already working, whether a teammate's message or something you type, no longer takes over the credit for the work in progress. Both requests are kept, and Claude says which one a DevSpec change is for before it is recorded.
+- Fixed: Claude can no longer state for itself whose request a change serves. Only the plugin does.
+- Claude now names which request background work is for before starting it, whenever it is carrying more than one request, so whatever that work does later is credited correctly.
+- Fixed: a teammate's message waiting to reach Claude is no longer marked finished when Claude's current turn ends.
+- Fixed: a request whose finish DevSpec didn't hear about is tried again, and a background job that ends without telling Claude no longer keeps its request open for ever. Messages from other sources, and loops started by two people, are handled too.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.45.1 - 2026-10-11
+
+- Work Claude does for a DevSpec automation run is credited to that run, even while someone's message to Claude is still open.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.45.0 - 2026-10-11
+
+- DevSpec now records whose request each piece of Claude's work serves, even when it happens later. A background command, a subagent, a workflow, a monitor, a scheduled wake-up or a loop that Claude started for someone carries on that person's request: what Claude does when it wakes it up is credited to them, and to your terminal when you typed the request here. Something Claude started that nobody asked for is recorded as Claude's own initiative. When the plugin cannot tell, it says nothing and DevSpec works it out as before: it never guesses.
+- Two people's requests on one Claude are never credited to each other. If a second person's message reaches Claude while it is working on the first, Claude has to say which request a DevSpec change is for before DevSpec will record it. The plugin tells it the one command to run.
+- On an older server the plugin keeps working as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.44.1 - 2026-10-11
+
+- Recording that one action item replaces another is now DevSpec's own supersede action, with a preview first. Sessions you drive from DevSpec can run both without stopping to ask for permission. The old conflict-ruling tools are gone from DevSpec and from the list of tools those sessions may use.
+- DevSpec's trial that asked Claude to judge which existing items its own change affected has ended, so its two tools are no longer pre-approved.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.44.0 - 2026-10-11
+
+- New: you can clear Claude's conversation from DevSpec. Use Clear conversation in the agent's controls, or type `/clear` to the agent. It runs exactly as typing `/clear` in Claude Code's terminal would: Claude starts afresh, stays connected to the same session, and the old conversation can still be picked up with `claude --resume`. If Claude is busy, it clears when it finishes what it is doing.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.43.0 - 2026-10-11
+
+- New: you can change Claude's thinking level and compact its conversation from DevSpec, as well as stop it. Open the agent's controls from the composer's To menu, or type `/thinking high` or `/compact` to the agent. Each runs exactly as typing `/effort` or `/compact` in Claude Code's terminal would, so a new thinking level also becomes Claude Code's default for that model in new sessions. If Claude is busy, the change waits until it finishes what it is doing, and Stop stays available meanwhile.
+- DevSpec now shows the thinking levels Claude's current model offers, and confirms the new level as soon as Claude Code has applied it.
+- Switching model from DevSpec is not offered for Claude Code: Claude Code asks for confirmation in its own terminal before switching model part-way through a conversation, and nobody is there to answer when you are steering from DevSpec.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.7 - 2026-10-10
+
+- Fixed: a Claude Code started from inside another Claude Code (for example `claude -p` run by the first one's Bash tool) no longer copies its prompt into the first conversation's DevSpec session as if you had typed it. Each prompt is now matched to the conversation it was actually typed in.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.6 - 2026-10-10
+
+- Fixed: if your DevSpec key is not saved in the plugin's own settings, Claude Code now tells you when a conversation starts, and again when you connect with `/devspec:devspec.remote`. Before, it said nothing. Without the key there, Claude Code quietly switches off part of the plugin: your agent's model on the Agents page, the DevSpec status line, stopping the agent from DevSpec, and copying what you type into the session. The message gives the one step that turns them back on (`/plugin` → Installed → DevSpec, press Enter, paste your `dvs_` key, restart Claude Code). This mostly affects setups where the key reaches Claude Code another way, such as a project `.mcp.json` or the `DEVSPEC_MCP_TOKEN` environment variable.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.5 - 2026-10-08
+
+- Fixed: when you drive Claude from DevSpec, it can now link two action items (a follow-up, a blocker, a related item) or remove such a link without stopping to ask permission in its terminal. Before, linking stalled Claude at a prompt only someone at the keyboard could answer.
+- Changed: Claude reserves the items you ask it to work on before it answers you, so each item it then works is recorded as asked for by you even after your message is answered.
+- Both manifests are bumped because Claude Code runs skills and commands from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.4 - 2026-10-08
+
+- Added: when Claude records finished work or a decision in DevSpec, DevSpec may ask it which existing action items that change affects. Claude can now answer (`assess_change_impact`, then `record_change_impact`) without stopping to ask permission when you drive it from DevSpec. Nothing in your project changes because of its answers.
+- Both manifests are bumped because Claude Code runs skills and commands from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.3 - 2026-10-07
+
+- Fixed: when you drive Claude from DevSpec, it can now leave a note on an action item without stopping to ask permission in its terminal. Before, a note stalled Claude at a prompt that only someone at the keyboard could answer. The same was true of linking a commit to an item, reopening an item before working on it again, recording finished work that had no item, and showing items on a room's card list; Claude can now do each of these without asking.
+- Both manifests are bumped because Claude Code runs skills and commands from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.2 - 2026-10-07
+
+- Changed: a note Claude leaves on an action item now says which of your agents wrote it, not only whose account. When Claude is driven from DevSpec it passes its connection on the notes it writes (`add_implementation_note`, progress updates, and the notes stored when it records or fails work), so two Claude Code windows working the same item are told apart on the item and to other agents reading it.
+- Both manifests are bumped because Claude Code runs hooks and skills from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.1 - 2026-10-07
+
+- Fixed: when DevSpec sends Claude an automation run, Claude now tells DevSpec exactly which agent is doing it, both when it takes the run and when it reports the result. Before, DevSpec had to work out which of your agents had taken the run, and with several connected it could only guess from where the run was aimed. If a run can't be taken, Claude now does what DevSpec's reply says (for example, carries on with a run it already holds) instead of always assuming another agent took it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.42.0 - 2026-10-06
+
+- Changed: DevSpec shows Claude as working for as long as the work actually lasts, not for at most an hour. Before, a request was treated as finished one hour after it arrived, even if Claude or its subagents were still busy on it. The open message was then closed with nothing in it ("No response"), and Claude's answer turned up later as a separate message. Now a request stays open while Claude keeps working on it, and while it waits for work it started in the background. Only a request with no activity at all for an hour is treated as finished, which covers Claude Code versions that can't report an interrupt.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.41.2 - 2026-10-06
+
+- Fixed: an empty "No response" bubble no longer appears in the room after Claude answers. When Claude had handed work to subagents, the plugin sent the room the same summary of that work again as Claude's turn ended. If Claude's answer had already closed its bubble, that repeat opened a new one with nothing in it. The summary is now sent only when it has changed since the last one DevSpec received.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.41.1 - 2026-10-06
+
+- Fixed: a scheduled prompt no longer appears in the room as your message. When a `/loop`, a routine or a reminder Claude scheduled for itself fired, the room showed its text as if you had just typed it. Now only prompts a person sent are shown as yours: ones typed in this terminal, sent through Claude Code's Remote Control, or given to `claude -p`. Background-task notices and messages from other sessions are not shown either. The plugin goes by where Claude Code says each prompt came from, not by what the prompt says.
+- Showing a typed prompt in the room now needs Claude Code 2.1.289 or later, like the terminal status line and Stop. On older versions, prompts typed in the terminal no longer appear in the room. Everything else works as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.41.0 - 2026-10-06
+
+- New: DevSpec now knows which model your Claude Code is running, without Claude having to say so. The composer's agent list, the session's agent lists and the Agents page show the model, its effort level and how full the context is, the same as they do for Pi, and work Claude claims records the model that did it. The figures come from Claude Code itself at the start and end of every turn, so after switching with /model the new model shows from the next turn. A subagent's model is not reported as the agent's. Nothing is sent for a conversation that is not connected to DevSpec.
+- Needs a Claude Code version with the plugin API (the same one Stop from DevSpec needs). On older versions nothing changes.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.40.1 - 2026-10-06
+
+- Fixed: denying a permission prompt no longer leaves the room showing Claude as working. Like an interrupt, a denied prompt ends Claude's turn without the step that tells DevSpec so; the plugin now notices any turn that ended without it and tells DevSpec itself.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.40.0 - 2026-10-06
+
+- New: Stop works for Claude Code. When Claude is in the middle of something, Stop in DevSpec (the square button in the session's composer) stops it in its terminal straight away, exactly as pressing Esc there would. The conversation and Claude Code stay open, ready for your next message. DevSpec offers Stop only for a Claude Code that can carry it out: one running this plugin on a Claude Code version with the plugin API it needs. Others simply don't show it.
+- Changed: owner controls no longer reach Claude as messages. Before, a control from DevSpec woke Claude with a note that it could not be carried out.
+- Fixed: stopping Claude, whether from DevSpec or with Esc in the terminal, no longer leaves the room showing it as working. Claude Code skips its usual end-of-turn step for an interrupted turn, so DevSpec was never told the turn ended.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.39.0 - 2026-10-06
+
+- New: an agent in a DevSpec room now keeps up with the room by itself. While it works, it is told when messages it hasn't read arrive, from you, a teammate or another agent, without being interrupted. That covers messages addressed to someone else and anything said since its last reply. It is told as counts (how many, from whom, how many are addressed to it), never the messages themselves, and it reads them with one command that hands them over whole, oldest first. Joining a room counts the room so far, so asking a newly joined agent "what do you think?" no longer depends on it choosing to scroll back.
+- New: before the agent posts to the room, if messages arrived that it hasn't been told about, the post is held once so it can read them first. It then posts the same answer or a better one. With nothing new, posts go straight through.
+- What counts is what you see in the room: anything from a person, another agent or Dev with text or files, including another agent's reply that is still being written. "Joined" and "left" markers, other system lines, empty or deleted messages, and the agent's own messages never count. A message that changes after the agent has read it is reported as updated.
+- Messages addressed to the agent still wake or interrupt it exactly as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.38.0 - 2026-10-06
+
+- New: when Claude Code stops on something only you can answer in its terminal, such as a permission prompt or a connected tool asking a question, DevSpec now shows the agent as waiting for you, says what for ("Approve Bash"), and notifies you. It is reported once Claude Code raises its own alert (a few seconds after the prompt appears), so answering straight away at the terminal never sends you a notification. Only the tool's name is sent, never its command, SQL or other input. The waiting state clears when you answer: a command you approve clears when it finishes running, and one you deny clears straight away. Needs the DevSpec server change that adds this (shown on the Agents page and in the room).
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.37.0 - 2026-10-06
+
+- New: ending an agent from DevSpec now closes its Claude Code in the terminal, straight away and even mid-task, so with many terminals open you no longer have to find and close the right one by hand. The conversation is kept and can be resumed with `claude --resume`. Only an End made in DevSpec does this: `/devspec:devspec.remote-stop` in the terminal, a detach, or a brief problem on DevSpec's side never closes Claude Code, and a conversation resumed in another window closes only there. Not on Windows yet, where the terminal line still says it was ended.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.36.0 - 2026-10-05
+
+- Changed: your and your project's rules now always reach Claude the same way, as one short line naming the file that holds them all, which Claude is told to read in full. Before, small rule sets were pasted into the conversation and large ones went to a file, so how the rules arrived depended on how many there were. Nothing is ever cut, and a changed rule set gets a new file name so Claude knows to read it again. `orient` names the same file.
+- New: the remote-command guidance says that writing @ and a person's name in an answer notifies that person.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.35.2 - 2026-10-05
+
+- New: when Claude hands work to subagents and waits, the session's Activity now shows them, the same way it does for Pi. You'll see "Reviewing with 2 agents", one row per subagent with the name Claude gave it and its model, and each row turns finished, with how long it took, when that subagent is actually done. A subagent that stops only to say it is still waiting on its own command stays running until it really finishes.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.35.1 - 2026-10-05
+
+- Fixed: when Claude handed work to a subagent and ended its turn to wait, DevSpec showed the agent idle while the subagent was still working. The request also closed at that point, so what Claude did after the subagent reported back was not recorded against the person who asked. The plugin now asks Claude Code what is still running, and keeps the agent Working and the request open until the subagents, background commands and workflows Claude started for that request have finished and Claude has answered. DevSpec's own always-on listener never counts, and neither does work left over from an earlier request. On Claude Code versions that don't report running work, behaviour is the same as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.35.0 - 2026-10-05
+
+- Changed: DevSpec now shows Claude only the DevSpec tools it should call. The connection plumbing that the plugin's own scripts use (registering, polling, keep-alives, pickup and completion reports) no longer appears in Claude's tool list. The plugin declares the two plumbing tools Claude still calls itself, to mark the connection offline and detach it in `/devspec:devspec.remote-stop`, so those stay available. Everything else works as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.34.0 - 2026-10-05
+
+- New: the terminal now shows how this Claude Code stands with DevSpec. A line under the prompt gives the name it has on the Agents page, the DevSpec project, the session it is attached to and the item it is working on, for example `devspec: Cosmic Raven · DevSpec · “Fix the login redirect” · working on c6dcb524`. A short notice appears when it connects. When someone ends it from DevSpec, the line changes to `ended from DevSpec` and a notice says how to connect again, so with many terminals open you can see which ones are still connected. None of this calls the model. It needs Claude Code 2.1.289 or later; on older versions the line does not appear and everything else works as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.33.5 - 2026-10-05
+
+- Fixed: in a DevSpec room with more than 16 open polls, or polls with a lot of text, Claude was told the room had no polls. The room file now always lists polls when the room has any. It shows the newest ones that fit, says how many there are in total, and, when some were left out, tells Claude to read them all with `manage_poll list`. Rooms with fewer polls look the same as before.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.33.4 - 2026-10-05
+
+- Fixed: Claude's own DevSpec actions only said which connected Claude Code made them when Claude remembered to say so. So a request you typed in the terminal could still be recorded with no requester, and so could a request sent from the room if Claude forgot. The plugin now adds this conversation's connection to Claude's DevSpec calls, the same way it already adds the project, so DevSpec can tell who asked. A call that already names a connection or a room is left exactly as Claude wrote it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.33.3 - 2026-10-04
+
+- Fixed: when you typed a request into Claude Code's own terminal, DevSpec did not record you as the person who asked. Items, memories and documents Claude created for you showed "Requester unknown". When Claude Code is connected to a DevSpec room, a prompt you type there now starts a turn that DevSpec can confirm came from your terminal, and what Claude creates during it names you as the person who asked. Requests sent from the room are unchanged and still name whoever sent them. Starting work on an existing item from the terminal does not record you yet.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.33.2 - 2026-10-04
+
+- Fixed: when someone asked Claude Code to do something and Claude paused to wait for a job it had started in the background, DevSpec treated the request as finished. Anything Claude did after the job woke it was recorded with no requester and handled with the permissions of whoever owns the agent, not the person who asked. A suggestion from a Reviewed Contributor could become agreed work, and a person who had lost access could still have their request carried out. A request now stays open while Claude's own background work is still running, and closes when Claude gives its answer. So work done after the wait is recorded against the person who asked and checked against their access.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.33.1 - 2026-10-03
+
+- Fixed: when your rules and your project's rules together ran past about 10,000 characters, Claude Code never actually saw them in a conversation connected to DevSpec. Claude Code shows the model only the first 2,000 characters of anything that long, and those were the list of project repositories, so none of the rules arrived. The plugin still recorded them as delivered and told Claude to "keep following them". Rules now come first. When they are too long to show in full, Claude is told to read a file that holds all of them, and the plugin only treats rules as delivered once Claude has been shown them in full. Conversations that were affected receive the rules again after the update.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.33.0 - 2026-10-01
+
+- Fixed: opening Claude Code could silently disconnect your other Claude Code windows. Each new window used to check other windows' connections, and from 0.31.0 it mistook a window that had been attached to a quiet room for over an hour for an abandoned one, and stopped it. That window stayed open but stopped receiving messages, and the room showed it as "Previously here". A window no longer touches any connection but its own.
+- Changed: a connection now lasts until you end it: **End** on the Agents page, `/devspec:devspec.remote-stop`, or closing the conversation. If its background process dies while the window is still open, Claude Code brings it back on the same connection, with the same name and the same room, within a few seconds. Nobody has to run a command.
+- Changed: resuming a conversation in a new window (`claude --resume`, or **Resume** in DevSpec) moves the whole connection there, name and room included. Messages go only to the new window. The old window stops receiving, and closing it no longer ends the connection the new window is using. Only the same conversation can move a connection, so opening an unrelated window never takes one over.
+- Changed: a connection you make with `/devspec:devspec.remote` is kept alive the same way, and that command no longer asks Claude to start a second listener when this session's own listener already holds the connection.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up. A window opened before the update keeps its old behaviour until it is restarted.
+
+## 0.32.23 - 2026-10-01
+
+- Changed: DevSpec's personal Coding agents settings page is now **Agents**, at `/settings/agents`. The plugin now links to it instead of pointing you at "You → Coding agents", a menu path that doesn't appear until you are already in Settings. The warning shown when two DevSpec keys on this machine disagree, and the error shown when neither key owns a connection, both link the Agents page on the DevSpec you are connected to (`app.devspec.ai`). The README and the token prompt link the production page.
+- Changed: the per-project page is now named **Project Settings → Agents**, and the README says "agent" where it said "coding agent" or "local agent".
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to get the new messages. Nothing about how the plugin behaves has changed.
+
+## 0.32.22
+
+- Commit observations no longer attribute an existing commit from a fast-forward merge, replayed output, or failed command to the current agent. Direct commits require matching pre/post observations and corroborating Git history; unsupported operations continue without interruption.
+- Reconnecting or changing accounts/repository scope during a command cannot reassign its commit observation. Reports retain an observation ID and repository context; credentials and raw commands are not copied into observation markers.
+- Both manifests are bumped for Claude's version-keyed cache. A source update alone does not refresh running sessions.
+
+## 0.32.21
+
+- Remove the bundled DevSpec Launcher and its automatic SessionStart installation/pairing hook. Claude's normal authentication, automatic connection and room delivery remain plugin-owned and unchanged.
+- Document the launcher as a separately installed optional app; this plugin no longer registers its handler or starts its service.
+
+## 0.32.19 - 2026-09-30
+
+Bundle launcher 0.3.1 to find npm-installed Pi from desktop services and avoid duplicate loopback error tabs. Update the installed plugin and start a new session to run the shared update check.
+
 All notable changes to this plugin are documented here. This project follows [Semantic Versioning](https://semver.org).
+
+## 0.32.18 - 2026-09-30
+
+SessionStart now checks a generated shared launcher payload through its install, OS-registration and readiness flow. No startup package download is needed, and setup failure does not block Claude Code. Claude's own launch scheme and connection credentials remain independent. Refresh the installed plugin and start a new session to load the hook.
+
+## 0.32.17 - 2026-09-29
+
+Rule and repository-context readers now write separate per-conversation delivery receipts, never a rewritten copy of the live snapshot. A concurrent registration/poll refresh therefore cannot be overwritten by a reader marking older context consumed. Queued rule files are rendered from their captured response rather than re-reading mutable cache state. Deterministic interleaving tests cover both caches. Update/restart to load the versioned hooks.
+
+## 0.32.16 - 2026-09-29
+
+Session attach/create/reconnect now retain the server's refreshed rule fields rather than discarding them. Explicit null clears the old rule; omitted fields stay unchanged. Manual connections also preserve rule text for resume/compaction, and session-start context restores it. Changed rules accompanying a validated remote command are retained in a complete immutable file named on that command, with no context-only wake or added authority.
+
+Update the installed plugin and restart existing Claude conversations to load the new cached hooks.
+
+## 0.32.15 - 2026-09-29
+
+The selected project's complete repository inventory now reaches Claude as factual context: names, safe remote URLs, provider and tracked/default branches. Manual Remote includes it in the connection result; automatic connections deliver it through local prompt hooks or remote orientation. Session start restores the snapshot for resume/compaction, and project switches use the new conversation's inventory. Repeated unchanged prompt reads are deduplicated. An old server or failed inventory read is unavailable, never an empty project. No cloning tutorial, local readiness claim, description or vision is added.
+
+Both manifests are bumped because Claude executes version-keyed cached files. Update the installed plugin and start a new conversation to load the hooks; a repository merge alone does not update an existing Claude process.
+
+## 0.32.14 - 2026-09-28
+
+Remote accepts `--project <name-or-id>` for one local Claude conversation. Ambiguous connections retain structured project-and-organisation choices for native questions; normal resolving connections still need no discovery prompt. The selected project survives resume and is stamped onto ordinary DevSpec tool calls by the same hook that reports plugin versions, without granting permissions.
+
+`/devspec:devspec.project` shows the choice and offers choose/remember/forget. Folder changes use an explicit preview and confirmation; choosing alone writes no pin. Changing projects requires fresh local context, and background connection helpers never wait for a keyboard choice. Both manifests are bumped; update/reload the plugin to replace Claude's version-keyed cached copy.
+
+## 0.32.13 - 2026-09-28
+
+Registration and attachment now report the executing DevSpec plugin artifact's version. Both the plugin's connection scripts and native MCP tool calls are covered. The metadata hook does not approve or deny tools, and unavailable host versions stay unreported. Both versioned manifests are updated; existing Claude Code sessions continue using their cached plugin until their normal restart/update.
+
+## 0.32.12 - 2026-09-27
+
+### Delivery evidence stays on action items, out of project memory
+
+The knowledge-capture guidance your agent reads now draws one more line: what shipped, which commit and what passed belong on the action item, not in project memory — and a memory should hold what a future decision needs that the existing record doesn't already preserve. Shared project knowledge stays free of per-task status reports.
+
+## 0.32.11 - 2026-09-26
+
+- Fixed: the README described things that don't work. It told you to pass
+  `--project-id=<id>` when a repo is tracked by more than one project, but
+  nothing reads that flag; a `.devspec/project.json` pin naming the project is
+  what settles it, and the README now says so. It sent you to **Settings →
+  Execution** for how Claude branches, commits and merges; that page is
+  **Project Settings → Coding Agents**. And it said the start-up connect switch
+  is under `/config`; like your token, it is set under `/plugin` → Installed →
+  DevSpec. Nothing about how the plugin behaves has changed.
+
+## 0.32.10 - 2026-09-26
+
+- Changed: the plugin now sends you to DevSpec's settings pages by their new
+  names. Your token lives under **You → Coding agents** (it was You →
+  Connections): the README, the token prompt when you install the plugin, and
+  the warning shown when two DevSpec keys on this machine disagree all say so.
+  The instructions Claude is given at connect now call your reply preference
+  "Your response style", as DevSpec's You → Replies & voice page does, rather
+  than "chat response style". Nothing about how the plugin behaves has changed.
+
+## 0.32.9 - 2026-09-26
+
+- Added: a test that reads DevSpec's live tool list from a server checkout
+  beside this repo and fails if anything in this plugin names a DevSpec tool
+  the server does not have. A tool renamed or retired on the server is then
+  caught here, before Claude is told to call it in someone's session. With no
+  checkout beside it the test skips; `DEVSPEC_V2_ROOT` names one. Nothing about
+  how the plugin behaves has changed.
+
+## 0.32.8 - 2026-09-25
+
+- Fixed: an answer you type in your own words to Claude's multiple-choice
+  question now reaches Claude when it is longer than 200 characters. DevSpec
+  accepts up to 1000, but the plugin kept its own, older copy of that limit, so
+  a longer answer was turned away here and never arrived. The plugin now leaves
+  answer limits to DevSpec, so a future change to them needs no plugin update.
+
+## 0.32.7
+
+- The remote command names where open questions about records live — the project's Review queue — and the tools to preview a ruling, link related records and read an item's history. A queued change is accepted on the Review page, under Proposed changes. Who may rule stays the served contract's decision.
+
+## 0.32.6 - 2026-09-25
+
+- Fixed: a message DevSpec held back for a moment could stop Claude hearing
+  anything more from the session. While Claude was still working on an answer to
+  its question, DevSpec kept the next message waiting and said so. The plugin
+  misread that as a request to page back through the session's history, and
+  DevSpec refused every check after it, so nothing more arrived until Claude
+  Code was restarted and reconnected. The plugin now keeps reading from where it
+  was. A connection already stuck this way recovers by itself on this version.
+
+## 0.32.5 - 2026-09-25
+
+- A message you send while Claude is still working on your answer to its
+  question now reaches it straight away. Before, it waited until Claude had
+  finished everything that answer set off, which could be half an hour. Claude
+  reads it at its next step without stopping what it was doing, and answers it
+  in the room under that message.
+
+## 0.32.4 - 2026-09-25
+
+- The room file's session activity is now a history, not a snapshot. Beside the
+  list of what the room produced and mentioned, it keeps what happened to those
+  records, as DevSpec recorded it: when each was created or first mentioned, an
+  item's lifecycle moving (from, to), a memory or artifact being replaced,
+  retracted or archived, each with the time it actually happened. Before, the
+  plugin guessed changes by comparing one read with the next, stamped them with
+  when it noticed, and kept each item's status as it stood at a read, which went
+  out of date. Statuses are no longer kept at all: fetch a record for how it
+  stands now.
+
+## 0.32.3 - 2026-09-25
+
+- The plugin's own DevSpec tools now work with its hooks and its permission
+  lists. Claude Code names them `mcp__plugin_devspec_devspec__…`, but every hook
+  and allow-list named `mcp__devspec__…`. So on a plain install, claiming an item
+  never registered, commits were never linked to it automatically, replies never
+  marked the turn finished, and the remote command's tools still asked for
+  permission. Both names now match everywhere.
+- Claude can answer the Review queue from DevSpec: it may read the queue, rule on
+  flags, preview and settle conflicts, link related knowledge, read an item's
+  history and manage discussion points without asking each time.
+- When you agree to a memory that is still being discussed, Claude marks it
+  decided instead of writing a new version of the same words.
+
+## 0.32.2 - 2026-09-24
+
+- Closing Claude Code now ends its connection in DevSpec, with the reason
+  recorded as a local stop. Before, the connection stayed open with nothing
+  behind it, and one that wasn't attached to a session never closed at all.
+  `/clear` and `/resume` still keep the connection, because Claude Code is
+  still running.
+
+## 0.32.1 - 2026-09-24
+
+- Claude knows it can report back on its own after its turn has ended, for
+  example when a background job it started finishes. The post lands in the
+  room under its name, and waiting with a background job works for at least
+  36 minutes.
+- Claude no longer passes the command's id to its reply by mistake, which cost
+  one refused call before the reply went through.
+
+## 0.32.0 - 2026-09-24
+
+### Claude reads the room itself, with no message limit
+
+When a command arrives, Claude is told where the room's transcript is, how many
+messages came since its last reply, and which parts of the room file changed.
+It reads as much of the room as the command needs, newest first. It no longer
+gets a fixed slice. That slice held at most 20 messages and 12,000 characters,
+and it silently skipped any single message longer than that. Connecting no
+longer fetches the last 40 messages either, because the transcript already holds
+the whole room.
+
+A command's full text, sender, response style, scope and files are on its line
+in the transcript, so Claude no longer opens the plugin's inbox to read one.
+Polls, Still to Discuss and plans are no longer repeated with every command;
+they are in the room file, and the command says when they changed. The
+transcript is written before Claude is woken, so the line a command points at
+is always there.
+
+## 0.31.0 - 2026-09-24
+
+### A complete copy of the room, beside the inbox
+
+Claude Code now keeps its own copy of the room it is attached to:
+`~/.devspec/remote-control/connections/<connection>.<session>.transcript.jsonl`,
+one line per message in the room's order. Each line has who said it, who it was
+for, the full text and any file references. It is filled from the start of the
+room when Claude Code connects, and kept up to date as messages arrive, finish or
+are deleted, even in a quiet room. It checks itself against the room's own counts
+and re-reads the history if they ever disagree.
+
+The room file (`<connection>.room.json`) now also says how complete that copy is,
+and lists what the session produced and referenced as references to look up,
+with the changes seen along the way. It never claims to know how an item stands
+now. Nothing new is printed to the conversation, so none of this costs a turn.
+
+## 0.30.3 - 2026-09-23
+
+- If Claude writes the folder pin in a form DevSpec cannot read, it is told straight
+  away and rewrites it, so the folder links instead of silently never connecting.
+
+## 0.30.2 - 2026-09-23
+
+- The exact form of the folder pin is now in the short description Claude always
+  sees, not only in the instructions it may or may not open.
+
+## 0.30.1 - 2026-09-23
+
+- Asking Claude to pin a folder to a DevSpec project now writes the file in the form
+  DevSpec reads. Before, a model with nothing to go on could write it in a slightly
+  different shape that nothing recognised, and the folder was never linked.
+
+## 0.30.0 - 2026-09-23
+
+### A new project connects as soon as its folder is linked
+
+Starting a project before its code exists usually means opening Claude Code in an
+empty folder and linking it to DevSpec part-way through, with a
+`.devspec/project.json` pin or by adding a repository your project tracks. Until now
+the agent only checked once, when Claude Code started, so it stayed off the Agents
+page until the next restart. It now notices the folder being linked and appears on
+the Agents page within a few seconds. Waiting still costs nothing: it only looks at
+a couple of files every few seconds, and a folder that is never linked is never
+reported to DevSpec.
+
+### A reminder to add a new repository to your project
+
+When your agent gives a linked folder its repository, for example with
+`git remote add origin` or `gh repo create`, and that repository is not part of the
+project yet, it reminds you to add it under the project's **Settings → Integrations →
+Repositories**. Until you do, DevSpec cannot read the code or connect its commits to
+your work. You hear it once per conversation, and never when the repository is
+already linked or DevSpec cannot be reached.
+
+### Also in this release
+
+- An agent started while your computer is offline now connects once the network is
+  back, instead of staying off the Agents page for the rest of the session.
+
+## 0.29.2 - 2026-09-23
+
+- Claude loads the instructions for DevSpec messages once per conversation instead of
+  being nudged to reload them for every message, which re-sent the full text each
+  time.
+
+## 0.29.1 - 2026-09-23
+
+- `/devspec:devspec.remote` no longer says Claude Code started the listener when an
+  earlier connect in the same conversation did. Either way it still tells Claude
+  not to start a second one.
+
+## 0.29.0 - 2026-09-23
+
+### Claude Code connects to DevSpec when it starts, and waiting costs nothing
+
+Start Claude Code in a folder that belongs to one of your DevSpec projects and it
+now appears on the Agents page by itself, ready to be sent work. Nothing to type,
+and nothing loaded into the conversation until someone actually sends it a
+message.
+
+Until now an agent only became available after `/devspec:devspec.remote` had put
+its instructions and connection details into the conversation, and on the Claude
+Code versions that cap a background watch at 30 minutes, an idle agent woke itself
+every half hour just to keep listening. Both costs are gone: the listener now
+starts with Claude Code and lasts as long as the session does, and Claude only
+runs when a message arrives.
+
+It connects only in folders a DevSpec project tracks (or that carry a
+`.devspec/project.json` pin), never in an unrelated repository. To turn it off,
+switch off **Make Claude Code available on DevSpec when it starts** in `/config`.
+`/devspec:devspec.remote` still works whenever you want to connect by hand or
+attach to a particular session.
+
+### `/clear` no longer disconnects your agent
+
+Clearing or resuming a conversation used to leave the agent listed as available
+but no longer listening. It now carries its connection into the new conversation.
+
+### Also in this release
+
+- How Claude handles a message from DevSpec now lives in one skill,
+  `devspec-remote-command`, shared by both ways of connecting.
 
 ## 0.28.2 - 2026-09-20
 
@@ -185,7 +804,7 @@ Nothing could tell two of the owner's own agents apart. `commits` carries only t
 author, which is the machine's git config — every agent on one machine commits as the
 same person. So an action item auto-created from an unlinked commit could not be
 attributed to the agent that did the work, and nothing could be told that its commit
-had produced an item (item `27fab61a`).
+had produced an item.
 
 The observation was never missing. This plugin already watched every commit go past in
 `PreToolUse`; it just used that only to gate, and discarded it whenever the gate did
@@ -250,7 +869,7 @@ which repository the commit lands in.
 This **deliberately reverses two assertions** that previously required `git add -A &&
 git commit -m "x"` to be unreadable ("prefix is not cd", "compound"). The reversal is
 recorded in the test with the reasoning, so it reads as a decision rather than an
-erosion of the fail-open doctrine (item `e6873db2`).
+erosion of the fail-open doctrine.
 
 Still refused, and refusing still means allow: `npm test && git commit` (a test command
 can write the very file the commit will include), `make build`, any script, a bare
@@ -281,7 +900,7 @@ Measured on one repository's `staging` branch over 14 days: 343 non-merge commit
 carrying `[devspec:…]`, **59 without — and all 59 of them multi-line. Zero single-line
 commits escaped.** The deny path had had no opportunity to fire at all. The hole was
 documented as deliberate ("the analyzer reconciles it server-side"); what was not
-anticipated is that it is the *common* path rather than the edge case (item `022e487b`).
+anticipated is that it is the *common* path rather than the edge case.
 
 `heredocGitCommit` adds the two multi-line forms whose message is a **single-quoted**
 heredoc, where the shell expands nothing and the text is exactly the bytes between the
@@ -495,13 +1114,7 @@ it.
 **One deliberate limitation, stated plainly:** a reference is checked for *shape*, not
 verified to exist. A correct short code with a wrong uuid suffix will pass this hook.
 Catching it would mean a network call and an auth dependency in front of every commit,
-for a case the server already resolves. The full capability table, including what
-Claude Code genuinely exposes and what it does not, is in
-[`docs/commit-provenance.md`](docs/commit-provenance.md).
-
-Implements ADR `71c23b46` under brief `e3d3b54f` (item `e21d7d4b`). The items that
-built the previous architecture — `cdd7a494`, `dfa86f3f`, `4910e673`, `730bf485` —
-remain accurate history; this supersedes their enforcement model, not their record.
+for a case the server already resolves.
 
 ## 0.15.4 - 2026-08-19
 
@@ -741,8 +1354,7 @@ Cursor's plan mode from DevSpec, so that goes with it. If you want plan mode it
 should come back as a deliberate feature, not as a leftover.
 
 **The README's "Stage for Autopilot" section is also gone.** It described work
-being handed to an idle session — a dispatch model deleted some time ago
-(`13958ab4`). Nothing is ever sent work now: an agent reserves what it was asked
+being handed to an idle session — a dispatch model deleted some time ago. Nothing is ever sent work now: an agent reserves what it was asked
 to do.
 
 ## 0.13.0 - 2026-08-17
@@ -805,9 +1417,8 @@ Connecting used to be something the model *performed*: check node, read the git 
 - **It decides nothing.** It sends the git remote and the folder pin up as facts and lets the server arbitrate scope — which is what lets a stale pin copied in with a template correct itself instead of hijacking a folder. The `list_projects` round-trip is gone entirely: the server resolves the project from the remote.
 - **Reconnecting no longer re-reads what you already know.** The connection state now retains the instruction-tier fingerprint, so a reconnecting conversation is told the tiers are unchanged instead of being handed all four again. Orientation reads are bounded and echo that fingerprint, so the same texts are never sent twice inside one connect — and the seed always reports how much of the room it saw, so a bound is never a silent truncation.
 - **`/devspec.work` points at the product contract** (`devspec://product/implementation-contract/{attended,unattended}`) instead of restating its rules. DevSpec owns what an implementation must do; the command file owns only the Claude Code mechanics for doing it here.
-- The long-form background — the poller and wait protocol, the failure history, the no-plugin fallback — moved to `docs/remote-control/`, where it is available when someone is debugging and absent when they are not.
 
-Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are untouched. Item `5a393e4c`.
+Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wait.mjs` are untouched.
 
 ## 0.10.0 - 2026-08-14
 
@@ -818,7 +1429,7 @@ Nothing about the pump changed: `devspec-remote-poll.mjs` and `devspec-remote-wa
 - **The "Remote" badge is gone from the sessions list** (server side). How a session was opened is not a property worth labelling on every row; who is attached is already shown by the connection strip and the Agents page. The "Remote control" type filter still exists for anyone who wants to narrow to them.
 - **The "Private" badge now means what it says.** It was only ever drawn on remote-control rows, so a private ordinary session looked identical to a shared one. It now shows for any private session, whatever its type.
 
-Nothing about private sessions is removed — only the assumption that an agent wanted one. Item `32801088`; server side in DevSpecV2.
+Nothing about private sessions is removed — only the assumption that an agent wanted one.
 
 ## 0.9.0 - 2026-08-14
 
@@ -829,13 +1440,11 @@ Nothing about private sessions is removed — only the assumption that an agent 
 - **The pin is passed as `pinned_project_id`, never as `project_id`.** They are not interchangeable. `project_id` is an explicit override that outranks a verified git remote; the pin is only a local assertion, and the server deliberately ranks it BELOW a remote it can verify. Commands send whichever signals they have and let the server arbitrate — precedence is never decided locally.
 - **A real remote always wins.** So a pin that arrives by copying a template or forking quietly stops mattering the moment the folder has its own repo, instead of hijacking it. And because the pin holds no file paths, moving or renaming the folder never breaks it.
 
-Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which was left at 0.8.0 by the previous release.
-
 ## 0.8.1 - 2026-08-14
 
 ### A quiet connection stays up while the host process is alive
 
-- **Removed the 72h idle-disconnect.** The poller no longer stamps `idle_timeout` and exits after three quiet days. A connection lives as long as its Claude Code process, unless you End it or run `/devspec:devspec.remote-stop`. Item `addbfdbf`.
+- **Removed the 72h idle-disconnect.** The poller no longer stamps `idle_timeout` and exits after three quiet days. A connection lives as long as its Claude Code process, unless you End it or run `/devspec:devspec.remote-stop`.
 
 ## 0.8.0 - 2026-08-11
 
@@ -850,8 +1459,6 @@ Item `6faa4044`; server side `ceda04b7`. Also bumps `marketplace.json`, which wa
 - **`fail_work_item` joins the remote allow-list** so a batch member that can't be done safely fails loudly and the batch continues, instead of stalling on a question nobody is there to answer.
 - The same deletion lands across the Cursor, OpenCode, Grok, Antigravity and Codex plugins under the same item, so the concept doesn't survive in one tool after leaving another.
 
-Item `3f2f390c`.
-
 ## 0.7.4 - 2026-08-07
 
 ### A screenshot can no longer go missing between the inbox and the agent
@@ -861,8 +1468,6 @@ Item `3f2f390c`.
 - **The advisory tiers get the same treatment.** `owner_ambient` and `room_context` are room messages like any other and can carry a teammate's screenshot. They are still never acted on, but an agent reading the room can now open what the room was looking at.
 - **Materialisation is idempotent, which is load-bearing rather than tidy.** The wait script still runs it over everything it reads. Without a pass-through for its own descriptors it would look for a payload, find none, and drop the attachment — a worse bug than the one being fixed. It is asserted directly in the tests, and it is also what keeps inbox lines written by an **older** poller working, since a running poller keeps the code it started with until the agent is relaunched.
 - **The command doc now says attachments exist at all.** It never did — so the only record of the trap was one agent's private memory on one machine. It now states that a `delivery: "file"` path is part of the instruction, and that an ad-hoc inbox reader must print `attachments` alongside `content`.
-
-Item `b237de43` (the write half of `99165e12`). Claude Code plugin only — the other families are independent and are not being synced.
 
 ## 0.7.3 - 2026-08-04
 
@@ -876,30 +1481,24 @@ DevSpec's `search_memories` (and `get_decisions` / `get_conventions`) changed to
 
 Nothing else needs reinstalling for the DevSpec-side change: MCP tool definitions come from the server, so a reconnect picks up the renamed `body` parameter and the now-required `title` on `record_memory`. **This release is required only because `allowed-tools:` lists ship inside the plugin.**
 
-Item `93a851b5`.
-
 ## 0.7.2 - 2026-08-02
 
 ### A connected agent no longer wakes itself up once a day for nothing
 
-- **Measured, not theorised.** The 24h cap fired on schedule two days running against a healthy owner-anchored stream. Each firing spent a model turn on a wake that carried no owner mail and a re-arm that changed nothing — and the host reported the non-zero exit as a failure on top of that. `be0a929a`'s own intent named this cost before it happened: *"in a metered product that is real money spent on zero work."*
+- **Measured, not theorised.** The 24h cap fired on schedule two days running against a healthy owner-anchored stream. Each firing spent a model turn on a wake that carried no owner mail and a re-arm that changed nothing — and the host reported the non-zero exit as a failure on top of that. *"in a metered product that is real money spent on zero work."*
 - **The cap was buying nothing there.** A deadline is a zombie backstop, not a policy. An owner-anchored arm already exits the moment the owning agent process goes, which is exactly the contract the poller has always run on with **no** time cap — it was at 2d+ uptime while this was written. So an anchored `--stream` arm now has no deadline at all.
 - **An arm that cannot anchor still keeps the cap**, because for that one the clock is the only remaining guarantee that it cannot outlive its owner. That is the case `remote-control-state.mjs` already refuses to start a *poller* in, and it must not be given up here either.
-- **The one-shot fallback keeps its cap unconditionally.** That asymmetry is deliberate: a one-shot arm is expected to be short-lived, so its 24h rollover is a rare edge case rather than a daily event, and exit-3-at-24h is a contract `d655b2a4` established on purpose.
-
-Item `be0a929a`.
+- **The one-shot fallback keeps its cap unconditionally.** That asymmetry is deliberate: a one-shot arm is expected to be short-lived, so its 24h rollover is a rare edge case rather than a daily event, and exit-3-at-24h is an intentional contract.
 
 ## 0.7.1 - 2026-08-01
 
 ### A 24-hour rollover no longer looks like a crash
 
-- **Observed in real use, one day after 0.7.0 shipped.** The wake stream hit its 24h cap exactly as designed, emitted its `listener_rollover` notice and exited 3 (non-terminal, "re-arm me"). The host then reported that as **"script failed (exit 3)"** — so a routine rollover reads, at a glance, like something broke. This is the same misreading `d655b2a4` was filed for, in new clothing: a non-terminal end that looks like an ending, which historically provokes the harmful reflex of re-registering a perfectly live connection.
+- **Observed in real use, one day after 0.7.0 shipped.** The wake stream hit its 24h cap exactly as designed, emitted its `listener_rollover` notice and exited 3 (non-terminal, "re-arm me"). The host then reported that as **"script failed (exit 3)"** — so a routine rollover reads, at a glance, like something broke. This is a non-terminal rollover that looked like an error: a non-terminal end that looks like an ending, which historically provokes the harmful reflex of re-registering a perfectly live connection.
 - **The rollover notice now says so explicitly** — that the host may label the exit a failure, that it is not one, and that nothing is lost because re-arming resumes from the same cursor. The exit table says the same, and to trust the event over the host's summary label. The truth goes where the agent actually reads it, rather than relying on it to interpret an exit code correctly.
 - No behaviour change: the cap, the exit code and the cursor are all unchanged.
 
 Also confirms 0.7.0 in the field: that stream ran a **full 24 hours** as a persistent monitor before its own cap ended it, across an entirely idle period, and the re-arm drained a cursor exactly level with the inbox — nothing skipped, nothing replayed.
-
-Item `be0a929a`.
 
 ## 0.7.0 - 2026-07-31
 
@@ -911,8 +1510,6 @@ Item `be0a929a`.
 - **"Live" and "will actually wake up" stop being different promises** on this host: the listener's lifetime is now the session's lifetime. 0.6.6's honest **Not reading** signal stays exactly as it is, for any host that cannot hold a stream.
 - **No command is lost in the switch.** The inbox cursor is unchanged, and now advances only *after* a command has been handed over — so an interrupted delivery repeats rather than vanishes.
 - The one-shot behaviour remains available for hosts with no persistent monitor; drop `--stream` and it exits on the first command as before.
-
-Item `be0a929a` (related: `8b4ceaa3`, `d655b2a4`).
 
 ### Maintainers: plugin families are independent implementations now
 
@@ -929,8 +1526,6 @@ Item `be0a929a` (related: `8b4ceaa3`, `d655b2a4`).
 - **Armed is proved by a live pid, never by a leftover file** — a hard-killed listener leaves its pidfile behind, and trusting that would report exactly the lie this is meant to catch.
 - **It will not cry wolf.** A missing pidfile only counts as evidence once this connection has armed a pidfile-writing wait at least once. Waits armed before that shipped never wrote one, so "no file" from them means "older build", not "deaf" — otherwise every healthy pre-upgrade agent would light up as Not reading at the very moment you were deciding whether to trust the new badge.
 
-Items `8b4ceaa3`, `d655b2a4`.
-
 ## 0.6.5 - 2026-07-30
 
 ### A remote agent can no longer go silently deaf while telling you it is fine
@@ -941,8 +1536,6 @@ Items `8b4ceaa3`, `d655b2a4`.
 - **A blocked stop keeps you "working".** The turn genuinely has not ended, so the indicator stays on rather than reporting a finish that has not happened.
 - **A reaped or aged-out listener no longer reads as a dead connection.** The wait used to exit 1 both for "a human ended this" and for "my arm aged out" — and the documented response to exit 1 is *stop*, so an agent following the instructions correctly tore down a perfectly live connection on a 24-hour rollover. Non-terminal cases now exit **3**, meaning "re-arm me, nothing is wrong", and exit 1 is strictly "a human or the server ended this".
 - **The arming instructions now say not to pass a timeout**, since supplying a plausible-looking one was a way for an agent to manufacture this failure itself.
-
-Items `8b4ceaa3`, `d655b2a4`.
 
 > Note for maintainers: `devspec-remote-wait.mjs` is in the sync's UNIVERSAL list, so the next `sync-hooks` run would carry exit 3 to the other plugin families — whose exit tables still document only 0/1/2 and would misread it. Propagate the docs with the code. The `mirror-turn.mjs` change relies on Claude Code's Stop-hook decision control and is not portable as-is.
 >
@@ -1017,7 +1610,7 @@ Items `8b4ceaa3`, `d655b2a4`.
 - **Answers:** when attached, post via `post_session_message({ connection_id })` (server resolves current session / reattach-safe). Sessionless: assignment / `report_progress` only — never invent a room.
 - **Stop hooks:** busy/heartbeat + optional local_prompt only — **no** full assistant text as primary path (no dual writers).
 - **`/devspec.work --remote`:** defaults **sessionless**; optional `--session` / `--new` for a transcript.
-- **Delivery contract:** skills/commands align with DevSpecV2 `docs/REMOTE-CONTROL-DELIVERY-CONTRACT.md` (ADR b98a39a9).
+- **Delivery contract:** skills/commands align with the DevSpec remote-control delivery contract.
 
 ### Repo + plugin rename, token docs, and remote-control groundwork
 

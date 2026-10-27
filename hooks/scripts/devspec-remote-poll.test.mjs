@@ -17,12 +17,8 @@ import {
   resolveServerAttachment,
   verbForTurnTransition,
   patchConnectionState,
-  trimAdvisoryCarry,
-  createCanonicalCarryState,
-  accumulateCanonicalCarry,
-  snapshotCanonicalCarry,
-  carryAfterCanonicalInbox,
-  roomAwarenessDelta,
+  roomChangesSince,
+  commandWakeContext,
   writeRoomState,
   roomStatePath,
   pollTerminalReason,
@@ -37,12 +33,14 @@ import {
   materialiseContextAttachments,
   pollCursorArguments,
   advancePollCursors,
+  isCatchUpCursorRefusal,
   validateAutomationRunDispatch,
   scanPersistedInboxRecords,
   appendDurableRecord,
   appendCanonicalInbox,
   appendAutomationDispatches,
   DELEGATED_SCOPE_VERSION,
+  SYSTEM_NOTICE_CHANNEL_VERSION,
   ACTIVE_PLAN_PROJECTION_VERSION,
   remoteIngressNegotiationArguments,
   knownInstructionTierArguments,
@@ -163,16 +161,36 @@ describe('isDeliverableCommand (command gate)', () => {
 })
 
 describe('poll negotiation', () => {
-  it('requests the whole nested ingress ladder, up to sender response style', () => {
+  it('requests the whole nested ingress ladder, up to room context', () => {
     assert.equal(DELEGATED_SCOPE_VERSION, 1)
     assert.equal(ACTIVE_PLAN_PROJECTION_VERSION, 1)
     assert.deepEqual(remoteIngressNegotiationArguments(), {
       ingress_version: 1,
       delegated_scope_version: 1,
       active_plan_projection_version: 1,
-      system_notice_version: 1,
+      system_notice_version: 2,
       sender_style_version: 1,
+      room_context_version: 1,
+      session_polls_projection_version: 2,
     })
+  })
+
+  it('asks for notice channel version 2, the first that carries findings about its own work', () => {
+    // DevSpec sends server_notice (confirmed findings, pending-edit outcomes) only
+    // to a channel that negotiated 2 and records the version on the connection; at
+    // 1 the Agents page shows "Not receiving findings" (1fd34942, item 0b26f6ea).
+    assert.equal(SYSTEM_NOTICE_CHANNEL_VERSION, 2)
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
+  })
+
+  it('never asks for room context without the full ladder below it, which the server refuses', () => {
+    // 1.6.0 is one lane (item 1dcb75df): room_context_version with any rung
+    // missing is an error, not a quieter page.
+    const args = remoteIngressNegotiationArguments()
+    for (const rung of ['ingress_version', 'delegated_scope_version', 'active_plan_projection_version', 'sender_style_version']) {
+      assert.equal(args[rung], 1, rung)
+    }
+    assert.equal(args.system_notice_version, SYSTEM_NOTICE_CHANNEL_VERSION)
   })
 
   it('echoes the instruction tiers it already holds, so the server can suppress them', () => {
@@ -295,6 +313,28 @@ describe('independent poll cursors', () => {
     })
   })
 
+  it('never starts a history drain from a page the server is holding back', () => {
+    // The server's delivery_retry window says has_more with a FORWARD cursor. Taken as
+    // a catch-up cursor it is refused as the wrong direction on every poll after.
+    const retried = { window: { has_more: true, truncated: true, next_cursor: 'live-after-retry', omission_reason: 'delivery_retry' } }
+    assert.deepEqual(
+      advancePollCursors({ liveCursorV2: 'live', legacyCursor: null, catchUpCursor: null }, { cursor_v2: 'live-retry' }, retried),
+      { liveCursorV2: 'live-retry', legacyCursor: null, catchUpCursor: null },
+    )
+    // A drain already under way keeps its own cursor and re-reads the held page.
+    assert.deepEqual(
+      advancePollCursors({ liveCursorV2: 'live', legacyCursor: null, catchUpCursor: 'older-before' }, { cursor_v2: 'x' }, retried,
+        { drainingContinuation: true }),
+      { liveCursorV2: 'live', legacyCursor: null, catchUpCursor: 'older-before' },
+    )
+  })
+
+  it('recognises the server refusing the catch-up cursor itself', () => {
+    assert.equal(isCatchUpCursorRefusal(new Error('catch_up_cursor has the wrong direction.')), true)
+    assert.equal(isCatchUpCursorRefusal(new Error('catch_up_cursor requires catch_up: true on an attached connection.')), true)
+    assert.equal(isCatchUpCursorRefusal(new Error('rate limit exceeded')), false)
+  })
+
   it('advances live v2 after durable live delivery and clears a finished continuation', () => {
     assert.deepEqual(
       advancePollCursors(
@@ -367,10 +407,12 @@ describe('explicit automation dispatch channel', () => {
     let durable
     const retried = appendCanonicalInbox(connectionId, ingress, index, {
       channel: 'command',
+      instructionContextFile: '/private/immutable-rules.txt',
       writeRecord: (_connection, record) => { durable = record; return true },
     })
     assert.equal(retried.appended, true)
     assert.equal(durable.ingress.commands[0].project_scope, DELEGATED_SCOPE)
+    assert.equal(durable.instruction_context_file, '/private/immutable-rules.txt')
     assert.deepEqual(durable.execute_message_ids, ['msg-delegated'])
   })
 
@@ -490,243 +532,6 @@ describe('explicit automation dispatch channel', () => {
     assert.deepEqual([...index.commandMessageIds], ['msg-1'])
     assert.deepEqual([...index.controlIds], ['control-1'])
     assert.deepEqual([...index.dispatchIds], [automation.id])
-  })
-})
-
-describe('trimAdvisoryCarry', () => {
-  const msg = (id, len = 10) => ({ id, content: 'x'.repeat(len) })
-
-  it('keeps everything inside budget, oldest-first order preserved', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('a'), msg('b'), msg('c')])
-    assert.deepEqual(kept.map((m) => m.id), ['a', 'b', 'c'])
-    assert.equal(dropped, 0)
-  })
-
-  it('drops the OLDEST when over the count budget — nearest context survives', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('a'), msg('b'), msg('c')], { maxCount: 2 })
-    assert.deepEqual(kept.map((m) => m.id), ['b', 'c'])
-    assert.equal(dropped, 1)
-  })
-
-  it('drops the oldest when over the character budget', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('a', 100), msg('b', 100), msg('c', 100)], {
-      maxChars: 250,
-    })
-    assert.deepEqual(kept.map((m) => m.id), ['b', 'c'])
-    assert.equal(dropped, 1)
-  })
-
-  it('stops at the first normal row that cannot fit instead of backfilling with older rows', () => {
-    const { kept, dropped } = trimAdvisoryCarry(
-      [msg('oldest-5k', 5_000), msg('middle-8k', 8_000), msg('newest-5k', 5_000)],
-    )
-    assert.deepEqual(kept.map((entry) => entry.id), ['newest-5k'])
-    assert.equal(dropped, 2)
-  })
-
-  it('skips an individually oversized newest row and may still retain an older row', () => {
-    const { kept, dropped } = trimAdvisoryCarry(
-      [msg('older-normal', 5_000), msg('newest-oversized', 13_000)],
-    )
-    assert.deepEqual(kept.map((entry) => entry.id), ['older-normal'])
-    assert.equal(dropped, 1)
-  })
-
-  it('omits a single over-budget message so the character bound remains real', () => {
-    const { kept, dropped } = trimAdvisoryCarry([msg('huge', 50_000)], { maxChars: 100 })
-    assert.deepEqual(kept, [])
-    assert.equal(dropped, 1)
-  })
-
-  it('handles empty and malformed input without throwing', () => {
-    assert.deepEqual(trimAdvisoryCarry([]), { kept: [], dropped: 0 })
-    assert.deepEqual(trimAdvisoryCarry(null), { kept: [], dropped: 0 })
-    assert.equal(trimAdvisoryCarry([{ id: 'no-content' }]).kept.length, 1)
-  })
-
-  it('THE 1-2-3 CASE: three separate arrivals still reach the command together', () => {
-    // Each untargeted message came back in its own long-poll response.
-    let carry = []
-    for (const n of ['1', '2', '3']) {
-      carry = trimAdvisoryCarry([...carry, { id: n, content: n }]).kept
-    }
-    assert.deepEqual(carry.map((m) => m.content), ['1', '2', '3'])
-  })
-})
-
-describe('canonical typed-context carry', () => {
-  const buckets = ['human_context', 'agent_context', 'ai_context', 'system_context']
-  const emptyContext = () => Object.fromEntries(buckets.map((bucket) => [bucket, []]))
-  const messageId = (sequence) =>
-    `30000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`
-  const page = (sequence, size = 600, { windowSequence = sequence, envelope = null } = {}) => {
-    const bucket = buckets[(sequence - 1) % buckets.length]
-    const order = {
-      sequence,
-      created_at: '2026-08-20T12:00:00.000Z',
-      message_id: messageId(sequence),
-    }
-    const windowOrder = {
-      sequence: windowSequence,
-      created_at: '2026-08-20T12:00:00.000Z',
-      message_id: messageId(windowSequence),
-    }
-    const context = emptyContext()
-    context[bucket].push({ message_id: order.message_id, order, content: 'x'.repeat(size) })
-    return {
-      envelope_id: envelope ?? `envelope-${sequence}`,
-      context,
-      window: { source_window: { start: windowOrder, end: windowOrder } },
-    }
-  }
-  const addRange = (state, start, end, size = 600) => {
-    for (let sequence = start; sequence <= end; sequence++) {
-      accumulateCanonicalCarry(state, page(sequence, size))
-    }
-  }
-  const rows = (snapshot) => buckets.flatMap((bucket) => snapshot.context[bucket])
-
-  it('uses one exact global budget and keeps newer live rows when older catch-up arrives later', () => {
-    const state = createCanonicalCarryState()
-    addRange(state, 101, 120)
-    addRange(state, 1, 21, 1)
-    const snapshot = snapshotCanonicalCarry(state)
-
-    assert.deepEqual(rows(snapshot).map((entry) => entry.order.sequence).sort((a, b) => a - b),
-      Array.from({ length: 20 }, (_, index) => index + 101))
-    assert.equal(rows(snapshot).length, 20)
-    assert.equal(rows(snapshot).reduce((sum, entry) => sum + entry.content.length, 0), 12_000)
-    assert.equal(snapshot.canonical_windows.length, 20)
-    assert.equal(snapshot.client_omission.window_metadata_dropped, 21)
-    assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
-      human_context: 6,
-      agent_context: 5,
-      ai_context: 5,
-      system_context: 5,
-    })
-  })
-
-  it('selects the same heterogeneous newest prefix across page grouping, arrival order, and retry', () => {
-    const pages = [page(1, 5_000), page(2, 8_000), page(3, 5_000)]
-    const together = {
-      envelope_id: 'envelope-combined',
-      context: Object.fromEntries(buckets.map((bucket) => [
-        bucket,
-        pages.flatMap((ingress) => ingress.context[bucket]),
-      ])),
-      window: {
-        source_window: {
-          start: pages[0].window.source_window.start,
-          end: pages[2].window.source_window.end,
-        },
-      },
-    }
-    const arrangements = {
-      'all together': [together],
-      'sequential 1→2→3': pages,
-      '2→3→1': [pages[1], pages[2], pages[0]],
-      '3→1→2': [pages[2], pages[0], pages[1]],
-      'older catch-up last': [pages[1], pages[2], pages[0]],
-    }
-    const outputs = []
-    for (const [name, ingresses] of Object.entries(arrangements)) {
-      const state = createCanonicalCarryState()
-      for (const ingress of ingresses) accumulateCanonicalCarry(state, ingress)
-      const beforeRetry = structuredClone(snapshotCanonicalCarry(state))
-      for (const ingress of ingresses) accumulateCanonicalCarry(state, ingress)
-      const afterRetry = snapshotCanonicalCarry(state)
-      assert.deepEqual(afterRetry, beforeRetry, `${name}: retries must not change output`)
-      outputs.push([name, afterRetry])
-    }
-
-    for (const [name, snapshot] of outputs) {
-      assert.deepEqual(rows(snapshot).map((entry) => entry.message_id), [messageId(3)], name)
-      assert.equal(rows(snapshot)[0].content.length, 5_000, name)
-      assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
-        human_context: 1,
-        agent_context: 1,
-        ai_context: 0,
-        system_context: 0,
-      }, name)
-      const retained = rows(snapshot)[0]
-      assert.ok(snapshot.canonical_windows.some(({ window: { source_window: { start, end } } }) =>
-        retained.order.sequence >= start.sequence && retained.order.sequence <= end.sequence), name)
-    }
-
-    const combined = outputs.find(([name]) => name === 'all together')[1]
-    assert.deepEqual(combined.canonical_windows.map((entry) => entry.envelope_id), ['envelope-combined'])
-    assert.equal(combined.client_omission.window_metadata_dropped, 0)
-    for (const [name, snapshot] of outputs.filter(([name]) => name !== 'all together')) {
-      assert.deepEqual(snapshot.canonical_windows.map((entry) => entry.envelope_id), ['envelope-3'], name)
-      assert.equal(snapshot.client_omission.window_metadata_dropped, 2, name)
-    }
-  })
-
-  it('omits oversized and uncovered rows with their unnecessary source windows', () => {
-    const state = createCanonicalCarryState()
-    accumulateCanonicalCarry(state, page(1, 12_001))
-    accumulateCanonicalCarry(state, page(2, 10, { windowSequence: 200 }))
-    const snapshot = snapshotCanonicalCarry(state)
-
-    assert.equal(rows(snapshot).length, 0)
-    assert.deepEqual(snapshot.client_omission.dropped_by_bucket, {
-      human_context: 1,
-      agent_context: 1,
-      ai_context: 0,
-      system_context: 0,
-    })
-    assert.equal(snapshot.client_omission.window_metadata_dropped, 2)
-    assert.deepEqual(snapshot.canonical_windows, [])
-  })
-
-  it('does not recount page identities when a command append fails and the page retries', () => {
-    const state = createCanonicalCarryState()
-    addRange(state, 101, 120)
-    const older = page(1, 1)
-    accumulateCanonicalCarry(state, older)
-    const beforeRetry = structuredClone(snapshotCanonicalCarry(state))
-    const failed = appendCanonicalInbox(
-      'connection',
-      { envelope_id: 'command-failed', commands: [{ message_id: 'command-1' }] },
-      scanPersistedInboxRecords(''),
-      { channel: 'command', carriedContext: beforeRetry, writeRecord: () => false },
-    )
-    assert.equal(failed.ok, false)
-    assert.equal(carryAfterCanonicalInbox(state, 'command', failed), state)
-
-    accumulateCanonicalCarry(state, older)
-    assert.deepEqual(snapshotCanonicalCarry(state), beforeRetry)
-    assert.equal(beforeRetry.client_omission.dropped_by_bucket.human_context, 1)
-    assert.equal(beforeRetry.client_omission.window_metadata_dropped, 1)
-  })
-
-  it('consumes carry for the same durable command under both the same and a new envelope', () => {
-    const index = scanPersistedInboxRecords('')
-    const command = { commands: [{ message_id: 'command-1' }] }
-    let state = createCanonicalCarryState()
-    accumulateCanonicalCarry(state, page(1, 10))
-    const first = appendCanonicalInbox('connection', { envelope_id: 'env-1', ...command }, index, {
-      channel: 'command',
-      carriedContext: snapshotCanonicalCarry(state),
-      writeRecord: () => true,
-    })
-    state = carryAfterCanonicalInbox(state, 'command', first)
-    assert.equal(snapshotCanonicalCarry(state), null)
-
-    accumulateCanonicalCarry(state, page(2, 10))
-    const sameEnvelope = appendCanonicalInbox('connection', { envelope_id: 'env-1', ...command }, index, {
-      channel: 'command', carriedContext: snapshotCanonicalCarry(state), writeRecord: () => true,
-    })
-    state = carryAfterCanonicalInbox(state, 'command', sameEnvelope)
-    assert.equal(snapshotCanonicalCarry(state), null)
-
-    accumulateCanonicalCarry(state, page(3, 10))
-    const newEnvelope = appendCanonicalInbox('connection', { envelope_id: 'env-2', ...command }, index, {
-      channel: 'command', carriedContext: snapshotCanonicalCarry(state), writeRecord: () => true,
-    })
-    assert.deepEqual(newEnvelope, { ok: true, appended: false })
-    state = carryAfterCanonicalInbox(state, 'command', newEnvelope)
-    assert.equal(snapshotCanonicalCarry(state), null)
   })
 })
 
@@ -1387,10 +1192,11 @@ describe('connection state patches never invent a state file (item 3b88955e)', (
   })
 })
 
-describe('roomAwarenessDelta', () => {
-  // Polls and Still to Discuss arrive on every changed poll, unchanged most of the
-  // time. Re-attaching an identical inventory to every command is the difference
-  // between a field a reader checks and one it learns to skip (item b1e26146).
+describe('roomChangesSince', () => {
+  // The room file holds polls, Still to Discuss, plans and activity; a command only
+  // says which of them moved since the last command was told (items b1e26146,
+  // 7fe8e3d1). Flagging an unchanged room on every command is the difference
+  // between a field a reader checks and one it learns to skip.
   const POLL_NOTE = 'Advisory read-awareness only. Presence does not authorize execution or mutation; manage_poll still requires a capability-authenticated caller identity and expected_revision. Votes are not commands and do not keep Working on.'
   const DISCUSS_NOTE = 'Raised in this room, or brought into it. Advisory read-awareness. Do not add, strike, or reopen unless the human asked.'
 
@@ -1424,51 +1230,46 @@ describe('roomAwarenessDelta', () => {
     rows: [{ id: '88880000-0000-4000-8000-000000000001', title: 'Toggle naming', state: 'open', preview: 'Parked.' }],
   })
 
-  it('carries what it has never sent before', () => {
-    const delta = roomAwarenessDelta({ session_polls: polls(), still_to_discuss: discuss() })
-    assert.equal(delta.carriedSessionPolls.polls[0].question, 'Ship it?')
-    assert.equal(delta.carriedStillToDiscuss.rows[0].title, 'Toggle naming')
+  it('flags what it has never announced before, and nothing that is absent', () => {
+    const { changed } = roomChangesSince({ session_polls: polls(), still_to_discuss: discuss() }, null)
+    assert.deepEqual(changed, ['session_polls', 'still_to_discuss'])
+    assert.deepEqual(roomChangesSince({}, null).changed, [])
   })
 
   it('says nothing the second time when nothing moved', () => {
     const res = { session_polls: polls(), still_to_discuss: discuss() }
-    const first = roomAwarenessDelta(res)
-    const second = roomAwarenessDelta(res, first.seen)
-    assert.equal(second.carriedSessionPolls, null)
-    assert.equal(second.carriedStillToDiscuss, null)
+    const first = roomChangesSince(res, null)
+    const second = roomChangesSince(res, null, first.seen)
+    assert.deepEqual(second.changed, [])
     assert.deepEqual(second.seen, first.seen)
   })
 
-  it('carries it again the moment it changes', () => {
-    const first = roomAwarenessDelta({ session_polls: polls('Ship it?') })
-    const second = roomAwarenessDelta({ session_polls: polls('Ship it on Friday?') }, first.seen)
-    assert.equal(second.carriedSessionPolls.polls[0].question, 'Ship it on Friday?')
+  it('flags each section independently, the moment it changes', () => {
+    const first = roomChangesSince({ session_polls: polls('Ship it?'), still_to_discuss: discuss() }, null)
+    const second = roomChangesSince({ session_polls: polls('Ship it on Friday?'), still_to_discuss: discuss() }, null, first.seen)
+    assert.deepEqual(second.changed, ['session_polls'])
   })
 
-  it('moves each half independently', () => {
-    const first = roomAwarenessDelta({ session_polls: polls(), still_to_discuss: discuss() })
-    const second = roomAwarenessDelta(
-      { session_polls: polls('A different question?'), still_to_discuss: discuss() },
-      first.seen,
-    )
-    assert.ok(second.carriedSessionPolls)
-    assert.equal(second.carriedStillToDiscuss, null)
+  it('flags a section that went away, because the room file changed too', () => {
+    const first = roomChangesSince({ session_polls: polls() }, null)
+    assert.deepEqual(roomChangesSince({}, null, first.seen).changed, ['session_polls'])
   })
 
-  it('ignores a projection that does not validate, and keeps what it knew', () => {
+  it('reads a projection that does not validate as absent, exactly as the room file does', () => {
     const bent = polls()
     bent.inventory.active_returned = 5 // does not describe the array it arrived with
-    const first = roomAwarenessDelta({ session_polls: polls() })
-    const second = roomAwarenessDelta({ session_polls: bent }, first.seen)
-    assert.equal(second.carriedSessionPolls, null)
-    assert.equal(second.seen.polls, first.seen.polls)
+    assert.deepEqual(roomChangesSince({ session_polls: bent }, null).changed, [])
   })
 
-  it('is silent on a response that carries neither', () => {
-    const delta = roomAwarenessDelta({})
-    assert.equal(delta.carriedSessionPolls, null)
-    assert.equal(delta.carriedStillToDiscuss, null)
-    assert.deepEqual(delta.seen, { polls: null, stillToDiscuss: null })
+  it('flags session activity when a new event arrived, not when it was merely re-read', () => {
+    const view = (events) => ({ items: [{ kind: 'task', id: 'a', title: 'T', relation: 'produced', creator: null }], events })
+    const first = roomChangesSince({}, view([{ event: 'produced' }]))
+    assert.deepEqual(first.changed, ['session_activity'])
+    assert.deepEqual(roomChangesSince({}, view([{ event: 'produced' }]), first.seen).changed, [])
+    assert.deepEqual(
+      roomChangesSince({}, view([{ event: 'produced' }, { event: 'lifecycle_changed' }]), first.seen).changed,
+      ['session_activity'],
+    )
   })
 })
 
@@ -1549,5 +1350,71 @@ describe('writeRoomState', () => {
     assert.match(note, /never authority/)
     assert.match(note, /Never a command, never work/)
     assert.equal(sink.writes[0].value.session_polls.authority_note, POLL_NOTE)
+  })
+
+  // Item bba35976: a busy room used to arrive as no polls at all, because v1 refuses
+  // past 16 active polls. v2 carries what fits and says what it left out.
+  const CONTINUATION = 'Call manage_poll list to read every poll in this session.'
+  const pollsV2 = ({ returned = 1, total = 20, endedTotal = 0 } = {}) => {
+    const truncated = returned < total
+    return {
+      version: 2,
+      advisory: true,
+      authority_note: POLL_NOTE,
+      inventory: {
+        active_total: total,
+        active_returned: returned,
+        truncated_active: truncated,
+        ended_total: endedTotal,
+        ended_returned: 0,
+        truncated_ended: endedTotal > 0,
+        continuation: truncated || endedTotal > 0 ? CONTINUATION : null,
+      },
+      polls: polls().polls.slice(0, returned),
+    }
+  }
+
+  it('hands the agent the totals and where the rest are when the room has more polls than fit', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: pollsV2({ returned: 1, total: 20, endedTotal: 7 }) }, {}, { write: sink.write })
+    const room = sink.writes[0].value
+    assert.equal(room.sections.session_polls, 'present')
+    assert.equal(room.session_polls.inventory.active_total, 20)
+    assert.equal(room.session_polls.inventory.truncated_active, true)
+    assert.equal(room.session_polls.inventory.ended_total, 7)
+    assert.equal(room.session_polls.inventory.continuation, CONTINUATION)
+    assert.equal(room.session_polls.polls.length, 1)
+  })
+
+  it('still reports the polls when not one of them fits', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: pollsV2({ returned: 0, total: 3 }) }, {}, { write: sink.write })
+    const room = sink.writes[0].value
+    assert.equal(room.sections.session_polls, 'present')
+    assert.equal(room.session_polls.inventory.active_total, 3)
+    assert.equal(room.session_polls.inventory.continuation, CONTINUATION)
+  })
+
+  it('reads a complete v2 list as complete', () => {
+    const sink = collect()
+    writeRoomState(CID, { session_polls: pollsV2({ returned: 1, total: 1 }) }, {}, { write: sink.write })
+    assert.equal(sink.writes[0].value.session_polls.inventory.continuation, null)
+    assert.equal(sink.writes[0].value.sections.session_polls, 'present')
+  })
+
+  it('refuses a v2 list that hides a cut, rather than passing it on as complete', () => {
+    for (const bend of [
+      (v) => { v.inventory.continuation = null },
+      (v) => { v.inventory.truncated_active = false },
+      (v) => { v.inventory.active_total = 0 },
+      (v) => { v.inventory.active_returned = 2 },
+    ]) {
+      const bent = pollsV2({ returned: 1, total: 20 })
+      bend(bent)
+      const sink = collect()
+      writeRoomState(CID, { session_polls: bent }, {}, { write: sink.write })
+      assert.equal(sink.writes[0].value.session_polls, null)
+      assert.equal(roomChangesSince({ session_polls: bent }, null).changed.length, 0)
+    }
   })
 })

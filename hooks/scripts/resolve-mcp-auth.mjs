@@ -13,10 +13,13 @@
  * 3. Project .mcp.json (cwd and parents) — that file's token AND url.
  * 4. ~/.claude.json project entries that match cwd (mcpServers.devspec)
  * 5. ~/.claude.json top-level mcpServers.devspec
- * 6. CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — plugin userConfig token, paired with the
- *    plugin's OWN configured URL (CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL, defaulting to
- *    https://api.devspec.ai/api/mcp). Lowest priority so a developer's own .mcp.json
- *    (e.g. staging) still wins when no host token was supplied.
+ * 6. The plugin's own userConfig token, paired with the plugin's OWN configured URL
+ *    (defaulting to https://api.devspec.ai/api/mcp). A hook reads them from
+ *    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN / _MCP_URL, which Claude Code hands it; a Bash
+ *    tool call or monitor reads this conversation's private settings file, which the
+ *    SessionStart hook names in DEVSPEC_PLUGIN_SETTINGS_SESSION (plugin-settings.mjs,
+ *    item 4d40407b). Lowest priority so a developer's own .mcp.json (e.g. staging)
+ *    still wins when no host token was supplied.
  *
  * At write time, proveCredentialPair heartbeats the just-registered connection
  * under each distinct token until one owns it. The poller caches that pair.
@@ -29,14 +32,51 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pluginSettingsFromEnv } from './plugin-settings.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
+const DEFAULT_APP_ORIGIN = 'https://app.devspec.ai'
 const WRONG_TOKEN_RE = /belongs to a different token/i
 
 export const DEFAULT_MCP_URL = DEFAULT_PROD_URL
 
-export const TOKENS_WARNING_FIX =
-  'Open You → Connections, reveal the key you want, and make the plugin key and the project .mcp.json key the same.'
+/**
+ * The DevSpec web-app origin of the deployment an MCP URL points at.
+ *
+ * Every deployment serves MCP from its `api.` host and the app from `app.` on the
+ * same root domain (api.devspec.ai ↔ app.devspec.ai, api.devspecstaging.com ↔
+ * app.devspecstaging.com). Any other host — localhost, or a URL already on the app
+ * host — is its own app origin. Anything unreadable falls back to production, the
+ * same default the MCP URL itself has.
+ *
+ * Messages that send someone to a DevSpec page build their link from this, so a
+ * plugin pointed at staging never links to production.
+ */
+export function devspecAppOrigin(mcpUrl) {
+  let url
+  try {
+    url = new URL(String(mcpUrl ?? DEFAULT_PROD_URL))
+  } catch {
+    return DEFAULT_APP_ORIGIN
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return DEFAULT_APP_ORIGIN
+  if (url.hostname.startsWith('api.')) url.hostname = `app.${url.hostname.slice('api.'.length)}`
+  return url.origin
+}
+
+/** The personal Agent setup page (where the account's key is revealed), on that deployment. */
+export function agentsSettingsUrl(mcpUrl) {
+  return `${devspecAppOrigin(mcpUrl)}/settings/agents`
+}
+
+/** How to settle two disagreeing keys, linking the Agent setup page on the host in use. */
+export function tokensWarningFix(mcpUrl) {
+  return (
+    `Open DevSpec's Agent setup page at ${agentsSettingsUrl(mcpUrl)} to reveal the key you want, ` +
+    'then make the plugin key and the project .mcp.json key the same.'
+  )
+}
 
 function readJson(file) {
   try {
@@ -135,39 +175,35 @@ export function fingerprintToken(token) {
 
 /**
  * The bearer the HOST MCP client is expected to have used for register_connection,
- * drawn from the reachable process env. The one host-token carrier that reaches
- * hook/tool subprocesses today is CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN — the plugin
- * userConfig token Claude Code exports, which IS the token the host uses for the
- * plugin-declared `devspec` MCP server (so register_connection runs on it). Pass the
- * result as resolveDevspecMcpAuth(cwd, { hostToken }) at connect/write time to keep
- * the poller on the same token. Returns null where the plugin env is unset (a
+ * drawn from what this process can reach. The one host-token carrier that reaches
+ * hook/tool subprocesses is the plugin's userConfig token (see pluginSettingsFromEnv),
+ * which IS the token the host uses for the plugin-declared `devspec` MCP server (so
+ * register_connection runs on it). Pass the result as
+ * resolveDevspecMcpAuth(cwd, { hostToken }) at connect/write time to keep the poller on
+ * the same token. Returns null where the plugin settings are unreachable (a
  * dev-from-source .mcp.json setup, or the non-Claude local-poller plugins) → the
  * caller's resolution is unchanged.
  */
 export function hostTokenFromEnv(env = process.env) {
-  const t = env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN || env.CLAUDE_PLUGIN_OPTION_devspec_token || null
-  return typeof t === 'string' && t.trim() ? t.trim() : null
-}
-
-function pluginTokenFromEnv(env) {
-  return trimToken(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN || env.CLAUDE_PLUGIN_OPTION_devspec_token)
+  return trimToken(pluginSettingsFromEnv(env)?.token)
 }
 
 /**
- * The URL the plugin-declared `devspec` MCP server is actually pointed at.
+ * The plugin's own pair: its token and the URL the plugin-declared `devspec` MCP server
+ * is actually pointed at.
  *
- * `plugin.json` declares `"url": "${user_config.devspec_mcp_url}"`, so the host talks
- * to whatever that userConfig field holds — production by default, staging for us.
- * Claude Code exports userConfig to subprocesses as CLAUDE_PLUGIN_OPTION_<KEY>, so the
- * poller can read the same value and stay on the SAME host as the server that ran
+ * `plugin.json` declares `"url": "${user_config.devspec_mcp_url}?model_tools=…"`, so the
+ * host talks to whatever that userConfig field holds — production by default, staging for us.
+ * Reading the same value keeps the poller on the SAME host as the server that ran
  * register_connection. Reading only the token and assuming production would recreate
- * exactly the cross-wiring item 8bb707fd removed, one field along.
+ * exactly the cross-wiring item 8bb707fd removed, one field along. Both come from one
+ * carrier — the hook environment or the conversation's settings file — never one of each.
  */
-function pluginUrlFromEnv(env) {
-  return (
-    trimToken(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL || env.CLAUDE_PLUGIN_OPTION_devspec_mcp_url) ||
-    DEFAULT_PROD_URL
-  )
+function pluginPairFromEnv(env, opts) {
+  const settings = pluginSettingsFromEnv(env, opts.pluginSettingsDir ? { dir: opts.pluginSettingsDir } : undefined)
+  const token = trimToken(settings?.token)
+  if (!token) return { token: null, mcp_url: DEFAULT_PROD_URL }
+  return { token, mcp_url: trimToken(settings.mcp_url) || DEFAULT_PROD_URL }
 }
 
 /**
@@ -189,8 +225,7 @@ export function enumerateCredentialPairs(cwd = process.cwd(), opts = {}) {
 
   const envToken = trimToken(env.DEVSPEC_MCP_TOKEN || env.DEVSPEC_TOKEN)
   const envUrl = trimToken(env.DEVSPEC_MCP_URL) || DEFAULT_PROD_URL
-  const pluginToken = pluginTokenFromEnv(env)
-  const pluginUrl = pluginUrlFromEnv(env)
+  const { token: pluginToken, mcp_url: pluginUrl } = pluginPairFromEnv(env, opts)
   const hostToken =
     typeof opts.hostToken === 'string' && opts.hostToken.trim() ? opts.hostToken.trim() : null
   const fromProject = walkMcpJson(cwd)
@@ -270,7 +305,11 @@ export function distinctTokenPairs(pairs) {
   return out
 }
 
-export function buildTokensWarning(pairs) {
+/**
+ * `mcpUrl` is the host the link in the fix should point at: the proven pair's when
+ * there is one, otherwise the default pick (the first pair, in precedence order).
+ */
+export function buildTokensWarning(pairs, mcpUrl) {
   const tokens = distinctTokenPairs(pairs)
   if (tokens.length < 2) return null
   const named = tokens
@@ -278,7 +317,7 @@ export function buildTokensWarning(pairs) {
     .join(', ')
   return (
     `This machine has more than one DevSpec key: ${named}. ` +
-    `Connect will use the key that owns this connection. ${TOKENS_WARNING_FIX}`
+    `Connect will use the key that owns this connection. ${tokensWarningFix(mcpUrl ?? tokens[0].mcp_url)}`
   )
 }
 
@@ -310,7 +349,8 @@ export async function proveCredentialPair(pairs, { connectionId, probe } = {}) {
   for (const pair of tokens) {
     try {
       await probe(pair, connectionId)
-      return { pair, probed: true, warning, error: null }
+      // The proven pair is the host this connection lives on; link that one.
+      return { pair, probed: true, warning: buildTokensWarning(pairs, pair.mcp_url), error: null }
     } catch (err) {
       if (isWrongTokenError(err)) continue
       continue
@@ -360,7 +400,7 @@ export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
 }
 
 // CLI
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('resolve-mcp-auth.mjs')) {
+if (isEntryPoint(import.meta.url)) {
   // Reflect the same host-token preference the write path uses, for diagnostics.
   const result = resolveDevspecMcpAuth(process.cwd(), { hostToken: hostTokenFromEnv(process.env) })
   process.stdout.write(JSON.stringify(result) + '\n')

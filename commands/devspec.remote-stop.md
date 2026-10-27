@@ -2,7 +2,7 @@
 name: devspec.remote-stop
 description: Disconnect DevSpec remote control for THIS conversation only — connection offline, stop matching poller, leave other remotes alone.
 argument-hint: "[connection_id=<uuid>]"
-allowed-tools: Bash, mcp__devspec__heartbeat_connection, mcp__devspec__detach_connection, mcp__devspec__get_session_transcript
+allowed-tools: Bash, mcp__plugin_devspec_devspec__heartbeat_connection, mcp__devspec__heartbeat_connection, mcp__plugin_devspec_devspec__detach_connection, mcp__devspec__detach_connection, mcp__plugin_devspec_devspec__get_session_transcript, mcp__devspec__get_session_transcript
 ---
 
 # DevSpec Remote Control — Stop / Disconnect

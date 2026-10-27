@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * DevSpec remote-control mirror hook (Stop / UserPromptSubmit) — CONNECTION-NATIVE.
+ * DevSpec remote-control mirror hook (Stop / a prompt) — CONNECTION-NATIVE.
  * Resolves ONLY the connection bound to THIS local conversation — never a
  * machine-global "latest" pointer. Posts mechanically — no LLM tokens.
  *
- * user_prompt → optional local_prompt bubble when attached (literal owner text)
+ * user_prompt → busy/heartbeat + turn marker; and, for a prompt a person submitted,
+ *               the owner's own turn plus a local_prompt bubble when attached
+ *               (literal owner text). Run by the hooks module (hooks/local-prompt.ts)
+ *               with Claude Code's origin for the prompt.
  * stop        → busy/heartbeat + turn marker only (NO assistant text)
  *
  * Answers are agent-canonical: skills call post_session_message({ connection_id }).
@@ -14,16 +17,18 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
+import { fitRoomMessage } from './room-message.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
 import {
   STATE_OK,
   STATE_UNREADABLE,
+  patchPrivateJson,
   readPrivateJson,
   readPrivateJsonResult,
+  writePrivateJson,
 } from './private-state.mjs'
 import {
   activeContinuation,
@@ -33,33 +38,460 @@ import {
 } from './interaction-events.mjs'
 // The bridge owns clearing a resolved continuation; Stop is its other resolver.
 import { clearStoredContinuation } from './devspec-question.mjs'
+import {
+  absentLaunches,
+  appendRequestEvent,
+  closeRequest,
+  launchForRequest,
+  openRequest,
+  promptArrival,
+  readRequestState,
+  requestFinished,
+  requestForLaunch,
+  requestsWithWorkPending,
+  rotateRequestLog,
+  UNSTATED,
+} from './requests.mjs'
+import { ownedByAnotherProcess, resolveClaudePid } from './startup-listener.mjs'
+import {
+  launchedBackgroundWork,
+  outstandingBackgroundWorkFromFile,
+  ownedOutstandingWork,
+  parseBackgroundTasks,
+} from './background-work.mjs'
+import {
+  DELEGATED_KINDS,
+  delegatedChildren,
+  delegationEvent,
+  delegationText,
+  deliveredPicture,
+  ensureTrailState,
+  latestDeliveredCommand,
+  pictureKey,
+  postLatest,
+  recordDeliveredPicture,
+  turnIdentity,
+} from './delegation-trail.mjs'
+import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
+import { readTurnActivity, turnActivityPath, turnIsLive } from './turn-liveness.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
-const mode = process.argv[2] === 'user_prompt' ? 'user_prompt' : 'stop'
+// `background_launch` is the PostToolUse hook that records a background job a turn
+// started (item beb0e005); everything else is a turn boundary.
+const MODES = new Set(['user_prompt', 'stop', 'background_launch', 'subagent_stop'])
+const mode = MODES.has(process.argv[2]) ? process.argv[2] : 'stop'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
+
+// Whether a turn is still live is decided in one place for the hooks and the poller
+// alike (turn-liveness.mjs, item 9e8dda57): by what Claude Code shows, not by how long
+// ago the turn started.
 
 // Turn marker — the connected agent is the SOLE authority for the "working" state.
 // UserPromptSubmit (turn start) writes it; Stop (turn end) clears it. The long-lived
 // poller reads it (by connection_id) to re-assert busy on heartbeats while a turn
 // runs, so long turns stay "working" and the server's busy freshness doesn't decay.
-export function turnMarkerPath(connectionId) {
-  return path.join(CONNECTIONS_DIR, `${connectionId}.turn`)
+/**
+ * Merge a patch into this connection's own state file. Only an existing file: a
+ * conversation bound through the legacy singleton has no per-connection file to
+ * extend, and a file holding nothing but the patch would be a bond with no identity.
+ * Losing a patch to a concurrent poller write is harmless here — Stop falls back to
+ * the connection-scoped completion and the next start relearns its predecessor.
+ */
+function patchOwnState(connectionId, patch) {
+  const file = path.join(CONNECTIONS_DIR, `${connectionId}.json`)
+  if (!connectionId || !fs.existsSync(file)) return false
+  return patchPrivateJson(file, { ...patch, updated_at: new Date().toISOString() })
 }
-function writeTurnMarker(connectionId) {
+
+export function turnMarkerPath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.turn`)
+}
+function readTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
+  if (!connectionId) return null
+  try {
+    const marker = readPrivateJson(turnMarkerPath(connectionId, dir))
+    return typeof marker?.startedAt === 'number' ? marker : null
+  } catch {
+    return null
+  }
+}
+/** Is this connection's marker a live turn (turn-liveness.mjs)? */
+function markerIsLive(connectionId, marker, { dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
+  return turnIsLive(marker, { activity: readTurnActivity(connectionId, dir), now })
+}
+
+/**
+ * Open or keep the turn. `held` records a Stop that kept the command open for its own
+ * background work: the poller treats a held turn as live until the next Stop rewrites
+ * or clears the marker (item 9e8dda57), because nothing fires while Claude waits.
+ */
+function writeTurnMarker(connectionId, { held = false } = {}) {
   if (!connectionId) return
+  // A turn that is already live keeps its start. A held turn's start bounds which
+  // background jobs belong to it (backgroundHoldDecision), so a wake-up prompt must
+  // not move it past jobs that are still running.
+  const existing = readTurnMarker(connectionId)
+  const startedAt = markerIsLive(connectionId, existing) ? existing.startedAt : Date.now()
   try {
     fs.mkdirSync(CONNECTIONS_DIR, { recursive: true })
-    fs.writeFileSync(turnMarkerPath(connectionId), JSON.stringify({ startedAt: Date.now() }), {
+    fs.writeFileSync(turnMarkerPath(connectionId), JSON.stringify(held ? { startedAt, held: true } : { startedAt }), {
       mode: 0o600,
     })
   } catch {
     /* non-fatal — the immediate busy heartbeat below still fires */
   }
 }
+
+/**
+ * The background jobs each turn launched (item beb0e005): one JSON line per launch,
+ * `{ id, kind, turn, at }`, where `turn` is the marker's `startedAt` at the time.
+ *
+ * Appended, never rewritten: parallel tool calls finish together, and a
+ * read-modify-write of one file would drop one of their ids. A line belongs to the
+ * turn its `turn` names. When the poller picks up a new command it writes a new
+ * `startedAt`, so an earlier command's jobs stop counting without anyone having to
+ * clean them up. clearTurnMarker removes the file with the marker.
+ */
+export function ownedWorkPath(connectionId, dir = CONNECTIONS_DIR) {
+  return path.join(dir, `${connectionId}.turn-owned.jsonl`)
+}
+
+/**
+ * Record that the open turn launched `launch` ({ id, kind }). Only an open, fresh
+ * turn owns work: with no marker there is no command for the job to belong to.
+ */
+export function recordOwnedLaunch(connectionId, launch, { dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
+  if (!connectionId || !launch?.id) return false
+  const marker = readTurnMarker(connectionId, dir)
+  if (!markerIsLive(connectionId, marker, { dir, now })) return false
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    const line = { id: launch.id, kind: launch.kind, turn: marker.startedAt, at: new Date(now).toISOString() }
+    if (launch.label) line.label = launch.label
+    if (launch.model) line.model = launch.model
+    if (launch.parent) line.parent = launch.parent
+    fs.appendFileSync(ownedWorkPath(connectionId, dir), `${JSON.stringify(line)}\n`, { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Record that owned work ended, on the same append-only file (item d2cbd4c6).
+ * Only work the open turn launched can end in it; anything else is ignored.
+ */
+export function recordOwnedEnd(connectionId, id, { status = 'completed', dir = CONNECTIONS_DIR, now = Date.now() } = {}) {
+  const marker = readTurnMarker(connectionId, dir)
+  if (!markerIsLive(connectionId, marker, { dir, now }) || typeof id !== 'string') return false
+  const lines = readOwnedLines(connectionId, marker, dir)
+  if (!lines.some((entry) => entry.id === id && typeof entry.ended !== 'string')) return false
+  if (lines.some((entry) => entry.id === id && typeof entry.ended === 'string')) return false
+  try {
+    fs.appendFileSync(
+      ownedWorkPath(connectionId, dir),
+      `${JSON.stringify({ id, turn: marker.startedAt, ended: new Date(now).toISOString(), status })}\n`,
+      { mode: 0o600 },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Every owned-work line the turn `marker` names, launches and ends alike. */
+export function readOwnedLines(connectionId, marker, dir = CONNECTIONS_DIR) {
+  if (!connectionId || typeof marker?.startedAt !== 'number') return []
+  let text = ''
+  try {
+    text = fs.readFileSync(ownedWorkPath(connectionId, dir), 'utf8')
+  } catch {
+    return []
+  }
+  const lines = []
+  for (const line of text.split('\n')) {
+    try {
+      const entry = JSON.parse(line)
+      if (entry?.turn === marker.startedAt && typeof entry.id === 'string') lines.push(entry)
+    } catch {
+      /* a torn or foreign line is not a record */
+    }
+  }
+  return lines
+}
+
+/** The ids the turn `marker` names launched, oldest first. */
+export function readOwnedIds(connectionId, marker, dir = CONNECTIONS_DIR) {
+  if (!connectionId || typeof marker?.startedAt !== 'number') return []
+  let text = ''
+  try {
+    text = fs.readFileSync(ownedWorkPath(connectionId, dir), 'utf8')
+  } catch {
+    return []
+  }
+  const ids = []
+  for (const line of text.split('\n')) {
+    try {
+      const entry = JSON.parse(line)
+      if (entry?.turn === marker.startedAt && typeof entry.id === 'string' && typeof entry.ended !== 'string' && !ids.includes(entry.id)) ids.push(entry.id)
+    } catch {
+      /* a torn or foreign line is not a launch */
+    }
+  }
+  return ids
+}
+
+/**
+ * Does this Stop end the DevSpec command, or only pause it (item f4a79327)?
+ *
+ * Claude ends its turn to wait for work it started in the background (a subagent, a
+ * background command, a workflow), and is woken again when that work finishes. The
+ * command is not over: what Claude does after the wake is still the requester's work.
+ * Reporting the turn complete here closed the command server-side, so every later
+ * write lost its requester and was judged by the agent owner's role. While such work
+ * is still running, keep the turn open; it ends when the agent posts its answer with
+ * complete_turn (which clears the marker) or at a later Stop with nothing left running.
+ *
+ * What is still running comes from the host itself when it says (item beb0e005):
+ * `backgroundTasks` is the Stop input's in-flight list, and `ownedIds` the jobs this
+ * turn's own tool calls launched. A host that sends no list falls back to reading the
+ * transcript, which sees only `run_in_background` launches since the turn began.
+ *
+ * Only while the turn is live: an absent marker means the agent already closed the
+ * turn itself, and one with no sign of life is a turn the poller has already let go
+ * (turn-liveness.mjs).
+ *
+ * @returns {Array<object>|null} the outstanding jobs when the turn should stay open
+ */
+export function backgroundHoldDecision({
+  marker,
+  transcriptPath,
+  backgroundTasks = null,
+  ownedIds = [],
+  activity = null,
+  now = Date.now(),
+  readOutstanding = outstandingBackgroundWorkFromFile,
+}) {
+  if (!turnIsLive(marker, { activity, now })) return null
+  const outstanding = Array.isArray(backgroundTasks)
+    ? ownedOutstandingWork(backgroundTasks, ownedIds)
+    : readOutstanding(transcriptPath, marker.startedAt)
+  return outstanding.length > 0 ? outstanding : null
+}
+
+/**
+ * PostToolUse for Bash / Agent / Workflow: if the call left work running in the
+ * background, record it against this conversation's open turn. Silent either way;
+ * the hook never blocks or changes a tool call.
+ */
+export function recordBackgroundLaunch(raw, { load = loadState, record = recordOwnedLaunch } = {}) {
+  let input
+  try {
+    input = JSON.parse(raw || '{}')
+  } catch {
+    return false
+  }
+  const found = launchedBackgroundWork(input?.tool_name, input?.tool_response)
+  if (!found) return false
+  // Work a subagent started belongs to that subagent too: it is what the subagent is
+  // still waiting on after it stops to report (item d2cbd4c6).
+  const launch = typeof input?.agent_id === 'string' && input.agent_id ? { ...found, parent: input.agent_id } : found
+  const state = load(resolveHookConversationId(raw))
+  if (!state?.connection_id) return false
+  const recorded = record(state.connection_id, launch)
+  return recorded ? { state, launch } : false
+}
+
+/**
+ * PostToolUse for a call that left work running or set up a wake: record which
+ * request it belongs to (item 7a4d04fd, requests.mjs), so the wake it causes later
+ * continues that request. Independent of the turn marker, which a new command
+ * rewrites: the request a job serves does not change when someone else asks for
+ * something in between.
+ */
+export function recordRequestLaunch(raw, { load = loadState, dir = CONNECTIONS_DIR } = {}) {
+  let input
+  try {
+    input = JSON.parse(raw || '{}')
+  } catch {
+    return false
+  }
+  const launch = launchForRequest(input?.tool_name, input?.tool_input, input?.tool_response, input?.tool_use_id)
+  if (!launch) return false
+  const state = load(resolveHookConversationId(raw))
+  if (!state?.connection_id) return false
+  const agentId = typeof input?.agent_id === 'string' && input.agent_id ? input.agent_id : null
+  const { request, also } = requestForLaunch(readRequestState(state.connection_id, { dir }), agentId)
+  return launch.schedule
+    ? appendRequestEvent(state.connection_id, { op: 'schedule', prompt: launch.prompt, id: launch.id, request, also }, { dir })
+    : appendRequestEvent(state.connection_id, { op: 'launch', key: launch.key, alias: launch.alias, kind: launch.kind, notifies: launch.notifies, request, also }, { dir })
+}
+
+/** The Stop input's scheduled prompts (`session_crons`), or null when not sent. */
+export function parseSessionCrons(hookInput) {
+  try {
+    const data = JSON.parse(hookInput || '{}')
+    return Array.isArray(data.session_crons) ? data.session_crons : null
+  } catch {
+    return null
+  }
+}
+
+/** The auth a hook posts with: the connection's own token and server, as main() uses. */
+function hookAuth(state) {
+  let token = state.token
+  let mcpUrl = state.mcp_url
+  if (!token) {
+    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
+    token = auth.token
+    mcpUrl = mcpUrl || auth.mcp_url
+  }
+  return token ? { token, mcpUrl: mcpUrl || 'https://api.devspec.ai/api/mcp' } : null
+}
+
+/**
+ * Bring this turn's delegation group in the room's Activity up to date (item
+ * d2cbd4c6). Posts nothing when the turn delegated nothing, when the connection is
+ * not in a room, or when the turn's command identity cannot be established.
+ * Failure is silent: Activity is a view, and the command does not depend on it.
+ */
+export async function updateDelegationTrail(state, {
+  dir = CONNECTIONS_DIR,
+  marker = readTurnMarker(state?.connection_id, dir),
+  call = mcpToolsCall,
+  auth = hookAuth(state || {}),
+} = {}) {
+  const connectionId = state?.connection_id
+  if (!connectionId || !state.session_id || !marker || !auth) return { posted: 0 }
+  const children = () => delegatedChildren(readOwnedLines(connectionId, marker, dir), marker.startedAt)
+  if (children().length === 0) return { posted: 0 }
+  const trail = ensureTrailState(connectionId, {
+    dir,
+    turn: marker.startedAt,
+    resolveIdentity: () => {
+      let inbox = ''
+      try {
+        inbox = fs.readFileSync(inboxPathFor(connectionId, dir), 'utf8')
+      } catch {
+        /* no delivered commands: only a local turn can be identified */
+      }
+      return turnIdentity({ state, marker, latestCommand: latestDeliveredCommand(inbox) })
+    },
+  })
+  if (!trail) return { posted: 0 }
+  return postLatest(connectionId, {
+    dir,
+    build: () => {
+      const lines = readOwnedLines(connectionId, marker, dir)
+      const event = delegationEvent(delegatedChildren(lines, marker.startedAt), { seq: trail.delegationSeq })
+      return event ? { event, text: delegationText(lines, marker.startedAt) } : null
+    },
+    // Unchanged pictures are not re-sent (item 8ea07be1): after an answer, a repeat
+    // can only open an empty bubble.
+    isDelivered: (payload) => deliveredPicture(connectionId, { dir, turn: marker.startedAt }) === pictureKey(payload),
+    onDelivered: (payload) => recordDeliveredPicture(connectionId, { dir, turn: marker.startedAt, key: pictureKey(payload) }),
+    post: async ({ event, text }) => {
+      try {
+        await call({
+          mcpUrl: auth.mcpUrl,
+          token: auth.token,
+          name: 'post_session_message',
+          arguments: {
+            connection_id: connectionId,
+            agent_name: AGENT_NAME,
+            phase: 'trail',
+            message: text,
+            trail_events: [event],
+            ...trail.identity,
+          },
+          timeoutMs: 8_000,
+        })
+        return true
+      } catch {
+        return false
+      }
+    },
+  })
+}
+
+/**
+ * SubagentStop: a subagent this turn launched has finished. Record its end and bring
+ * the delegation group up to date.
+ */
+export async function recordSubagentStop(raw, { load = loadState } = {}) {
+  let input
+  try {
+    input = JSON.parse(raw || '{}')
+  } catch {
+    return false
+  }
+  const agentId = typeof input?.agent_id === 'string' ? input.agent_id : null
+  if (!agentId) return false
+  const state = load(resolveHookConversationId(raw))
+  if (!state?.connection_id) return false
+  if (subagentStillWaiting(state.connection_id, agentId, parseBackgroundTasks(raw))) return false
+  if (!recordOwnedEnd(state.connection_id, agentId)) return false
+  await updateDelegationTrail(state)
+  return true
+}
+
+/**
+ * Is owned work `id` still alive: in the host's in-flight list itself, or through
+ * anything it started (recursively) that is?
+ *
+ * Measured 2026-10-05 on Claude Code 2.1.289: a subagent stops every time it reports,
+ * including to say "my command is still running, I'll wait". While it waits, the
+ * host lists the subagent's background command but NOT the subagent. So a subagent
+ * has finished only when neither it nor anything it started is still listed.
+ */
+export function stillAlive(id, lines, listed) {
+  const childrenOf = new Map()
+  for (const entry of lines) {
+    if (typeof entry.parent === 'string' && typeof entry.ended !== 'string') {
+      if (!childrenOf.has(entry.parent)) childrenOf.set(entry.parent, [])
+      childrenOf.get(entry.parent).push(entry.id)
+    }
+  }
+  const seen = new Set()
+  const visit = (current) => {
+    if (seen.has(current)) return false
+    seen.add(current)
+    if (listed.has(current)) return true
+    return (childrenOf.get(current) || []).some(visit)
+  }
+  return visit(id)
+}
+
+/**
+ * A subagent's stop is final unless something it started is still running. It is
+ * always listed itself at its own stop, so only its own work decides. A host that
+ * sends no list cannot tell an interim stop from the last one, so it is taken as final.
+ */
+export function subagentStillWaiting(connectionId, agentId, backgroundTasks, { dir = CONNECTIONS_DIR } = {}) {
+  if (!Array.isArray(backgroundTasks)) return false
+  const marker = readTurnMarker(connectionId, dir)
+  if (!marker) return false
+  const listed = new Set(backgroundTasks.map((task) => task?.id).filter((taskId) => taskId !== agentId))
+  return stillAlive(agentId, readOwnedLines(connectionId, marker, dir), listed)
+}
+
+/** The transcript path Claude Code passes every hook on stdin. */
+export function parseTranscriptPath(raw) {
+  try {
+    const data = JSON.parse(raw || '{}')
+    return typeof data.transcript_path === 'string' && data.transcript_path ? data.transcript_path : null
+  } catch {
+    return null
+  }
+}
 export function clearTurnMarker(connectionId) {
   if (!connectionId) return
   try {
     fs.rmSync(turnMarkerPath(connectionId), { force: true })
+    fs.rmSync(ownedWorkPath(connectionId), { force: true })
+    fs.rmSync(path.join(CONNECTIONS_DIR, `${connectionId}.turn-trail.json`), { force: true })
+    fs.rmSync(turnActivityPath(connectionId, CONNECTIONS_DIR), { force: true })
   } catch {
     /* ignore */
   }
@@ -74,23 +506,29 @@ function readStdin() {
 }
 
 /**
- * The DevSpec connection to mirror for belongs to THIS local conversation. Resolve
- * its conversation id the SAME way remote-control-state.mjs `write` stamped it — via
- * the shared detectLocalId (probes whichever conversation-id env var THIS tool
- * exposes), then the hook stdin session_id. Tool-agnostic and SYMMETRIC with connect.
+ * The DevSpec connection to mirror for belongs to THIS local conversation. The firing
+ * hook's own stdin `session_id` is that conversation, so it wins; the env var
+ * `write` stamped from (via the shared detectLocalId, this host's names only) is the
+ * fallback for an invocation with no hook input. This is the order
+ * remote-control-state.mjs `context` already uses.
+ *
+ * Env used to win (item 554b9b42), on the reasoning that it is the value `write`
+ * stamped. The two agree whenever this Claude Code set the env. They differ when one
+ * Claude Code is started from another's Bash tool: the child's process env keeps the
+ * parent's CLAUDE_CODE_SESSION_ID, the hooks module runs this script with that env
+ * and the child's own id on stdin, and env-first posted the child's prompt into the
+ * parent's room as the owner (item ffd6e767). An env value shadowing the real id is
+ * the shape of SHELL_SESSION_ID (87117120) and of a foreign host's id (75f65461) too.
  */
 export function resolveHookConversationId(hookInput, env = process.env) {
-  const fromEnv = detectLocalId({}, env).local_id
-  if (fromEnv) return fromEnv
+  let fromHook = null
   try {
     const parsed = JSON.parse(hookInput || '{}')
-    if (typeof parsed.session_id === 'string' && parsed.session_id.trim()) {
-      return parsed.session_id.trim()
-    }
+    if (typeof parsed.session_id === 'string' && parsed.session_id.trim()) fromHook = parsed.session_id
   } catch {
-    /* fall through — fail closed below */
+    /* no usable hook input; env below, else fail closed */
   }
-  return null
+  return detectLocalId(fromHook ? { 'local-id': fromHook } : {}, env).local_id
 }
 
 /**
@@ -261,7 +699,19 @@ export function loadState(conversationId) {
   } catch {
     /* selection below fails closed when no readable matching state exists */
   }
-  return selectBoundState(candidates, conversationId, AGENT_NAME)
+  return selectBoundState(withoutConnectionsOwnedElsewhere(candidates), conversationId, AGENT_NAME)
+}
+
+/**
+ * Drop live connections another Claude Code process owns (item 7e35d818). When this
+ * conversation was resumed in another window, the conversation id is shared, so the
+ * window it moved away from would otherwise keep mirroring its prompts into the room,
+ * ending the new window's turns, and blocking on a listener it no longer needs.
+ * Injectable for tests; a process that cannot place itself keeps every candidate.
+ */
+export function withoutConnectionsOwnedElsewhere(candidates, { myPid = resolveClaudePid(process.env), ownedElsewhere = ownedByAnotherProcess } = {}) {
+  if (!myPid) return candidates
+  return candidates.filter(({ raw } = {}) => raw?.enabled !== true || !ownedElsewhere(raw, myPid))
 }
 
 function extractLastText(hookInput, which) {
@@ -310,19 +760,48 @@ function extractLastText(hookInput, which) {
 }
 
 /**
- * Claude Code re-invokes the model after a background task by injecting a synthetic
- * user prompt (a <task-notification> block, a [SYSTEM NOTIFICATION …] banner, or a
- * <system-reminder>). Those are harness plumbing, never owner-typed input, and must
- * not be mirrored as local_prompt bubbles.
+ * The origins, in Claude Code's own closed set (`prompt.submit`'s `e.origin.kind`),
+ * of a prompt the person running this Claude Code submitted: typed at the terminal
+ * (`composer`), sent through Claude Code's Remote Control from a phone or the web
+ * (`bridge`), or the turn of an SDK host such as `claude -p` (`sdk`).
+ *
+ * Nothing else is the owner's words, and the room must never show it as if it were
+ * (item dd1a8325): a scheduled or /loop firing (`scheduled-trigger`), a background
+ * task's notification, which is how DevSpec's own wake stream arrives
+ * (`task-notification`), another session, a channel, an unclassified turn, and any
+ * kind added after this list was written. The stamp is the engine's, never read from
+ * the text: a /loop firing carries exactly the text that was typed to start it.
  */
-function isHarnessInjection(text) {
-  const t = String(text)
-  return (
-    t.includes('<task-notification') ||
-    t.includes('[SYSTEM NOTIFICATION - NOT USER INPUT]') ||
-    t.includes('This is an automated background-task event') ||
-    t.includes('<system-reminder>')
-  )
+const PROMPT_ORIGINS_OF_A_PERSON = new Set(['composer', 'bridge', 'sdk'])
+
+/** Claude Code's own stamp of where a prompt came from (`e.origin.kind`), or null. */
+/** The running turn a prompt was submitted into (`prompt.submit`'s turnId), or null. */
+export function promptTurnId(hookInput) {
+  try {
+    const turnId = JSON.parse(hookInput || '{}')?.turn_id
+    return typeof turnId === 'string' && turnId ? turnId : null
+  } catch {
+    return null
+  }
+}
+
+export function promptOrigin(hookInput) {
+  try {
+    const kind = JSON.parse(hookInput || '{}')?.origin?.kind
+    return typeof kind === 'string' ? kind : null
+  } catch {
+    return null
+  }
+}
+
+/** True only when the hooks module passed an origin that names a person (above). */
+export function promptCameFromAPerson(hookInput) {
+  try {
+    const kind = JSON.parse(hookInput || '{}')?.origin?.kind
+    return typeof kind === 'string' && PROMPT_ORIGINS_OF_A_PERSON.has(kind)
+  } catch {
+    return false
+  }
 }
 
 const REMOTE_STATUS_BANNER = '━━━ DevSpec Remote Control ━━━'
@@ -611,11 +1090,33 @@ export function prepareAgentMirrorText(text) {
   if (!t) return null
   if (t.includes(REMOTE_STATUS_BANNER)) t = stripRemoteControlBanner(t).trim()
   if (!t || isOperationalChrome(t)) return null
-  return t.slice(0, 12000)
+  return fitRoomMessage(t)
 }
 
 async function main() {
   const raw = readStdin()
+  if (mode === 'background_launch') {
+    try {
+      recordRequestLaunch(raw)
+    } catch {
+      /* an unrecorded launch only means its wake is credited as nobody's request */
+    }
+    try {
+      const recorded = recordBackgroundLaunch(raw)
+      if (recorded && DELEGATED_KINDS.has(recorded.launch.kind)) await updateDelegationTrail(recorded.state)
+    } catch {
+      /* a launch we could not record only means the turn may close early */
+    }
+    process.exit(0)
+  }
+  if (mode === 'subagent_stop') {
+    try {
+      await recordSubagentStop(raw)
+    } catch {
+      /* Activity is a view; the command never depends on it */
+    }
+    process.exit(0)
+  }
   const conversationId = resolveHookConversationId(raw)
   const state = loadState(conversationId)
   if (!state) {
@@ -626,6 +1127,17 @@ async function main() {
       if (reason) process.stderr.write(`[devspec-remote] stop could not bind: ${reason}\n`)
     }
     process.exit(0)
+  }
+
+  // The module ends a turn for DevSpec itself when no Stop hook ran for it (an
+  // interrupt, a denied prompt), and this record is how it knows one did (item
+  // cbf3d758, control-relay.mjs).
+  if (mode === 'stop' && state.connection_id) {
+    try {
+      writePrivateJson(path.join(CONNECTIONS_DIR, `${state.connection_id}.stop-hook.json`), { at: new Date().toISOString() })
+    } catch {
+      /* a missing record only means the module ends this turn a second time, harmlessly */
+    }
   }
 
   let token = state.token
@@ -643,9 +1155,42 @@ async function main() {
   const connectionId = state.connection_id
   const sessionId = state.session_id || null // null = sessionless (no room to mirror into)
   const localId = state.local_id || null
+  // Short, and in parallel at Stop: a slow DevSpec must not hold the person's
+  // prompt or the turn's end, and a request it did not hear about is retried.
+  const callRequest = (args, timeoutMs = 5_000) => mcpToolsCall({
+    mcpUrl,
+    token,
+    connectionCapability: state.connection_capability,
+    name: 'report_request',
+    arguments: args,
+    timeoutMs,
+  })
 
   const text = extractLastText(raw, mode)
-  const skipMirror = mode === 'user_prompt' && !!text && isHarnessInjection(text)
+  const fromAPerson = mode === 'user_prompt' && promptCameFromAPerson(raw)
+
+  // The request this prompt serves (item 7a4d04fd, requests.mjs), recorded before
+  // any network call: a hook cut short leaves this turn's request unknown, never an
+  // earlier one's. A prompt a person sent here is the owner's own new request; a
+  // wake continues whatever started what woke it. Anything Claude Code delivers
+  // into a running turn joins it instead of replacing what it serves.
+  let typedRequest = null
+  if (mode === 'user_prompt' && connectionId) {
+    try {
+      const midTurn = promptTurnId(raw) !== null
+      const arrival = promptArrival({
+        fromAPerson: fromAPerson && Boolean(text && String(text).trim()),
+        origin: promptOrigin(raw),
+        text,
+        midTurn,
+        state: readRequestState(connectionId, { dir: CONNECTIONS_DIR }),
+      })
+      for (const event of arrival.events) appendRequestEvent(connectionId, event, { dir: CONNECTIONS_DIR })
+      if (arrival.typedId) typedRequest = { id: arrival.typedId, midTurn }
+    } catch {
+      /* an unrecorded request only leaves DevSpec to resolve who asked itself */
+    }
+  }
 
   // Consume any explicit-reply marker so it cannot bleed into a later turn.
   // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full
@@ -670,18 +1215,80 @@ async function main() {
         })
       : null
 
+  // A Stop that only pauses the command for background work keeps the turn open
+  // (item f4a79327). Decided here, with the block, for the same reason: it is not a
+  // turn end, so busy stays on and nothing is reported complete.
+  const turnMarker = mode === 'stop' && connectionId && !blockReason ? readTurnMarker(connectionId) : null
+  const backgroundHold = turnMarker
+    ? backgroundHoldDecision({
+        marker: turnMarker,
+        transcriptPath: parseTranscriptPath(raw),
+        backgroundTasks: parseBackgroundTasks(raw),
+        ownedIds: readOwnedIds(connectionId, turnMarker),
+        activity: readTurnActivity(connectionId, CONNECTIONS_DIR),
+      })
+    : null
+  if (backgroundHold) {
+    process.stderr.write(
+      `[devspec-remote] command kept open: ${backgroundHold.length} background job(s) still running\n`,
+    )
+  }
+  // Delegated work the host no longer lists has ended; the group says so before the
+  // turn's records are cleared (item d2cbd4c6).
+  const hostList = turnMarker ? parseBackgroundTasks(raw) : null
+  if (turnMarker && Array.isArray(hostList)) {
+    try {
+      const listed = new Set(hostList.map((task) => task?.id))
+      const lines = readOwnedLines(connectionId, turnMarker)
+      for (const child of delegatedChildren(lines, turnMarker.startedAt)) {
+        if (child.status === 'running' && !stillAlive(child.id, lines, listed)) recordOwnedEnd(connectionId, child.id)
+      }
+      await updateDelegationTrail(state, { marker: turnMarker })
+    } catch {
+      /* Activity is a view; the turn's end never depends on it */
+    }
+  }
+
   try {
+    // A prompt typed at this terminal opens the owner's own turn, admitted with the
+    // connection capability BEFORE the model starts, so every write it makes names
+    // the owner as the person who asked (item 718825fc, local-turn.mjs). Nothing
+    // else does: a room command carries its own requester, a background wake
+    // continues the turn that is already open, and a scheduled firing was asked for
+    // by nobody at this moment.
+    if (fromAPerson && connectionId && sessionId && text && String(text).trim()) {
+      const scope = localTurnScope(state, sessionId)
+      if (scope) {
+        const admitted = await startLocalTurn({
+          scope,
+          previousAttemptId: state.local_turn?.attempt_id ?? null,
+          call: (args) => mcpToolsCall({
+            mcpUrl,
+            token,
+            connectionCapability: state.connection_capability,
+            name: 'report_pickup',
+            arguments: args,
+          }),
+        })
+        if (admitted) patchOwnState(connectionId, { local_turn: admitted })
+      }
+    }
+
+    // The typed request recorded above, opened on DevSpec before the turn runs, with
+    // the connection capability, so DevSpec knows it is this host's observation,
+    // not the model's. One that cannot be opened leaves its turn's writes unstated,
+    // or, delivered mid-turn, joins the turn as something not known.
+    if (typedRequest && state.connection_capability) {
+      const opened = await openRequest({ connectionId, kind: 'typed_prompt', call: callRequest, dir: CONNECTIONS_DIR, id: typedRequest.id })
+        .catch(() => null)
+      if (!opened && typedRequest.midTurn) appendRequestEvent(connectionId, { op: 'joined', id: UNSTATED }, { dir: CONNECTIONS_DIR })
+    }
+
     // LOCAL PROMPT only: mirror owner text typed in the terminal into the room
     // when attached (two-sided transcript). Agent Stop text is NOT posted here —
     // the skill must post_session_message the direct answer (prefer connection_id).
-    if (
-      mode === 'user_prompt' &&
-      sessionId &&
-      text &&
-      String(text).trim() &&
-      !skipMirror
-    ) {
-      const cleaned = String(text).trim().slice(0, 12000)
+    if (fromAPerson && sessionId && text && String(text).trim()) {
+      const cleaned = fitRoomMessage(String(text).trim())
       if (cleaned) {
         const postArgs = {
           message: cleaned,
@@ -704,8 +1311,10 @@ async function main() {
     // marker so the poller re-asserts); stop ends it (busy:false + clear marker).
     // Marker is keyed by connection_id (the poller reads it by connection_id).
     // A blocked stop keeps the turn OPEN — the agent is about to re-arm and carry on.
-    const turnActive = mode === 'user_prompt' || !!blockReason
-    if (turnActive) writeTurnMarker(connectionId)
+    // So does a stop that is waiting on the agent's own background work.
+    const turnActive = mode === 'user_prompt' || !!blockReason || !!backgroundHold
+    let stopDecisionAction = null
+    if (turnActive) writeTurnMarker(connectionId, { held: !!backgroundHold })
     else clearTurnMarker(connectionId)
 
     // Busy heartbeat — one connection-native path (attached or sessionless). The
@@ -746,7 +1355,11 @@ async function main() {
         // wait's poll interval (sub-second), and its cost is bounded — the delivery
         // wakes the model immediately and that turn's end completes exactly — whereas
         // sealing an attempt whose answer the model never saw is unrecoverable.
+        stopDecisionAction = stopDecision.action
         if (stopDecision.action !== 'hold') {
+          // A terminal turn this connection admitted closes exactly; anything else
+          // keeps the connection-scoped completion it always had.
+          const localAttempt = localTurnToComplete(state.local_turn, sessionId)
           try {
             await mcpToolsCall({
               mcpUrl,
@@ -762,14 +1375,43 @@ async function main() {
                     reason: 'turn_end',
                     ...continuationIdentity(stopDecision.continuation),
                   }
-                : { connection_id: connectionId, reason: 'turn_end' },
+                : localAttempt
+                  ? { connection_id: connectionId, attempt_id: localAttempt, reason: 'turn_end' }
+                  : { connection_id: connectionId, reason: 'turn_end' },
             })
             if (stopDecision.action === 'complete') clearStoredContinuation(connectionId)
           } catch {
             /* non-fatal — the poller's marker-driven backstop still runs */
           }
+          // The turn is over whether or not the completion landed: never carry it
+          // into the next one.
+          if (state.local_turn) patchOwnState(connectionId, { local_turn: null })
         }
       }
+    }
+
+    // Close every request whose work is finished (item 7a4d04fd): nothing it
+    // launched is still running or still to wake the agent, no question it asked
+    // is still waiting for its answer, and a room command has its final answer
+    // (item 984ca8b4). A request with work in flight stays open whatever else
+    // this agent does in between, so another person's command ending never ends it.
+    if (mode === 'stop' && connectionId && !blockReason && state.connection_capability) {
+      const requests = readRequestState(connectionId, { dir: CONNECTIONS_DIR })
+      const backgroundTasks = parseBackgroundTasks(raw)
+      if (requests.open.size > 0) {
+        const pending = requestsWithWorkPending(requests, { backgroundTasks, sessionCrons: parseSessionCrons(raw) })
+        const awaitingAnswer = stopDecisionAction === 'hold' ? requests.current : null
+        // Only a request that has reached the agent: a command opened ahead of its
+        // wake has not started, and closing it would lose its turn's attribution.
+        const finished = [...requests.open.keys()]
+          .filter((id) => requestFinished(requests, id, pending) && id !== awaitingAnswer)
+        await Promise.all(finished.map((requestId) =>
+          closeRequest({ connectionId, requestId, call: (args) => callRequest(args, 3_000), dir: CONNECTIONS_DIR })))
+      }
+      for (const key of absentLaunches(requests, backgroundTasks)) {
+        appendRequestEvent(connectionId, { op: 'absent', key }, { dir: CONNECTIONS_DIR })
+      }
+      rotateRequestLog(connectionId, { dir: CONNECTIONS_DIR })
     }
   } catch (e) {
     process.stderr.write(`[devspec-remote] ${e instanceof Error ? e.message : String(e)}\n`)
@@ -786,5 +1428,5 @@ async function main() {
   process.exit(0)
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+const isMain = isEntryPoint(import.meta.url)
 if (isMain) main()

@@ -86,11 +86,21 @@ function sleepSync(ms) {
 }
 
 export function writePrivateJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  writePrivateText(filePath, JSON.stringify(value, null, 2) + '\n')
+}
+
+/**
+ * Atomically replace a private (0600) file with `text`: written beside the
+ * destination, then renamed over it, so a reader — or a crash — only ever sees the
+ * whole old file or the whole new one. The room transcript (item 1a4f0246) uses it
+ * for exactly that reason: a half-written copy must never pass for the room.
+ */
+export function writePrivateText(filePath, text) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
   // Same directory as the destination: rename is only atomic within one filesystem.
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now().toString(36)}`
   try {
-    fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 })
+    fs.writeFileSync(tmp, text, { mode: 0o600 })
     // The temp file carries 0600 through the rename, so the destination never
     // exists in a permissive state — not even for an instant.
     fs.chmodSync(tmp, 0o600)

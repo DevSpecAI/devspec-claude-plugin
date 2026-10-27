@@ -171,7 +171,9 @@ describe('private remote-control state helper', () => {
       'devspec-remote-poll.mjs',
       'devspec-remote-wait.mjs',
       'mirror-turn.mjs',
+      'own-connection.mjs',
       'remote-control-state.mjs',
+      'repository-context.mjs',
     ].sort()
     assert.deepEqual(consumers, expected)
     for (const name of consumers) {

@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readServerFailure, isRetryableHttpFailure } from './mcp-call.mjs'
+import { mcpToolsCall, readServerFailure, isRetryableHttpFailure } from './mcp-call.mjs'
 
 describe('readServerFailure', () => {
   it('reads the outage contract: 503 + auth_validation_unavailable + retryable', () => {
@@ -102,6 +102,23 @@ describe('isRetryableHttpFailure', () => {
     // err.code is the ABORT reason in this module, not the server's code.
     assert.equal(isRetryableHttpFailure({ code: 'owner_gone', status: 503 }), false)
     assert.equal(isRetryableHttpFailure({ code: 'timeout', status: 503 }), false)
+  })
+
+  it('retries a request the server never saw (fa9b809b)', async () => {
+    // DNS, refused, reset, no network: fetch throws before any status exists. That is
+    // no verdict, and reading it as one put an offline-at-startup agent to sleep.
+    let thrown = null
+    try {
+      await mcpToolsCall({ mcpUrl: 'http://127.0.0.1:1/api/mcp', token: 'dvs_x', name: 'list_projects', arguments: {} })
+    } catch (e) {
+      thrown = e
+    }
+    assert.ok(thrown, 'an unreachable server throws')
+    assert.equal(thrown.transport, true)
+    assert.equal(thrown.status, undefined)
+    assert.equal(isRetryableHttpFailure(thrown), true)
+    // A deliberate abort still wins over the transport mark.
+    assert.equal(isRetryableHttpFailure({ transport: true, code: 'timeout' }), false)
   })
 
   it('is safe on non-objects', () => {

@@ -23,7 +23,7 @@
  *   node devspec-remote-connect.mjs [--session <uuid> | --new] [--private]
  *       [--name "<codename>"] [--title "…"] [--agent "Claude Code"]
  *       [--cwd <path>] [--owner-pid <pid>] [--local-id <id>] [--force-new]
- *       [--tail <n>] [--no-poller] [--json]
+ *       [--no-poller] [--json]
  *
  * Exit 0 = connected. Exit 1 = connect failed (message on stderr). Exit 2 = bad args.
  */
@@ -34,13 +34,21 @@ import { fileURLToPath } from 'node:url'
 import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
 import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
+import { waitHolderOwnerPid, waitHolderPid } from './devspec-remote-wait.mjs'
+import { renderTiers, renderTiersPointer, saveTiersText, storeTiers, hasStoredTiers, mergeInstructionTiers } from './instruction-tiers.mjs'
+import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext } from './repository-context.mjs'
+import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
+import { claudeProcessOf, readOwnerListenerStatus, startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
+import { PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, PLUGIN_SETTINGS_KEY_VAR } from './session-env-credentials.mjs'
+import { PROJECT_ID, projectCandidate, matchingProjects, readProjectSelection, readConversationProject, saveConversationProject, blockConversationProject } from './conversation-project.mjs'
 import {
   detectLocalId,
   resolveLocalAction,
   writeConnectionState,
   knownInstructionTiersFor,
 } from './remote-control-state.mjs'
+import { isEntryPoint } from './entry-point.mjs'
 
 /**
  * Connect is a one-shot command, so a transient failure is the whole command
@@ -83,26 +91,22 @@ export async function withHttpRetry(invoke, options = {}) {
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url))
 const WAIT_SCRIPT = path.join(THIS_DIR, 'devspec-remote-wait.mjs')
 
-/**
- * Orientation window default. Bounded because an unbounded seed re-pays the whole
- * room on every reconnect (measured: one catch-up read cost ~26k tokens). NOT a
- * silent cap — the seed always reports matched/returned/has_more, so an agent that
- * needs more knows there is more and can page for it deliberately.
- */
-const DEFAULT_TAIL = 40
-
 function parseArgs(argv) {
   const out = { _: [] }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--session' || a === '--session_id') out.session = argv[++i]
     else if (a === '--agent' || a === '--agent_name') out.agent = argv[++i]
+    else if (a === '--project') {
+      if (out.project !== undefined || !argv[i + 1]?.trim() || argv[i + 1].startsWith('--')) throw new ConnectError('Pass one project name or ID after --project.', { code: 2, reason: 'bad_args' })
+      out.project = argv[++i]
+    }
+    else if (a.startsWith('--project=')) throw new ConnectError('Use --project <name-or-id>, with a space before its value.', { code: 2, reason: 'bad_args' })
     else if (a === '--cwd') out.cwd = argv[++i]
     else if (a === '--name' || a === '--codename') out.name = argv[++i]
     else if (a === '--title') out.title = argv[++i]
     else if (a === '--local-id' || a === '--local_id') out.localId = argv[++i]
     else if (a === '--owner-pid') out.ownerPid = argv[++i]
-    else if (a === '--tail') out.tail = argv[++i]
     else if (a === '--new') out.new = true
     else if (a === '--private') out.private = true
     else if (a === '--force-new') out.forceNew = true
@@ -110,6 +114,7 @@ function parseArgs(argv) {
     else if (a === '--json') out.json = true
     else if (a && !a.startsWith('--')) out._.push(a)
   }
+  if (out.project !== undefined && out._.length) throw new ConnectError('Quote a project name containing spaces, or use its full ID.', { code: 2, reason: 'bad_args' })
   return out
 }
 
@@ -144,59 +149,113 @@ export function armCursorFlag({ created } = {}) {
   return created === true ? '--from-end' : '--pending'
 }
 
-/** The tier fields the server may hand back, in the order they should be read. */
-const TIER_FIELDS = [
-  ['owner_custom_instructions', 'Your chat response style'],
-  ['owner_agent_rules', 'Your personal agent rules (machine/tooling)'],
-  ['project_custom_instructions', 'Project principles (team-wide)'],
-  ['project_agent_rules', 'Project agent rules (execution mechanics)'],
-]
-
-function renderTiers(payload) {
-  if (payload?.instructions_unchanged) {
-    return '\nInstructions: unchanged since this conversation last connected — the tiers you already hold still apply.\n'
+/**
+ * A connect that could not complete. `code` is the CLI exit status; `reason` is a
+ * stable token a caller that is not a person (the startup listener) can branch on
+ * without parsing prose.
+ */
+export class ConnectError extends Error {
+  constructor(message, { code = 1, reason = 'failed', projectSelection = null } = {}) {
+    super(message)
+    this.name = 'ConnectError'
+    this.code = code
+    this.reason = reason
+    this.projectSelection = projectSelection
   }
-  const parts = []
-  for (const [field, label] of TIER_FIELDS) {
-    const value = payload?.[field]
-    if (typeof value === 'string' && value.trim()) {
-      parts.push(`\n### ${label}\n\n${value.trim()}\n`)
-    }
-  }
-  if (!parts.length) return ''
-  return `\n## Instructions in force for this run\n${parts.join('')}`
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2))
+/**
+ * Did the server PROVE a startup registration was scoped by this folder?
+ *
+ * A registration made when Claude Code starts runs in every folder its user opens, so it
+ * must only join a project the folder identifies (item b7ef1fe2). The server honours
+ * `folder_scope_only` and echoes it back; a server predating the flag silently drops
+ * the argument and may have resolved "your only project" instead. No echo, no trust.
+ */
+export function startupScopeProven(registration) {
+  return registration?.folder_scope_only === true
+}
+
+/**
+ * The whole deterministic connect, returning a summary instead of printing one.
+ *
+ * `startup: true` is the variant the listener runs when Claude Code starts, with no
+ * model anywhere near it:
+ *   - it asks the server to resolve the project from this folder alone, and stands
+ *     down if the server cannot prove it did;
+ *   - it never echoes the known tier fingerprint, so the server always hands the full
+ *     tier texts over — they cost nothing here, because nothing reads them until the
+ *     first command arrives, and the listener stores them for exactly that moment;
+ *   - it reads no room transcript: orientation is for a model, and there is none yet.
+ *
+ * `deps` exists for tests. Production callers pass nothing.
+ */
+export async function connect(options = {}, deps = {}) {
+  const {
+    session = null,
+    new: createNew = false,
+    private: makePrivate = false,
+    name = null,
+    title = null,
+    agent = null,
+    cwd: cwdArg = null,
+    ownerPid = null,
+    localId: localIdArg = null,
+    forceNew = false,
+    noPoller = false,
+    startup = false,
+    project: projectSelector = null,
+    env = process.env,
+  } = options
+  const {
+    callTool = mcpToolsCall,
+    writeState = writeConnectionState,
+    resolveAuth = resolveDevspecMcpAuth,
+    projectHome = os.homedir(),
+    onRetryMessage = (message) => process.stderr.write(message),
+  } = deps
 
   const [major] = process.versions.node.split('.')
   if (Number(major) < 18) {
-    process.stderr.write(
-      `DevSpec remote control needs Node.js 18 or newer; this is ${process.version}.\n`,
+    throw new ConnectError(
+      `DevSpec remote control needs Node.js 18 or newer; this is ${process.version}.`,
+      { reason: 'node_version' },
     )
-    process.exit(1)
   }
-  if (args.private && !args.new) {
-    process.stderr.write(
-      'note: --private only applies with --new (it sets the new session private). Ignored here.\n',
-    )
+  if (startup && (createNew || session)) {
+    throw new ConnectError('A startup connect never creates or attaches a session.', {
+      code: 2,
+      reason: 'bad_args',
+    })
   }
 
-  const cwd = args.cwd ? path.resolve(args.cwd) : process.cwd()
-  const agentName = args.agent || AGENT_NAME
-  const detected = detectLocalId({ 'local-id': args.localId }, process.env)
+  const cwd = cwdArg ? path.resolve(cwdArg) : process.cwd()
+  const agentName = agent || AGENT_NAME
+  const detected = detectLocalId({ 'local-id': localIdArg }, env)
   const localId = detected.local_id
   const gitRemote = gitRemoteOrigin(cwd)
   const pin = findProjectPin(cwd)
+  const previousProject = readConversationProject(localId, { home: projectHome })
 
-  const auth = resolveDevspecMcpAuth(cwd, { hostToken: hostTokenFromEnv(process.env) })
+  if (startup && !gitRemote && !pin && previousProject?.status !== 'selected') {
+    // Nothing about this folder names a project. Not an error: most folders a person
+    // opens Claude Code in are not DevSpec projects, and that is fine.
+    throw new ConnectError('This folder has no git remote and no .devspec/project.json pin.', {
+      reason: 'folder_not_linked',
+    })
+  }
+
+  const auth = resolveAuth(cwd, { hostToken: hostTokenFromEnv(env), env })
   if (!auth.ok || !auth.token) {
-    process.stderr.write(
+    throw new ConnectError(
       `DevSpec MCP auth could not be resolved: ${auth.error || 'no token found'}\n` +
-        'Fix MCP auth (DEVSPEC_MCP_TOKEN, the plugin token, .mcp.json or ~/.claude.json) and retry.\n',
+        'Fix MCP auth (DEVSPEC_MCP_TOKEN, the plugin token, .mcp.json or ~/.claude.json) and retry.',
+      { reason: 'auth' },
     )
-    process.exit(1)
+  }
+
+  if (previousProject && previousProject.endpoint !== auth.mcp_url) {
+    throw new ConnectError('This conversation belongs to another DevSpec endpoint. Start a fresh Claude Code conversation.', { reason: 'auth' })
   }
 
   // The bond decision for THIS conversation — never a cwd scan, never another
@@ -204,33 +263,60 @@ async function main() {
   const bond = resolveLocalAction({
     agent: agentName,
     localId,
-    forceNew: !!args.forceNew || !!args.new,
+    forceNew: !!forceNew || !!createNew,
     maxAgeMinutes: 30,
   })
 
-  const call = (name, toolArgs, options = {}) =>
+  const call = (toolName, toolArgs, callOptions = {}) =>
     withHttpRetry(
       () =>
-        mcpToolsCall({
+        callTool({
           mcpUrl: auth.mcp_url,
           token: auth.token,
-          name,
+          name: toolName,
           arguments: toolArgs,
           timeoutMs: 30_000,
-          ...options,
+          ...callOptions,
         }),
       {
         onRetry: (e) =>
-          process.stderr.write(
-            `devspec-remote-connect: ${name} failed (${e.message}) — retrying\n`,
-          ),
+          onRetryMessage(`devspec-remote-connect: ${toolName} failed (${e.message}) — retrying\n`),
       },
     )
+
+  let selectedProjectId = previousProject?.status === 'selected' ? previousProject.project.id : null
+  let selectedCandidate = null
+  if (projectSelector !== null) {
+    try {
+      const selector = String(projectSelector).trim()
+      if (!selector) throw new ConnectError('--project needs a project name or ID.', { code: 2, reason: 'bad_args' })
+      if (PROJECT_ID.test(selector)) selectedProjectId = selector.toLowerCase()
+      else {
+        const listing = await call('list_projects', {})
+        if (!Array.isArray(listing.projects)) throw new ConnectError('DevSpec did not return project choices. Retry.', { reason: 'register_refused' })
+        const candidates = listing.projects.map(projectCandidate)
+        if (candidates.some(candidate => !candidate)) throw new ConnectError('DevSpec returned invalid project choices. Retry without choosing a default.', { reason: 'register_refused' })
+        const matches = matchingProjects(candidates, selector)
+        if (matches.length !== 1) throw new ConnectError(matches.length ? 'More than one accessible project has that name. Choose an organisation and project ID.' : 'No accessible project has that exact name. Use a full project ID or list the projects.', {
+          reason: 'register_refused', projectSelection: { version: 1, status: 'choice_required', reason: matches.length ? 'ambiguous_name' : 'unknown_name', candidates: matches.length ? matches : candidates },
+        })
+        selectedCandidate = matches[0]
+        selectedProjectId = selectedCandidate.id
+      }
+      if (previousProject?.status === 'selected' && previousProject.project.id !== selectedProjectId) {
+        throw new ConnectError('This conversation already uses another project. Start a fresh Claude Code conversation, then run Remote with --project. The existing connection has not changed.', { reason: 'register_refused' })
+      }
+    } catch (error) {
+      blockConversationProject(localId, auth.mcp_url, 'Choose a project explicitly with Remote --project before using project-scoped DevSpec tools.', { home: projectHome })
+      throw error
+    }
+  }
 
   // 1. Register (idempotent on the conversation bond). Scope goes up as facts —
   //    git_remote and/or the folder pin — and the server arbitrates. No list_projects
   //    round-trip: the router resolves the project from git_remote itself.
-  const known = knownInstructionTiersFor(bond.connection_id)
+  const tierDir = path.join(projectHome, '.devspec', 'remote-control', 'connections')
+  const known = startup || !hasStoredTiers(bond.connection_id, {dir:tierDir}) ? null : knownInstructionTiersFor(bond.connection_id)
   let registration
   let connectionCapability = null
   try {
@@ -241,8 +327,11 @@ async function main() {
       machine_hostname: os.hostname(),
       ...(gitRemote ? { git_remote: gitRemote } : {}),
       ...(pin ? { pinned_project_id: pin.project_id } : {}),
-      ...(args.name ? { name: args.name } : {}),
+      ...(name ? { name } : {}),
+      ...(selectedProjectId ? { project_id: selectedProjectId } : {}),
+      ...(startup ? { folder_scope_only: true } : {}),
       connection_capability_version: 1,
+      project_selection_version: 1,
       ...(known ? { known_instruction_tiers_version: known.version, known_instruction_tiers_hash: known.hash } : {}),
     }, {
       onResultMeta: (meta) => {
@@ -257,71 +346,107 @@ async function main() {
       !gitRemote && !pin
         ? '\nThis folder has no git remote and no .devspec/project.json pin, so nothing identified the project.'
         : ''
-    process.stderr.write(`register_connection failed: ${e.message}${hint}\n`)
-    process.exit(1)
+    // `unreachable` is the one failure worth trying again later: the server never gave
+    // a verdict. Anything else is an answer — an unlinked folder, a refused token.
+    const projectSelection = readProjectSelection(e.details)
+    if (projectSelection || projectSelector !== null) blockConversationProject(localId, auth.mcp_url, 'Choose a project explicitly with Remote --project before using project-scoped DevSpec tools.', { home: projectHome })
+    throw new ConnectError(`register_connection failed: ${e.message}${hint}`, {
+      reason: isRetryableHttpFailure(e) ? 'unreachable' : 'register_refused', projectSelection,
+    })
   }
 
   const connectionId = registration.connection_id
   if (!connectionId) {
-    process.stderr.write(`register_connection returned no connection_id: ${JSON.stringify(registration)}\n`)
-    process.exit(1)
+    throw new ConnectError(`register_connection returned no connection_id: ${JSON.stringify(registration)}`)
   }
   const codename = registration.codename || null
+
+  if (startup && !startupScopeProven(registration)) {
+    // The server did not say it scoped this by folder, so it may have joined "your only
+    // project" from an unrelated repository. Take it straight back offline rather than
+    // leave an agent on someone's Agents page that nobody meant to put there.
+    try {
+      await call('heartbeat_connection', {
+        connection_id: connectionId,
+        status: 'offline',
+        end_reason: 'local_stop',
+      })
+    } catch {
+      /* best effort: the poller never started, so it goes stale on its own */
+    }
+    throw new ConnectError(
+      'The DevSpec server did not confirm this registration was scoped by folder; it needs updating before agents can connect themselves at startup.',
+      { reason: 'server_scope_unproven' },
+    )
+  }
+
+  const confirmedProject = projectCandidate(registration.project_selection?.project)
+    ?? projectCandidate({ id: registration.project_id, name: selectedCandidate?.name ?? registration.project_id, organization: selectedCandidate?.organization })
+  if (!confirmedProject || (selectedProjectId && confirmedProject.id !== selectedProjectId)) {
+    throw new ConnectError('DevSpec did not confirm the selected project. No local connection was adopted.', { reason: 'register_refused' })
+  }
+  const projectState = saveConversationProject(localId, auth.mcp_url, confirmedProject, registration.project_selection?.source ?? 'conversation', { home: projectHome })
 
   // 2. Session attachment, by invocation. Bare = sessionless, and that is a
   //    first-class outcome, not a degraded one.
   let sessionId = null
   let sessionAccess = null
   let status = registration.created ? 'registered' : 'already live'
-  if (args.new) {
+  if (createNew) {
     const created = await call('create_session', {
       session_type: 'agent_remote_control',
       agent_name: agentName,
+      project_id: confirmedProject.id,
       ...(gitRemote ? { git_remote: gitRemote } : {}),
       ...(pin ? { pinned_project_id: pin.project_id } : {}),
       ...(codename ? { session_codename: codename } : {}),
       machine_hostname: os.hostname(),
       cwd,
-      ...(args.title ? { title: args.title } : {}),
+      ...(title ? { title } : {}),
       // Shared is the server default and stays that way. A terminal opening the
       // channel is not a reason to make someone's session private.
-      ...(args.private ? { access: 'private' } : {}),
+      ...(makePrivate ? { access: 'private' } : {}),
     })
     sessionId = created.session_id || created.id || null
-    sessionAccess = args.private ? 'private' : 'shared'
+    sessionAccess = makePrivate ? 'private' : 'shared'
     if (!sessionId) {
-      process.stderr.write(`create_session returned no session id: ${JSON.stringify(created)}\n`)
-      process.exit(1)
+      throw new ConnectError(`create_session returned no session id: ${JSON.stringify(created)}`)
     }
-    await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
+    registration = mergeInstructionTiers(registration, await call('attach_connection', { connection_id: connectionId, session_id: sessionId }))
     status = 'attached'
-  } else if (args.session) {
-    sessionId = args.session
-    await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
+  } else if (session) {
+    sessionId = session
+    registration = mergeInstructionTiers(registration, await call('attach_connection', { connection_id: connectionId, session_id: sessionId }))
     status = 'attached'
   } else if (bond.action === 'reconnect' && bond.session_id) {
     // Resume exactly what this conversation had — its prior session, nothing else.
     sessionId = bond.session_id
-    await call('attach_connection', { connection_id: connectionId, session_id: sessionId })
+    registration = mergeInstructionTiers(registration, await call('attach_connection', { connection_id: connectionId, session_id: sessionId }))
     status = 'reconnected'
   }
+  storeTiers(connectionId, registration, {dir:tierDir})
 
   // 3. State + bond + poller. One writer, shared with the `write` command.
-  const written = await writeConnectionState({
+  const written = await writeState({
     connectionId,
     sessionId,
     agent: agentName,
     cwd,
     localId,
-    ownerPid: args.ownerPid,
+    ownerPid,
     codename,
-    title: args.title,
+    title,
     instructionTiers:
       registration.instruction_tiers_hash && registration.instruction_tiers_version
         ? { hash: registration.instruction_tiers_hash, version: registration.instruction_tiers_version }
         : null,
     connectionCapability,
-    noPoller: !!args.noPoller,
+    noPoller: !!noPoller,
+    env,
+  })
+
+  storeRepositoryContext(connectionId, registration, {
+    dir: path.join(projectHome, '.devspec', 'remote-control', 'connections'),
   })
 
   // The session this connection is ON, which is not the same as one this
@@ -332,141 +457,252 @@ async function main() {
   // the room, i.e. answer somewhere the human cannot see.
   const effectiveSessionId = written.session_id || null
 
-  // 4. Orientation seed — bounded, and echoing the tier fingerprint we were just
-  //    handed so the same texts are not sent twice inside one connect.
-  let seed = null
-  if (effectiveSessionId) {
-    const tail = Math.max(1, Number.parseInt(String(args.tail ?? DEFAULT_TAIL), 10) || DEFAULT_TAIL)
-    try {
-      seed = await call('get_session_transcript', {
-        session_id: effectiveSessionId,
-        tail,
-        ...(registration.instruction_tiers_hash && registration.instruction_tiers_version
-          ? {
-              known_instruction_tiers_version: registration.instruction_tiers_version,
-              known_instruction_tiers_hash: registration.instruction_tiers_hash,
-            }
-          : known
-            ? { known_instruction_tiers_version: known.version, known_instruction_tiers_hash: known.hash }
-            : {}),
-      })
-    } catch (e) {
-      seed = { error: e.message }
-    }
-  }
+  // No room seed (item 7fe8e3d1). The poller writes the whole room to a local
+  // transcript as it drains the room's history, and the agent reads as much of it
+  // as it needs; a count chosen here would decide for it. This used to fetch the
+  // last 40 messages, and the one that mattered could be the forty-first.
+  const transcript = effectiveSessionId ? transcriptPaths(connectionId, effectiveSessionId).transcript : null
 
   // The owner-pid the writer actually resolved (win32 self-resolves it), so the arm
   // line the model runs is already correct rather than something it must assemble.
-  const ownerPid = written.owner_pid
+  const resolvedOwnerPid = written.owner_pid
   const cursorFlag = armCursorFlag({ created: registration.created })
   const armCommand =
     `node ${JSON.stringify(WAIT_SCRIPT)} --connection-id ${connectionId}` +
-    `${ownerPid ? ` --owner-pid ${ownerPid}` : ''} --stream ${cursorFlag}`
+    `${resolvedOwnerPid ? ` --owner-pid ${resolvedOwnerPid}` : ''} --stream ${cursorFlag}`
 
-  const summary = {
+  return {
     ok: true,
     status,
     agent_name: agentName,
     codename,
     connection_id: connectionId,
+    created: registration.created === true,
     session_id: effectiveSessionId,
     session_access: sessionAccess,
     local_id: localId,
     local_id_source: detected.source,
+    project_id: confirmedProject.id,
+    project_selection: projectState,
     project_scope: {
       git_remote: gitRemote,
       pinned_project_id: pin?.project_id || null,
       pin_path: pin?.path || null,
       resolved_by_server: true,
+      folder_scope_only: startup ? true : undefined,
     },
     mcp_url: written.mcp_url,
+    auth_ok: written.auth_ok,
     auth_source: written.auth_source,
+    warning: written.warning || null,
     warning_tokens: written.warning_tokens || null,
+    warning_poller: written.warning_poller || null,
+    warning_local: written.warning_local || null,
+    // The session-start hook's marker (item 721f9c67): only it can see the plugin
+    // settings. Absent means unknown, never "set".
+    plugin_settings_key_missing: env[PLUGIN_SETTINGS_KEY_VAR] === 'missing',
     poller: written.poller || null,
     bond_action: bond.action,
     state_path: written.path,
+    owner_pid: resolvedOwnerPid,
+    cursor_flag: cursorFlag,
     arm_command: armCommand,
+    connection_capability_present: !!connectionCapability,
     plan_access: connectionCapability ? 'manage_plan capability ready' : 'unavailable — reconnect/update required',
-    orientation: seed?.transcript_window || (seed?.error ? { error: seed.error } : null),
+    // Where the room is: the transcript fills in as the poller drains its history,
+    // and the room file says how complete it is.
+    transcript,
+    room_state: roomStatePath(connectionId),
+    // Kept for the CLI's --json and for the startup listener, which files the tier
+    // texts for the first command instead of printing them.
+    registration,
   }
+}
 
-  if (args.json) {
-    process.stdout.write(JSON.stringify({ ...summary, seed, registration }, null, 2) + '\n')
-    process.exit(0)
-  }
-
+/**
+ * The terminal status block for a person (or a model) who ran /devspec.remote.
+ * `listenerArmed` is whether something already holds this connection's wake — the
+ * listener Claude Code started with the session — in which case arming a second one
+ * would have two readers racing for one inbox.
+ */
+export function renderStatusBlock(summary, { listenerArmed = false, startupListener = false, noPoller = false, saveTiers = saveTiersText } = {}) {
   const lines = []
   lines.push('━━━ DevSpec Remote Control ━━━')
-  lines.push(`Agent:      ${agentName} · ${codename || short(connectionId)}`)
-  lines.push(`Connection: ${short(connectionId)}`)
+  lines.push(`Agent:      ${summary.agent_name} · ${summary.codename || short(summary.connection_id)}`)
+  lines.push(`Connection: ${short(summary.connection_id)}`)
+  if (summary.project_selection) {
+    lines.push(`Project data: ${JSON.stringify({ ...summary.project_selection.project, source: summary.project_selection.source })}`)
+  }
   lines.push(
-    `Session:    ${effectiveSessionId ? `${short(effectiveSessionId)}${sessionAccess ? ` (${sessionAccess})` : ""}` : "none — available"}`,
+    `Session:    ${summary.session_id ? `${short(summary.session_id)}${summary.session_access ? ` (${summary.session_access})` : ''}` : 'none — available'}`,
   )
-  lines.push(`Status:     ${status}`)
+  lines.push(`Status:     ${summary.status}`)
   lines.push('Open:       Agents page')
   lines.push('Stop with:  /devspec.remote-stop')
   lines.push('─────────────────────────────')
 
-  const poller = written.poller
+  const poller = summary.poller
   const pollerText = poller?.skipped
     ? 'skipped (--no-poller) — this connection will NOT receive commands'
     : poller?.ok
       ? `running (pid ${poller.pid})`
-      : `NOT RUNNING — ${written.warning_poller || 'unknown'}`
-  lines.push(`poller: ${pollerText} · host: ${written.mcp_url}`)
-  lines.push(`plans: ${connectionCapability ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
-  if (!written.auth_ok) lines.push(`auth: FAILED — ${written.warning}`)
-  if (written.warning_tokens) lines.push(`warning: ${written.warning_tokens}`)
-  if (!localId) lines.push(`warning: ${written.warning_local}`)
-  if (!ownerPid && !args.noPoller) {
+      : `NOT RUNNING — ${summary.warning_poller || 'unknown'}`
+  lines.push(`poller: ${pollerText} · host: ${summary.mcp_url}`)
+  lines.push(`plans: ${summary.connection_capability_present ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
+  if (!summary.auth_ok) lines.push(`auth: FAILED — ${summary.warning}`)
+  if (summary.warning_tokens) lines.push(`warning: ${summary.warning_tokens}`)
+  if (!summary.local_id) lines.push(`warning: ${summary.warning_local}`)
+  if (summary.plugin_settings_key_missing) lines.push(`warning: ${PLUGIN_SETTINGS_KEY_MISSING_MESSAGE}`)
+  if (!summary.owner_pid && !noPoller) {
     lines.push(
       'warning: no owner pid resolved — pass --owner-pid "$PPID". Without an owner anchor a poller' +
         ' can never be proven dead, so it is refused rather than left to zombie as a "Live" agent.',
     )
   }
-  if (!gitRemote && !pin) {
+  if (!summary.project_scope.git_remote && !summary.project_scope.pinned_project_id && !summary.project_selection) {
     lines.push(
       'scope: no git remote and no .devspec/project.json pin — the server resolved this by token access alone.',
     )
   }
 
   lines.push('')
-  lines.push('ARM THE WAKE STREAM NOW (Monitor tool — never a background task):')
-  lines.push(armCommand)
-  lines.push(
-    '  (persistent: true if Monitor\'s schema offers it — one arm then lasts the session.' +
-      ' If it does not, pass the largest timeout_ms it allows and re-arm with --stream' +
-      ' --pending at each expiry; persistent is silently discarded on that schema.)',
+  if (listenerArmed) {
+    lines.push(
+      startupListener
+        ? 'wake: ALREADY ARMED — Claude Code started this connection\'s listener with the session.'
+        : 'wake: ALREADY ARMED — a listener is already running for this connection.',
+    )
+    lines.push(
+      '  Do NOT arm the Monitor: a second reader would race it for the same inbox. Commands' +
+        ' arrive as "DevSpec" monitor events; handle each with the devspec-remote-command skill.',
+    )
+  } else {
+    lines.push('ARM THE WAKE STREAM NOW (Monitor tool — never a background task):')
+    lines.push(summary.arm_command)
+    lines.push(
+      '  (persistent: true if Monitor\'s schema offers it — one arm then lasts the session.' +
+        ' If it does not, pass the largest timeout_ms it allows and re-arm with --stream' +
+        ' --pending at each expiry; persistent is silently discarded on that schema.)',
+    )
+    if (summary.cursor_flag === '--pending') {
+      lines.push(
+        '  (--pending, not --from-end: this connection already existed, so mail may be waiting.' +
+          ' --from-end would discard it.)',
+      )
+    }
+  }
+
+  if (summary.transcript) {
+    lines.push('')
+    lines.push(`Room transcript: ${summary.transcript}`)
+    lines.push(
+      `  The whole room, filled in by the poller. How complete it is: ${summary.room_state}` +
+        ' (the room file). Read it when a command needs the room.',
+    )
+  }
+
+  // The rules always go to a file the model is told to read, with the same short
+  // line at every size (decision 86111641); "unchanged" needs no file.
+  const repositories = renderRepositoryContext(summary.registration)
+  const tiers = renderTiers(summary.registration)
+  if (tiers) lines.push(summary.registration?.instructions_unchanged ? tiers : renderTiersPointer(saveTiers(summary.connection_id, tiers)))
+  if (repositories) lines.push(repositories)
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * The statuses after which this session's startup listener goes on to serve whatever
+ * this process connects: it follows the owner pointer connect writes.
+ */
+const LISTENER_WILL_SERVE = new Set(['connecting', 'waiting_for_link', 'watching', 'serving', 'superseded', 'ended'])
+const LISTENER_SETTLE_MS = 20_000
+
+/**
+ * Will the listener Claude Code started with this session hold this connection's wake?
+ *
+ * It picks up a connection made by hand within seconds, so this waits — bounded — for
+ * it to say so, instead of asking the model to arm a Monitor that would only race it
+ * (item 7e35d818). A listener that will not serve (none, or one that cannot) answers
+ * false at once, and the model arms as before.
+ */
+export async function listenerHoldsWake(ownerPid, connectionId, { read = readOwnerListenerStatus, waitMs = LISTENER_SETTLE_MS, sleepFn = sleep } = {}) {
+  if (!ownerPid || !connectionId) return false
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    const status = read(ownerPid)
+    if (!status || !LISTENER_WILL_SERVE.has(status.status)) return false
+    if (status.status === 'serving' && status.connection_id === connectionId) return true
+    if (Date.now() >= deadline) return false
+    await sleepFn(250)
+  }
+}
+
+/**
+ * Does a reader belonging to THIS Claude Code process hold the wake already? A reader
+ * armed by a window this conversation was resumed away from does not count: it stands
+ * itself down, and this window must then hear on its own.
+ */
+export function wakeHeldByThisProcess(connectionId, ownerPid, { holderOf = waitHolderPid, ownerOfHolder = waitHolderOwnerPid, claudeOf = claudeProcessOf } = {}) {
+  const holder = holderOf(connectionId)
+  if (holder === null) return false
+  const holderOwner = ownerOfHolder(holder)
+  if (holderOwner === null || !ownerPid) return true
+  const mine = claudeOf(Number(ownerPid))
+  const theirs = claudeOf(holderOwner)
+  return mine === null || theirs === null || mine === theirs
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  if (args.private && !args.new) {
+    process.stderr.write(
+      'note: --private only applies with --new (it sets the new session private). Ignored here.\n',
+    )
+  }
+  let summary
+  try {
+    summary = await connect({
+      session: args.session || null,
+      project: args.project ?? null,
+      new: !!args.new,
+      private: !!args.private,
+      name: args.name || null,
+      title: args.title || null,
+      agent: args.agent || null,
+      cwd: args.cwd || null,
+      ownerPid: args.ownerPid,
+      localId: args.localId,
+      forceNew: !!args.forceNew,
+      noPoller: !!args.noPoller,
+    })
+  } catch (e) {
+    if (e instanceof ConnectError) {
+      if (e.projectSelection) process.stdout.write(JSON.stringify({ ok: false, code: 'project_choice_required', project_selection: e.projectSelection }) + '\n')
+      process.stderr.write(`${e.message}\n`)
+      process.exit(e.code)
+    }
+    throw e
+  }
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
+    takeRepositoryContext(summary.connection_id, summary.local_id)
+    process.exit(0)
+  }
+  const owner = summary.owner_pid ? (claudeProcessOf(Number(summary.owner_pid)) ?? Number(summary.owner_pid)) : null
+  const listenerHolds = !args.noPoller && (await listenerHoldsWake(owner, summary.connection_id))
+  process.stdout.write(
+    renderStatusBlock(summary, {
+      listenerArmed: listenerHolds || wakeHeldByThisProcess(summary.connection_id, owner),
+      startupListener: listenerHolds || startupListenerAlive(summary.connection_id),
+      noPoller: !!args.noPoller,
+    }),
   )
-  if (cursorFlag === '--pending') {
-    lines.push(
-      '  (--pending, not --from-end: this connection already existed, so mail may be waiting.' +
-        ' --from-end would discard it.)',
-    )
-  }
-
-  if (seed?.transcript_window) {
-    const w = seed.transcript_window
-    lines.push('')
-    lines.push(
-      `Room seeded: ${w.returned ?? '?'} of ${w.matched ?? '?'} messages` +
-        `${w.has_more ? ' — MORE EXIST above this window; page with after_message_id/limit if you need them.' : ' (complete).'}`,
-    )
-  } else if (seed?.error) {
-    lines.push('')
-    lines.push(`Room seed failed: ${seed.error} — pull get_session_transcript yourself if you need the room.`)
-  }
-
-  const tiers = renderTiers(registration)
-  if (tiers) lines.push(tiers)
-
-  process.stdout.write(lines.join('\n') + '\n')
+  takeRepositoryContext(summary.connection_id, summary.local_id)
   process.exit(0)
 }
 
-const isMain =
-  Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+const isMain = isEntryPoint(import.meta.url)
 
 if (isMain) {
   main().catch((e) => {

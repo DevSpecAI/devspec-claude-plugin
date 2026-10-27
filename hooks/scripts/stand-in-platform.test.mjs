@@ -8,10 +8,10 @@
  * Windows. The conversation's environment file is sourced first, as Claude Code does,
  * then the command. Every path has a space in it.
  *
- * On native Windows the session-start hook does not start the stand-in yet (Claude
- * Code's PowerShell tool, git-observer.mjs standInAllowed); the first test checks that
- * with the real hook. The rest set it up directly, so the Windows job proves it works
- * there before it is switched on.
+ * On native Windows the session-start hook starts the stand-in only while Claude
+ * Code's PowerShell tool is turned off (git-observer.mjs standInAllowed); the first test
+ * checks that with the real hook. The rest set the stand-in up directly. Real Claude
+ * Code on Windows is tests/runtime/windows-powershell-runtime.mjs.
  *
  * Covered, as on Linux: a plain commit, a heredoc into -F -, -m with a command
  * substitution and -F <file> are tagged with the one claimed task and reported; with no
@@ -97,22 +97,30 @@ before(() => {
 after(() => fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
 
 describe(`the git stand-in on ${process.platform}`, () => {
-  it(WINDOWS ? 'is not started by the session-start hook on native Windows yet' : 'is started by the session-start hook', () => {
-    const hookEnv = path.join(home, 'hook-env.sh')
-    fs.writeFileSync(hookEnv, '')
-    const hook = spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'git-observer.mjs'), 'session-start'], {
-      input: JSON.stringify({ session_id: 'hook-check', hook_event_name: 'SessionStart' }),
-      encoding: 'utf8',
-      env: { ...shellEnv(), CLAUDE_ENV_FILE: hookEnv, DEVSPEC_CLAUDE_STATE_DIR: stateDir },
-    })
-    assert.equal(hook.status, 0, hook.stderr)
-    assert.equal(hook.stdout, '', 'a hook says nothing to the model')
-    if (WINDOWS) {
-      assert.equal(fs.readFileSync(hookEnv, 'utf8'), '', 'nothing is added to the environment file')
-      assert.equal(observerActive('hook-check', home), false)
-    } else {
-      assert.match(fs.readFileSync(hookEnv, 'utf8'), /^export PATH='.*\/hook-check\/bin':"\$PATH"\n$/)
-      assert.equal(observerActive('hook-check', home), true)
+  it(WINDOWS ? 'is started by the session-start hook only while the PowerShell tool is turned off' : 'is started by the session-start hook', () => {
+    const hook = (id, extra) => {
+      const file = path.join(home, `${id}-env.sh`)
+      fs.writeFileSync(file, '')
+      const run = spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'git-observer.mjs'), 'session-start'], {
+        input: JSON.stringify({ session_id: id, hook_event_name: 'SessionStart' }),
+        encoding: 'utf8',
+        env: { ...shellEnv(), CLAUDE_ENV_FILE: file, DEVSPEC_CLAUDE_STATE_DIR: stateDir, ...extra },
+      })
+      assert.equal(run.status, 0, run.stderr)
+      assert.equal(run.stdout, '', 'a hook says nothing to the model')
+      return fs.readFileSync(file, 'utf8')
+    }
+    const started = (text, id) => assert.match(text, new RegExp(`^export PATH='[^']*${id}/bin':"\\$PATH"\n$`))
+    started(hook('hook-off', { CLAUDE_CODE_USE_POWERSHELL_TOOL: '0' }), 'hook-off')
+    assert.equal(observerActive('hook-off', home), true)
+    for (const [id, extra] of [['hook-default', {}], ['hook-on', { CLAUDE_CODE_USE_POWERSHELL_TOOL: '1' }]]) {
+      const text = hook(id, extra)
+      if (WINDOWS) {
+        assert.equal(text, '', `${id}: nothing is added to the environment file`)
+        assert.equal(observerActive(id, home), false)
+      } else {
+        started(text, id)
+      }
     }
   })
 

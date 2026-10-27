@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.50.3 - 2026-10-27
+
+- Corrected the README about native Windows. Claude Code's PowerShell tool is on by default there, and commits Claude makes through it are not checked or tagged automatically. Commits made through Claude's Bash tool get the simpler check, which covers plain commit commands only. For full commit tracking, use WSL. The sentence about which setups get full commit tracking is unchanged.
+- Groundwork for native Windows, not yet switched on: the plugin's stand-in for `git` now works under Git Bash. It handles Windows and Git Bash spellings of a path, spaces in paths, and the real `git.exe`. The plugin's check that a script was run directly now compares Windows paths correctly. Its tests run on Windows and Linux in GitHub Actions. The stand-in still does not start on native Windows: Claude Code's PowerShell tool never applies the setting that puts it in place, and turning it on would stop the plugin's other session settings from reaching PowerShell commands.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.50.2 - 2026-10-27
 
 - The README now says which setups get full commit tracking: "Full commit tracking — every commit reported to DevSpec and tagged with its task automatically — needs macOS, Linux, or Windows through WSL." On native Windows, the plugin uses a simpler check that reads the commit command Claude runs. It catches plain commit commands, but not commits made by scripts, in background work or by subagents.

@@ -24,8 +24,11 @@
  * that cannot be sent is tried again a bounded number of times; anything dropped,
  * refused or sent is written to ~/.devspec/git-observer/commits.log.
  *
- * Where this cannot run (Windows, or a Claude Code without CLAUDE_ENV_FILE), the
- * older command recogniser in commit-observation.mjs reports what it can.
+ * On Windows, Claude Code runs Bash commands in Git Bash, so the stand-in and the
+ * PATH line name paths the way Git Bash does, and the stand-in runs git.exe (item
+ * 4054ff58). The session-start hook does not start it on native Windows yet (see
+ * standInAllowed). Where it does not run, the older command recogniser in
+ * commit-observation.mjs reports what it can.
  */
 
 import crypto from 'node:crypto'
@@ -96,19 +99,32 @@ export function logOutcome(entry, home = os.homedir()) {
 // ---------------------------------------------------------------------------
 
 /** The git a hook would run, outside every observer directory. */
-export function findRealGit(env = process.env, home = os.homedir()) {
-  const base = observerBase(home)
+export function findRealGit(env = process.env, home = os.homedir(), platform = process.platform) {
+  const windows = platform === 'win32'
+  const fold = (value) => (windows ? value.toLowerCase() : value)
+  const base = fold(observerBase(home))
   for (const dir of String(env.PATH || '').split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(dir, 'git')
+    // Windows runs git.exe; an extensionless file there is a script, like the stand-in.
+    const candidate = path.join(dir, windows ? 'git.exe' : 'git')
     try {
       fs.accessSync(candidate, fs.constants.X_OK)
       if (!fs.statSync(candidate).isFile()) continue
-      const real = fs.realpathSync(candidate)
+      const real = fold(fs.realpathSync(candidate))
       if (real === base || real.startsWith(base + path.sep)) continue
       return candidate
     } catch { /* not here */ }
   }
   return null
+}
+
+/**
+ * A Windows path as Git Bash names it (C:\Users\x → /c/Users/x), for its PATH and the
+ * stand-in's own script. On Windows, Claude Code runs shell commands in Git Bash
+ * (item 4054ff58).
+ */
+export function toBashPath(target) {
+  const drive = /^([A-Za-z]):[\\/]?(.*)$/.exec(target)
+  return drive ? `/${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, '/')}` : target.replace(/\\/g, '/')
 }
 
 /** git's own builtin command names. Empty if git cannot say: then every command is observed. */
@@ -122,6 +138,18 @@ function gitBuiltins(realGit) {
 }
 
 /**
+ * Whether the session-start hook starts the stand-in. Not on native Windows yet (item
+ * 4054ff58): there Claude Code's PowerShell tool, on by default, never applies the
+ * environment file, so its commits would not meet the stand-in, and a PATH line that
+ * is not a plain assignment stops every other variable in that file from reaching
+ * PowerShell commands, the plugin's own settings session among them (item 4d40407b).
+ * startObserver itself works under Git Bash, and the Windows CI job runs it.
+ */
+export function standInAllowed({ platform = process.platform } = {}) {
+  return platform === 'win32' ? { ok: false, reason: 'windows' } : { ok: true }
+}
+
+/**
  * Set up this conversation's observer. Returns { ok: true, dir } or { ok: false, reason }.
  * Never throws: a session must start whatever happens here.
  */
@@ -129,9 +157,13 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
   try {
     const dir = observerDir(sessionId, home)
     if (!dir) return { ok: false, reason: 'no conversation id' }
-    if (platform === 'win32') return { ok: false, reason: 'windows' }
+    // On Windows the shell is Git Bash: its own paths for what it runs and searches,
+    // forward-slash Windows paths for what Node is handed.
+    const windows = platform === 'win32'
+    const forBash = (target) => (windows ? toBashPath(target) : target)
+    const forNode = (target) => (windows ? target.replace(/\\/g, '/') : target)
     if (typeof envFile !== 'string' || !envFile) return { ok: false, reason: 'no CLAUDE_ENV_FILE' }
-    const realGit = findRealGit(env, home)
+    const realGit = findRealGit(env, home, platform)
     if (!realGit) return { ok: false, reason: 'git not found' }
     pruneStale(home, now, sessionId)
     const bin = path.join(dir, 'bin')
@@ -165,14 +197,14 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
     // If node or the copy goes missing, git still runs.
     fs.writeFileSync(path.join(bin, 'git'), [
       '#!/bin/sh',
-      `if [ -x ${shellQuote(nodePath)} ] && [ -f ${shellQuote(shim)} ]; then`,
-      `  DEVSPEC_CLAUDE_GIT_OBSERVER=${shellQuote(dir)} exec ${shellQuote(nodePath)} ${shellQuote(shim)} "$@"`,
+      `if [ -x ${shellQuote(forBash(nodePath))} ] && [ -f ${shellQuote(forBash(shim))} ]; then`,
+      `  DEVSPEC_CLAUDE_GIT_OBSERVER=${shellQuote(forNode(dir))} exec ${shellQuote(forBash(nodePath))} ${shellQuote(forNode(shim))} "$@"`,
       'fi',
-      `exec ${shellQuote(realGit)} "$@"`,
+      `exec ${shellQuote(forBash(realGit))} "$@"`,
       '',
     ].join('\n'), { mode: 0o700 })
     fs.chmodSync(path.join(bin, 'git'), 0o700)
-    fs.appendFileSync(envFile, `export PATH=${shellQuote(bin)}:"$PATH"\n`)
+    fs.appendFileSync(envFile, `export PATH=${shellQuote(forBash(bin))}:"$PATH"\n`)
     return { ok: true, dir }
   } catch (error) {
     return { ok: false, reason: error?.message ?? String(error) }
@@ -413,7 +445,8 @@ async function main(command) {
   const sessionId = typeof input.session_id === 'string' ? input.session_id : null
   if (!sessionId) return
   if (command === 'session-start') {
-    const result = startObserver({ sessionId, envFile: process.env.CLAUDE_ENV_FILE })
+    const allowed = standInAllowed()
+    const result = allowed.ok ? startObserver({ sessionId, envFile: process.env.CLAUDE_ENV_FILE }) : allowed
     if (!result.ok) logOutcome({ outcome: 'not observing', reason: result.reason, session: sessionId })
     return
   }

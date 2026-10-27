@@ -34,10 +34,14 @@ export function isEntryPoint(moduleUrl, argv1 = process.argv[1]) {
   } catch {
     return false
   }
+  // The native form settles letter case and separators, so on Windows a script run as
+  // c:/users/… is still the module Node loaded from C:\Users\… (item 4054ff58).
+  const real = typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native : fs.realpathSync
+  const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b)
   try {
-    return fs.realpathSync(argv1) === fs.realpathSync(modulePath)
+    return same(real(argv1), real(modulePath))
   } catch {
     // A path that cannot be resolved still matches itself.
-    return path.resolve(argv1) === path.resolve(modulePath)
+    return same(path.resolve(argv1), path.resolve(modulePath))
   }
 }

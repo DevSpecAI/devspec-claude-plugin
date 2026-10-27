@@ -1,0 +1,50 @@
+# The git stand-in on every platform Claude Code runs it on (item 4054ff58):
+# Git Bash on Windows, sh on Linux. Only the stand-in's own tests, so it stays cheap.
+name: Stand-in
+
+on:
+  pull_request:
+    paths:
+      - 'hooks/scripts/**'
+      - '.github/workflows/stand-in.yml'
+  push:
+    branches: [staging, main]
+    paths:
+      - 'hooks/scripts/**'
+      - '.github/workflows/stand-in.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stand-in-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Where Claude Code finds Git Bash
+        run: |
+          echo "CLAUDE_CODE_GIT_BASH_PATH=C:\\Program Files\\Git\\bin\\bash.exe" >> "$GITHUB_ENV"
+          git --version
+      - run: node --test hooks/scripts/stand-in-platform.test.mjs
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node --test hooks/scripts/stand-in-platform.test.mjs hooks/scripts/commit-stamp.test.mjs hooks/scripts/git-observer.test.mjs

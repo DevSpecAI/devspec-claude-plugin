@@ -9,9 +9,14 @@
  *               (literal owner text). Run by the hooks module (hooks/local-prompt.ts)
  *               with Claude Code's origin for the prompt.
  * stop        → busy/heartbeat + turn marker only (NO assistant text)
+ * stop_failure → the StopFailure hook: an error from Anthropic's service ended the
+ *               turn before the model could answer. Tells the room in Claude Code's
+ *               own words, then ends the turn as stop does (item b6a38d81,
+ *               turn-failure.mjs).
  *
  * Answers are agent-canonical: skills call post_session_message({ connection_id }).
- * ADR b98a39a9 — no dual writers.
+ * ADR b98a39a9 — no dual writers. stop_failure is not a second writer: it answers
+ * only a turn the model never ran.
  */
 
 import fs from 'node:fs'
@@ -19,6 +24,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { fitRoomMessage } from './room-message.mjs'
+import { parseTurnFailure, turnFailureMessage } from './turn-failure.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
@@ -42,6 +48,7 @@ import {
   absentLaunches,
   appendRequestEvent,
   closeRequest,
+  commandsAnsweredNow,
   launchForRequest,
   openRequest,
   promptArrival,
@@ -78,8 +85,10 @@ import { isEntryPoint } from './entry-point.mjs'
 
 // `background_launch` is the PostToolUse hook that records a background job a turn
 // started (item beb0e005); everything else is a turn boundary.
-const MODES = new Set(['user_prompt', 'stop', 'background_launch', 'subagent_stop'])
+const MODES = new Set(['user_prompt', 'stop', 'stop_failure', 'background_launch', 'subagent_stop'])
 const mode = MODES.has(process.argv[2]) ? process.argv[2] : 'stop'
+// Both end the turn; a failed one has no model left to re-arm or wait on its work.
+const endsTurn = mode === 'stop' || mode === 'stop_failure'
 const LEGACY_STATE_PATH = path.join(os.homedir(), '.devspec', 'remote-control.json')
 const CONNECTIONS_DIR = path.join(os.homedir(), '.devspec', 'remote-control', 'connections')
 
@@ -1093,6 +1102,33 @@ export function prepareAgentMirrorText(text) {
   return fitRoomMessage(t)
 }
 
+/**
+ * Answer the room commands a failed turn carries with Claude Code's own error
+ * (item b6a38d81, turn-failure.mjs). Only a command this turn carries that nobody
+ * has answered: a prompt typed at this terminal is already in front of its owner,
+ * a wake carries no command, and a command the agent answered before the failure
+ * has its answer. `call(args)` performs post_session_message; it throws when the
+ * post is refused, and only a stored answer marks the commands answered, so the
+ * Stop that follows closes them.
+ *
+ * @returns {Promise<string[]>} the commands answered
+ */
+export async function postTurnFailure({ raw, connectionId, call, dir = CONNECTIONS_DIR, agentName = AGENT_NAME }) {
+  const failure = parseTurnFailure(raw)
+  if (!failure || !connectionId) return []
+  const requests = readRequestState(connectionId, { dir })
+  const commands = commandsAnsweredNow(requests)
+  if (commands.length === 0) return []
+  await call({
+    connection_id: connectionId,
+    message: fitRoomMessage(turnFailureMessage(failure, agentName)),
+    agent_name: agentName,
+    complete_turn: true,
+  })
+  for (const id of commands) appendRequestEvent(connectionId, { op: 'answered', id }, { dir })
+  return commands
+}
+
 async function main() {
   const raw = readStdin()
   if (mode === 'background_launch') {
@@ -1122,7 +1158,7 @@ async function main() {
   if (!state) {
     // Unbound is normal and silent. A NAMED fault is not: say it once, so a turn
     // that will not end has a cause someone can read instead of a spinner.
-    if (mode === 'stop') {
+    if (endsTurn) {
       const reason = stopBondDiagnostic()
       if (reason) process.stderr.write(`[devspec-remote] stop could not bind: ${reason}\n`)
     }
@@ -1131,8 +1167,9 @@ async function main() {
 
   // The module ends a turn for DevSpec itself when no Stop hook ran for it (an
   // interrupt, a denied prompt), and this record is how it knows one did (item
-  // cbf3d758, control-relay.mjs).
-  if (mode === 'stop' && state.connection_id) {
+  // cbf3d758, control-relay.mjs). A failed turn writes it first, before any network
+  // call, because the module waits for it rather than ending that turn twice.
+  if (endsTurn && state.connection_id) {
     try {
       writePrivateJson(path.join(CONNECTIONS_DIR, `${state.connection_id}.stop-hook.json`), { at: new Date().toISOString() })
     } catch {
@@ -1196,7 +1233,21 @@ async function main() {
   // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full
   // assistant text as a primary path — dual writers caused wrong-voice dupes
   // and silent misses when bonding failed.
-  if (mode === 'stop') consumeExplicitReplyMarker(connectionId)
+  if (endsTurn) consumeExplicitReplyMarker(connectionId)
+
+  // A turn Claude Code could not run (StopFailure): the model will post nothing, so
+  // the room hears it here, and the turn then ends below exactly as a Stop ends it.
+  if (mode === 'stop_failure' && connectionId && sessionId) {
+    try {
+      await postTurnFailure({
+        raw,
+        connectionId,
+        call: (args) => mcpToolsCall({ mcpUrl, token, name: 'post_session_message', arguments: args }),
+      })
+    } catch (e) {
+      process.stderr.write(`[devspec-remote] could not tell the room this turn failed: ${e instanceof Error ? e.message : String(e)}\n`)
+    }
+  }
 
   // Refuse a stop that would leave this connection deaf (items 8b4ceaa3, d655b2a4).
   // Decided BEFORE the turn-lifecycle writes below, because a blocked stop is not a
@@ -1395,7 +1446,7 @@ async function main() {
     // is still waiting for its answer, and a room command has its final answer
     // (item 984ca8b4). A request with work in flight stays open whatever else
     // this agent does in between, so another person's command ending never ends it.
-    if (mode === 'stop' && connectionId && !blockReason && state.connection_capability) {
+    if (endsTurn && connectionId && !blockReason && state.connection_capability) {
       const requests = readRequestState(connectionId, { dir: CONNECTIONS_DIR })
       const backgroundTasks = parseBackgroundTasks(raw)
       if (requests.open.size > 0) {

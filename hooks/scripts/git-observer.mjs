@@ -42,10 +42,13 @@ import { McpToolRefusalError, isRetryableHttpFailure, mcpToolsCall } from './mcp
 import { findProjectPin } from './devspec-scope.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
 import { stateDir } from './commit-provenance.mjs'
+import { STAND_IN_MARKER, isMarkedStandIn } from './git-stand-in.mjs'
 
 const SHIM_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'git-shim.mjs')
 // The stand-in imports this, so it is copied beside it (item e597bc18).
 const STAMP_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'commit-stamp.mjs')
+// And this, for what every DevSpec stand-in agrees on (item 30978c06).
+const STAND_IN_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'git-stand-in.mjs')
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const FULL_SHA = /^[0-9a-f]{40}$/
@@ -98,7 +101,10 @@ export function logOutcome(entry, home = os.homedir()) {
 // Session start: the stand-in, and the PATH line Claude Code applies.
 // ---------------------------------------------------------------------------
 
-/** The git a hook would run, outside every observer directory. */
+/**
+ * The git a hook would run: outside every observer directory, and not another
+ * plugin's stand-in either (item 30978c06).
+ */
 export function findRealGit(env = process.env, home = os.homedir(), platform = process.platform) {
   const windows = platform === 'win32'
   const fold = (value) => (windows ? value.toLowerCase() : value)
@@ -111,6 +117,7 @@ export function findRealGit(env = process.env, home = os.homedir(), platform = p
       if (!fs.statSync(candidate).isFile()) continue
       const real = fold(fs.realpathSync(candidate))
       if (real === base || real.startsWith(base + path.sep)) continue
+      if (isMarkedStandIn(candidate)) continue
       return candidate
     } catch { /* not here */ }
   }
@@ -184,6 +191,8 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
     fs.chmodSync(shim, 0o600)
     fs.copyFileSync(STAMP_SOURCE, path.join(dir, 'commit-stamp.mjs'))
     fs.chmodSync(path.join(dir, 'commit-stamp.mjs'), 0o600)
+    fs.copyFileSync(STAND_IN_SOURCE, path.join(dir, 'git-stand-in.mjs'))
+    fs.chmodSync(path.join(dir, 'git-stand-in.mjs'), 0o600)
     const journal = path.join(dir, 'journal.jsonl')
     if (!fs.existsSync(journal)) fs.writeFileSync(journal, '', { mode: 0o600 })
     const previous = readPrivateJson(path.join(dir, 'observer.json'))
@@ -206,6 +215,8 @@ export function startObserver({ sessionId, envFile, env = process.env, home = os
     // If node or the copy goes missing, git still runs.
     fs.writeFileSync(path.join(bin, 'git'), [
       '#!/bin/sh',
+      // Every DevSpec stand-in, whichever plugin's, skips a git carrying this line.
+      `${STAND_IN_MARKER}: DevSpec for Claude Code notes the commits this conversation makes, then runs the real git.`,
       `if [ -x ${shellQuote(forBash(nodePath))} ] && [ -f ${shellQuote(forBash(shim))} ]; then`,
       `  DEVSPEC_CLAUDE_GIT_OBSERVER=${shellQuote(forNode(dir))} exec ${shellQuote(forBash(nodePath))} ${shellQuote(forNode(shim))} "$@"`,
       'fi',

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.5 - 2026-10-30
+
+- Fixed a loop that could use up all of your computer's memory. DevSpec's plugins for Claude Code, Pi and Antigravity each put a stand-in for `git` in front of the real one, so they can tag and report commits. When two of them were on the same PATH, for example when Claude started a Pi session or ran Pi's tests, each took the other for git and they passed every git command back and forth, starting a new process each time. The stand-in now recognises any DevSpec plugin's stand-in and always runs the real git. If an older version of another plugin still sends a command round in a loop, the command stops at once with a message saying so, instead of exhausting memory.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.4 - 2026-10-27
 
 - Resolved Anthropic plugin directory portal validation findings in unit test fixtures (`hooks/scripts/interaction-events.test.mjs` and `hooks/scripts/devspec-remote-poll.test.mjs`).

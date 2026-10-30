@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.9 - 2026-10-30
+
+- When Claude Code can't answer a message sent from a DevSpec room, because it is signed out, has hit a usage limit, has a billing problem, or Anthropic's service is down, the room now says so straight away instead of staying silent. The reply is Claude Code's own error message, word for word (for example "Login expired · Please run /login"), with a line saying that anything it asks for is done on the computer Claude Code runs on, and to send the message again once that's sorted. The message then counts as answered, and the agent stops showing as working. Nothing is posted for a prompt typed in Claude Code's own terminal, where the error is already in front of you. This uses Claude Code's `StopFailure` hook, which runs in place of the normal end-of-turn hook when an error from Anthropic's service ends a turn.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.8 - 2026-10-30
 
 - The plugin's skills no longer show up in the `/` command menu. They are instructions Claude reads for itself (handling a DevSpec message, asking you a question, session plans and polls, pinning a folder), so running one yourself did nothing useful and made it look as if DevSpec had two remote commands. Claude still loads each one when it needs it. The commands you run are unchanged: `/devspec:devspec.remote`, `/devspec:devspec.remote-stop` and `/devspec:devspec.project`.

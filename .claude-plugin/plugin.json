@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "DevSpec for Claude Code — shared team memory, live remote control from phone or web, and automatic task & commit provenance.",
-  "version": "0.51.8",
+  "version": "0.51.9",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"

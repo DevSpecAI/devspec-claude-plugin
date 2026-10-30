@@ -85,6 +85,17 @@ export function stopHookPath(home, connectionId) {
   return `${home}/${REMOTE_DIR}/connections/${connectionId}.stop-hook.json`
 }
 
+/**
+ * How long the module waits for the StopFailure hook's record after a turn that an
+ * error from Anthropic's service ended (item b6a38d81). That hook tells the room and
+ * ends the turn itself, writing the same record as Stop first thing, but it is a
+ * separate process Claude Code starts as the turn ends without waiting on it, so its
+ * record can land just after turn.complete. The wait covers a node process starting
+ * on a busy machine; the module ends the turn only if the record never comes, which
+ * is a configuration where command hooks do not run at all.
+ */
+export const STOP_FAILURE_GRACE_MS = 10_000
+
 /** Whether the Stop hook ran at or after `sinceMs`, from its record. */
 export function stopHookRanSince(text, sinceMs) {
   const at = Date.parse(parseJson(text)?.at ?? '')

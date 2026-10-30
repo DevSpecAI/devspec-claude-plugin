@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.7 - 2026-10-30
+
+- Updated `devspec-remote-command` task guidance for required task dismissal categories (`duplicate`, `replaced`, `outdated`, and `not_wanted`) on `update_task` (`lifecycle: "dismissed"`), including `target_task_id` linking, held-replacement behaviour for unmerged replacements, and required rejection notes on `not_wanted`.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.6 - 2026-10-30
 
 - Remote-controlled Claude Code sessions can now read and manage project goals and outcomes without stalling at a terminal permission prompt (`get_goals`, `get_project_goals`, and `manage_goals` are pre-approved in `/devspec:devspec.remote` and `devspec-remote-command` in both plugin and manual MCP tool forms).

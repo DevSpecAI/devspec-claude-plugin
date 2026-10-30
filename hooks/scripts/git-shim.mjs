@@ -24,8 +24,12 @@
  * has evaluated them, so every way of writing the message is the same here. A
  * reference the model wrote itself is confirmed online first, as decided in 6fa0241e.
  *
- * Imports only Node built-ins and commit-stamp.mjs, copied beside it: this file runs
- * as a copy, outside the plugin. The online check alone loads the plugin's own
+ * Another DevSpec plugin's stand-in can be on the same PATH, for example when this
+ * agent runs Pi. This one never takes another for git, and never goes deeper than
+ * git-stand-in.mjs allows (item 30978c06).
+ *
+ * Imports only Node built-ins, commit-stamp.mjs and git-stand-in.mjs, copied beside it:
+ * this file runs as a copy, outside the plugin. The online check alone loads the plugin's own
  * scripts from where it is installed, and is skipped if they are not there.
  */
 
@@ -40,6 +44,7 @@ import {
   ANY_REFERENCE, boundConnectionId, conversationClaims, gitIn, noClaimText, parseCommitArgs, projectScope,
   severalClaimsText, stampedText, tagMessage,
 } from './commit-stamp.mjs'
+import { MAX_STAND_IN_DEPTH, STAND_IN_DEPTH_ENV, isMarkedStandIn, loopStoppedText, standInDepth } from './git-stand-in.mjs'
 
 const FULL_SHA = /^[0-9a-f]{40}$/u
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/u
@@ -86,7 +91,8 @@ function executable(file) {
 
 /**
  * The git this shell would have run without the stand-in: the first one on PATH
- * outside every observer directory, so a stale stand-in can never call itself.
+ * outside every observer directory, so a stale stand-in can never call itself, and
+ * not another DevSpec plugin's stand-in, which may well be calling this one.
  */
 function realGitFor(config) {
   let base = null
@@ -99,6 +105,7 @@ function realGitFor(config) {
     let real
     try { real = realpathSync(candidate) } catch { continue }
     if (base && inside(real, base)) continue
+    if (isMarkedStandIn(real)) continue
     return candidate
   }
   return null
@@ -428,6 +435,15 @@ async function planCommit(realGit, args, config, dir) {
   }
 }
 
+// Started inside another stand-in's work: go no deeper than the plugins agree, and
+// make everything started from here, git included, one level deeper.
+const depth = standInDepth(process.env)
+if (depth >= MAX_STAND_IN_DEPTH) {
+  process.stderr.write(`${loopStoppedText()}\n`)
+  process.exit(126)
+}
+process.env[STAND_IN_DEPTH_ENV] = String(depth + 1)
+
 let dir = process.env.DEVSPEC_CLAUDE_GIT_OBSERVER
 let config = dir ? readConfig(dir) : null
 const realGit = config ? realGitFor(config) : null
@@ -447,7 +463,9 @@ if (config && session && session !== config.session_id) {
   dir = otherConfig ? other : null
   config = otherConfig
 }
-const eligible = Boolean(config && !process.env.GIT_TRACE2_EVENT && !process.env.GIT_TRACE2)
+// Inside another stand-in's work (another plugin's, or a git hook under one), the
+// commit is that one's to tag and record: git runs straight through.
+const eligible = Boolean(config && depth === 0 && !process.env.GIT_TRACE2_EVENT && !process.env.GIT_TRACE2)
 const builtins = new Set(Array.isArray(config?.builtins) ? config.builtins : [])
 const plan = eligible ? await planCommit(realGit, args, config, dir) : { args }
 if (plan.stop) {

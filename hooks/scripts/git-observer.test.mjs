@@ -8,13 +8,14 @@
  * environment file is sourced first, then the command. Nothing parses them.
  */
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import { LIMITS, drainObserver, endObserver, findRealGit, logPath, observerActive, observerDir, reportArguments, standInAllowed, startObserver, toBashPath } from './git-observer.mjs'
 import { McpToolRefusalError } from './mcp-call.mjs'
+import { STAND_IN_MARKER, isMarkedStandIn, loopStoppedText } from './git-stand-in.mjs'
 
 const SESSION = 'conversation-604c360a'
 const CONNECTION = '11111111-1111-4111-8111-111111111111'
@@ -215,6 +216,131 @@ describe('what the stand-in records', () => {
     assert.equal(direct.status, 0, direct.stderr)
     assert.equal(direct.stdout, 'no stand-in\n')
     assert.deepEqual(journal(), [])
+  })
+})
+
+describe('another DevSpec plugin\'s git stand-in on the same PATH (item 30978c06)', { skip: process.platform === 'win32' && 'the stand-in fixtures are POSIX shell scripts' }, () => {
+  // On 2026-10-30 this plugin's stand-in and Pi's each took the other for git and
+  // started processes back and forth until the machine ran out of memory.
+  //
+  // The git these run is the one git itself reports, never the caller's PATH, which
+  // for an agent running this suite already holds that agent's own stand-in.
+  const realGitDir = () => execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim()
+  /** Another plugin's stand-in that follows the shared rules: marked, one level deeper, skips marked gits. */
+  const followsRules = [
+    '#!/bin/sh',
+    `${STAND_IN_MARKER}: a fixture for another DevSpec plugin's stand-in`,
+    'DEVSPEC_GIT_STAND_IN_DEPTH=$(( ${DEVSPEC_GIT_STAND_IN_DEPTH:-0} + 1 )); export DEVSPEC_GIT_STAND_IN_DEPTH',
+    'IFS=:',
+    'for dir in $PATH; do',
+    '  [ -f "$dir/git" ] && [ -x "$dir/git" ] || continue',
+    `  head -c 256 "$dir/git" | grep -qF '${STAND_IN_MARKER}' && continue`,
+    '  unset IFS; exec "$dir/git" "$@"',
+    'done',
+    'exit 127',
+    '',
+  ].join('\n')
+  /** An older stand-in that follows none of them: it runs the first other git on PATH. */
+  const followsNone = [
+    '#!/bin/sh',
+    'self=$(cd "$(dirname "$0")" && pwd -P)',
+    'IFS=:',
+    'for dir in $PATH; do',
+    '  [ "$(cd "$dir" 2>/dev/null && pwd -P)" = "$self" ] && continue',
+    '  [ -f "$dir/git" ] && [ -x "$dir/git" ] || continue',
+    '  unset IFS; exec "$dir/git" "$@"',
+    'done',
+    'exit 127',
+    '',
+  ].join('\n')
+
+  /** A conversation started with `script` as another plugin's stand-in ahead of the real git. */
+  const alongside = (sessionId, script) => {
+    const other = path.join(home, `other-${sessionId}`)
+    fs.mkdirSync(other)
+    fs.writeFileSync(path.join(other, 'git'), script, { mode: 0o755 })
+    const pathValue = [other, realGitDir(), '/usr/bin', '/bin'].join(path.delimiter)
+    const env = path.join(home, `${sessionId}-env.sh`)
+    fs.writeFileSync(env, '')
+    assert.equal(startObserver({ sessionId, envFile: env, env: { PATH: pathValue }, home }).ok, true)
+    return { other, env, pathValue }
+  }
+  /**
+   * A shell command in its own process group, killed whole if it outlives the bound: a
+   * regression here is a runaway, and must fail the test rather than take the machine.
+   */
+  const bounded = (command, { sessionId, env, pathValue }, ms = 20_000) => new Promise((resolve) => {
+    const startedAt = Date.now()
+    const child = spawn('sh', ['-c', `. "$ENV_FILE"; ${command}`], {
+      cwd: repo,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: pathValue, HOME: home, ENV_FILE: env, CLAUDE_CODE_SESSION_ID: sessionId, ...IDENTITY },
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    const timer = setTimeout(() => {
+      try { process.kill(-child.pid, 'SIGKILL') } catch { /* already gone */ }
+    }, ms)
+    child.once('close', (status, signal) => {
+      clearTimeout(timer)
+      resolve({ status, signal, stdout, stderr, group: child.pid, elapsed: Date.now() - startedAt })
+    })
+  })
+  const nothingLeft = (group) => assert.throws(() => process.kill(-group, 0), { code: 'ESRCH' }, 'no process of the command is still running')
+  const journalOf = (sessionId) => {
+    try {
+      return fs.readFileSync(path.join(observerDir(sessionId, home), 'journal.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    } catch {
+      return []
+    }
+  }
+
+  it('marks its own stand-in, so the other plugins can tell it from git', () => {
+    assert.equal(isMarkedStandIn(path.join(observerDir(SESSION, home), 'bin', 'git')), true)
+    assert.equal(isMarkedStandIn(path.join(realGitDir(), 'git')), false)
+  })
+
+  it('looks past a marked stand-in to the real git, and records the commit exactly as usual', async () => {
+    const session = 'beside-a-marked-stand-in'
+    const setup = alongside(session, followsRules)
+    const config = JSON.parse(fs.readFileSync(path.join(observerDir(session, home), 'observer.json'), 'utf8'))
+    assert.equal(isMarkedStandIn(config.real_git), false, `recorded ${config.real_git} as git`)
+    const made = await bounded('git commit --allow-empty -q -m "beside another stand-in"', { sessionId: session, ...setup })
+    assert.equal(made.status, 0, made.stderr)
+    assert.deepEqual(journalOf(session).map((row) => row.sha), [git(['rev-parse', 'HEAD'])])
+    nothingLeft(made.group)
+    // The other plugin's agent puts its stand-in in front for its own commands: it
+    // must reach git too, without this one taking the commit as this conversation's.
+    const theirs = await bounded(`export PATH='${setup.other}':"$PATH"; git commit --allow-empty -q -m "theirs"`, { sessionId: session, ...setup })
+    assert.equal(theirs.status, 0, theirs.stderr)
+    assert.equal(git(['log', '-1', '--format=%s']), 'theirs')
+    assert.equal(journalOf(session).length, 1)
+    nothingLeft(theirs.group)
+  })
+
+  it('stops a loop with an older stand-in that follows none of the rules at once, and leaves nothing running', async () => {
+    const session = 'beside-an-older-stand-in'
+    const setup = alongside(session, followsNone)
+    const head = git(['rev-parse', 'HEAD'])
+    const looped = await bounded('git commit --allow-empty -q -m "sent round in a loop"', { sessionId: session, ...setup })
+    assert.equal(looped.signal, null, `killed after ${looped.elapsed} ms: the loop was not stopped`)
+    assert.equal(looped.status, 126, looped.stderr)
+    assert.ok(looped.stderr.includes(loopStoppedText()), looped.stderr)
+    assert.equal(git(['rev-parse', 'HEAD']), head, 'nothing was committed')
+    assert.deepEqual(journalOf(session), [])
+    nothingLeft(looped.group)
+  })
+
+  it('refuses outright once nested as deep as the plugins allow, before starting anything', async () => {
+    const session = 'too-deep'
+    const setup = alongside(session, followsRules)
+    const refused = await bounded('DEVSPEC_GIT_STAND_IN_DEPTH=8 git log -1 --format=%s', { sessionId: session, ...setup })
+    assert.equal(refused.status, 126)
+    assert.equal(refused.stdout, '')
+    assert.equal(refused.stderr.trim(), loopStoppedText())
   })
 })
 

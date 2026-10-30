@@ -79,3 +79,30 @@ describe('what the skill listing shows the model', () => {
     assert.equal(frontmatterField(doc('when_to_use: Later.'), 'description'), '')
   })
 })
+
+/**
+ * Who the `/` menu is for. Claude Code puts every plugin skill in the menu unless its
+ * frontmatter says `user-invocable: false`, and still lets the model load it either way.
+ * This plugin's skills are instructions the agent reads for itself; the commands are
+ * what a person runs. A skill left in the menu looked like a second remote command
+ * (item 4ac8b0ab), so every skill must opt out and no command may.
+ */
+describe('what the / menu shows a person', () => {
+  const inDir = (dir) => listedFiles().filter((file) => path.relative(ROOT, file).startsWith(`${dir}${path.sep}`))
+
+  it('lists none of the skills', () => {
+    const skills = inDir('skills')
+    assert.ok(skills.length >= 1, 'found no skills: the scan is broken, not clean')
+    const listed = skills
+      .filter((file) => frontmatterField(fs.readFileSync(file, 'utf8'), 'user-invocable') !== 'false')
+      .map((file) => path.relative(ROOT, file))
+    assert.deepEqual(listed, [], `skills a person would see in the / menu (add \`user-invocable: false\`):\n  ${listed.join('\n  ')}`)
+  })
+
+  it('still lists every command', () => {
+    const hidden = inDir('commands')
+      .filter((file) => frontmatterField(fs.readFileSync(file, 'utf8'), 'user-invocable') === 'false')
+      .map((file) => path.relative(ROOT, file))
+    assert.deepEqual(hidden, [], `commands hidden from the / menu:\n  ${hidden.join('\n  ')}`)
+  })
+})

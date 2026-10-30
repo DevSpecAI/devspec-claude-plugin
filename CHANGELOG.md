@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51.8 - 2026-10-30
+
+- The plugin's skills no longer show up in the `/` command menu. They are instructions Claude reads for itself (handling a DevSpec message, asking you a question, session plans and polls, pinning a folder), so running one yourself did nothing useful and made it look as if DevSpec had two remote commands. Claude still loads each one when it needs it. The commands you run are unchanged: `/devspec:devspec.remote`, `/devspec:devspec.remote-stop` and `/devspec:devspec.project`.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.7 - 2026-10-30
 
 - Updated `devspec-remote-command` task guidance for required task dismissal categories (`duplicate`, `replaced`, `outdated`, and `not_wanted`) on `update_task` (`lifecycle: "dismissed"`), including `target_task_id` linking, held-replacement behaviour for unmerged replacements, and required rejection notes on `not_wanted`.

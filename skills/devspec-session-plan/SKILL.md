@@ -1,6 +1,6 @@
 ---
 name: devspec-session-plan
-description: Manage a shared DevSpec session plan only for material multi-phase progress that other room participants need to follow or resume. Never create plans for routine read-only investigation, quick answers, or ordinary bookkeeping.
+description: Claude Code only — in Cursor or any other host, ignore this skill. Manage a shared DevSpec session plan only for material multi-phase progress that other room participants need to follow or resume. Never create plans for routine read-only investigation, quick answers, or ordinary bookkeeping.
 user-invocable: false
 allowed-tools: Bash, mcp__plugin_devspec_devspec__manage_plan, mcp__devspec__manage_plan
 ---

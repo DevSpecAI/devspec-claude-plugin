@@ -1,6 +1,6 @@
 ---
 name: devspec-directed-question
-description: Ask the person driving this DevSpec session a question and wait for their answer, when a decision is genuinely theirs to make and no recorded intent settles it. Never for work you can do, check, or decide yourself.
+description: Claude Code only — in Cursor or any other host, ignore this skill. Ask the person driving this DevSpec session a question and wait for their answer, when a decision is genuinely theirs to make and no recorded intent settles it. Never for work you can do, check, or decide yourself.
 user-invocable: false
 allowed-tools: Bash
 ---

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.51.11 - 2026-10-31
+
+- If you also use Cursor's command-line agent, this plugin now stays out of the way there. Cursor loads the Claude Code plugins on your computer and runs their background steps. Ending a Cursor conversation could disconnect a DevSpec-connected Claude Code conversation, and this plugin's steps could act on Cursor's conversations. Now none of them does anything inside Cursor, where DevSpec's Cursor plugin does that work. Nothing changes in Claude Code.
+- Cursor also lists this plugin's skills. Each now says it is for Claude Code only, so Cursor's agent leaves them alone.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.10 - 2026-10-30
 
 - If you're on a Claude Pro or Max plan, DevSpec now shows how much of your 5-hour and weekly usage limits each Claude Code agent has used, next to its context level on the Agents page and in a session's Agents list. A limit that's nearly used up stands out, and hovering shows when it resets. The plugin reads these figures from Claude Code at the start and end of every turn, along with the model and context level it already reports. Nothing is shown for Claude Code on an API key, which has no such limits.

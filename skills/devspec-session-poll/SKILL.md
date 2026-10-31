@@ -1,6 +1,6 @@
 ---
 name: devspec-session-poll
-description: Open a shared poll in a DevSpec session when the room genuinely has a choice to make between concrete options, and read the result. Not for asking one person a question, and not for decisions you can make yourself.
+description: Claude Code only — in Cursor or any other host, ignore this skill. Open a shared poll in a DevSpec session when the room genuinely has a choice to make between concrete options, and read the result. Not for asking one person a question, and not for decisions you can make yourself.
 user-invocable: false
 allowed-tools: Bash, mcp__plugin_devspec_devspec__manage_poll, mcp__devspec__manage_poll
 ---

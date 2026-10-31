@@ -32,7 +32,7 @@ export const REQUEST_REF_TOOLS = new Set([
   'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_goals', 'manage_knowledge_links',
   'decide_proposal', 'manage_protected_intent', 'record_completed_work', 'record_criterion_verdicts',
   'record_duplicate_nonmatch', 'record_implementation', 'record_memory',
-  'release_work_item', 'reopen_task', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag',
+  'release_work_item', 'reopen_task', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag', 'resolve_task_flag',
   'retract_memory', 'spin_off_task', 'supersede_task', 'supersede_memory',
   'supersede_resource', 'unlink_tasks', 'update_task', 'update_automation',
   'update_memory', 'update_resource', 'write_project_instruction_rule',

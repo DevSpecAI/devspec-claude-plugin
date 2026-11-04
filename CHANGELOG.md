@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.52.1 - 2026-11-04
+
+- When Claude Code changes one of your team's decisions, conventions or requirements for someone in a DevSpec room, DevSpec can now answer that the change is accepted but not yet in effect: what is in force stays until the change's checks are ruled, then the change takes effect by itself, or it waits for the OK of the person DevSpec names. The plugin's instructions now tell Claude what that answer means and to follow DevSpec's own note on it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.52.0 - 2026-11-04
 
 - Claude Code can now rule DevSpec's checks on its own changes. When Claude Code changes something in your project, DevSpec checks the change for conflicts with what your team decided, for duplicates and for records it makes out of date. That check now goes first to the Claude Code that made the change, since it already knows what it did. Claude takes it, rules every entry by the check's own definition, reading any linked supporting document in full first, and then carries on with what it was doing. If it cannot rule the check, it hands it back and DevSpec rules it as before.

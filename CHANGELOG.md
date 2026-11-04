@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.52.0 - 2026-11-04
+
+- Claude Code can now rule DevSpec's checks on its own changes. When Claude Code changes something in your project, DevSpec checks the change for conflicts with what your team decided, for duplicates and for records it makes out of date. That check now goes first to the Claude Code that made the change, since it already knows what it did. Claude takes it, rules every entry by the check's own definition, reading any linked supporting document in full first, and then carries on with what it was doing. If it cannot rule the check, it hands it back and DevSpec rules it as before.
+- Claude Code tells DevSpec it can receive check jobs on every check-in, and DevSpec sends them only to a Claude Code that says so. Older versions of the plugin keep working as before, and DevSpec rules their checks.
+- A check job that arrives while Claude is working on something you asked for does not change who that work is recorded as asked by.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.11 - 2026-10-31
 
 - If you also use Cursor's command-line agent, this plugin now stays out of the way there. Cursor loads the Claude Code plugins on your computer and runs their background steps. Ending a Cursor conversation could disconnect a DevSpec-connected Claude Code conversation, and this plugin's steps could act on Cursor's conversations. Now none of them does anything inside Cursor, where DevSpec's Cursor plugin does that work. Nothing changes in Claude Code.

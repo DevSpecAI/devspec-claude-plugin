@@ -35,10 +35,13 @@ import {
   advancePollCursors,
   isCatchUpCursorRefusal,
   validateAutomationRunDispatch,
+  validateCheckJobDispatch,
+  validateWakeDispatch,
   scanPersistedInboxRecords,
   appendDurableRecord,
   appendCanonicalInbox,
-  appendAutomationDispatches,
+  appendWakeDispatches,
+  CHECK_JOB_VERSION,
   DELEGATED_SCOPE_VERSION,
   SYSTEM_NOTICE_CHANNEL_VERSION,
   ACTIVE_PLAN_PROJECTION_VERSION,
@@ -172,7 +175,15 @@ describe('poll negotiation', () => {
       sender_style_version: 1,
       room_context_version: 1,
       session_polls_projection_version: 2,
+      check_job_version: 1,
     })
+  })
+
+  it('says it reads check jobs on every poll, since a poll without it tells DevSpec it stopped', () => {
+    // Item f7b8c8d3: the server records the version from each poll and clears it
+    // when a poll leaves it out, and only then stops offering check jobs.
+    assert.equal(CHECK_JOB_VERSION, 1)
+    assert.equal(remoteIngressNegotiationArguments().check_job_version, 1)
   })
 
   it('asks for notice channel version 2, the first that carries findings about its own work', () => {
@@ -509,7 +520,7 @@ describe('explicit automation dispatch channel', () => {
   })
 
   it('does not make a failed automation append eligible for dispatch_cursor advancement', () => {
-    const result = appendAutomationDispatches(
+    const result = appendWakeDispatches(
       connectionId,
       [automation],
       'dispatch-next',
@@ -532,6 +543,122 @@ describe('explicit automation dispatch channel', () => {
     assert.deepEqual([...index.commandMessageIds], ['msg-1'])
     assert.deepEqual([...index.controlIds], ['control-1'])
     assert.deepEqual([...index.dispatchIds], [automation.id])
+  })
+})
+
+describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
+  const connectionId = '10000000-0000-4000-8000-000000000001'
+  const automation = {
+    id: '20000000-0000-4000-8000-000000000002',
+    kind: 'automation_run',
+    run_id: '20000000-0000-4000-8000-000000000002',
+    automation_id: '30000000-0000-4000-8000-000000000003',
+    automation_name: 'Review',
+    trigger_kind: 'scheduled',
+    owner: { user_id: '40000000-0000-4000-8000-000000000004', display_name: 'Ali Price' },
+    permission: 'look_only',
+    queued_at: '2026-11-04T12:00:00.000Z',
+    delivery_connection_id: connectionId,
+    requester: null,
+  }
+  // Exactly CHECK_JOB_WAKE_KEYS, as DevSpec's shapeCheckJobWake builds it.
+  const checkJob = {
+    id: '60000000-0000-4000-8000-000000000006',
+    kind: 'check_job',
+    check_job_id: '60000000-0000-4000-8000-000000000006',
+    check_kind: 'conflict_decisions',
+    record: { type: 'task', id: '70000000-0000-4000-8000-000000000007', title: 'Sign in with a passkey' },
+    entries: 3,
+    high_risk: 1,
+    yours: true,
+    offered_at: '2026-11-04T12:00:01.000Z',
+    delivery_connection_id: connectionId,
+  }
+  const append = (dispatches, index = scanPersistedInboxRecords('')) => {
+    const written = []
+    const result = appendWakeDispatches(connectionId, dispatches, 'cursor-1', index, null, (_id, record) => {
+      written.push(record)
+      return true
+    })
+    return { result, written, index }
+  }
+
+  it('still takes an automation run exactly as before, and now a check job beside it', () => {
+    assert.equal(validateWakeDispatch(automation, connectionId).ok, true)
+    assert.equal(validateWakeDispatch(checkJob, connectionId).ok, true)
+    for (const kind of ['conflict', 'conflict_decisions', 'duplicate', 'staleness']) {
+      assert.equal(validateCheckJobDispatch({ ...checkJob, check_kind: kind }, connectionId).ok, true, kind)
+    }
+    for (const type of ['task', 'memory', 'artifact', 'proposal']) {
+      assert.equal(validateCheckJobDispatch({ ...checkJob, record: { ...checkJob.record, type } }, connectionId).ok, true, type)
+    }
+    // A record with no title arrives with an empty one.
+    assert.equal(validateCheckJobDispatch({ ...checkJob, record: { ...checkJob.record, title: '' } }, connectionId).ok, true)
+  })
+
+  it('rejects a check job with a key added or missing, or one that is not exactly addressed', () => {
+    const { offered_at: _gone, ...missing } = checkJob
+    const { title: _untitled, ...recordMissing } = checkJob.record
+    for (const [label, bad] of [
+      ['extra key', { ...checkJob, text: 'the record body' }],
+      ['missing key', missing],
+      ['extra record key', { ...checkJob, record: { ...checkJob.record, body: 'x' } }],
+      ['missing record key', { ...checkJob, record: recordMissing }],
+      ['id is not the job', { ...checkJob, check_job_id: '60000000-0000-4000-8000-0000000000ff' }],
+      ['unknown check kind', { ...checkJob, check_kind: 'everything' }],
+      ['unknown record type', { ...checkJob, record: { ...checkJob.record, type: 'session' } }],
+      ['entries not a count', { ...checkJob, entries: '3' }],
+      ['more high risk than entries', { ...checkJob, high_risk: 4 }],
+      ['yours not a boolean', { ...checkJob, yours: 'yes' }],
+      ['bad offered_at', { ...checkJob, offered_at: 'soon' }],
+      ['another connection', { ...checkJob, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }],
+    ]) {
+      assert.equal(validateWakeDispatch(bad, connectionId).ok, false, label)
+    }
+  })
+
+  it('rejects every other shape exactly as before', () => {
+    for (const bad of [
+      null,
+      [],
+      'check_job',
+      { ...automation, kind: 'assignment' },
+      { ...checkJob, kind: 'assignment' },
+      // A check job's keys under the automation run's kind is neither.
+      { ...checkJob, kind: 'automation_run' },
+      { ...automation, kind: 'check_job' },
+    ]) {
+      assert.equal(validateWakeDispatch(bad, connectionId).ok, false, JSON.stringify(bad))
+    }
+  })
+
+  it('keeps a check job in the inbox once, by its id, beside the automation run', () => {
+    const first = append([automation, checkJob])
+    assert.deepEqual(first.result, { ok: true, appended: 2, checkJobs: 1 })
+    assert.deepEqual(first.written.map((record) => record.type), ['automation_run', 'check_job'])
+    assert.deepEqual(first.written[1].dispatch, checkJob)
+    assert.equal(first.written[1].dispatch_cursor, 'cursor-1')
+
+    // The server carries the whole open set on every poll: the second copy is not kept.
+    const again = append([automation, checkJob], first.index)
+    assert.deepEqual(again.result, { ok: true, appended: 0, checkJobs: 0 })
+    assert.equal(again.written.length, 0)
+
+    // And after a crash the inbox itself is the dedupe.
+    const text = first.written.map((record) => JSON.stringify(record)).join('\n') + '\n'
+    const rebuilt = scanPersistedInboxRecords(text)
+    assert.deepEqual([...rebuilt.dispatchIds], [automation.id, checkJob.id])
+    assert.deepEqual(append([checkJob], rebuilt).result, { ok: true, appended: 0, checkJobs: 0 })
+  })
+
+  it('rejects the whole batch, writing nothing, when one item is bad', () => {
+    for (const bad of [{ ...checkJob, extra: true }, { ...automation, kind: 'assignment' }]) {
+      const { result, written, index } = append([automation, checkJob, bad])
+      assert.equal(result.ok, false)
+      assert.equal(result.appended, 0)
+      assert.equal(written.length, 0)
+      assert.equal(index.dispatchIds.size, 0)
+    }
   })
 })
 
@@ -946,13 +1073,14 @@ describe('countUnconsumedCommands', () => {
     )
   })
 
-  it('counts typed controls and explicit automation runs as wake backlog', () => {
+  it('counts typed controls, explicit automation runs and check jobs as wake backlog', () => {
     withInbox(
       [
         { type: 'canonical_control', ingress: { control: { id: 'c' } } },
         { type: 'automation_run', dispatch: { id: 'p' } },
+        { type: 'check_job', dispatch: { id: 'j' } },
       ],
-      ({ dir, conn }) => assert.equal(countUnconsumedCommands(conn, 0, dir), 2),
+      ({ dir, conn }) => assert.equal(countUnconsumedCommands(conn, 0, dir), 3),
     )
   })
 

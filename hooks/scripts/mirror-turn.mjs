@@ -984,7 +984,7 @@ export function countUnreadOwnerCommands(connectionId, offset, dir = CONNECTIONS
             ? obj.ingress.command_message_ids
             : []
         count += ids.length
-      } else if (obj?.type === 'canonical_control' || obj?.type === 'automation_run') {
+      } else if (obj?.type === 'canonical_control' || obj?.type === 'automation_run' || obj?.type === 'check_job') {
         count++
       } else if (obj?.type === 'interaction_answer' && obj.disposition === DELIVERED) {
         // Not a command, but a person is waiting on it just as directly.

@@ -391,6 +391,16 @@ describe('countUnreadOwnerCommands', () => {
     })
   })
 
+  it('counts an unread check job, which nobody reading the inbox would rule (item f7b8c8d3)', () => {
+    withConnDir(({ dir, conn, writeInbox }) => {
+      writeInbox([
+        { type: 'automation_run', dispatch: { id: 'run' } },
+        { type: 'check_job', dispatch: { id: 'job' } },
+      ])
+      assert.equal(countUnreadOwnerCommands(conn, 0, dir), 2)
+    })
+  })
+
   it('counts only what is PAST the offset — already-consumed mail is not unread', () => {
     withConnDir(({ dir, conn, writeInbox }) => {
       const consumed = JSON.stringify(canonicalCommands([{ id: 'old' }])) + '\n'

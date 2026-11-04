@@ -1730,6 +1730,10 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       assert.equal(events[0].notice_type, 'reversal')
       assert.equal(events[0].session_id, null)
       assert.equal(events[0].records.length, 2)
+      const head500 = JSON.stringify(events[0]).slice(0, 500)
+      assert.ok(head500.includes(`"notice_id":"${NOTICE_ID}"`), 'notice_id must fit inside 500-char Monitor cap')
+      assert.ok(head500.includes(`"inbox":${JSON.stringify(file)}`), 'inbox path must fit inside 500-char Monitor cap')
+      assert.ok(head500.includes('"summary":"Protected decision reversed by new record"'), 'summary must fit inside 500-char Monitor cap')
       assert.match(events[0].content, /Protected record \(existing decision\)/)
       assert.match(events[0].content, /All remote deliveries must use the canonical ingress envelope\./)
       // The handling travels with the notice: tell the person, never answer for one.
@@ -1768,6 +1772,85 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       assert.deepEqual(events[1].system_notice_ids, [LATER_ID])
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('holds check_job and canonical_system_notices in --stream mode while a turn is active, then emits them one turn at a time in FIFO order', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-fifo-queue-'))
+    const connDir = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(connDir, { recursive: true, mode: 0o700 })
+    const stateFile = path.join(connDir, `${CONNECTION}.json`)
+    const inbox = path.join(connDir, `${CONNECTION}.inbox.jsonl`)
+    const turnFile = path.join(connDir, `${CONNECTION}.turn`)
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0 }),
+      { mode: 0o600 },
+    )
+    // Turn 1 is currently active.
+    fs.writeFileSync(turnFile, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
+
+    // Append a check job first, then a system notice while Turn 1 is running.
+    const index = scanPersistedInboxRecords('')
+    let noticeRecord = null
+    appendCanonicalInbox(CONNECTION, NOTICE_ENVELOPE, index, {
+      sessionId: null,
+      channel: 'system_notice',
+      writeRecord: (_cid, rec) => {
+        noticeRecord = rec
+        return true
+      },
+    })
+    fs.writeFileSync(
+      inbox,
+      `${JSON.stringify(checkJobBatch())}\n${JSON.stringify(noticeRecord)}\n`,
+      { mode: 0o600 },
+    )
+
+    const child = spawn(
+      process.execPath,
+      [WAIT_SCRIPT, '--connection-id', CONNECTION, '--pending', '--poll-ms', '20', '--owner-pid', String(process.pid), '--stream'],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          DEVSPEC_WAIT_TURN_PICKUP_MS: '180',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
+    let stdout = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    const closed = new Promise((resolve) => child.once('close', resolve))
+    const events = () => stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      assert.equal(events().length, 0, 'neither check_job nor system_notice may interrupt an active turn')
+
+      // End Turn 1: check_job #1 emits first while system_notice waits for its own turn.
+      fs.unlinkSync(turnFile)
+      await awaitReader(() => events().some((e) => e.type === 'check_job'))
+      // Simulate Claude Code picking up check_job as Turn 2 within the pickup window.
+      fs.writeFileSync(turnFile, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
+      await new Promise((resolve) => setTimeout(resolve, 240))
+      assert.equal(events().filter((e) => e.type === 'check_job').length, 1)
+      assert.equal(events().some((e) => e.type === 'system_notice'), false, 'system_notice waits while check_job turn runs')
+
+      // End Turn 2: system_notice emits next in FIFO arrival order.
+      fs.unlinkSync(turnFile)
+      await awaitReader(() => events().some((e) => e.type === 'system_notice'))
+      const emittedTypes = events().map((e) => e.type)
+      assert.ok(emittedTypes.indexOf('check_job') < emittedTypes.indexOf('system_notice'))
+    } finally {
+      const timer = setTimeout(() => child.kill('SIGKILL'), 500)
+      child.kill('SIGTERM')
+      await closed
+      clearTimeout(timer)
+      fs.rmSync(home, { recursive: true, force: true })
     }
   })
 })

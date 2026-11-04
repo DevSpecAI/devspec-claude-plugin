@@ -370,11 +370,16 @@ export function requestForWake({ origin, text, state }) {
     // An automation run DevSpec dispatched is positively nobody's request: DevSpec
     // credits the run while it is running, never a command that happens to be live.
     if (/"type"\s*:\s*"automation_run"/.test(String(text || ''))) return { ref: NO_REQUEST, also: [] }
-    // A check job is usually about a change the agent just made for the request it
-    // is still serving: ruling it, or acting on what it found, carries on that
-    // work. Joining it as something not known would refuse that request's next
-    // write until the agent named one, on every one of its own changes.
-    if (/"type"\s*:\s*"check_job"/.test(String(text || ''))) return { ref: UNSTATED, also: [], carries: false }
+    // A check job or system notice is about a change the agent just made: when queued
+    // behind the active turn (`midTurn: false`) it starts unstated rather than
+    // inheriting a prior command, and if ever delivered alongside an open turn it does
+    // not join an unknown requester that would block the turn's writes.
+    if (
+      /"type"\s*:\s*"(?:check_job|system_notice)"/.test(String(text || '')) ||
+      /\[DevSpec System Notice:/.test(String(text || ''))
+    ) {
+      return { ref: UNSTATED, also: [], carries: false }
+    }
     return { ref: UNSTATED, also: [] }
   }
   if (kind === 'scheduled-trigger') {

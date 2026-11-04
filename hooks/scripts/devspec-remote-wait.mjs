@@ -57,6 +57,7 @@ import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
 import { replyLine } from './notice-reply.mjs'
+import { readTurnActivity, turnIsLive, turnMarkerFile } from './turn-liveness.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
@@ -764,43 +765,50 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
         kind: notice.kind,
         notice_id: notice.notice_id,
         readable: false,
-        content: formatSystemNoticeContent(notice),
+        inbox: inboxFile ?? null,
         session_id: sessionId,
         envelope_id: ingress?.envelope_id ?? null,
-        inbox: inboxFile ?? null,
+        content: formatSystemNoticeContent(notice),
         authoritative: false,
         executable: false,
         authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
       })
       continue
     }
+    // Keep core identity, summary, and inbox path ahead of verbose record context so
+    // Claude Code's 500-char Monitor notification cap never clips notice_id or inbox.
     events.push({
       type: 'system_notice',
       kind: notice.kind,
       notice_id: notice.notice_id,
+      inbox: inboxFile ?? null,
+      session_id: sessionId,
+      envelope_id: ingress?.envelope_id ?? null,
       ...(notice.kind === 'server_notice'
         ? {
             topic: notice.topic,
             notice_type: notice.notice_type,
             summary: notice.summary,
-            prompt: notice.prompt,
-            records: notice.records,
-            allowed_outcomes: notice.allowed_outcomes,
-            allowed_tools: notice.allowed_tools,
           }
         : {
             commit_sha: notice.commit_sha,
             task_id: notice.task_id,
             task_title: notice.task_title,
             branch: notice.branch,
+          }),
+      content: formatSystemNoticeContent(notice),
+      ...(notice.kind === 'server_notice'
+        ? {
+            prompt: notice.prompt,
+            records: notice.records,
+            allowed_outcomes: notice.allowed_outcomes,
+            allowed_tools: notice.allowed_tools,
+          }
+        : {
             prompt: notice.prompt,
             allowed_outcomes: notice.allowed_outcomes,
             allowed_tools: notice.allowed_tools,
           }),
-      content: formatSystemNoticeContent(notice),
-      session_id: sessionId,
-      envelope_id: ingress?.envelope_id ?? null,
-      inbox: inboxFile ?? null,
       authoritative: false,
       executable: true,
       authoritative_source: REMOTE_INGRESS_RESOURCE_URI,
@@ -1180,6 +1188,18 @@ export function buildOwnerMessageEvents(batch, { inboxFile, attachmentDir, write
   return events
 }
 
+/**
+ * Whether this connection currently has a live turn marker (`<cid>.turn`), meaning
+ * queued check jobs and system notices in `--stream` mode should wait behind the
+ * active turn rather than interrupting mid-turn (item d36ac887, decision ff1bcabe).
+ */
+export function isConnectionTurnActive(connectionId, dir = CONNECTIONS_DIR, now = Date.now()) {
+  const markerResult = readPrivateJsonResult(turnMarkerFile(connectionId, dir))
+  if (markerResult.status !== STATE_OK) return false
+  const activity = readTurnActivity(connectionId, dir)
+  return turnIsLive(markerResult.value, { activity, now })
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const connectionId = args.connectionId
@@ -1265,6 +1285,11 @@ async function main() {
 
   // Retain completed delivery accounting across a deferred suffix, including one-shot mode.
   let delivered = 0
+  let holdQueuedUntil = 0
+  const queuedTurnPickupMs = Math.max(
+    pollMs * 2,
+    Number(process.env.DEVSPEC_WAIT_TURN_PICKUP_MS ?? 400),
+  )
   let nextOwnerCheck = Date.now() + OWNER_CHECK_MS
   while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
@@ -1300,6 +1325,7 @@ async function main() {
     const records = readInboxRecords(file, offset)
     if (records.length > 0) {
       let deferred = false
+      let emittedQueuedInTick = false
       for (const record of records) {
         const [batch] = parseInboxBatches([record.line], connectionId)
         if (batch) {
@@ -1308,6 +1334,18 @@ async function main() {
             if (decision === 'defer') { deferred = true; break }
             // Keep the immutable record on disk, but tombstone it by advancing the cursor.
             if (decision === 'obsolete') { offset = record.endOffset; continue }
+          }
+          const isQueuedWake =
+            batch.type === 'check_job' || batch.type === 'canonical_system_notices'
+          if (
+            args.stream &&
+            isQueuedWake &&
+            (emittedQueuedInTick ||
+              Date.now() < holdQueuedUntil ||
+              isConnectionTurnActive(connectionId))
+          ) {
+            deferred = true
+            break
           }
           const events = batch.type === 'canonical_commands'
             ? buildCanonicalCommandEvents(batch, {
@@ -1338,6 +1376,10 @@ async function main() {
             if (deferred) break
             if (!emitted) { offset = record.endOffset; continue }
           } else await writeEventSequence(events)
+          if (args.stream && isQueuedWake) {
+            emittedQueuedInTick = true
+            holdQueuedUntil = Date.now() + queuedTurnPickupMs
+          }
           delivered += batch.type === 'canonical_commands'
             ? batch.execute_message_ids.length
             : batch.type === 'canonical_system_notices'
@@ -1351,19 +1393,19 @@ async function main() {
       }
 
       if (readDismissalState(connectionId)) writeStatePatch(connectionId, { inbox_byte_offset: offset })
-      // The deferred record remains unread, but a fully emitted prefix is never
-      // read again by this loop. Persist that prefix once own state is readable.
-      if (deferred) { await sleep(pollMs); continue }
-      if (delivered > 0) {
-        if (!args.stream) {
-          process.stderr.write(`devspec-remote-wait: wake (${delivered} msg) — exit 0\n`)
-          process.exit(EXIT_WAKE)
-        }
+      if (args.stream && delivered > 0) {
         // The wake was the stdout line above. Staying alive is the whole point.
         process.stderr.write(
           `devspec-remote-wait: streamed wake (${delivered} msg) — still watching\n`,
         )
         delivered = 0
+      }
+      // The deferred record remains unread, but a fully emitted prefix is never
+      // read again by this loop. Persist that prefix once own state is readable.
+      if (deferred) { await sleep(pollMs); continue }
+      if (delivered > 0) {
+        process.stderr.write(`devspec-remote-wait: wake (${delivered} msg) — exit 0\n`)
+        process.exit(EXIT_WAKE)
       }
     }
 

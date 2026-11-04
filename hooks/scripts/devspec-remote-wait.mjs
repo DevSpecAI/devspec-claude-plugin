@@ -5,8 +5,8 @@
  * It preserves the existing byte-offset cursor, armed-listener pidfile, one-shot
  * fallback and preferred session-scoped `--stream` Monitor architecture. Runtime
  * wake inputs are revalidated `canonical_commands`, typed `canonical_control`,
- * explicit `automation_run`, or `interaction_answer` records previously validated and
- * written by the poller. A directed-question answer wakes the model but is never
+ * explicit `automation_run`, `check_job`, or `interaction_answer` records previously
+ * validated and written by the poller. A directed-question answer wakes the model but is never
  * authority: it is the mechanical response to a question this agent asked, and it
  * names the one operation that finishes the turn it opened
  * (devspec://product/interaction-event-contract).
@@ -568,6 +568,43 @@ function validateAutomationInboxRecord(record, connectionId) {
   )
 }
 
+const CHECK_JOB_KEYS = [
+  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'high_risk', 'yours',
+  'offered_at', 'delivery_connection_id',
+]
+
+function exactKeys(value, keys) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+}
+
+/**
+ * A check job record exactly as the poller wrote it (validateCheckJobDispatch in
+ * devspec-remote-poll.mjs, item f7b8c8d3), addressed to this connection. Rechecked
+ * here, like an automation run, because the inbox is a file and this is the last
+ * step before the model sees it.
+ */
+function validateCheckJobInboxRecord(record, connectionId) {
+  const d = record?.dispatch
+  const r = d?.record
+  return Boolean(
+    record?.type === 'check_job' &&
+    exactKeys(d, CHECK_JOB_KEYS) &&
+    d.kind === 'check_job' &&
+    typeof d.id === 'string' && INBOX_UUID.test(d.id) && d.check_job_id === d.id &&
+    ['conflict', 'conflict_decisions', 'duplicate', 'staleness'].includes(d.check_kind) &&
+    exactKeys(r, ['type', 'id', 'title']) &&
+    ['task', 'memory', 'artifact', 'proposal'].includes(r.type) &&
+    typeof r.id === 'string' && INBOX_UUID.test(r.id) &&
+    typeof r.title === 'string' &&
+    Number.isInteger(d.entries) && d.entries >= 0 &&
+    Number.isInteger(d.high_risk) && d.high_risk >= 0 && d.high_risk <= d.entries &&
+    typeof d.yours === 'boolean' &&
+    typeof d.offered_at === 'string' && !Number.isNaN(Date.parse(d.offered_at)) &&
+    d.delivery_connection_id === connectionId,
+  )
+}
+
 /** Revalidate every executable durable record before it reaches Monitor. */
 export function parseInboxBatches(lines, connectionId) {
   const batches = []
@@ -624,6 +661,8 @@ export function parseInboxBatches(lines, connectionId) {
         if (!validateInteractionAnswerRecord(record, connectionId)) continue
         batches.push(record)
       } else if (validateAutomationInboxRecord(record, connectionId)) {
+        batches.push(record)
+      } else if (validateCheckJobInboxRecord(record, connectionId)) {
         batches.push(record)
       }
     } catch {
@@ -1008,6 +1047,55 @@ export function buildAutomationRunEvents(batch, { inboxFile } = {}) {
   ]
 }
 
+/**
+ * The one line a check job wakes the agent with (item f7b8c8d3; DevSpec item
+ * 55d71b0c, contract text). What a check is and how to rule it is the
+ * devspec-remote-command skill's and the job's own (claim_check_job returns the
+ * definition to rule by); this only says one is waiting, and on what. The title is
+ * the record's own text, quoted and kept on one line; a record with no title is
+ * named by its type and id.
+ */
+export function checkJobWakeText(d) {
+  const title = typeof d?.record?.title === 'string' ? d.record.title.replace(/\s+/g, ' ').trim() : ''
+  const subject = title ? `"${title}"` : `${d?.record?.type ?? 'record'} ${d?.record?.id ?? ''}`.trim()
+  return `A check is waiting on ${subject}: take it with claim_check_job, rule every entry with record_check_rulings, then carry on.`
+}
+
+/**
+ * Stdout events for one check job. Like a notice it is never authority, a command
+ * or task work; it is something to act on. Key order is the budget
+ * (HOST_NOTIFICATION_LINE_MAX_CHARS): the ids the claim needs and the wake text
+ * come first, so a cut line still says what to do and with which job.
+ */
+export function buildCheckJobEvents(batch, { inboxFile } = {}) {
+  const d = batch.dispatch
+  return [
+    {
+      type: 'check_job',
+      check_job_id: d.check_job_id,
+      connection_id: d.delivery_connection_id,
+      content: checkJobWakeText(d),
+      check_kind: d.check_kind,
+      entries: d.entries,
+      high_risk: d.high_risk,
+      yours: d.yours,
+      session_id: batch.session_id ?? null,
+      authoritative: false,
+      executable: true,
+      channel: 'explicit_check_job_dispatch',
+      dispatch: d,
+    },
+    {
+      type: 'wake',
+      reason: 'check_job',
+      check_job_id: d.check_job_id,
+      inbox: inboxFile ?? null,
+      authoritative: false,
+      executable: false,
+    },
+  ]
+}
+
 function stdoutLine(line) {
   return new Promise((resolve, reject) => {
     process.stdout.write(line, (error) => error ? reject(error) : resolve())
@@ -1236,7 +1324,9 @@ async function main() {
                   ? (batch.disposition === QUEUED
                       ? buildQueuedAnswerEvents(batch, { inboxFile: file })
                       : buildInteractionAnswerEvents(batch, { inboxFile: file }))
-                  : buildAutomationRunEvents(batch, { inboxFile: file })
+                  : batch.type === 'check_job'
+                    ? buildCheckJobEvents(batch, { inboxFile: file })
+                    : buildAutomationRunEvents(batch, { inboxFile: file })
           if (batch.type === DISMISSAL_RECORD_TYPE) {
             let emitted = false
             for (const event of events) {

@@ -6,8 +6,9 @@
  * inbox → wait stream → Claude Code Monitor. Polling negotiates ingress_version:1,
  * delegated_scope_version:1 and active_plan_projection_version:1, then validates the canonical envelope before it can
  * create a wake record. Legacy
- * conversational/context arrays are inert; top-level automation_run dispatches retain
- * their explicit independent channel and cursor.
+ * conversational/context arrays are inert; top-level automation_run and check_job
+ * dispatches (check jobs once check_job_version is sent) retain their explicit
+ * independent channel and cursor.
  *
  * Typed advisory context is carried forward with the existing bounded newest-first
  * behavior, while every raw canonical envelope and its window metadata remains in
@@ -118,6 +119,17 @@ export const ACTIVE_PLAN_PROJECTION_VERSION = 1
  */
 export const SYSTEM_NOTICE_CHANNEL_VERSION = 2
 export const SENDER_STYLE_VERSION = 1
+/**
+ * Check jobs on the wake channel (item f7b8c8d3, DevSpec item 55d71b0c, decision
+ * c7cf2398): with this sent, `dispatches[]` also carries `kind: 'check_job'`, a check
+ * DevSpec sends this agent to rule. A connection that never sends it is never sent
+ * one, because a plugin that validates dispatches by exact shape would drop the whole
+ * batch on it. A host that asks must report busy truthfully, because DevSpec drops an
+ * untaken or unfinished job when the agent's turn ends; this host's busy is its turn,
+ * from Claude Code's own prompt and Stop hooks (mirror-turn.mjs), which the poller
+ * re-asserts while that turn is live.
+ */
+export const CHECK_JOB_VERSION = 1
 
 /**
  * The ingress ladder we ask for, and it is nested: each tier requires the one
@@ -157,6 +169,9 @@ export function remoteIngressNegotiationArguments() {
     // Item bba35976: the poll inventory that is never dropped when the room has more
     // polls than fit; it says how many there are and where to read the rest.
     session_polls_projection_version: SESSION_POLL_PROJECTION_VERSION_2,
+    // Outside the ladder: it needs no rung, and every poll states it, because a
+    // poll that leaves it out tells the server this host no longer reads check jobs.
+    check_job_version: CHECK_JOB_VERSION,
   }
 }
 
@@ -296,7 +311,7 @@ export function countUnconsumedCommands(connectionId, inboxOffset, dir = CONNECT
             ? obj.ingress.command_message_ids
             : []
         count += ids.length
-      } else if (obj?.type === 'canonical_control' || obj?.type === 'automation_run') {
+      } else if (obj?.type === 'canonical_control' || obj?.type === 'automation_run' || obj?.type === 'check_job') {
         count++
       } else if (obj?.type === 'interaction_answer' && obj.disposition === DELIVERED) {
         count++
@@ -567,7 +582,7 @@ function appendInbox(
  */
 const UUID_PATTERN = /^(?:00000000-0000-0000-0000-000000000000|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
 
-/** Only the server's explicit automation_run wake envelope is executable here. */
+/** The server's explicit automation_run wake envelope, exactly (one half of validateWakeDispatch). */
 export function validateAutomationRunDispatch(dispatch, connectionId) {
   if (!dispatch || typeof dispatch !== 'object' || Array.isArray(dispatch)) {
     return { ok: false, error: 'dispatch is not an object' }
@@ -606,6 +621,73 @@ export function validateAutomationRunDispatch(dispatch, connectionId) {
   return valid
     ? { ok: true, dispatch }
     : { ok: false, error: 'invalid or misaddressed automation_run dispatch' }
+}
+
+/**
+ * The check-job wake envelope, exactly (CHECK_JOB_WAKE_KEYS in DevSpec's
+ * coherence/check-jobs.ts, item 55d71b0c): inbox metadata only, never record text.
+ * Which record, which kind of check, how many entries and how many of those are high
+ * risk, and whether this agent made the change. The job itself (what to rule, by
+ * which definition) is only ever read through claim_check_job.
+ */
+const CHECK_JOB_KEYS = [
+  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'high_risk', 'yours',
+  'offered_at', 'delivery_connection_id',
+]
+const CHECK_JOB_RECORD_KEYS = ['type', 'id', 'title']
+const CHECK_KINDS = ['conflict', 'conflict_decisions', 'duplicate', 'staleness']
+const CHECK_RECORD_TYPES = ['task', 'memory', 'artifact', 'proposal']
+
+function hasExactKeys(value, keys) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+}
+
+/** A check job DevSpec sent THIS connection to rule (item f7b8c8d3), in its exact shape. */
+export function validateCheckJobDispatch(dispatch, connectionId) {
+  if (!dispatch || typeof dispatch !== 'object' || Array.isArray(dispatch)) {
+    return { ok: false, error: 'dispatch is not an object' }
+  }
+  if (!hasExactKeys(dispatch, CHECK_JOB_KEYS)) {
+    return { ok: false, error: 'dispatch does not exactly match check_job' }
+  }
+  const record = dispatch.record
+  const valid =
+    dispatch.kind === 'check_job' &&
+    typeof dispatch.id === 'string' && UUID_PATTERN.test(dispatch.id) &&
+    dispatch.check_job_id === dispatch.id &&
+    CHECK_KINDS.includes(dispatch.check_kind) &&
+    hasExactKeys(record, CHECK_JOB_RECORD_KEYS) &&
+    CHECK_RECORD_TYPES.includes(record.type) &&
+    typeof record.id === 'string' && UUID_PATTERN.test(record.id) &&
+    // A record with no title arrives with an empty one, never a missing key.
+    typeof record.title === 'string' &&
+    Number.isInteger(dispatch.entries) && dispatch.entries >= 0 &&
+    Number.isInteger(dispatch.high_risk) && dispatch.high_risk >= 0 && dispatch.high_risk <= dispatch.entries &&
+    typeof dispatch.yours === 'boolean' &&
+    typeof dispatch.offered_at === 'string' && !Number.isNaN(Date.parse(dispatch.offered_at)) &&
+    dispatch.delivery_connection_id === connectionId
+  return valid
+    ? { ok: true, dispatch }
+    : { ok: false, error: 'invalid or misaddressed check_job dispatch' }
+}
+
+/**
+ * The wake channel's one validator: each item is an automation run in its exact
+ * existing shape, or a check job in its exact shape (remote-ingress contract,
+ * `dispatches`). The two are told apart by `kind`; anything else is rejected, and
+ * the caller rejects the whole batch for it, exactly as before check jobs existed.
+ */
+export function validateWakeDispatch(dispatch, connectionId) {
+  if (dispatch && typeof dispatch === 'object' && !Array.isArray(dispatch) && dispatch.kind === 'check_job') {
+    return validateCheckJobDispatch(dispatch, connectionId)
+  }
+  return validateAutomationRunDispatch(dispatch, connectionId)
+}
+
+/** The inbox record type each validated dispatch is kept under. */
+function dispatchRecordType(dispatch) {
+  return dispatch.kind === 'check_job' ? 'check_job' : 'automation_run'
 }
 
 /** Rebuild crash-safe delivery identity from newline-terminated durable records only. */
@@ -652,7 +734,8 @@ export function scanPersistedInboxRecords(text, activeSessionId = undefined) {
             : []
         for (const id of ids) if (typeof id === 'string') index.systemNoticeIds.add(id)
       }
-      if (record?.type === 'automation_run' && typeof record.dispatch?.id === 'string') {
+      // One identity space: a check job's id is its own uuid, never a run's.
+      if ((record?.type === 'automation_run' || record?.type === 'check_job') && typeof record.dispatch?.id === 'string') {
         index.dispatchIds.add(record.dispatch.id)
       }
     } catch {
@@ -804,7 +887,13 @@ export function appendCanonicalInbox(
   }
 }
 
-export function appendAutomationDispatches(
+/**
+ * Persist the dispatches one response carried: automation runs and check jobs, each
+ * kept once by its id. The whole batch is validated before anything is written, so
+ * one bad item rejects all of it and the dispatch cursor does not move. `appended`
+ * counts both; `checkJobs` is how many of them were check jobs.
+ */
+export function appendWakeDispatches(
   connectionId,
   dispatches,
   dispatchCursor,
@@ -814,15 +903,17 @@ export function appendAutomationDispatches(
 ) {
   const validated = []
   for (const offered of Array.isArray(dispatches) ? dispatches : []) {
-    const parsed = validateAutomationRunDispatch(offered, connectionId)
-    if (!parsed.ok) return { ok: false, appended: 0, error: parsed.error }
+    const parsed = validateWakeDispatch(offered, connectionId)
+    if (!parsed.ok) return { ok: false, appended: 0, checkJobs: 0, error: parsed.error }
     validated.push(parsed.dispatch)
   }
   let appended = 0
+  let checkJobs = 0
   for (const dispatch of validated) {
     if (index.dispatchIds.has(dispatch.id)) continue
+    const type = dispatchRecordType(dispatch)
     const record = {
-      type: 'automation_run',
+      type,
       connection_id: connectionId,
       session_id: sessionId,
       received_at: new Date().toISOString(),
@@ -830,12 +921,13 @@ export function appendAutomationDispatches(
       dispatch,
     }
     if (!writeRecord(connectionId, record)) {
-      return { ok: false, appended, error: 'automation inbox persistence failed' }
+      return { ok: false, appended, checkJobs, error: `${type} inbox persistence failed` }
     }
     index.dispatchIds.add(dispatch.id)
     appended++
+    if (type === 'check_job') checkJobs++
   }
-  return { ok: true, appended }
+  return { ok: true, appended, checkJobs }
 }
 
 /**
@@ -2253,15 +2345,18 @@ async function main() {
     return { ok: true, delivered: true }
   }
 
-  /** Independent explicit automation channel; task assignments are rejected. */
-  function consumeAutomationDispatches(res) {
+  /**
+   * Independent explicit dispatch channel: automation runs and check jobs; task
+   * assignments and every other shape are rejected.
+   */
+  function consumeWakeDispatches(res) {
     if (!Array.isArray(res?.dispatches)) {
       process.stderr.write('devspec-remote-poll: rejected malformed dispatches channel\n')
       return { ok: false, delivered: false }
     }
     const nextDispatchCursor =
       typeof res.dispatch_cursor === 'string' ? res.dispatch_cursor : dispatchCursor
-    const persisted = appendAutomationDispatches(
+    const persisted = appendWakeDispatches(
       connectionId,
       res.dispatches,
       nextDispatchCursor,
@@ -2269,7 +2364,7 @@ async function main() {
       sessionId,
     )
     if (!persisted.ok) {
-      process.stderr.write(`devspec-remote-poll: rejected automation dispatch (${persisted.error})\n`)
+      process.stderr.write(`devspec-remote-poll: rejected dispatch (${persisted.error})\n`)
       return { ok: false, delivered: false }
     }
     // Only now is the complete response dispatch set durable/deduped.
@@ -2280,16 +2375,33 @@ async function main() {
       // itself. The newest 200 keep a state file that is rewritten on every poll small.
       delivered_dispatch_ids: [...persistedInbox.dispatchIds].slice(-200),
     })
-    if (persisted.appended > 0) {
+    const runs = persisted.appended - persisted.checkJobs
+    if (runs > 0) {
       process.stdout.write(JSON.stringify({
         type: 'wake',
         reason: 'automation_run',
-        count: persisted.appended,
+        count: runs,
         inbox: inboxPathForConnection(connectionId),
         authoritative: false,
         executable: false,
       }) + '\n')
       writeTurnMarker(connectionId)
+    }
+    // A check job opens no turn here. Busy follows the turn the wake starts (or
+    // the one it is delivered into), from Claude Code's own prompt and Stop hooks,
+    // so it never says Working before the agent is, and never restarts a running
+    // turn's clock, which would detach that turn's own background work
+    // (mirror-turn.mjs). DevSpec drops an untaken job when a turn ends, so busy
+    // has to be the turn and nothing else.
+    if (persisted.checkJobs > 0) {
+      process.stdout.write(JSON.stringify({
+        type: 'wake',
+        reason: 'check_job',
+        count: persisted.checkJobs,
+        inbox: inboxPathForConnection(connectionId),
+        authoritative: false,
+        executable: false,
+      }) + '\n')
     }
     return { ok: true, delivered: persisted.appended > 0 }
   }
@@ -2568,8 +2680,9 @@ async function main() {
         continue
       }
       // Conversational commands/context come only from canonical ingress. Explicit
-      // automation runs remain an independent top-level channel with their own clock.
-      const automations = consumeAutomationDispatches(res)
+      // automation runs and check jobs remain an independent top-level channel with
+      // their own clock.
+      const automations = consumeWakeDispatches(res)
       const canonical = await consumeCanonicalIngress(res)
       if (canonical.ok) {
         needsSeed = redrainRequested

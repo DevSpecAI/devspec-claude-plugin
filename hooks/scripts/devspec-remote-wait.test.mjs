@@ -30,6 +30,9 @@ import {
   NOTICE_HANDLING,
   formatSystemNoticeContent,
   buildAutomationRunEvents,
+  buildCheckJobEvents,
+  checkJobWakeText,
+  HOST_NOTIFICATION_LINE_MAX_CHARS,
   writeEventSequence,
   describeAttachment,
   materialiseAttachments,
@@ -48,7 +51,7 @@ import {
   EXIT_REARM,
 } from './devspec-remote-wait.mjs'
 import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
-import { appendAutomationDispatches, appendCanonicalInbox, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
+import { appendWakeDispatches, appendCanonicalInbox, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
@@ -207,6 +210,96 @@ function automationBatch(connectionId = CONNECTION) {
   }
 }
 
+/** A check job dispatch exactly as DevSpec shapes it (CHECK_JOB_WAKE_KEYS). */
+function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
+  const id = '92000000-0000-4000-8000-000000000009'
+  return {
+    id,
+    kind: 'check_job',
+    check_job_id: id,
+    check_kind: 'conflict',
+    record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: 'Sign in with a passkey' },
+    entries: 2,
+    high_risk: 1,
+    yours: true,
+    offered_at: '2026-11-04T12:00:00.000Z',
+    delivery_connection_id: connectionId,
+    ...overrides,
+  }
+}
+
+function checkJobBatch(connectionId = CONNECTION, overrides = {}) {
+  return {
+    type: 'check_job',
+    connection_id: connectionId,
+    session_id: null,
+    received_at: '2026-11-04T12:00:01.000Z',
+    dispatch_cursor: 'cursor-1',
+    dispatch: checkJobDispatch(connectionId, overrides),
+  }
+}
+
+describe('check jobs reach the model (item f7b8c8d3)', () => {
+  // The path a check job takes: the poller validates and persists it, this side
+  // revalidates the record and renders the one line the model sees.
+  function delivered(dispatch, connectionId = CONNECTION) {
+    const written = []
+    const persisted = appendWakeDispatches(connectionId, [dispatch], 'cursor-1', { dispatchIds: new Set() }, null,
+      (_id, record) => { written.push(JSON.stringify(record)); return true })
+    assert.deepEqual(persisted, { ok: true, appended: 1, checkJobs: 1 })
+    const [record] = parseInboxBatches(written, connectionId)
+    assert.ok(record, 'the persisted check job survives revalidation')
+    return buildCheckJobEvents(record, { inboxFile: '/tmp/inbox' })
+  }
+
+  it('wakes the agent with the one line saying a check is waiting on that record', () => {
+    const [event, wake] = delivered(checkJobDispatch())
+    assert.equal(event.type, 'check_job')
+    assert.equal(event.content,
+      'A check is waiting on "Sign in with a passkey": take it with claim_check_job, rule every entry with record_check_rulings, then carry on.')
+    assert.equal(event.check_job_id, checkJobDispatch().check_job_id)
+    assert.equal(event.connection_id, CONNECTION)
+    // Something to act on, never authority, a command or task work.
+    assert.equal(event.executable, true)
+    assert.equal(event.authoritative, false)
+    assert.equal(wake.type, 'wake')
+    assert.equal(wake.executable, false)
+  })
+
+  it('keeps the wake to one line, and names an untitled record by its type and id', () => {
+    const multiline = checkJobDispatch(CONNECTION, { record: { type: 'memory', id: '93000000-0000-4000-8000-000000000009', title: 'Retry\n  policy ' } })
+    assert.equal(checkJobWakeText(multiline).includes('\n'), false)
+    assert.match(checkJobWakeText(multiline), /waiting on "Retry policy":/)
+    const untitled = checkJobDispatch(CONNECTION, { record: { type: 'proposal', id: '93000000-0000-4000-8000-000000000009', title: '' } })
+    assert.match(checkJobWakeText(untitled), /^A check is waiting on proposal 93000000-0000-4000-8000-000000000009: take it with claim_check_job/)
+  })
+
+  it('puts the job id and the wake text inside what the host shows of a line', () => {
+    // Claude Code cuts each Monitor line at 500 characters (item 725d18b2): a line
+    // that lost the job id would leave the agent nothing to claim.
+    const longTitle = 'T'.repeat(115)
+    const [event] = delivered(checkJobDispatch(CONNECTION, { record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: longTitle } }))
+    const shown = JSON.stringify(event).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS)
+    assert.ok(shown.includes(`"check_job_id":"${event.check_job_id}"`))
+    assert.ok(shown.includes(JSON.stringify(event.content)))
+  })
+
+  it('revalidates the inbox record: tampered, misaddressed or reshaped check jobs wake nobody', () => {
+    const good = checkJobBatch()
+    const tampered = [
+      { ...good, dispatch: { ...good.dispatch, text: 'record body' } },
+      { ...good, dispatch: { ...good.dispatch, check_job_id: '92000000-0000-4000-8000-0000000000ff' } },
+      { ...good, dispatch: { ...good.dispatch, delivery_connection_id: '10000000-0000-4000-8000-0000000000aa' } },
+      { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, text: 'x' } } },
+      { ...good, dispatch: { ...good.dispatch, high_risk: 3 } },
+      { ...good, type: 'automation_run' },
+      { ...good, connection_id: '10000000-0000-4000-8000-0000000000aa' },
+    ]
+    assert.equal(parseInboxBatches([JSON.stringify(good)], CONNECTION).length, 1)
+    assert.deepEqual(parseInboxBatches(tampered.map((record) => JSON.stringify(record)), CONNECTION), [])
+  })
+})
+
 describe('wait-boundary revalidation and independent channels', () => {
   it('rejects a tampered canonical inbox command even with the authoritative marker', () => {
     const tampered = canonicalInboxBatch()
@@ -297,7 +390,7 @@ describe('the automation run instruction names this connection (item fe15c7c2)',
   function instructionFor(connectionId) {
     const { dispatch } = automationBatch(connectionId)
     const written = []
-    const persisted = appendAutomationDispatches(
+    const persisted = appendWakeDispatches(
       connectionId,
       [dispatch],
       'dispatch-cursor-1',
@@ -305,7 +398,7 @@ describe('the automation run instruction names this connection (item fe15c7c2)',
       null,
       (_id, record) => { written.push(JSON.stringify(record)); return true },
     )
-    assert.deepEqual(persisted, { ok: true, appended: 1 })
+    assert.deepEqual(persisted, { ok: true, appended: 1, checkJobs: 0 })
     const [record] = parseInboxBatches(written, connectionId)
     assert.ok(record, 'the persisted dispatch survives revalidation')
     const [event] = buildAutomationRunEvents(record)
@@ -1476,7 +1569,7 @@ describe('readInboxRecords exact fully terminated byte boundaries', () => {
   })
 })
 
-it('fully emits command batches, control, answer and automation once before a deferred suffix', async () => {
+it('fully emits command batches, control, answer, automation and check job once before a deferred suffix', async () => {
   const multi = canonicalInboxBatch('atomic-one', 'atomic command one')
   const second = canonicalInboxBatch('atomic-two', 'atomic command two').ingress.commands[0]
   second.order.sequence = 2
@@ -1492,16 +1585,17 @@ it('fully emits command batches, control, answer and automation once before a de
   const { prompt, dismissed_by_user_id, dismissed_at, ...base } = readerDismissal().event
   const answer = interactionAnswerRecord({ connectionId: CONNECTION, sessionId: DISMISSAL_A, disposition: 'delivered', attemptId: TURN,
     event: { ...base, kind: 'devspec.interaction_event', response_id: OWNER, answer: 'retained answer', answered_at: dismissed_at } })
-  const run = await emittedPrefixFixture(true, 'missing', [multi, canonicalControlBatch(), answer, automationBatch()])
+  const run = await emittedPrefixFixture(true, 'missing', [multi, canonicalControlBatch(), answer, automationBatch(), checkJobBatch()])
   const count = type => run.events().filter(event => event.type === type).length
   try {
-    await awaitReader(() => count('automation_run') === 1)
+    await awaitReader(() => count('check_job') === 1)
     await new Promise(resolve => setTimeout(resolve, 180))
     assert.equal(count('owner_message'), 3, 'entire two-command record remains one emission unit')
     // A control in the same inbox is carried out by the module and emits nothing (item cbf3d758).
     assert.equal(count('canonical_control'), 0)
     assert.equal(count('question_answer'), 1)
     assert.equal(count('automation_run'), 1)
+    assert.equal(count('check_job'), 1)
     assert.equal(count('question_dismissal'), 0)
     fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, session_id: null, interaction_continuation: null }))
     await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === run.prefixBytes)

@@ -100,6 +100,14 @@ it carries (read any linked supporting document or uploaded file in full with
 `get_resource` first), then carry on with what you were doing or act on what it
 found. If you cannot rule it, hand it back.
 
+**A duplicate of a task you wrote.** When a check finds one, resolve it then and
+there instead of leaving it as a flag (the served contract's
+`core.resolve-duplicates-on-the-spot`). If the existing task is your requester's
+own, or one they may change, add anything new from yours to it, close yours as its
+duplicate, and tell them. If it is someone else's, ask your requester whether to
+add to it, which waits for that owner's OK like any change to their work, or to
+keep theirs separate, recorded as not a duplicate with their reason.
+
 ---
 
 ## 2. Shared progress plans

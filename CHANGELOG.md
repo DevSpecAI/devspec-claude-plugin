@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.52.2 - 2026-11-04
+
+- When DevSpec's check finds that a task Claude Code just wrote for you duplicates one that already exists, Claude now sorts it out there and then instead of leaving a flag for later. If the existing task is yours, or one you're allowed to change, Claude adds anything new to it, closes the new one as its duplicate and tells you. If it's someone else's, Claude asks you whether to add to it, which waits for that person's OK, or to keep yours separate, recorded as not a duplicate with your reason.
+
 ## 0.52.1 - 2026-11-04
 
 - When Claude Code changes one of your team's decisions, conventions or requirements for someone in a DevSpec room, DevSpec can now answer that the change is accepted but not yet in effect: what is in force stays until the change's checks are ruled, then the change takes effect by itself, or it waits for the OK of the person DevSpec names. The plugin's instructions now tell Claude what that answer means and to follow DevSpec's own note on it.

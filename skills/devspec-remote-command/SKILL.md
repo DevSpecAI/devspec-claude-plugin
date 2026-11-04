@@ -209,7 +209,7 @@ Every decision a person can make in Review has a tool:
 
 A "related" link (`link_tasks`, `manage_knowledge_links`) settles none of these.
 
-Relay each result in plain words from its `summary` (or `note`) and `next`. `queued_for_review` carries a `proposal_id` and changes nothing until whoever decides it accepts it. `pending_checks` is accepted: the version in force stays until the change's checks are ruled, then it takes effect by itself, or waits for the OK of whoever the result names; report it as accepted and taking effect once checked, never as committed or failed, and follow the result's own note. Never report a refused, queued, unconfirmed or unknown outcome as done.
+Relay each result in plain words from its `summary` (or `note`) and `next`. `queued_for_review` carries a `proposal_id` and changes nothing until whoever decides it accepts it. `pending_checks` is accepted but not yet in effect: the version in force stays until the change's checks are ruled, then it takes effect by itself, or it waits for the OK of the person the result names. Follow the result's own note. Never report a refused, queued, unconfirmed or unknown outcome as done.
 
 ---
 

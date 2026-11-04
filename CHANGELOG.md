@@ -2,7 +2,7 @@
 
 ## 0.52.1 - 2026-11-04
 
-- When Claude Code changes one of your team's decisions, conventions or requirements for someone in a DevSpec room, DevSpec can now answer that the change is accepted but waits for its checks before it takes effect. Claude now reports that as accepted and taking effect once checked, rather than as done or as a failure, and passes on what DevSpec's answer says, including whose OK it waits for when it clashes with someone else's decision.
+- When Claude Code changes one of your team's decisions, conventions or requirements for someone in a DevSpec room, DevSpec can now answer that the change is accepted but not yet in effect: what is in force stays until the change's checks are ruled, then the change takes effect by itself, or it waits for the OK of the person DevSpec names. The plugin's instructions now tell Claude what that answer means and to follow DevSpec's own note on it.
 - Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
 
 ## 0.52.0 - 2026-11-04

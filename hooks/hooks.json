@@ -113,7 +113,7 @@
           },
           {
             "type": "command",
-            "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; input=$(cat); sid=$(printf '%s' \"$input\" | grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9._-]*\"' | head -n 1 | sed 's/.*\"\\([A-Za-z0-9._-]*\\)\"$/\\1/'); if [ -n \"$sid\" ] && [ -e \"$HOME/.devspec/git-observer/$sid/pending\" ] && command -v node >/dev/null 2>&1; then printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain; fi; exit 0",
+            "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; [ -d \"$HOME/.devspec/git-observer\" ] || exit 0; command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain || true",
             "timeout": 30
           }
         ]
@@ -233,7 +233,7 @@
       {
         "hooks": [{
           "type": "command",
-          "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; input=$(cat); sid=$(printf '%s' \"$input\" | grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9._-]*\"' | head -n 1 | sed 's/.*\"\\([A-Za-z0-9._-]*\\)\"$/\\1/'); if [ -n \"$sid\" ] && [ -e \"$HOME/.devspec/git-observer/$sid/pending\" ] && command -v node >/dev/null 2>&1; then printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain; fi; exit 0",
+          "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; [ -d \"$HOME/.devspec/git-observer\" ] || exit 0; command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain || true",
           "timeout": 30
         }]
       }
@@ -251,7 +251,7 @@
       {
         "hooks": [{
           "type": "command",
-          "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; input=$(cat); sid=$(printf '%s' \"$input\" | grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9._-]*\"' | head -n 1 | sed 's/.*\"\\([A-Za-z0-9._-]*\\)\"$/\\1/'); if [ -n \"$sid\" ] && [ -e \"$HOME/.devspec/git-observer/$sid/pending\" ] && command -v node >/dev/null 2>&1; then printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain; fi; exit 0",
+          "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; [ -d \"$HOME/.devspec/git-observer\" ] || exit 0; command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain || true",
           "timeout": 30
         }]
       },
@@ -276,7 +276,7 @@
       {
         "hooks": [{
           "type": "command",
-          "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; input=$(cat); sid=$(printf '%s' \"$input\" | grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9._-]*\"' | head -n 1 | sed 's/.*\"\\([A-Za-z0-9._-]*\\)\"$/\\1/'); if [ -n \"$sid\" ] && [ -e \"$HOME/.devspec/git-observer/$sid/pending\" ] && command -v node >/dev/null 2>&1; then printf '%s' \"$input\" | node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain; fi; exit 0",
+          "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; [ -d \"$HOME/.devspec/git-observer\" ] || exit 0; command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-observer.mjs\" drain || true",
           "timeout": 30
         }]
       },

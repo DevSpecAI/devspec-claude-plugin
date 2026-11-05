@@ -74,6 +74,12 @@ export function observerDir(sessionId, home = os.homedir()) {
   return SESSION_ID.test(sessionId ?? '') ? path.join(observerBase(home), sessionId) : null
 }
 
+/** Whether the stand-in has journalled a commit this conversation has not reported. */
+export function hasPending(sessionId, home = os.homedir()) {
+  const dir = observerDir(sessionId, home)
+  return dir !== null && fs.existsSync(path.join(dir, 'pending'))
+}
+
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'"'"'`)}'`
 }
@@ -470,6 +476,11 @@ async function main(command) {
     if (!result.ok) logOutcome({ outcome: 'not observing', reason: result.reason, session: sessionId })
     return
   }
+  // The drain hooks run after every tool call and at every stop. Their command lines
+  // are fixed (the plugin directory refuses a hook line built from values the shell
+  // derives), so the check for this conversation's waiting commit lives here: with
+  // nothing pending, return before loading the reporting code.
+  if (command === 'drain' && !hasPending(sessionId)) return
   const { boundConnection } = await import('./commit-observation.mjs')
   if (command === 'drain') await drainObserver({ sessionId, boundConnection })
   else if (command === 'session-end') await endObserver({ sessionId, boundConnection })

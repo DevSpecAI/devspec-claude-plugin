@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "DevSpec for Claude Code — shared team memory, live remote control from phone or web, and automatic task & commit provenance.",
-  "version": "0.52.4",
+  "version": "0.52.5",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -39,7 +39,7 @@
     "connect_at_startup": {
       "type": "boolean",
       "title": "Make Claude Code available on DevSpec when it starts",
-      "description": "When you start Claude Code in a folder linked to a DevSpec project, it appears on the Agents page straight away, ready for your team to send it work. It uses nothing while it waits. Turn this off to connect only when you run /devspec:devspec.remote.",
+      "description": "When you start Claude Code in a folder linked to a DevSpec project, it appears on the Agents page straight away, ready for your team to send it work. Sitting idle uses no tokens; it runs only for authorized requests, project-configured check rulings, or automations you opted into. Turn this off to connect only when you run /devspec:devspec.remote.",
       "default": true,
       "required": false
     }
@@ -50,7 +50,7 @@
       "url": "${user_config.devspec_mcp_url}?model_tools=heartbeat_connection,detach_connection",
       "headers": {
         "Authorization": "Bearer ${user_config.devspec_token}",
-        "x-devspec-plugin": "claude_code/0.52.4"
+        "x-devspec-plugin": "claude_code/0.52.5"
       }
     }
   },

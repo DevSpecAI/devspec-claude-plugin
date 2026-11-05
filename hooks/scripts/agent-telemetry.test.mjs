@@ -247,3 +247,42 @@ describe('sending the report to DevSpec', () => {
     assert.equal(calls.length, 0)
   })
 })
+
+// How much of a subscription's usage limits the agent has used (item e1f11c83), as
+// `$.session.usage().rateLimits` measures it on 2.1.314.
+describe('usage limits', () => {
+  const FIVE_HOUR = { kind: 'five_hour', percentUsed: 82.4, resetsAt: '2026-10-30T16:00:00.000Z' }
+  const WEEK = { kind: 'seven_day', percentUsed: 41, resetsAt: '2026-11-03T09:00:00.000Z' }
+
+  it("are reported as Claude Code measured them, at a turn's first request and at its end", () => {
+    const refreshed = parseTelemetryRecord(refreshedRecord({
+      previous: null, conversationId: CONVERSATION, model: 'claude-opus-5-5', effort: 'high',
+      context: undefined, rateLimits: [FIVE_HOUR, WEEK], nowIso: T0,
+    }))
+    assert.deepEqual(refreshed.report.usageLimits, [FIVE_HOUR, WEEK])
+    assert.deepEqual(settle(refreshed, { rateLimits: [FIVE_HOUR, WEEK] }).report.usageLimits, [FIVE_HOUR, WEEK])
+  })
+
+  it('leave out a window that does not read, and keep the rest', () => {
+    const { report } = settle(null, { rateLimits: [
+      { kind: 'five_hour', percentUsed: Number.NaN, resetsAt: FIVE_HOUR.resetsAt },
+      { kind: 'monthly', percentUsed: 10, resetsAt: FIVE_HOUR.resetsAt },
+      { kind: 'spend_limit', percentUsed: 30, resetsAt: 'soon' },
+      WEEK,
+      null,
+    ] })
+    assert.deepEqual(report.usageLimits, [WEEK])
+  })
+
+  it('are absent when Claude Code has none: an API key, or before the first response', () => {
+    for (const rateLimits of [[], undefined]) {
+      assert.equal(Object.hasOwn(settle(null, { rateLimits }).report, 'usageLimits'), false)
+    }
+  })
+
+  it('are never carried on from an earlier reading: a window no longer listed has reset or gone', () => {
+    const earlier = settle(null, { rateLimits: [FIVE_HOUR, WEEK] })
+    assert.deepEqual(settle(earlier, { rateLimits: [WEEK] }).report.usageLimits, [WEEK])
+    assert.equal(Object.hasOwn(settle(earlier, { rateLimits: [] }).report, 'usageLimits'), false)
+  })
+})

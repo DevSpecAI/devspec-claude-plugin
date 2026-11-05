@@ -102,6 +102,32 @@ export function contextFigures(context) {
   return { tokens, window, percent }
 }
 
+/** The usage windows DevSpec shows, in Claude Code's own names for them. */
+const USAGE_LIMIT_KINDS = new Set(['five_hour', 'seven_day', 'spend_limit'])
+
+/**
+ * `$.session.usage().rateLimits` as the report carries it (item e1f11c83): how much
+ * of each subscription usage window is used and when it resets. Claude Code gives
+ * them only to a Pro or Max subscriber, or behind a Claude apps gateway with a spend
+ * limit, and only after the session's first API response; it measures
+ * `{ kind, percentUsed (0-100), resetsAt (ISO) }` (2.1.314). What it gives now is
+ * reported as it is, never an earlier reading: a window it no longer lists has reset
+ * or gone. Null when there are none.
+ */
+export function usageLimitFigures(rateLimits) {
+  if (!Array.isArray(rateLimits)) return null
+  const limits = rateLimits.flatMap((limit) => {
+    if (!limit || typeof limit !== 'object' || !USAGE_LIMIT_KINDS.has(limit.kind)) return []
+    const percentUsed = typeof limit.percentUsed === 'number' && Number.isFinite(limit.percentUsed)
+      ? Math.max(0, Math.min(100, limit.percentUsed))
+      : null
+    const resetsAt = typeof limit.resetsAt === 'string' ? Date.parse(limit.resetsAt) : Number.NaN
+    if (percentUsed === null || !Number.isFinite(resetsAt)) return []
+    return [{ kind: limit.kind, percentUsed, resetsAt: new Date(resetsAt).toISOString() }]
+  })
+  return limits.length > 0 ? limits : null
+}
+
 /**
  * The record on file: the report and the conversation it counts for. A report from
  * another conversation (before a /clear moved this connection) is not this one's, so
@@ -130,15 +156,17 @@ function record(conversationId, report) {
  * On a turn's first model request: the model and effort it was sent with, and the
  * context as it stands. The last turn's usage is kept as it was; nothing settled.
  */
-export function refreshedRecord({ previous, conversationId, model, effort, context, nowIso }) {
+export function refreshedRecord({ previous, conversationId, model, effort, context, rateLimits, nowIso }) {
   const before = previousFor(previous, conversationId)
   const id = modelId(model)
+  const usageLimits = usageLimitFigures(rateLimits)
   return record(conversationId, {
     v: 1,
     model: id ? { provider: MODEL_PROVIDER, id } : before?.model ?? null,
     thinkingLevel: id ? effortLevel(effort) : before?.thinkingLevel ?? null,
     supportedThinkingLevels: id ? supportedThinkingLevels(effort) : before?.supportedThinkingLevels,
     context: contextFigures(context) ?? before?.context ?? null,
+    ...(usageLimits ? { usageLimits } : {}),
     turn: before?.turn ?? { ...emptyUsage(), messages: 0 },
     session: before?.session ?? { ...emptyUsage(), turns: 0 },
     at: nowIso,
@@ -160,6 +188,7 @@ export function settledRecord({
   stepModel,
   effort,
   context,
+  rateLimits,
   requests,
   sessionTurns,
   sessionCostUsd,
@@ -168,6 +197,7 @@ export function settledRecord({
 }) {
   const before = previousFor(previous, conversationId)
   const id = modelId(usage?.model) ?? modelId(stepModel)
+  const usageLimits = usageLimitFigures(rateLimits)
   const turn = {
     input: count(usage?.input_tokens),
     output: count(usage?.output_tokens),
@@ -192,6 +222,7 @@ export function settledRecord({
     thinkingLevel: modelId(stepModel) ? effortLevel(effort) : before?.thinkingLevel ?? null,
     supportedThinkingLevels: modelId(stepModel) ? supportedThinkingLevels(effort) : before?.supportedThinkingLevels,
     context: contextFigures(context) ?? before?.context ?? null,
+    ...(usageLimits ? { usageLimits } : {}),
     turn,
     session,
     at: nowIso,

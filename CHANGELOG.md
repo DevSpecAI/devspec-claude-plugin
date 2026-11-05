@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.52.5 - 2026-11-05
+
+- Updated `README.md` and the startup connection setting description to accurately cover conflict, duplicate, and **Possibly outdated** screening across shared memory, sessionless **Agents** page availability versus session room attachment, check-ruling and automation wake behavior, single-claim commit tagging across linked repositories (including Git worktrees) and `.devspec/project.json`-pinned folders, observed criterion verification, Protected intent holds, and GitHub pull-request checks.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.52.4 - 2026-11-05
+
+- A check or notice waiting for Claude Code's current turn no longer holds up anything behind it. Room commands, Stop and other controls, and answers to a question Claude asked still reach it straight away. The waiting checks and notices then follow one per turn, in the order they arrived.
+- A turn kept open only because Claude Code is waiting on its own background work no longer counts as busy for this. Claude Code is idle then, so it takes the next waiting check or notice straight away instead of after the background work finishes.
+- Restarting the listener keeps the waiting checks and notices. Each is still delivered exactly once, and nothing delivered before the restart arrives again.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.52.3 - 2026-11-04
+
+- Checks and notices about Claude Code's own work now wait until its running turn finishes and then run one at a time in the order they arrived, rather than interrupting mid-turn.
+- System notices place their notice ID, summary and inbox location at the start of the notification line so Claude Code's notification length cap never cuts them off, and starting a notice turn does not carry over who asked for the previous turn's command.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.52.2 - 2026-11-04
+
+- When DevSpec's check finds that a task Claude Code just wrote for you duplicates one that already exists, Claude now sorts it out there and then instead of leaving a flag for later. If the existing task is yours, or one you're allowed to change, Claude adds anything new to it, closes the new one as its duplicate and tells you. If it's someone else's, Claude asks you whether to add to it, which waits for that person's OK, or to keep yours separate, recorded as not a duplicate with your reason.
+
+## 0.52.1 - 2026-11-04
+
+- When Claude Code changes one of your team's decisions, conventions or requirements for someone in a DevSpec room, DevSpec can now answer that the change is accepted but not yet in effect: what is in force stays until the change's checks are ruled, then the change takes effect by itself, or it waits for the OK of the person DevSpec names. The plugin's instructions now tell Claude what that answer means and to follow DevSpec's own note on it.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.52.0 - 2026-11-04
+
+- Claude Code can now rule DevSpec's checks on its own changes. When Claude Code changes something in your project, DevSpec checks the change for conflicts with what your team decided, for duplicates and for records it makes out of date. That check now goes first to the Claude Code that made the change, since it already knows what it did. Claude takes it, rules every entry by the check's own definition, reading any linked supporting document in full first, and then carries on with what it was doing. If it cannot rule the check, it hands it back and DevSpec rules it as before.
+- Claude Code tells DevSpec it can receive check jobs on every check-in, and DevSpec sends them only to a Claude Code that says so. Older versions of the plugin keep working as before, and DevSpec rules their checks.
+- A check job that arrives while Claude is working on something you asked for does not change who that work is recorded as asked by.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.11 - 2026-10-31
+
+- If you also use Cursor's command-line agent, this plugin now stays out of the way there. Cursor loads the Claude Code plugins on your computer and runs their background steps. Ending a Cursor conversation could disconnect a DevSpec-connected Claude Code conversation, and this plugin's steps could act on Cursor's conversations. Now none of them does anything inside Cursor, where DevSpec's Cursor plugin does that work. Nothing changes in Claude Code.
+- Cursor also lists this plugin's skills. Each now says it is for Claude Code only, so Cursor's agent leaves them alone.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.10 - 2026-10-30
+
+- If you're on a Claude Pro or Max plan, DevSpec now shows how much of your 5-hour and weekly usage limits each Claude Code agent has used, next to its context level on the Agents page and in a session's Agents list. A limit that's nearly used up stands out, and hovering shows when it resets. The plugin reads these figures from Claude Code at the start and end of every turn, along with the model and context level it already reports. Nothing is shown for Claude Code on an API key, which has no such limits.
+- Fixed the plugin version Claude Code sends DevSpec with each request. 0.51.9 still reported itself as 0.51.8, so DevSpec could have shown an up-to-date agent as needing an update.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.9 - 2026-10-30
+
+- When Claude Code can't answer a message sent from a DevSpec room, because it is signed out, has hit a usage limit, has a billing problem, or Anthropic's service is down, the room now says so straight away instead of staying silent. The reply is Claude Code's own error message, word for word (for example "Login expired · Please run /login"), with a line saying that anything it asks for is done on the computer Claude Code runs on, and to send the message again once that's sorted. The message then counts as answered, and the agent stops showing as working. Nothing is posted for a prompt typed in Claude Code's own terminal, where the error is already in front of you. This uses Claude Code's `StopFailure` hook, which runs in place of the normal end-of-turn hook when an error from Anthropic's service ends a turn.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.8 - 2026-10-30
+
+- The plugin's skills no longer show up in the `/` command menu. They are instructions Claude reads for itself (handling a DevSpec message, asking you a question, session plans and polls, pinning a folder), so running one yourself did nothing useful and made it look as if DevSpec had two remote commands. Claude still loads each one when it needs it. The commands you run are unchanged: `/devspec:devspec.remote`, `/devspec:devspec.remote-stop` and `/devspec:devspec.project`.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.7 - 2026-10-30
+
+- Updated `devspec-remote-command` task guidance for required task dismissal categories (`duplicate`, `replaced`, `outdated`, and `not_wanted`) on `update_task` (`lifecycle: "dismissed"`), including `target_task_id` linking, held-replacement behaviour for unmerged replacements, and required rejection notes on `not_wanted`.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.6 - 2026-10-30
+
+- Remote-controlled Claude Code sessions can now read and manage project goals and outcomes without stalling at a terminal permission prompt (`get_goals`, `get_project_goals`, and `manage_goals` are pre-approved in `/devspec:devspec.remote` and `devspec-remote-command` in both plugin and manual MCP tool forms).
+- Goal and outcome writes via `manage_goals` now carry the active command's `request_ref` attribution, matching every other judged DevSpec write.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.51.5 - 2026-10-30
+
+- Fixed a loop that could use up all of your computer's memory. DevSpec's plugins for Claude Code, Pi and Antigravity each put a stand-in for `git` in front of the real one, so they can tag and report commits. When two of them were on the same PATH, for example when Claude started a Pi session or ran Pi's tests, each took the other for git and they passed every git command back and forth, starting a new process each time. The stand-in now recognises any DevSpec plugin's stand-in and always runs the real git. If an older version of another plugin still sends a command round in a loop, the command stops at once with a message saying so, instead of exhausting memory.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.51.4 - 2026-10-27
 
 - Resolved Anthropic plugin directory portal validation findings in unit test fixtures (`hooks/scripts/interaction-events.test.mjs` and `hooks/scripts/devspec-remote-poll.test.mjs`).

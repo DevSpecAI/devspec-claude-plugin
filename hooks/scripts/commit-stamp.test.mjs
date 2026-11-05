@@ -189,6 +189,19 @@ describe('the commit check, before git runs', () => {
     assert.equal(git(['rev-parse', 'HEAD']), head)
     assert.equal(shell(`git commit --allow-empty -q -m "chosen [devspec:${OTHER_TASK}]"`).status, 0, 'naming one goes through')
   })
+
+  it('inside another git stand-in\'s work, neither stops, tags nor records the commit: that one owns it (item 30978c06)', () => {
+    // What another DevSpec plugin's stand-in, or a git hook under one, hands this one.
+    const nested = (command) => shell(`DEVSPEC_GIT_STAND_IN_DEPTH=1 ${command}`)
+    const unclaimed = nested('git commit --allow-empty -q -m "unclaimed, nested"')
+    assert.equal(unclaimed.status, 0, unclaimed.stderr)
+    assert.equal(subject(), 'unclaimed, nested')
+    claim(TASK)
+    const claimed = nested('git commit --allow-empty -q -m "claimed, nested"')
+    assert.equal(claimed.status, 0, claimed.stderr)
+    assert.equal(body(), 'claimed, nested')
+    assert.equal(fs.readFileSync(path.join(observerDir(SESSION, home), 'journal.jsonl'), 'utf8'), '')
+  })
 })
 
 describe('what is not the project\'s', () => {

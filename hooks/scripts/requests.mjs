@@ -342,6 +342,9 @@ function carriedBy(entry, state) {
  *   event is still that job.
  * - A DevSpec command (the listener's owner_message) is that command's request.
  * - An automation run DevSpec dispatched is nobody's request: the run's.
+ * - A check job DevSpec sent carries no request at all (item f7b8c8d3): it sits
+ *   outside provenance (remote-ingress contract, `dispatches`), so it neither
+ *   joins a running turn nor stands for anyone in a new one (`carries: false`).
  * - A scheduled firing is the request whose ScheduleWakeup, CronCreate or /loop
  *   recorded that prompt; several requests that scheduled the same prompt (two
  *   people's /loop) are all carried.
@@ -350,7 +353,8 @@ function carriedBy(entry, state) {
  *
  * `also` is the other open requests it carries, which join the turn.
  *
- * @returns {{ ref: string, also: string[] }} ref is a request id, NO_REQUEST or UNSTATED
+ * @returns {{ ref: string, also: string[], carries?: false }} ref is a request id,
+ *   NO_REQUEST or UNSTATED; `carries: false` when the wake carries no request at all
  */
 export function requestForWake({ origin, text, state }) {
   const kind = typeof origin === 'string' ? origin : origin?.kind
@@ -366,6 +370,16 @@ export function requestForWake({ origin, text, state }) {
     // An automation run DevSpec dispatched is positively nobody's request: DevSpec
     // credits the run while it is running, never a command that happens to be live.
     if (/"type"\s*:\s*"automation_run"/.test(String(text || ''))) return { ref: NO_REQUEST, also: [] }
+    // A check job or system notice is about a change the agent just made: when queued
+    // behind the active turn (`midTurn: false`) it starts unstated rather than
+    // inheriting a prior command, and if ever delivered alongside an open turn it does
+    // not join an unknown requester that would block the turn's writes.
+    if (
+      /"type"\s*:\s*"(?:check_job|system_notice)"/.test(String(text || '')) ||
+      /\[DevSpec System Notice:/.test(String(text || ''))
+    ) {
+      return { ref: UNSTATED, also: [], carries: false }
+    }
     return { ref: UNSTATED, also: [] }
   }
   if (kind === 'scheduled-trigger') {
@@ -403,9 +417,9 @@ export function promptArrival({ fromAPerson, origin, text, midTurn, state, newId
     events.push(midTurn ? { op: 'joined', id } : { op: 'current', ref: id })
     return { events, typedId: id }
   }
-  const { ref, also } = requestForWake({ origin, text, state })
+  const { ref, also, carries = true } = requestForWake({ origin, text, state })
   if (midTurn) {
-    for (const id of [ref, ...also]) events.push({ op: 'joined', id })
+    if (carries) for (const id of [ref, ...also]) events.push({ op: 'joined', id })
   } else {
     events.push({ op: 'current', ref: ref === UNSTATED ? null : ref })
     for (const id of also) events.push({ op: 'joined', id })

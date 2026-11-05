@@ -401,7 +401,8 @@ describe('stamping a DevSpec write', () => {
   })
 
   it('covers exactly the DevSpec tools that take a request', () => {
-    assert.equal(REQUEST_REF_TOOLS.size, 35)
+    assert.equal(REQUEST_REF_TOOLS.size, 37)
+    assert.equal(REQUEST_REF_TOOLS.has('manage_goals'), true)
     for (const name of ['post_session_message', 'reserve_work_items', 'claim_work_item', 'report_request']) {
       assert.equal(REQUEST_REF_TOOLS.has(name), false, name)
     }
@@ -440,6 +441,31 @@ describe('what reaches a running turn joins it', () => {
     assert.deepEqual(turnAmbiguity(reduceRequestLog(log(openA, { op: 'current', ref: A }, ...run.events))).map((entry) => entry.kind), ['command', 'none'])
     const peer = promptArrival({ origin: 'peer', text: 'hi', midTurn: true, state })
     assert.deepEqual(peer.events, [{ op: 'joined', id: UNSTATED }])
+  })
+
+  // Item f7b8c8d3: the check on the agent's own change usually reaches it while it
+  // still works the command that made the change. Joining it as something not known
+  // would refuse that command's next write until the agent named a request.
+  it('a check job delivered mid-turn joins nothing, so the command it interrupts keeps its writes', () => {
+    const state = reduceRequestLog(log(openA, { op: 'current', ref: A }))
+    const job = '<task-notification>\n<event>{"type":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a","content":"A check is waiting on \\"T\\": …"}</event>\n</task-notification>'
+    const midTurn = promptArrival({ origin: { kind: 'task-notification' }, text: job, midTurn: true, state })
+    assert.deepEqual(midTurn.events, [])
+    const after = reduceRequestLog(log(openA, { op: 'current', ref: A }, ...midTurn.events))
+    assert.equal(turnAmbiguity(after), null)
+    assert.equal(requestRefForWrite(after), A)
+    // A new turn it starts stands for nobody known, never the last turn's request.
+    assert.deepEqual(promptArrival({ origin: 'task-notification', text: job, midTurn: false, state }).events, [{ op: 'current', ref: null }])
+    // Carried with a command in one wake, the command still decides.
+    assert.deepEqual(requestForWake({ origin: 'task-notification', text: `${wakeFor(MSG_A)}\n${job}`, state }), { ref: A, also: [] })
+  })
+
+  it('a system notice turn starts unstated rather than carrying the previous command, and never joins mid-turn ambiguity', () => {
+    const state = reduceRequestLog(log(openA, { op: 'current', ref: A }))
+    const notice = '<task-notification>\n<event>{"type":"system_notice","kind":"server_notice","notice_id":"71000000-0000-4000-8000-000000000001"}</event>\n</task-notification>'
+    assert.deepEqual(promptArrival({ origin: 'task-notification', text: notice, midTurn: false, state }).events, [{ op: 'current', ref: null }])
+    assert.deepEqual(promptArrival({ origin: { kind: 'task-notification' }, text: notice, midTurn: true, state }).events, [])
+    assert.deepEqual(requestForWake({ origin: 'task-notification', text: `${wakeFor(MSG_A)}\n${notice}`, state }), { ref: A, also: [] })
   })
 
   it('a new turn from a prompt nothing here knows starts unstated, never as the last turn\'s request', () => {

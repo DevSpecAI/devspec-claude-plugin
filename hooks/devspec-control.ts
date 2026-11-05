@@ -31,6 +31,7 @@ import {
   controlIsCurrent,
   parsePendingControl,
   pendingControlPath,
+  STOP_FAILURE_GRACE_MS,
   stopHookPath,
   stopHookRanSince,
 } from './scripts/control-relay.mjs'
@@ -67,7 +68,17 @@ export function watchTurnsForStop(on: Parameters<Register>[0]): void {
         const readText = (path: string) => $.fs.read(path).then((text) => String(text), () => null)
         const connectionId = await boundConnectionId({ home, conversationId, readText })
         if (!connectionId) return
-        if (stopHookRanSince(await readText(stopHookPath(home, connectionId)), turnStartedAt)) return
+        const stopHookRan = async () => stopHookRanSince(await readText(stopHookPath(home, connectionId)), turnStartedAt)
+        // A turn an error from Anthropic's service ended runs the StopFailure hook in
+        // place of Stop, and that hook tells the room and ends the turn (item
+        // b6a38d81). Claude Code starts it without waiting, so wait for its record
+        // rather than end that turn a second time, racing its answer.
+        if (e.reason === 'error') {
+          for (let waited = 0; waited < STOP_FAILURE_GRACE_MS && !(await stopHookRan()); waited += CONTROL_TICK_MS) {
+            await $.clock.sleep(CONTROL_TICK_MS)
+          }
+        }
+        if (await stopHookRan()) return
         await $.process.run(['node', `${$.plugin.root}/hooks/scripts/mirror-turn.mjs`, 'stop'], {
           stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: conversationId, stop_hook_active: false }),
           timeoutMs: 30_000,

@@ -65,6 +65,7 @@ export function watchTurnsForTelemetry(on: Parameters<Register>[0]): void {
             model: turn.model,
             effort: turn.effort,
             context: usage.context,
+            rateLimits: usage.rateLimits,
             nowIso: new Date().toISOString(),
           }))
           await $.process.run(['node', `${$.plugin.root}/hooks/scripts/devspec-telemetry.mjs`, 'send', connectionId], {
@@ -100,6 +101,7 @@ export function watchTurnsForTelemetry(on: Parameters<Register>[0]): void {
           stepModel: turn?.model,
           effort: turn?.effort,
           context: usage.context,
+          rateLimits: usage.rateLimits,
           requests: turn?.requests,
           sessionTurns: await $.session.turns(),
           sessionCostUsd,

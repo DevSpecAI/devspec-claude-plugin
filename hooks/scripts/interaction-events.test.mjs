@@ -1073,7 +1073,10 @@ describe('directed-question policy surfaces', () => {
   })
 
   it('keeps the on-demand skill small enough to load without thinking about it', () => {
-    assert.ok(Buffer.byteLength(skill) < 3_600, `skill is ${Buffer.byteLength(skill)} bytes`)
+    // Claude Code loads the body, not the frontmatter, so frontmatter fields such as
+    // `user-invocable` (item 4ac8b0ab) do not count against it.
+    const body = skill.slice(skill.indexOf('\n---', 4) + 4)
+    assert.ok(Buffer.byteLength(body) < 3_600, `skill body is ${Buffer.byteLength(body)} bytes`)
   })
 })
 

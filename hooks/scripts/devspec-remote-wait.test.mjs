@@ -30,6 +30,9 @@ import {
   NOTICE_HANDLING,
   formatSystemNoticeContent,
   buildAutomationRunEvents,
+  buildCheckJobEvents,
+  checkJobWakeText,
+  HOST_NOTIFICATION_LINE_MAX_CHARS,
   writeEventSequence,
   describeAttachment,
   materialiseAttachments,
@@ -46,9 +49,13 @@ import {
   EXIT_TERMINAL,
   EXIT_BAD_ARGS,
   EXIT_REARM,
+  heldInboxRecords,
+  heldRecordRanges,
+  isConnectionTurnRunning,
 } from './devspec-remote-wait.mjs'
 import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
-import { appendAutomationDispatches, appendCanonicalInbox, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
+import { appendWakeDispatches, appendCanonicalInbox, countUnconsumedCommands, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
+import { continuationDelivered } from './interaction-events.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
@@ -207,6 +214,96 @@ function automationBatch(connectionId = CONNECTION) {
   }
 }
 
+/** A check job dispatch exactly as DevSpec shapes it (CHECK_JOB_WAKE_KEYS). */
+function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
+  const id = '92000000-0000-4000-8000-000000000009'
+  return {
+    id,
+    kind: 'check_job',
+    check_job_id: id,
+    check_kind: 'conflict',
+    record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: 'Sign in with a passkey' },
+    entries: 2,
+    high_risk: 1,
+    yours: true,
+    offered_at: '2026-11-04T12:00:00.000Z',
+    delivery_connection_id: connectionId,
+    ...overrides,
+  }
+}
+
+function checkJobBatch(connectionId = CONNECTION, overrides = {}) {
+  return {
+    type: 'check_job',
+    connection_id: connectionId,
+    session_id: null,
+    received_at: '2026-11-04T12:00:01.000Z',
+    dispatch_cursor: 'cursor-1',
+    dispatch: checkJobDispatch(connectionId, overrides),
+  }
+}
+
+describe('check jobs reach the model (item f7b8c8d3)', () => {
+  // The path a check job takes: the poller validates and persists it, this side
+  // revalidates the record and renders the one line the model sees.
+  function delivered(dispatch, connectionId = CONNECTION) {
+    const written = []
+    const persisted = appendWakeDispatches(connectionId, [dispatch], 'cursor-1', { dispatchIds: new Set() }, null,
+      (_id, record) => { written.push(JSON.stringify(record)); return true })
+    assert.deepEqual(persisted, { ok: true, appended: 1, checkJobs: 1 })
+    const [record] = parseInboxBatches(written, connectionId)
+    assert.ok(record, 'the persisted check job survives revalidation')
+    return buildCheckJobEvents(record, { inboxFile: '/tmp/inbox' })
+  }
+
+  it('wakes the agent with the one line saying a check is waiting on that record', () => {
+    const [event, wake] = delivered(checkJobDispatch())
+    assert.equal(event.type, 'check_job')
+    assert.equal(event.content,
+      'A check is waiting on "Sign in with a passkey": take it with claim_check_job, rule every entry with record_check_rulings, then carry on.')
+    assert.equal(event.check_job_id, checkJobDispatch().check_job_id)
+    assert.equal(event.connection_id, CONNECTION)
+    // Something to act on, never authority, a command or task work.
+    assert.equal(event.executable, true)
+    assert.equal(event.authoritative, false)
+    assert.equal(wake.type, 'wake')
+    assert.equal(wake.executable, false)
+  })
+
+  it('keeps the wake to one line, and names an untitled record by its type and id', () => {
+    const multiline = checkJobDispatch(CONNECTION, { record: { type: 'memory', id: '93000000-0000-4000-8000-000000000009', title: 'Retry\n  policy ' } })
+    assert.equal(checkJobWakeText(multiline).includes('\n'), false)
+    assert.match(checkJobWakeText(multiline), /waiting on "Retry policy":/)
+    const untitled = checkJobDispatch(CONNECTION, { record: { type: 'proposal', id: '93000000-0000-4000-8000-000000000009', title: '' } })
+    assert.match(checkJobWakeText(untitled), /^A check is waiting on proposal 93000000-0000-4000-8000-000000000009: take it with claim_check_job/)
+  })
+
+  it('puts the job id and the wake text inside what the host shows of a line', () => {
+    // Claude Code cuts each Monitor line at 500 characters (item 725d18b2): a line
+    // that lost the job id would leave the agent nothing to claim.
+    const longTitle = 'T'.repeat(115)
+    const [event] = delivered(checkJobDispatch(CONNECTION, { record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: longTitle } }))
+    const shown = JSON.stringify(event).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS)
+    assert.ok(shown.includes(`"check_job_id":"${event.check_job_id}"`))
+    assert.ok(shown.includes(JSON.stringify(event.content)))
+  })
+
+  it('revalidates the inbox record: tampered, misaddressed or reshaped check jobs wake nobody', () => {
+    const good = checkJobBatch()
+    const tampered = [
+      { ...good, dispatch: { ...good.dispatch, text: 'record body' } },
+      { ...good, dispatch: { ...good.dispatch, check_job_id: '92000000-0000-4000-8000-0000000000ff' } },
+      { ...good, dispatch: { ...good.dispatch, delivery_connection_id: '10000000-0000-4000-8000-0000000000aa' } },
+      { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, text: 'x' } } },
+      { ...good, dispatch: { ...good.dispatch, high_risk: 3 } },
+      { ...good, type: 'automation_run' },
+      { ...good, connection_id: '10000000-0000-4000-8000-0000000000aa' },
+    ]
+    assert.equal(parseInboxBatches([JSON.stringify(good)], CONNECTION).length, 1)
+    assert.deepEqual(parseInboxBatches(tampered.map((record) => JSON.stringify(record)), CONNECTION), [])
+  })
+})
+
 describe('wait-boundary revalidation and independent channels', () => {
   it('rejects a tampered canonical inbox command even with the authoritative marker', () => {
     const tampered = canonicalInboxBatch()
@@ -297,7 +394,7 @@ describe('the automation run instruction names this connection (item fe15c7c2)',
   function instructionFor(connectionId) {
     const { dispatch } = automationBatch(connectionId)
     const written = []
-    const persisted = appendAutomationDispatches(
+    const persisted = appendWakeDispatches(
       connectionId,
       [dispatch],
       'dispatch-cursor-1',
@@ -305,7 +402,7 @@ describe('the automation run instruction names this connection (item fe15c7c2)',
       null,
       (_id, record) => { written.push(JSON.stringify(record)); return true },
     )
-    assert.deepEqual(persisted, { ok: true, appended: 1 })
+    assert.deepEqual(persisted, { ok: true, appended: 1, checkJobs: 0 })
     const [record] = parseInboxBatches(written, connectionId)
     assert.ok(record, 'the persisted dispatch survives revalidation')
     const [event] = buildAutomationRunEvents(record)
@@ -1463,20 +1560,20 @@ describe('readInboxRecords exact fully terminated byte boundaries', () => {
       const split = torn.indexOf(Buffer.from('🧩')) + 2
       fs.writeFileSync(file, Buffer.concat([prefix, torn.subarray(0, split)]))
       assert.deepEqual(readInboxRecords(file, 0), [
-        { line: first.subarray(0, -1).toString('utf8'), endOffset: first.length },
-        { line: ' \r', endOffset: first.length + blank.length },
-        { line: '\ufffd', endOffset: prefix.length },
+        { line: first.subarray(0, -1).toString('utf8'), startOffset: 0, endOffset: first.length },
+        { line: ' \r', startOffset: first.length, endOffset: first.length + blank.length },
+        { line: '\ufffd', startOffset: first.length + blank.length, endOffset: prefix.length },
       ])
       assert.deepEqual(readInboxRecords(file, prefix.length), [])
       fs.appendFileSync(file, Buffer.concat([torn.subarray(split), Buffer.from('\r\n')]))
-      assert.deepEqual(readInboxRecords(file, prefix.length), [{ line: torn.toString('utf8') + '\r', endOffset: prefix.length + torn.length + 2 }])
+      assert.deepEqual(readInboxRecords(file, prefix.length), [{ line: torn.toString('utf8') + '\r', startOffset: prefix.length, endOffset: prefix.length + torn.length + 2 }])
       assert.deepEqual(readInboxRecords(file, fs.statSync(file).size), [])
       assert.deepEqual(readInboxRecords(file, first.length).map(record => record.endOffset), [first.length + blank.length, prefix.length, fs.statSync(file).size])
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
 })
 
-it('fully emits command batches, control, answer and automation once before a deferred suffix', async () => {
+it('fully emits command batches, control, answer, automation and check job once before a deferred suffix', async () => {
   const multi = canonicalInboxBatch('atomic-one', 'atomic command one')
   const second = canonicalInboxBatch('atomic-two', 'atomic command two').ingress.commands[0]
   second.order.sequence = 2
@@ -1492,16 +1589,17 @@ it('fully emits command batches, control, answer and automation once before a de
   const { prompt, dismissed_by_user_id, dismissed_at, ...base } = readerDismissal().event
   const answer = interactionAnswerRecord({ connectionId: CONNECTION, sessionId: DISMISSAL_A, disposition: 'delivered', attemptId: TURN,
     event: { ...base, kind: 'devspec.interaction_event', response_id: OWNER, answer: 'retained answer', answered_at: dismissed_at } })
-  const run = await emittedPrefixFixture(true, 'missing', [multi, canonicalControlBatch(), answer, automationBatch()])
+  const run = await emittedPrefixFixture(true, 'missing', [multi, canonicalControlBatch(), answer, automationBatch(), checkJobBatch()])
   const count = type => run.events().filter(event => event.type === type).length
   try {
-    await awaitReader(() => count('automation_run') === 1)
+    await awaitReader(() => count('check_job') === 1)
     await new Promise(resolve => setTimeout(resolve, 180))
     assert.equal(count('owner_message'), 3, 'entire two-command record remains one emission unit')
     // A control in the same inbox is carried out by the module and emits nothing (item cbf3d758).
     assert.equal(count('canonical_control'), 0)
     assert.equal(count('question_answer'), 1)
     assert.equal(count('automation_run'), 1)
+    assert.equal(count('check_job'), 1)
     assert.equal(count('question_dismissal'), 0)
     fs.writeFileSync(run.stateFile, JSON.stringify({ ...run.initial, session_id: null, interaction_continuation: null }))
     await awaitReader(() => JSON.parse(fs.readFileSync(run.stateFile)).inbox_byte_offset === run.prefixBytes)
@@ -1525,9 +1623,9 @@ it('one-shot completes its emitted prefix after an obsolete suffix without consu
   } finally { await run.cleanup() }
 })
 
-describe('canonical_system_notices delivery (server_notice & unlinked_commit_item_review)', () => {
-  const NOTICE_ID = '71000000-0000-4000-8000-000000000001'
-  const NOTICE_ENVELOPE = {
+/** A live system notice envelope addressed to this connection, as DevSpec sends one. */
+function systemNoticeEnvelope(noticeId) {
+  return {
     kind: 'devspec.remote_ingress',
     schema_version: 1,
     contract_version: '1.6.0',
@@ -1547,7 +1645,7 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       {
         version: 1,
         kind: 'server_notice',
-        notice_id: NOTICE_ID,
+        notice_id: noticeId,
         topic: 'coherence_finding',
         notice_type: 'reversal',
         summary: 'Protected decision reversed by new record',
@@ -1590,6 +1688,11 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       omission_reason: null,
     },
   }
+}
+
+describe('canonical_system_notices delivery (server_notice & unlinked_commit_item_review)', () => {
+  const NOTICE_ID = '71000000-0000-4000-8000-000000000001'
+  const NOTICE_ENVELOPE = systemNoticeEnvelope(NOTICE_ID)
 
   it('persists canonical_system_notices once with deduplication and wakes the agent even when session_id is null', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sys-notice-'))
@@ -1636,6 +1739,10 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       assert.equal(events[0].notice_type, 'reversal')
       assert.equal(events[0].session_id, null)
       assert.equal(events[0].records.length, 2)
+      const head500 = JSON.stringify(events[0]).slice(0, 500)
+      assert.ok(head500.includes(`"notice_id":"${NOTICE_ID}"`), 'notice_id must fit inside 500-char Monitor cap')
+      assert.ok(head500.includes(`"inbox":${JSON.stringify(file)}`), 'inbox path must fit inside 500-char Monitor cap')
+      assert.ok(head500.includes('"summary":"Protected decision reversed by new record"'), 'summary must fit inside 500-char Monitor cap')
       assert.match(events[0].content, /Protected record \(existing decision\)/)
       assert.match(events[0].content, /All remote deliveries must use the canonical ingress envelope\./)
       // The handling travels with the notice: tell the person, never answer for one.
@@ -1676,5 +1783,408 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('holds check_job and canonical_system_notices in --stream mode while a turn is active, then emits them one turn at a time in FIFO order', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-fifo-queue-'))
+    const connDir = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(connDir, { recursive: true, mode: 0o700 })
+    const stateFile = path.join(connDir, `${CONNECTION}.json`)
+    const inbox = path.join(connDir, `${CONNECTION}.inbox.jsonl`)
+    const turnFile = path.join(connDir, `${CONNECTION}.turn`)
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0 }),
+      { mode: 0o600 },
+    )
+    // Turn 1 is currently active.
+    fs.writeFileSync(turnFile, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
+
+    // Append a check job first, then a system notice while Turn 1 is running.
+    const index = scanPersistedInboxRecords('')
+    let noticeRecord = null
+    appendCanonicalInbox(CONNECTION, NOTICE_ENVELOPE, index, {
+      sessionId: null,
+      channel: 'system_notice',
+      writeRecord: (_cid, rec) => {
+        noticeRecord = rec
+        return true
+      },
+    })
+    fs.writeFileSync(
+      inbox,
+      `${JSON.stringify(checkJobBatch())}\n${JSON.stringify(noticeRecord)}\n`,
+      { mode: 0o600 },
+    )
+
+    const child = spawn(
+      process.execPath,
+      [WAIT_SCRIPT, '--connection-id', CONNECTION, '--pending', '--poll-ms', '20', '--owner-pid', String(process.pid), '--stream'],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          DEVSPEC_WAIT_TURN_PICKUP_MS: '180',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
+    let stdout = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    const closed = new Promise((resolve) => child.once('close', resolve))
+    const events = () => stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      assert.equal(events().length, 0, 'neither check_job nor system_notice may interrupt an active turn')
+
+      // End Turn 1: check_job #1 emits first while system_notice waits for its own turn.
+      fs.unlinkSync(turnFile)
+      await awaitReader(() => events().some((e) => e.type === 'check_job'))
+      // Simulate Claude Code picking up check_job as Turn 2 within the pickup window.
+      fs.writeFileSync(turnFile, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
+      await new Promise((resolve) => setTimeout(resolve, 240))
+      assert.equal(events().filter((e) => e.type === 'check_job').length, 1)
+      assert.equal(events().some((e) => e.type === 'system_notice'), false, 'system_notice waits while check_job turn runs')
+
+      // End Turn 2: system_notice emits next in FIFO arrival order.
+      fs.unlinkSync(turnFile)
+      await awaitReader(() => events().some((e) => e.type === 'system_notice'))
+      const emittedTypes = events().map((e) => e.type)
+      assert.ok(emittedTypes.indexOf('check_job') < emittedTypes.indexOf('system_notice'))
+    } finally {
+      const timer = setTimeout(() => child.kill('SIGKILL'), 500)
+      child.kill('SIGTERM')
+      await closed
+      clearTimeout(timer)
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
 })
 
+
+// Item d0b8eeb1: a check job or notice that waits for the running turn is set aside, and
+// the scan carries on past it. These run the real wait stream against a real inbox.
+describe('queued work waits for its turn and holds nothing else up (item d0b8eeb1)', () => {
+  const NOTICE_A = '71000000-0000-4000-8000-0000000000a1'
+  const NOTICE_B = '71000000-0000-4000-8000-0000000000b2'
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  async function until(predicate, label, timeoutMs = 4000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (predicate()) return
+      await sleep(20)
+    }
+    assert.fail(`timed out waiting for ${label}`)
+  }
+
+  function noticeRecord(noticeId) {
+    const envelope = { ...systemNoticeEnvelope(noticeId), envelope_id: uuidFor(`envelope-${noticeId}`, '6') }
+    let record = null
+    appendCanonicalInbox(CONNECTION, envelope, scanPersistedInboxRecords(''), {
+      sessionId: null,
+      channel: 'system_notice',
+      writeRecord: (_cid, rec) => {
+        record = rec
+        return true
+      },
+    })
+    assert.ok(record, 'the poller built the notice record')
+    return record
+  }
+
+  function checkJob(label) {
+    const id = uuidFor(`check-${label}`, '9')
+    return checkJobBatch(CONNECTION, { id, check_job_id: id })
+  }
+
+  function answerRecord() {
+    const { prompt, dismissed_by_user_id, dismissed_at, ...base } = readerDismissal().event
+    return interactionAnswerRecord({
+      connectionId: CONNECTION, sessionId: DISMISSAL_A, disposition: 'delivered', attemptId: TURN,
+      event: { ...base, kind: 'devspec.interaction_event', response_id: OWNER, answer: 'answer behind a check', answered_at: dismissed_at },
+    })
+  }
+
+  /** One connection's files, and a wait stream on them that can be stopped and started again. */
+  function connectionHome() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-queue-'))
+    const dir = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const stateFile = path.join(dir, `${CONNECTION}.json`)
+    const inbox = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+    const turnFile = path.join(dir, `${CONNECTION}.turn`)
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0 }),
+      { mode: 0o600 },
+    )
+    fs.writeFileSync(inbox, '', { mode: 0o600 })
+    // Everything every listener started here printed, in order.
+    let stdout = ''
+    let child = null
+    let closed = null
+    const events = () => stdout.split('\n').slice(0, -1).map((line) => JSON.parse(line))
+    const stop = async () => {
+      if (!child) return
+      const timer = setTimeout(() => child.kill('SIGKILL'), 1000)
+      child.kill('SIGTERM')
+      await closed
+      clearTimeout(timer)
+      child = null
+    }
+    return {
+      dir,
+      append(record) {
+        fs.appendFileSync(inbox, JSON.stringify(record) + '\n')
+        return fs.statSync(inbox).size
+      },
+      /** Claude Code is working on a turn (the marker UserPromptSubmit or a holding Stop writes). */
+      turn(marker = { startedAt: Date.now() }) {
+        fs.writeFileSync(turnFile, JSON.stringify(marker), { mode: 0o600 })
+      },
+      endTurn() {
+        fs.rmSync(turnFile, { force: true })
+      },
+      state: () => JSON.parse(fs.readFileSync(stateFile, 'utf8')),
+      held() {
+        return this.state().inbox_held_records ?? []
+      },
+      commands: () => events().filter((e) => e.type === 'owner_message').map((e) => e.message.message_id),
+      answers: () => events().filter((e) => e.type === 'question_answer'),
+      /** Check jobs and notices, in the order they reached the model. */
+      queued: () =>
+        events()
+          .filter((e) => e.type === 'check_job' || e.type === 'system_notice')
+          .map((e) => e.check_job_id ?? e.notice_id),
+      async start({ pickupMs = 400 } = {}) {
+        let stderr = ''
+        child = spawn(
+          process.execPath,
+          [WAIT_SCRIPT, '--connection-id', CONNECTION, '--stream', '--pending', '--poll-ms', '20', '--owner-pid', String(process.pid)],
+          {
+            env: { ...process.env, HOME: home, USERPROFILE: home, DEVSPEC_WAIT_TURN_PICKUP_MS: String(pickupMs) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
+        child.stdout.on('data', (chunk) => { stdout += chunk })
+        child.stderr.on('data', (chunk) => { stderr += chunk })
+        closed = new Promise((resolve) => child.once('close', resolve))
+        await until(() => stderr.includes('watching'), 'the listener to arm')
+      },
+      stop,
+      async cleanup() {
+        await stop()
+        fs.rmSync(home, { recursive: true, force: true })
+      },
+    }
+  }
+
+  it('a room command behind a check job held for the running turn is delivered at once, and the check follows the turn', async () => {
+    const conn = connectionHome()
+    try {
+      conn.turn()
+      const check = checkJob('ahead-of-command')
+      conn.append(check)
+      await conn.start()
+      await until(() => conn.held().length === 1, 'the check to be held')
+
+      const command = canonicalInboxBatch('behind-check', 'command behind a held check')
+      const end = conn.append(command)
+      // The review's probe: this command used to wait for the turn to end.
+      await until(() => conn.commands().includes(command.execute_message_ids[0]), 'the command', 1500)
+      await until(() => conn.state().inbox_byte_offset === end, 'the cursor past the command')
+      assert.deepEqual(conn.queued(), [], 'the check still waits for the running turn')
+
+      conn.endTurn()
+      await until(() => conn.queued().length === 1, 'the check once the turn ends')
+      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id])
+      await until(() => conn.held().length === 0, 'the held list to empty')
+      assert.equal(conn.commands().length, 1, 'the command is not delivered again')
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('a control and an answer to the agent’s own question behind held work are taken at once', async () => {
+    const conn = connectionHome()
+    try {
+      conn.turn()
+      conn.append(checkJob('ahead-of-control'))
+      conn.append(noticeRecord(NOTICE_A))
+      await conn.start()
+      await until(() => conn.held().length === 2, 'the check and the notice to be held')
+
+      // A control emits nothing here (the poller relays it to the hooks module); taking
+      // it means the cursor passes it, so nothing reports it sitting unread.
+      const controlEnd = conn.append(canonicalControlBatch())
+      await until(() => conn.state().inbox_byte_offset === controlEnd, 'the cursor past the control', 1500)
+      assert.equal(countUnconsumedCommands(CONNECTION, conn.state().inbox_byte_offset, conn.dir), 0)
+
+      const answerEnd = conn.append(answerRecord())
+      await until(() => conn.answers().length === 1, 'the answer', 1500)
+      await until(() => conn.state().inbox_byte_offset === answerEnd, 'the cursor past the answer')
+      // What the Stop hook and the command handoff ask before closing the question.
+      assert.equal(continuationDelivered({ inbox_offset_after: answerEnd }, conn.state().inbox_byte_offset), true)
+
+      assert.deepEqual(conn.queued(), [], 'the check and the notice still wait')
+      assert.equal(conn.held().length, 2)
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('held check jobs and notices go one per turn, in the order they arrived, once the running turn ends', async () => {
+    const conn = connectionHome()
+    const pickupMs = 400
+    try {
+      conn.turn()
+      const first = checkJob('first')
+      const second = checkJob('second')
+      conn.append(first)
+      conn.append(noticeRecord(NOTICE_A))
+      conn.append(canonicalInboxBatch('between', 'a command between them'))
+      conn.append(second)
+      await conn.start({ pickupMs })
+      await until(() => conn.held().length === 3, 'all three to be held')
+      await sleep(150)
+      assert.deepEqual(conn.queued(), [])
+      assert.equal(conn.commands().length, 1, 'the command between them did not wait')
+
+      const order = [first.dispatch.check_job_id, NOTICE_A, second.dispatch.check_job_id]
+      for (let n = 1; n <= order.length; n++) {
+        conn.endTurn()
+        await until(() => conn.queued().length === n, `queued record ${n}`)
+        // Claude Code takes it as its next turn; the rest wait for that one.
+        conn.turn()
+        await sleep(pickupMs + 250)
+        assert.deepEqual(conn.queued(), order.slice(0, n), `one per turn, in arrival order (after ${n})`)
+        assert.equal(conn.held().length, order.length - n)
+      }
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('a restarted listener delivers each held record once and never replays what it delivered past them', async () => {
+    const conn = connectionHome()
+    try {
+      conn.turn()
+      const check = checkJob('restart')
+      const command = canonicalInboxBatch('restart-command', 'command delivered before the restart')
+      conn.append(check)
+      conn.append(command)
+      conn.append(noticeRecord(NOTICE_B))
+      await conn.start()
+      await until(() => conn.commands().length === 1 && conn.held().length === 2, 'the command, and both held')
+
+      // Restart while the turn is still running: nothing is replayed, nothing jumps the turn.
+      await conn.stop()
+      await conn.start()
+      await sleep(200)
+      assert.equal(conn.commands().length, 1, 'the delivered command is not replayed')
+      assert.deepEqual(conn.queued(), [])
+
+      // The new listener owns the queue: the check goes when the turn ends.
+      conn.endTurn()
+      await until(() => conn.queued().length === 1, 'the check from the restarted listener')
+      conn.turn()
+      await until(() => conn.held().length === 1, 'only the notice left held')
+
+      // Restart again between the two: the check is not delivered twice, the notice not lost.
+      await conn.stop()
+      await conn.start()
+      await sleep(200)
+      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id])
+      conn.endTurn()
+      await until(() => conn.queued().length === 2, 'the notice after the second restart')
+      await sleep(200)
+      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id, NOTICE_B])
+      assert.equal(conn.commands().length, 1)
+      assert.equal(conn.held().length, 0)
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('a turn held open only for background work does not hold queued work back; a running one does', async () => {
+    const conn = connectionHome()
+    const pickupMs = 400
+    try {
+      // The Stop kept the command open for its background job: Claude Code is idle.
+      const startedAt = Date.now() - 10 * 60_000
+      conn.turn({ startedAt, held: true })
+      const check = checkJob('while-held')
+      conn.append(check)
+      conn.append(noticeRecord(NOTICE_A))
+      await conn.start({ pickupMs })
+      await until(() => conn.queued().length === 1, 'the check while the turn is only held')
+      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id])
+
+      // Claude Code takes the check as a prompt, which rewrites the marker without `held`.
+      conn.turn({ startedAt })
+      await sleep(pickupMs + 250)
+      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id], 'the notice waits for the running turn')
+
+      // That turn's Stop holds the command again for the background job still running.
+      conn.turn({ startedAt, held: true })
+      await until(() => conn.queued().length === 2, 'the notice once the turn is only held again')
+      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id, NOTICE_A])
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('isConnectionTurnRunning reads the marker: running counts, held and absent do not', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-turn-running-'))
+    const marker = path.join(dir, `${CONNECTION}.turn`)
+    try {
+      assert.equal(isConnectionTurnRunning(CONNECTION, dir), false, 'no marker')
+      fs.writeFileSync(marker, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
+      assert.equal(isConnectionTurnRunning(CONNECTION, dir), true)
+      fs.writeFileSync(marker, JSON.stringify({ startedAt: Date.now(), held: true }), { mode: 0o600 })
+      assert.equal(isConnectionTurnRunning(CONNECTION, dir), false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads back only held ranges that still name one whole queued record before the cursor', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-held-ranges-'))
+    const file = path.join(dir, 'inbox.jsonl')
+    try {
+      const lines = [checkJob('range-a'), canonicalInboxBatch('range-c'), noticeRecord(NOTICE_A), checkJob('range-b')]
+        .map((record) => JSON.stringify(record) + '\n')
+      fs.writeFileSync(file, lines.join(''))
+      const ranges = []
+      let at = 0
+      for (const line of lines) {
+        ranges.push({ start: at, end: at + Buffer.byteLength(line) })
+        at += Buffer.byteLength(line)
+      }
+      const [a, c, n, b] = ranges
+      const cursor = n.end
+      const held = heldInboxRecords(
+        file,
+        [n, a, c, b, { start: a.start + 1, end: a.end }, a, { start: a.start, end: c.end }, null, { start: 'x', end: 2 }],
+        cursor,
+        CONNECTION,
+      )
+      assert.deepEqual(
+        held.map(({ start, end, batch }) => [start, end, batch.type]),
+        [[a.start, a.end, 'check_job'], [n.start, n.end, 'canonical_system_notices']],
+        'in arrival order; a command, a record past the cursor and ranges overlapping a held one are dropped',
+      )
+      assert.deepEqual(heldRecordRanges(held), [a, n])
+      assert.deepEqual(heldInboxRecords(file, [{ start: a.start + 1, end: a.end }], cursor, CONNECTION), [], 'part of a record')
+      assert.deepEqual(heldInboxRecords(file, [{ start: c.start, end: n.end }], cursor, CONNECTION), [], 'two records in one range')
+      assert.deepEqual(heldInboxRecords(file, undefined, cursor, CONNECTION), [])
+      assert.deepEqual(heldInboxRecords(path.join(dir, 'missing.jsonl'), [a], cursor, CONNECTION), [])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

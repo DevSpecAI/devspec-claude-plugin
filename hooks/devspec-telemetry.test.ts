@@ -31,6 +31,12 @@ const USAGE = {
   cache_creation_input_tokens: 300,
 }
 
+// A subscriber's usage windows, as $.session.usage() gives them (item e1f11c83).
+const RATE_LIMITS = [
+  { kind: 'five_hour', percentUsed: 82.4, resetsAt: '2026-10-30T16:00:00.000Z' },
+  { kind: 'seven_day', percentUsed: 41, resetsAt: '2026-11-03T09:00:00.000Z' },
+]
+
 function harness(on: TestOn, files: Map<string, string>) {
   mock.env(on, { HOME })
   const seen = { runs: [] as Array<readonly string[]>, writes: [] as Array<{ path: string; text: string }> }
@@ -48,7 +54,7 @@ function harness(on: TestOn, files: Map<string, string>) {
   on('session.id', () => ({ value: CONVERSATION_ID }))
   on('session.turns', () => ({ value: 3 }))
   on('session.usage', () => ({
-    value: { startedAt: 0, context: { tokens: 50_000, window: 200_000, percent: 25 }, rateLimits: [], cost: { usd: costUsd } },
+    value: { startedAt: 0, context: { tokens: 50_000, window: 200_000, percent: 25 }, rateLimits: RATE_LIMITS, cost: { usd: costUsd } },
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.status', () => ({ value: undefined }))
@@ -94,6 +100,7 @@ test("a turn's first request reports its model and effort, and sends it straight
   expect(report.model).toEqual({ provider: 'anthropic', id: 'claude-opus-5-5' })
   expect(report.thinkingLevel).toBe('high')
   expect(report.context).toEqual({ tokens: 50_000, window: 200_000, percent: 25 })
+  expect(report.usageLimits).toEqual(RATE_LIMITS)
   expect(sends(seen.runs).map((argv) => argv.slice(2))).toEqual([['send', CONNECTION_ID]])
 
   // Later requests of the same turn write nothing more until it ends.
@@ -119,6 +126,7 @@ test("the turn's end reports what it used, and the session's cost from Claude Co
   expect(report.turn).toEqual({ input: 120, output: 80, cacheRead: 9_000, cacheWrite: 300, costUsd: 0.5, messages: 2 })
   expect(report.session.turns).toBe(3)
   expect(report.session.costUsd).toBe(1.75)
+  expect(report.usageLimits).toEqual(RATE_LIMITS)
   expect(sends(seen.runs).length).toBe(2)
 })
 

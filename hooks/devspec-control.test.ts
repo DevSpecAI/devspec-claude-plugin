@@ -219,6 +219,32 @@ test('a turn that ends with no Stop hook, interrupted or on a denied prompt, tel
   expect(turnEnds(seen.runs).map((argv) => argv.at(-1))).toEqual(['stop', 'stop'])
 })
 
+// An error from Anthropic's service ends a turn with the StopFailure hook in place of
+// Stop (item b6a38d81). Claude Code starts that hook without waiting for it, so its
+// record lands just after turn.complete, and the turn is the hook's to end.
+test('a turn an API error ended is left to the StopFailure hook, whose record lands just after', OPTIONS, async ($, on) => {
+  const files = bonded()
+  const { clock, seen } = harness(on, files)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'look into this', turnId: 'turn-8' })
+  await $.turn.complete({ turnId: 'turn-8', reason: 'error', isAborted: false, answer: '', durationMs: 300 })
+  files.set(STOP_HOOK_FILE, JSON.stringify({ at: new Date().toISOString() }))
+  await tickOnce(clock)
+  await tickOnce(clock)
+  expect(turnEnds(seen.runs)).toEqual([])
+})
+
+test('a failed turn is still ended when the StopFailure hook never records itself', OPTIONS, async ($, on) => {
+  const { clock, seen } = harness(on, bonded())
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'look into this', turnId: 'turn-9' })
+  await $.turn.complete({ turnId: 'turn-9', reason: 'error', isAborted: false, answer: '', durationMs: 300 })
+  await tickOnce(clock)
+  expect(turnEnds(seen.runs)).toEqual([])
+  for (let tick = 0; tick < 10; tick += 1) await tickOnce(clock)
+  expect(turnEnds(seen.runs).map((argv) => argv.at(-1))).toEqual(['stop'])
+})
+
 test("a turn whose Stop hook ran is left to it, and a subagent's run never ends the turn", OPTIONS, async ($, on) => {
   const files = bonded()
   const { seen } = harness(on, files)

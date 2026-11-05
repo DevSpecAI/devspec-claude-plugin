@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.52.6 - 2026-11-05
+
+- The four hooks that report your commits (after a tool runs, and when a turn or subagent stops or fails) are now plain command lines that run the plugin's own commit-observer script with a fixed argument, like every other hook. They used to read the conversation id out of the hook input with search patterns first, which the Anthropic plugin directory reads as a possible unpinned package launcher. The check for a waiting commit now happens inside the script, which stops before loading anything else when nothing is waiting. Commits are reported exactly as before.
+- A test fails if any hook command line uses a pattern-matching tool or builds a value from a command substitution other than reading the hook input.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.52.5 - 2026-11-05
 
 - Updated `README.md` and the startup connection setting description to accurately cover conflict, duplicate, and **Possibly outdated** screening across shared memory, sessionless **Agents** page availability versus session room attachment, check-ruling and automation wake behavior, single-claim commit tagging across linked repositories (including Git worktrees) and `.devspec/project.json`-pinned folders, observed criterion verification, Protected intent holds, and GitHub pull-request checks.

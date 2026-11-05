@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.52.5 - 2026-11-05
+
+- Updated `README.md` and the startup connection setting description to accurately cover conflict, duplicate, and **Possibly outdated** screening across shared memory, sessionless **Agents** page availability versus session room attachment, check-ruling and automation wake behavior, single-claim commit tagging across linked repositories (including Git worktrees) and `.devspec/project.json`-pinned folders, observed criterion verification, Protected intent holds, and GitHub pull-request checks.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.52.4 - 2026-11-05
 
 - A check or notice waiting for Claude Code's current turn no longer holds up anything behind it. Room commands, Stop and other controls, and answers to a question Claude asked still reach it straight away. The waiting checks and notices then follow one per turn, in the order they arrived.

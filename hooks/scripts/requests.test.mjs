@@ -460,6 +460,14 @@ describe('what reaches a running turn joins it', () => {
     assert.deepEqual(requestForWake({ origin: 'task-notification', text: `${wakeFor(MSG_A)}\n${job}`, state }), { ref: A, also: [] })
   })
 
+  it('a system notice turn starts unstated rather than carrying the previous command, and never joins mid-turn ambiguity', () => {
+    const state = reduceRequestLog(log(openA, { op: 'current', ref: A }))
+    const notice = '<task-notification>\n<event>{"type":"system_notice","kind":"server_notice","notice_id":"71000000-0000-4000-8000-000000000001"}</event>\n</task-notification>'
+    assert.deepEqual(promptArrival({ origin: 'task-notification', text: notice, midTurn: false, state }).events, [{ op: 'current', ref: null }])
+    assert.deepEqual(promptArrival({ origin: { kind: 'task-notification' }, text: notice, midTurn: true, state }).events, [])
+    assert.deepEqual(requestForWake({ origin: 'task-notification', text: `${wakeFor(MSG_A)}\n${notice}`, state }), { ref: A, also: [] })
+  })
+
   it('a new turn from a prompt nothing here knows starts unstated, never as the last turn\'s request', () => {
     const state = reduceRequestLog(log(openB, { op: 'current', ref: B }))
     const { events } = promptArrival({ origin: 'channel', text: 'from telegram', midTurn: false, state })

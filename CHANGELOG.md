@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.52.4 - 2026-11-05
+
+- A check or notice waiting for Claude Code's current turn no longer holds up anything behind it. Room commands, Stop and other controls, and answers to a question Claude asked still reach it straight away. The waiting checks and notices then follow one per turn, in the order they arrived.
+- A turn kept open only because Claude Code is waiting on its own background work no longer counts as busy for this. Claude Code is idle then, so it takes the next waiting check or notice straight away instead of after the background work finishes.
+- Restarting the listener keeps the waiting checks and notices. Each is still delivered exactly once, and nothing delivered before the restart arrives again.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
+## 0.52.3 - 2026-11-04
+
+- Checks and notices about Claude Code's own work now wait until its running turn finishes and then run one at a time in the order they arrived, rather than interrupting mid-turn.
+- System notices place their notice ID, summary and inbox location at the start of the notification line so Claude Code's notification length cap never cuts them off, and starting a notice turn does not carry over who asked for the previous turn's command.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.52.2 - 2026-11-04
 
 - When DevSpec's check finds that a task Claude Code just wrote for you duplicates one that already exists, Claude now sorts it out there and then instead of leaving a flag for later. If the existing task is yours, or one you're allowed to change, Claude adds anything new to it, closes the new one as its duplicate and tells you. If it's someone else's, Claude asks you whether to add to it, which waits for that person's OK, or to keep yours separate, recorded as not a duplicate with your reason.

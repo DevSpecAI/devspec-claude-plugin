@@ -22,6 +22,7 @@ import {
   recordTurnActivity,
   touch,
   turnIsLive,
+  turnIsRunning,
   turnMarkerFile,
 } from './turn-liveness.mjs'
 import { bondPath } from './terminal-status.mjs'
@@ -74,6 +75,28 @@ describe('turnIsLive — what Claude Code shows decides, not the time since pick
 
   it('no marker is no turn', () => {
     assert.equal(turnIsLive(null, { now: NOW }), false)
+  })
+})
+
+describe('turnIsRunning — queued work waits only for a turn Claude Code is working on (item d0b8eeb1)', () => {
+  it('a held turn is live but not running: Claude Code is idle, waiting on background work', () => {
+    const held = { startedAt: NOW - 1_000, held: true }
+    assert.equal(turnIsLive(held, { now: NOW }), true, 'the command stays open')
+    assert.equal(turnIsRunning(held, { now: NOW }), false)
+    assert.equal(turnIsRunning({ startedAt: NOW - 5 * HOUR, held: true }, { now: NOW }), false)
+  })
+
+  it('the prompt that ends the hold makes the same turn running again', () => {
+    // A prompt rewrites the held marker without `held`, keeping its start.
+    const startedAt = NOW - 10 * 60_000
+    assert.equal(turnIsRunning({ startedAt }, { now: NOW }), true)
+  })
+
+  it('a running turn follows the same signs of life as turnIsLive', () => {
+    const startedAt = NOW - HOUR - 1
+    assert.equal(turnIsRunning({ startedAt }, { activity: { turn: startedAt, at: NOW - 30_000 }, now: NOW }), true)
+    assert.equal(turnIsRunning({ startedAt }, { now: NOW }), false, 'an unreported end is not running')
+    assert.equal(turnIsRunning(null, { now: NOW }), false)
   })
 })
 

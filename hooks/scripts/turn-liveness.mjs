@@ -24,6 +24,12 @@
  *   never reported. That happens on Claude Code versions without the plugin API, where
  *   an interrupt runs no Stop hook.
  *
+ * Live is not the same as running. A held turn keeps its command open, but Claude Code
+ * itself is idle and takes the next prompt as it would with no turn open. Work that
+ * waits behind the active turn (check jobs and system notices in the wake stream,
+ * item d0b8eeb1) asks `turnIsRunning`; whether the command is still open, and so
+ * whether the agent is busy, stays `turnIsLive`.
+ *
  * The activity record is a separate file, never a rewrite of the marker: a tool call
  * finishing beside the Stop that clears the marker must not bring it back. It names
  * the turn it belongs to (the marker's `startedAt`), so a previous turn's activity
@@ -75,6 +81,16 @@ export function turnIsLive(marker, { activity = null, now = Date.now() } = {}) {
   if (!marker || typeof marker.startedAt !== 'number') return false
   if (marker.held === true) return true
   return now - lastSignOfLife(marker, activity) < NO_SIGN_OF_LIFE_MS
+}
+
+/**
+ * Whether Claude Code is working on the turn `marker` describes right now: live and not
+ * merely held for background work (see the file header). A held turn becomes running
+ * again when a prompt arrives, because the prompt rewrites the marker without `held`.
+ */
+export function turnIsRunning(marker, { activity = null, now = Date.now() } = {}) {
+  if (marker?.held === true) return false
+  return turnIsLive(marker, { activity, now })
 }
 
 export function readTurnActivity(connectionId, dir) {

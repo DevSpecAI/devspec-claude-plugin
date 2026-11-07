@@ -52,6 +52,27 @@ export function severalClaimsText(claims) {
   ].join(' ')
 }
 
+/**
+ * A claim made in this conversation could not be recorded (item c12783b9), so the
+ * commit may belong to it rather than to a task the plugin did record: the agent names
+ * the task, exactly as with several claims. Never a guess, and never a silent tag.
+ */
+export function unrecordedClaimText(claims, unrecorded) {
+  const choices = [
+    ...unrecorded.map((requested) => {
+      if (requested && UUID.test(requested)) return `[devspec:${requested}]`
+      if (requested) return `the task you claimed as ${requested} (get_task ${requested} gives its full id)`
+      return 'the task you last claimed (get_task gives its full id)'
+    }),
+    ...claims.map((id) => `[devspec:${id}]`),
+  ]
+  return [
+    'DevSpec: this commit has no [devspec:<id>] reference, and a claim made in this conversation could not be recorded, so nothing was added automatically.',
+    `Pick the task this commit belongs to and put its tag in the message, as [devspec:<full id>]: ${choices.join(' or ')}.`,
+    'Then retry the commit. Nothing else is blocked.',
+  ].join(' ')
+}
+
 export function stampedText(id) {
   return `DevSpec: added [devspec:${id}] to this commit's subject, for the one task claimed in this conversation.`
 }
@@ -266,10 +287,27 @@ export function projectScope({ cwd, worktree, sessionId, home, git }) {
  * (commit-provenance.mjs): every repository's, because a claim is the conversation's
  * work wherever it commits.
  */
-export function conversationClaims({ sessionId, stateDir, now = Date.now(), platform = process.platform }) {
+export function conversationClaims(options) {
+  return conversationClaimState(options).claims
+}
+
+/** A task as the agent named it when claiming: its 8-character short code or its full id. */
+export const REQUESTED_ITEM = /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i
+
+/**
+ * Everything the claim records say about this conversation: `claims`, the tasks it
+ * holds, and `unrecorded`, the claims it made that the plugin could not record (item
+ * c12783b9). A claim is unrecorded when the host handed the plugin a reply it could not
+ * read the task from, for example the notice Claude Code passes on in place of a reply
+ * too large to return inline. Each is the task as the agent named it, or null where it
+ * named none. While one is outstanding, no commit is tagged for the agent: the commit
+ * may well belong to that task and not to one the plugin did record.
+ */
+export function conversationClaimState({ sessionId, stateDir, now = Date.now(), platform = process.platform }) {
   const claims = new Set()
+  const unrecorded = new Set()
   let names = []
-  try { names = readdirSync(stateDir) } catch { return [] }
+  try { names = readdirSync(stateDir) } catch { return { claims: [], unrecorded: [] } }
   for (const name of names) {
     if (!name.endsWith('.claims.json')) continue
     try {
@@ -280,9 +318,15 @@ export function conversationClaims({ sessionId, stateDir, now = Date.now(), plat
       if (record?.schema !== 1 || record.session_id !== sessionId || !Array.isArray(record.claims)) continue
       if (typeof record.updated_at !== 'number' || record.updated_at > now + FUTURE_SKEW_MS || now - record.updated_at > CLAIM_MAX_AGE_MS) continue
       for (const id of record.claims) if (typeof id === 'string' && UUID.test(id)) claims.add(id.toLowerCase())
+      for (const entry of Array.isArray(record.unrecorded) ? record.unrecorded : []) {
+        if (!entry || typeof entry.at !== 'number' || entry.at > now + FUTURE_SKEW_MS || now - entry.at > CLAIM_MAX_AGE_MS) continue
+        unrecorded.add(typeof entry.requested === 'string' && REQUESTED_ITEM.test(entry.requested) ? entry.requested.toLowerCase() : null)
+      }
     } catch { /* not a claim record */ }
   }
-  return [...claims].sort() // the same order every time, whichever file was read first
+  // The same order every time, whichever file was read first; an unnamed claim last.
+  const named = [...unrecorded].filter((requested) => requested !== null).sort()
+  return { claims: [...claims].sort(), unrecorded: unrecorded.has(null) ? [...named, null] : named }
 }
 
 /** git in `cwd`, stdout trimmed, or null. */

@@ -41,8 +41,8 @@ import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
 import {
-  ANY_REFERENCE, boundConnectionId, conversationClaims, gitIn, noClaimText, parseCommitArgs, projectScope,
-  severalClaimsText, stampedText, tagMessage,
+  ANY_REFERENCE, boundConnectionId, conversationClaimState, gitIn, noClaimText, parseCommitArgs, projectScope,
+  severalClaimsText, stampedText, tagMessage, unrecordedClaimText,
 } from './commit-stamp.mjs'
 import { MAX_STAND_IN_DEPTH, STAND_IN_DEPTH_ENV, isMarkedStandIn, loopStoppedText, standInDepth } from './git-stand-in.mjs'
 
@@ -332,7 +332,8 @@ function inspectCommit(realGit, worktree, previousHead, amend, startedAt, endedA
 /**
  * What to run for this invocation. A plain `git commit` in the connected project's
  * repositories, with no reference in its message, gets the tag of the one task this
- * conversation has claimed, or is stopped: with no claim, and with several. Anything
+ * conversation has claimed, or is stopped: with no claim, with several, and while a
+ * claim it made could not be recorded (item c12783b9). Anything
  * else runs exactly as written, and a message read from standard input is passed on
  * byte for byte. Never throws.
  */
@@ -412,7 +413,10 @@ async function planCommit(realGit, args, config, dir) {
       return stop ? { stop } : { args, input }
     }
 
-    const claims = conversationClaims({ sessionId: config.session_id, stateDir: config.claims_dir })
+    const { claims, unrecorded } = conversationClaimState({ sessionId: config.session_id, stateDir: config.claims_dir })
+    // A claim the plugin could not record may be the one this commit belongs to: ask,
+    // never tag with another (item c12783b9).
+    if (unrecorded.length > 0) return { stop: unrecordedClaimText(claims, unrecorded) }
     if (claims.length === 0) return { stop: noClaimText() }
     if (claims.length > 1) return { stop: severalClaimsText(claims) }
     const id = claims[0]

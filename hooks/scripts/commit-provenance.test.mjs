@@ -24,6 +24,7 @@ import {
   handlePre,
   handleSessionStart,
   isSimpleGitPush,
+  readClaimState,
   readClaims,
   heredocGitCommit,
   referenceIn,
@@ -1244,5 +1245,216 @@ describe('with the git stand-in (item e597bc18)', () => {
     claim(ITEM, elsewhere)
     const home = connectedHome()
     assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env: { ...env, HOME: home } }), null)
+  })
+})
+
+/**
+ * A claim whose reply the plugin could not read is not "no claim" (item c12783b9).
+ *
+ * The incident: an agent claimed a task by its short code, Claude Code saved the large
+ * reply to a file and handed the hook only a notice naming it, so the claim was never
+ * recorded, and the next commit was tagged with the one OLDER claim still held. The
+ * notice below is Claude Code 2.1.x's own text, and it reaches PostToolUse as the whole
+ * `tool_response`, a bare string, exactly as the transcript records it.
+ */
+describe('a claim whose reply could not be read is never mistaken for no claim (item c12783b9)', () => {
+  const SHORT = ITEM.slice(0, 8)
+  const offline = async () => { throw new Error('offline') }
+  const toolResults = (sessionId = SESSION) => path.join(sandbox, 'claude-projects', 'project', sessionId, 'tool-results')
+  let saves = 0
+
+  const notice = (file, { failed = false } = {}) => failed
+    ? 'Error: result (106,333 characters) exceeds maximum allowed tokens. Failed to save output to file: EACCES. If this MCP server provides pagination or filtering tools, use them to retrieve specific portions of the data.'
+    : `Error: result (106,333 characters across 1,478 lines) exceeds maximum allowed tokens. Output has been saved to ${file}.\n` +
+      'Format: Plain text\n- For targeted searches (find a line, locate a string): use grep on the file directly.\n' +
+      `- For analysis or summarization that requires reading the full content: read ${file} in chunks of ~4 lines using offset/limit until you have read 100% of it.\n`
+
+  /** What the server sends: the full reply, pretty-printed as Claude Code saves it, id first. */
+  const fullReply = (id) => JSON.stringify({
+    id,
+    title: 'A task whose claim reply is large',
+    description: 'It failed before; this text is long. '.repeat(2000),
+    claim_success: true,
+    commit_tag: `[devspec:${id}]`,
+  }, null, 2)
+
+  /** claim_work_item by `taskId`, its reply saved to a file (or `content`, or nothing when null). */
+  function claimSaved(taskId, { content = fullReply(ITEM), file = path.join(toolResults(), `mcp-plugin_devspec_devspec-claim_work_item-${1794089251356 + (saves += 1)}.txt`), failed = false, extra = {} } = {}) {
+    if (content !== null) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, content)
+    }
+    return handlePost({
+      session_id: SESSION,
+      cwd: repo,
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__plugin_devspec_devspec__claim_work_item',
+      tool_input: { task_id: taskId, agent_branch: 'work/x' },
+      tool_response: notice(file, { failed }),
+    }, { env, call: offline, ...extra })
+  }
+
+  it('records a claim made by short code from its inline reply, and tags the next commit with it', async () => {
+    await handlePost({
+      session_id: SESSION, cwd: repo, hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__plugin_devspec_devspec__claim_work_item',
+      tool_input: { task_id: SHORT, agent_branch: 'work/x' },
+      tool_response: [{ type: 'text', text: JSON.stringify({ id: ITEM, claim_success: true, commit_tag: `[devspec:${ITEM}]` }) }],
+    }, { env, call: offline })
+    assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+    assert.equal(updated(await bash('git commit -m "short code work"')), `git commit -m "short code work [devspec:${ITEM}]"`)
+  })
+
+  it('records a claim made by short code whose reply was saved to a file, and tags the next commit with it', async () => {
+    await claimSaved(SHORT)
+    assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+    assert.deepEqual(readClaimState(scope(), { env }).unrecorded, [])
+    assert.equal(updated(await bash('git commit -m "saved reply"')), `git commit -m "saved reply [devspec:${ITEM}]"`)
+  })
+
+  it('reads the item from a saved reply that was cut short, or saved as its content blocks', async () => {
+    await claimSaved(SHORT, { content: fullReply(ITEM).slice(0, 4000) })
+    assert.deepEqual(readClaims(scope(), { env }), [ITEM], 'a reply cut mid-structure still begins with its id')
+    record(ITEM)
+    await claimSaved(SHORT, { content: JSON.stringify([{ type: 'text', text: JSON.stringify({ id: ITEM, claim_success: true }) }], null, 2) })
+    assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+  })
+
+  it('never reads a file outside this conversation\'s saved results', async () => {
+    for (const file of [
+      path.join(sandbox, 'elsewhere', 'tool-results', 'reply.txt'),
+      path.join(toolResults('another-session-1234'), 'reply.txt'),
+      path.join(toolResults(), '..', 'reply.txt'),
+    ]) {
+      await claimSaved(SHORT, { file })
+      assert.deepEqual(readClaims(scope(), { env }), [], file)
+    }
+    assert.deepEqual(readClaimState(scope(), { env }).unrecorded.map((entry) => entry.requested), [SHORT], 'each is unrecorded instead')
+  })
+
+  it('with an older claim held, does not tag the next commit with it when the new claim could not be recorded', async () => {
+    claim(OTHER)
+    await claimSaved(SHORT, { content: null }) // the saved file is gone: nothing names the item
+    assert.deepEqual(readClaims(scope(), { env }), [OTHER], 'the older claim is still held')
+    const result = await bash('git commit -m "work for the new task"')
+    assert.equal(updated(result), null, 'the older claim is not stamped')
+    assert.equal(decision(result), 'deny', 'the agent is asked instead')
+    const reason = result.hookSpecificOutput.permissionDecisionReason
+    assert.match(reason, /could not be recorded/)
+    assert.match(reason, new RegExp(`claimed as ${SHORT}`))
+    assert.ok(reason.includes(`[devspec:${OTHER}]`), 'the held claim is offered, never chosen')
+    assert.match(reason, /retry the commit/)
+    assert.equal(decision(await bash(`git commit -m "named [devspec:${ITEM}]"`)), null, 'naming the task goes through')
+  })
+
+  it('asks across repositories too: an unrecorded claim anywhere in the conversation stops the tag', async () => {
+    const elsewhere = path.join(sandbox, 'elsewhere')
+    gitInit(elsewhere)
+    claim(OTHER)
+    await handlePost({
+      session_id: SESSION, cwd: elsewhere, hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__devspec__claim_work_item',
+      tool_input: { task_id: SHORT },
+      tool_response: notice(path.join(toolResults(), 'missing.txt')),
+    }, { env, call: offline })
+    assert.equal(decision(await bash('git commit -m "here"')), 'deny')
+  })
+
+  it('treats the host\'s "failed to save" notice as unreadable, never as a refusal', async () => {
+    claim(OTHER)
+    await claimSaved(SHORT, { content: null, failed: true })
+    assert.equal(updated(await bash('git commit -m "x"')), null)
+    assert.deepEqual(readClaimState(scope(), { env }).unrecorded.map((entry) => entry.requested), [SHORT])
+    // Claimed by full id, the task asked for is the task claimed.
+    await claimSaved(ITEM, { content: null, failed: true })
+    assert.deepEqual(readClaims(scope(), { env }).sort(), [OTHER, ITEM].sort())
+  })
+
+  it('stops asking once the claim is recorded or the task released, and never leaves a refusal unrecorded', async () => {
+    claim(OTHER)
+    await claimSaved(SHORT, { content: null })
+    record(ITEM) // record_implementation by full id settles the claim that was never recorded
+    assert.deepEqual(readClaimState(scope(), { env }).unrecorded, [])
+    assert.equal(updated(await bash('git commit -m "back to one"')), `git commit -m "back to one [devspec:${OTHER}]"`)
+
+    await claimSaved(SHORT, { content: null })
+    await claimSaved(SHORT) // claimed again, and this time the reply could be read
+    assert.deepEqual(readClaimState(scope(), { env }).unrecorded, [])
+    assert.match((await bash('git commit -m "two now"')).hookSpecificOutput.permissionDecisionReason, /2 claims are active/)
+
+    record(OTHER)
+    record(ITEM)
+    await handlePost({
+      session_id: SESSION, cwd: repo, hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__devspec__claim_work_item',
+      tool_input: { task_id: SHORT },
+      tool_response: [{ type: 'text', text: JSON.stringify({ error: 'already claimed by another agent' }) }],
+    }, { env, call: offline })
+    assert.deepEqual(readClaimState(scope(), { env }), { claims: [], unrecorded: [] }, 'DevSpec said no: nothing is in doubt')
+  })
+
+  it('does not nudge an edit as unclaimed after a claim that could not be recorded', async () => {
+    await claimSaved(SHORT, { content: null })
+    assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env }), null)
+  })
+
+  describe('resolving the short code through the server', () => {
+    let server
+    let requests
+    let answer
+    beforeEach(async () => {
+      requests = []
+      answer = { id: ITEM, title: 'resolved' }
+      server = http.createServer((req, res) => {
+        let body = ''
+        req.on('data', (chunk) => { body += chunk })
+        req.on('end', () => {
+          requests.push(JSON.parse(body))
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(answer) }] } }))
+        })
+      })
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    })
+    afterEach(async () => { await new Promise((resolve) => server.close(resolve)) })
+
+    const online = () => ({
+      env: { ...env, DEVSPEC_MCP_URL: `http://127.0.0.1:${server.address().port}/api/mcp`, DEVSPEC_MCP_TOKEN: 'test-token' },
+    })
+    const claimUnreadable = (extra) => handlePost({
+      session_id: SESSION, cwd: repo, hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__plugin_devspec_devspec__claim_work_item',
+      tool_input: { task_id: SHORT },
+      tool_response: notice(path.join(toolResults(), 'gone.txt')),
+    }, extra)
+
+    it('records the task the server names for that short code', async () => {
+      await claimUnreadable(online())
+      assert.equal(requests.length, 1)
+      assert.equal(requests[0].params.name, 'get_task')
+      assert.equal(requests[0].params.arguments.task_id, SHORT)
+      assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+      assert.equal(updated(await bash('git commit -m "resolved"')), `git commit -m "resolved [devspec:${ITEM}]"`)
+    })
+
+    it('asks no server when the reply could be read', async () => {
+      await claimSaved(SHORT, { ...online(), call: undefined })
+      assert.equal(requests.length, 0)
+      assert.deepEqual(readClaims(scope(), { env }), [ITEM])
+    })
+
+    it('marks the claim unrecorded when the server names another task, or cannot be reached', async () => {
+      answer = { id: OTHER }
+      await claimUnreadable(online())
+      assert.deepEqual(readClaims(scope(), { env }), [])
+      assert.deepEqual(readClaimState(scope(), { env }).unrecorded.map((entry) => entry.requested), [SHORT])
+      const closed = http.createServer()
+      await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve))
+      const port = closed.address().port
+      await new Promise((resolve) => closed.close(resolve))
+      await claimUnreadable({ env: { ...env, DEVSPEC_MCP_URL: `http://127.0.0.1:${port}/api/mcp`, DEVSPEC_MCP_TOKEN: 't' } })
+      assert.deepEqual(readClaims(scope(), { env }), [])
+      assert.deepEqual(readClaimState(scope(), { env }).unrecorded.map((entry) => entry.requested), [SHORT])
+    })
   })
 })

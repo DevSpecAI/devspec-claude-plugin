@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { normalizeRemote, noClaimText, parseCommitArgs, severalClaimsText, stampedText, tagMessage } from './commit-stamp.mjs'
+import { normalizeRemote, noClaimText, parseCommitArgs, severalClaimsText, stampedText, tagMessage, unrecordedClaimText } from './commit-stamp.mjs'
 import { observerDir, startObserver } from './git-observer.mjs'
 import { handlePost } from './commit-provenance.mjs'
 
@@ -201,6 +201,52 @@ describe('the commit check, before git runs', () => {
     assert.equal(claimed.status, 0, claimed.stderr)
     assert.equal(body(), 'claimed, nested')
     assert.equal(fs.readFileSync(path.join(observerDir(SESSION, home), 'journal.jsonl'), 'utf8'), '')
+  })
+})
+
+/**
+ * The incident behind item c12783b9, through the real stand-in: a task claimed by its
+ * short code, its reply saved by Claude Code to a file and only a notice passed on, while
+ * the conversation still held one older claim. The stand-in tagged the commit with the
+ * older one. The notice is Claude Code's own text, as PostToolUse receives it.
+ */
+describe('a claim whose reply Claude Code saved to a file (item c12783b9)', () => {
+  const SHORT = TASK.slice(0, 8)
+  const results = () => path.join(home, '.claude', 'projects', 'project', SESSION, 'tool-results')
+  const claimBySavedReply = (saved) => {
+    const file = path.join(results(), 'mcp-plugin_devspec_devspec-claim_work_item-1794089251356.txt')
+    if (saved) {
+      fs.mkdirSync(results(), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify({ id: TASK, description: 'long '.repeat(20000), claim_success: true, commit_tag: `[devspec:${TASK}]` }, null, 2))
+    }
+    return handlePost({
+      session_id: SESSION,
+      cwd: outside,
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__plugin_devspec_devspec__claim_work_item',
+      tool_input: { task_id: SHORT, agent_branch: 'work/x' },
+      tool_response: `Error: result (100,145 characters across 6 lines) exceeds maximum allowed tokens. Output has been saved to ${file}.\nFormat: Plain text\n`,
+    }, { env: { PATH: process.env.PATH, HOME: home, DEVSPEC_CLAUDE_STATE_DIR: stateDir }, call: async () => { throw new Error('offline') } })
+  }
+
+  it('records the claim from the saved reply, so the next commit is tagged with that task', async () => {
+    await claimBySavedReply(true)
+    const result = shell('git commit --allow-empty -q -m "work on the short-code task"')
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(subject(), `work on the short-code task [devspec:${TASK}]`)
+  })
+
+  it('with an older claim held, never tags the commit with it when the new claim could not be recorded', async () => {
+    claim(OTHER_TASK)
+    await claimBySavedReply(false) // the notice names a file that is not there
+    const head = git(['rev-parse', 'HEAD'])
+    const result = shell('git commit --allow-empty -q -m "work on the short-code task"')
+    assert.equal(result.status, 1, 'stopped before git runs')
+    assert.equal(result.stderr.trim(), unrecordedClaimText([OTHER_TASK], [SHORT]))
+    assert.equal(git(['rev-parse', 'HEAD']), head, 'no commit was made, and none tagged with the older claim')
+    const named = shell(`git commit --allow-empty -q -m "named [devspec:${TASK}]"`)
+    assert.equal(named.status, 0, named.stderr)
+    assert.equal(subject(), `named [devspec:${TASK}]`, 'naming the task goes through as written')
   })
 })
 

@@ -688,10 +688,12 @@ export function parseOwnerBatches(lines, connectionId) {
 }
 
 /**
- * How every readable notice is handled, carried with the notice itself so it
- * costs nothing until one arrives (item 984ca8b4). A notice is about the agent's
- * own work: a finding on it, or what happened to a change that waited on
- * someone. The agent tells its person; it never answers for one.
+ * How a readable notice that needs a person (or carries no label) is handled,
+ * carried with the notice itself so it costs nothing until one arrives (item
+ * 984ca8b4). A notice is about the agent's own work: a finding on it, or what
+ * happened to a change that waited on someone. The agent tells its person; it
+ * never answers for one. A for-the-record notice gets FOR_THE_RECORD_HANDLING
+ * instead (item a868f41f).
  */
 export const NOTICE_HANDLING =
   'Handling: the labelled records above are your reading context — never dump their full text into the conversation. ' +

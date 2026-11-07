@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.53.0 - 2026-11-07
+
+- Claude Code can now rule three more kinds of DevSpec check: open tasks that may be out of date because a discussion point was settled, open tasks that may be out of date because a Goal or one of its outcomes changed, and the whole-backlog out-of-date scan started from the Tasks page. Each one says what it is when it arrives, for example "an out-of-date check is waiting, raised by the settled discussion point …". Claude rules them like any other check. The plugin now asks DevSpec for version 2 of check jobs, which carries these. Checks no longer show a high-risk count, because version 2 does not send one.
+- DevSpec now labels every notice it sends Claude Code about its own work: either it needs a person, or it is for the record. Claude replies in the room only to notices that need a person. A for-the-record notice, such as a pending edit going live or a duplicate of your own task, arrives with no way to reply to it in the room. Any housekeeping it asks for is done quietly, because the outcome is already on the record and in Review. If DevSpec turns down a reply because it was about for-the-record notices only, that is expected, and nothing is retried or reported.
+- Claude no longer posts in the room about ruling checks. The plugin's instructions now point to DevSpec's own rules for when to speak about notices and checks, instead of repeating them. That includes not telling you about folding a duplicate of your own task into the existing one. If a change Claude makes for a for-the-record notice touches someone else's record, DevSpec marks the result and Claude tells you what it changed.
+- This version needs a DevSpec server with check jobs version 2 and notice labels.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.52.6 - 2026-11-05
 
 - The four hooks that report your commits (after a tool runs, and when a turn or subagent stops or fails) are now plain command lines that run the plugin's own commit-observer script with a fixed argument, like every other hook. They used to read the conversation id out of the hook input with search patterns first, which the Anthropic plugin directory reads as a possible unpinned package launcher. The check for a waiting commit now happens inside the script, which stops before loading anything else when nothing is waiting. Commits are reported exactly as before.

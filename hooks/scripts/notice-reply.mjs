@@ -22,6 +22,13 @@
  *   the server: the command a turn carries still waits for its own answer.
  *
  * The rules are the served remote ingress contract's `semantics.notice_reply`.
+ *
+ * Only a notice that needs a person is replied to (item a868f41f): a for-the-record
+ * notice is handed to the model with no reply line, and a reply naming only such
+ * notices is refused with `delivery.reason: 'for_the_record'`. That refusal is an
+ * expected, quiet outcome: no hook treats it as a failure, surfaces it or retries it
+ * (mark-explicit-reply.mjs leaves every notice reply alone).
+ *
  * Imports only Node built-ins (DEVELOPMENT.md).
  */
 
@@ -76,6 +83,7 @@ export function replyLine(noticeIds) {
     'and no turn fields such as local_turn (one post may answer several notices: list every one it is about, and no other).',
     'It is your own message, labelled as a reply to the notice. It is no command\'s answer: it opens, answers and completes no turn, complete_turn has no effect on it, and a command you are working on still needs its own answer.',
     'If DevSpec refuses it, the result says why; not_attached means you are in no room, so tell the person at your terminal instead.',
+    'for_the_record is expected, not a failure: leave it there (semantics.notice_reply.only_when_needed).',
     `Rules: ${NOTICE_REPLY_RULES}.`,
   ].join(' ')
 }

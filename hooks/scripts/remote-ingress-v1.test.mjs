@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  isSystemNoticeV1,
   isUnreadableSystemNoticeV1,
+  NOTICE_AUDIENCES,
   READABLE_SYSTEM_NOTICE_KINDS,
   normalizeRemoteIngressV1,
   renderAdvisoryContext,
@@ -714,24 +716,60 @@ describe('strict 1.4 system notices', () => {
     assert.equal(result.envelope.system_notices[0].records.length, 2)
   })
 
-  // The channel version this plugin negotiates (2: the one that carries findings)
-  // is not the shape version inside each notice. DevSpec's version 2 adds kinds and
-  // changes none, so a server_notice on a version-2 channel still says `version: 1`
-  // and must be read in full, exactly as before (1fd34942, item 0b26f6ea).
-  it('reads a version-1 server_notice body delivered over the version-2 channel it asks for', () => {
-    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
-    const notice = serverNotice()
-    assert.equal(notice.version, 1)
-    const result = normalizeRemoteIngressV1(noticed({
-      commands: [],
-      command_message_ids: [],
-      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
-      system_notices: [notice],
-      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
-    }), CONNECTION)
-    assert.equal(result.ok, true)
-    assert.deepEqual(result.envelope.system_notices, [notice])
-    assert.equal(isUnreadableSystemNoticeV1(notice), false)
+  // The channel version this plugin negotiates is not the shape version inside each
+  // notice. DevSpec's version 2 adds kinds and changes none, and version 3 adds one
+  // field to every kind, `audience` (item a868f41f), so a notice on the version-3
+  // channel still says `version: 1` and must be read in full (1fd34942, item 0b26f6ea).
+  it('reads a labelled version-1 server_notice body delivered over the version-3 channel it asks for', () => {
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 3)
+    assert.deepEqual(NOTICE_AUDIENCES, ['needs_person', 'for_the_record'])
+    for (const audience of NOTICE_AUDIENCES) {
+      const notice = serverNotice({ audience })
+      assert.equal(notice.version, 1)
+      const result = normalizeRemoteIngressV1(noticed({
+        commands: [],
+        command_message_ids: [],
+        wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+        system_notices: [notice],
+        window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+      }), CONNECTION)
+      assert.equal(result.ok, true, audience)
+      assert.deepEqual(result.envelope.system_notices, [notice])
+      assert.equal(isUnreadableSystemNoticeV1(notice), false)
+    }
+  })
+
+  it('takes DevSpec\'s label on every kind it reads, and refuses any other value for it', () => {
+    const unlinked = {
+      version: 1,
+      kind: 'unlinked_commit_item_review',
+      notice_id: '71000000-0000-4000-8000-000000000002',
+      commit_sha: 'a'.repeat(40),
+      task_id: '81000000-0000-4000-8000-000000000003',
+      task_title: 'Sign in with a passkey',
+      branch: 'feat/passkeys',
+      contract_uri: 'devspec://product/remote-ingress-contract',
+      allowed_outcomes: ['correct_item', 'link_item', 'resolve_duplicate', 'dismiss_item', 'confirm_item_correct', 'defer_follow_up'],
+      allowed_tools: ['get_task', 'update_task', 'link_tasks', 'supersede_task'],
+    }
+    for (const audience of NOTICE_AUDIENCES) {
+      assert.equal(isSystemNoticeV1({ ...unlinked, audience }), true, `unlinked ${audience}`)
+      assert.equal(isSystemNoticeV1(serverNotice({ audience })), true, `server ${audience}`)
+    }
+    for (const audience of [null, '', 'later', 'NEEDS_PERSON', 'nobody', 1, ['for_the_record']]) {
+      assert.equal(isSystemNoticeV1({ ...unlinked, audience }), false, `unlinked ${JSON.stringify(audience)}`)
+      assert.equal(isSystemNoticeV1(serverNotice({ audience })), false, `server ${JSON.stringify(audience)}`)
+    }
+    // The label is the one key version 3 adds; any other still fails closed.
+    assert.equal(isSystemNoticeV1(serverNotice({ audience: 'for_the_record', priority: 'high' })), false)
+    assert.equal(isSystemNoticeV1({ ...unlinked, audience: 'for_the_record', ask: 'Approve it' }), false)
+  })
+
+  // A notice the poller wrote to the inbox before this version asked for 3 has no
+  // label. It is read as it always was, as DevSpec reads one queued before labels
+  // existed: an unknown never makes a notice quiet.
+  it('still reads an unlabelled notice written before this plugin asked for version 3', () => {
+    assert.equal(isSystemNoticeV1(serverNotice()), true)
   })
 
   it('rejects malformed server_notice payloads (missing records, extra keys, bad contract_uri)', () => {

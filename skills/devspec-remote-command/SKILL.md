@@ -83,30 +83,29 @@ debugging the plugin; commands are read from the wake and the transcript. `wake`
 poller notifications and every `notification_preview` are non-executable.
 
 **Notices about your own work** (`type: system_notice`) say what DevSpec found about
-work you did, or what happened to a change of yours. They are not commands, and each
-says how to handle it: tell the person, act only on what is yours to fix, and never
-answer for a person (section 7). Tell the person in the room with a **notice reply**:
-`post_session_message` with `system_notice_ids` copied from the notice's own reply
-line (every notice the post is about, and no other) and no turn fields such as
-`local_turn`. It answers no command and ends no turn (`complete_turn` has no effect
-on it), so a command you are working on still gets its own answer, in its own post.
-A refusal says why; `not_attached` means you are in no room, so tell the person at
-your terminal. The rules are the remote ingress contract's `semantics.notice_reply`.
+work you did, or what happened to a change of yours. They are not commands: act only
+on what is yours to fix, and never answer for a person (section 7). Each carries
+DevSpec's label, `audience`, and whether the room hears about it follows that label,
+never your judgement: the remote ingress contract's `semantics.notice_audience`. A
+notice that needs a person has a reply line: a **notice reply** is that
+`post_session_message` call, with no turn fields such as `local_turn`. It answers no
+command and ends no turn, so a command you are working on still gets its own answer.
+A for-the-record notice has no reply line. A refusal says why; `not_attached` means
+you are in no room, so tell the person at your terminal. The rules are
+`semantics.notice_reply`. A write result carrying `tell_person` asks you to tell your
+person what you changed (`semantics.notice_audience.telling_anyway`).
 
 **Check jobs** (`type: check_job`). DevSpec sends every check on a change — your own
 changes included — as a check job on your wake channel. Take it with
 `claim_check_job`, rule every entry with `record_check_rulings` using the definition
 it carries (read any linked supporting document or uploaded file in full with
-`get_resource` first), then carry on with what you were doing or act on what it
-found. If you cannot rule it, hand it back.
+`get_resource` first), then carry on with what you were doing. If you cannot rule
+it, hand it back. Never post in the room about ruling one
+(`semantics.check_job.room`).
 
-**A duplicate of a task you wrote.** When a check finds one, resolve it then and
-there instead of leaving it as a flag (the served contract's
-`core.resolve-duplicates-on-the-spot`). If the existing task is your requester's
-own, or one they may change, add anything new from yours to it, close yours as its
-duplicate, and tell them. If it is someone else's, ask your requester whether to
-add to it, which waits for that owner's OK like any change to their work, or to
-keep theirs separate, recorded as not a duplicate with their reason.
+**A duplicate of a task you wrote** is resolved then and there instead of being left
+as a flag: the served contract's `core.resolve-duplicates-on-the-spot`. Whether the
+room hears about it is the label on the notice that follows.
 
 ---
 
@@ -145,8 +144,9 @@ While work you started for a command is running in the background (command,
 subagent, workflow), ending your turn does not end the command: the Stop hook
 keeps it open so the wake still carries that command and its requester.
 Finish with your answer posted with `connection_id` and `complete_turn: true`.
-Work finishing after your final answer wakes you as a new turn: post what
-happened the same way.
+Work you started for a command that finishes after your final answer wakes you as
+a new turn: post what happened the same way. A check job or a notice is not such
+work.
 
 **Whose request a write serves.** The plugin tells DevSpec which request each
 write serves: the command or typed prompt that woke you, and, when a background

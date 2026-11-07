@@ -116,8 +116,13 @@ export const ACTIVE_PLAN_PROJECTION_VERSION = 1
  * finding and the Agents page shows it "Not receiving findings" (1fd34942, item
  * 0b26f6ea). Version 2 adds kinds and changes none: every notice still arrives with
  * its own `version: 1` body, validated by `isSystemNoticeV1` in remote-ingress-v1.mjs.
+ *
+ * 3 adds DevSpec's label to every notice, `audience: 'needs_person' | 'for_the_record'`
+ * (item a868f41f), and changes nothing else. The wait stream shows a for-the-record
+ * notice without the call that replies to it in the room; what the label means is
+ * the served contract's `semantics.notice_audience`.
  */
-export const SYSTEM_NOTICE_CHANNEL_VERSION = 2
+export const SYSTEM_NOTICE_CHANNEL_VERSION = 3
 export const SENDER_STYLE_VERSION = 1
 /**
  * Check jobs on the wake channel (item f7b8c8d3, DevSpec item 55d71b0c, decision

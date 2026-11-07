@@ -44,9 +44,17 @@ export const REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION = '2026-08-22.1'
  * The shape version each notice carries in its own `version` field. It is not the
  * channel version the poller negotiates (`SYSTEM_NOTICE_CHANNEL_VERSION` in
  * devspec-remote-poll.mjs): channel version 2 adds the `server_notice` kind and
- * changes no shape, so every notice is still `version: 1` (1fd34942).
+ * changes no shape, so every notice is still `version: 1` (1fd34942). Channel
+ * version 3 adds one field to every kind, `audience`, and still leaves the body at
+ * `version: 1` (item a868f41f).
  */
 export const SYSTEM_NOTICE_VERSION = 1
+/**
+ * DevSpec's label on every notice from channel version 3 (item a868f41f): whether it
+ * needs a person or is for the record. What each means is the served contract's
+ * `semantics.notice_audience`, never this plugin's to decide.
+ */
+export const NOTICE_AUDIENCES = Object.freeze(['needs_person', 'for_the_record'])
 export const SENDER_STYLE_VERSION = 1
 export const REMOTE_INGRESS_SCOPE_CONTRACT_VERSION = '1.2.0'
 export const REMOTE_INGRESS_SCOPE_POLICY_VERSION = '2026-08-19.3'
@@ -717,16 +725,28 @@ function serverNoticeRecord(value) {
   )
 }
 
+/**
+ * `audience`, the one field channel version 3 adds to every kind, as exactly one of
+ * DevSpec's two labels. It may be absent: a notice the poller wrote to the inbox
+ * before this plugin asked for 3 has none, and is handled as it always was, the way
+ * DevSpec reads a notice queued before labels existed (an unknown never makes a
+ * notice quiet). Any other value, or any other added key, still fails closed.
+ */
+function noticeAudienceOk(value) {
+  return !Object.hasOwn(value, 'audience') || NOTICE_AUDIENCES.includes(value.audience)
+}
+
 export function isSystemNoticeV1(value) {
   if (!record(value) || value.version !== SYSTEM_NOTICE_VERSION || value.contract_uri !== REMOTE_INGRESS_RESOURCE_URI) {
     return false
   }
+  if (!noticeAudienceOk(value)) return false
   if (value.kind === 'unlinked_commit_item_review') {
     return (
-      exactKeys(value, [
+      optionalExactKeys(value, [
         'version', 'kind', 'notice_id', 'commit_sha', 'task_id',
         'task_title', 'branch', 'contract_uri', 'allowed_outcomes', 'allowed_tools',
-      ]) &&
+      ], ['audience']) &&
       uuid(value.notice_id) &&
       typeof value.commit_sha === 'string' && FULL_LOWERCASE_SHA.test(value.commit_sha) &&
       uuid(value.task_id) &&
@@ -738,10 +758,10 @@ export function isSystemNoticeV1(value) {
   }
   if (value.kind === 'server_notice') {
     return (
-      exactKeys(value, [
+      optionalExactKeys(value, [
         'version', 'kind', 'notice_id', 'topic', 'notice_type',
         'summary', 'prompt', 'contract_uri', 'records', 'allowed_outcomes', 'allowed_tools',
-      ]) &&
+      ], ['audience']) &&
       uuid(value.notice_id) &&
       nonempty(value.topic) && value.topic.length <= 120 &&
       nonempty(value.notice_type) && value.notice_type.length <= 120 &&

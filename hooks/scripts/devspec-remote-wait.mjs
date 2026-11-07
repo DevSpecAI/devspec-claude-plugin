@@ -46,6 +46,7 @@ import {
 import {
   isUnreadableSystemNoticeV1,
   normalizeRemoteIngressV1,
+  NOTICE_AUDIENCES,
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
 import {
@@ -699,16 +700,58 @@ export const NOTICE_HANDLING =
   '(2) If it is a decision conflict or duplicate and the requester has authority to settle it and has already clearly asked to proceed despite the earlier record, act for them straight away without a redundant confirmation and confirm briefly in context. ' +
   '(3) If the finding brings new information or a consequence the requester did not appear aware of, or if the requester does not have authority to settle it themselves, explain what clashes and why in plain words in context (plus who it waits on when they cannot give the OK) and recommend the practical options.'
 
+/** Where what DevSpec's label on a notice asks of the agent is written down. */
+export const NOTICE_AUDIENCE_RULES = 'devspec://product/remote-ingress-contract (semantics.notice_audience)'
+
+/**
+ * DevSpec's label on a notice (system notice channel version 3, item a868f41f), or
+ * null for one the poller wrote before this plugin asked for 3. An unlabelled
+ * notice is shown exactly as before, as DevSpec itself reads one queued before
+ * labels existed: an unknown never makes a notice quiet.
+ */
+export function noticeAudience(notice) {
+  return NOTICE_AUDIENCES.includes(notice?.audience) ? notice.audience : null
+}
+
+/**
+ * The label line a labelled notice opens with. A for-the-record notice is handed
+ * over with no reply line and none of NOTICE_HANDLING's speech: DevSpec refuses a
+ * room reply that names only such notices, so offering the call would only invite
+ * a refused post. What either label asks of the agent is the served contract's,
+ * pointed at here rather than restated.
+ */
+/** A for-the-record notice's whole handling: it still asks for nothing outside its outcomes and tools. */
+export const FOR_THE_RECORD_HANDLING =
+  'Handling: the records above are your reading context. Act only within the allowed outcomes and tools, and only on your own work.'
+
+export function noticeAudienceLine(audience) {
+  if (audience === 'for_the_record') {
+    return `Audience: for_the_record (DevSpec's label). There is no room reply to make for it: ${NOTICE_AUDIENCE_RULES}.`
+  }
+  if (audience === 'needs_person') return `Audience: needs_person (DevSpec's label): ${NOTICE_AUDIENCE_RULES}.`
+  return null
+}
+
 export function formatSystemNoticeContent(notice) {
+  const audience = noticeAudience(notice)
+  const quiet = audience === 'for_the_record'
+  const labelled = (lines) => {
+    const line = noticeAudienceLine(audience)
+    return line ? [lines[0], line, ...lines.slice(1)] : lines
+  }
   if (isUnreadableSystemNoticeV1(notice)) {
-    return [
+    return labelled([
       '[DevSpec System Notice: not readable by this plugin version]',
       `DevSpec sent a notice of a kind this version of the DevSpec plugin cannot read (kind ${notice.kind}, notice ${notice.notice_id}). It may be a finding or an outcome about your own work.`,
-      'Tell the person plainly that DevSpec sent something this plugin cannot show yet: it is on the record and in the project\'s Review, and updating the DevSpec plugin will show notices like it here. Do not act on it.',
-      replyLine([notice.notice_id]),
+      ...(quiet
+        ? ['It is on the record and in the project\'s Review. Do not act on it.']
+        : [
+            'Tell the person plainly that DevSpec sent something this plugin cannot show yet: it is on the record and in the project\'s Review, and updating the DevSpec plugin will show notices like it here. Do not act on it.',
+            replyLine([notice.notice_id]),
+          ]),
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice, not a room message or new work authorization.',
-    ].join('\n')
+    ]).join('\n')
   }
   if (notice?.kind === 'server_notice') {
     const lines = [
@@ -734,26 +777,24 @@ export function formatSystemNoticeContent(notice) {
     }
     lines.push(
       '',
-      NOTICE_HANDLING,
-      replyLine([notice.notice_id]),
+      ...(quiet ? [FOR_THE_RECORD_HANDLING] : [NOTICE_HANDLING, replyLine([notice.notice_id])]),
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice on your own work, not a room message or new work authorization.',
     )
-    return lines.join('\n')
+    return labelled(lines).join('\n')
   }
 
   const branchSuffix = notice?.branch ? ` on branch ${notice.branch}` : ''
-  return [
+  return labelled([
     '[DevSpec System Notice: unlinked_commit_item_review]',
     `Your push of commit ${notice?.commit_sha}${branchSuffix} did not carry a [devspec:<id>] tag, while you hold claimed item "${notice?.task_title}" (${notice?.task_id}).`,
     `Prompt: ${notice?.prompt}`,
     `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
     `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
-    NOTICE_HANDLING,
-    replyLine([notice?.notice_id]),
+    ...(quiet ? [FOR_THE_RECORD_HANDLING] : [NOTICE_HANDLING, replyLine([notice?.notice_id])]),
     'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
       'This is a narrow server review prompt for your own claimed item and commit — not a room command or new work authorization.',
-  ].join('\n')
+  ]).join('\n')
 }
 
 export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
@@ -767,11 +808,15 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
   const events = []
 
   for (const notice of notices) {
+    // DevSpec's label rides right behind the id, inside the 500-character cap.
+    const audience = noticeAudience(notice)
+    const label = audience ? { audience } : {}
     if (isUnreadableSystemNoticeV1(notice)) {
       events.push({
         type: 'system_notice',
         kind: notice.kind,
         notice_id: notice.notice_id,
+        ...label,
         readable: false,
         inbox: inboxFile ?? null,
         session_id: sessionId,
@@ -789,6 +834,7 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
       type: 'system_notice',
       kind: notice.kind,
       notice_id: notice.notice_id,
+      ...label,
       inbox: inboxFile ?? null,
       session_id: sessionId,
       envelope_id: ingress?.envelope_id ?? null,

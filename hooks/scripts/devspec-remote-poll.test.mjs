@@ -171,7 +171,7 @@ describe('poll negotiation', () => {
       ingress_version: 1,
       delegated_scope_version: 1,
       active_plan_projection_version: 1,
-      system_notice_version: 2,
+      system_notice_version: 3,
       sender_style_version: 1,
       room_context_version: 1,
       session_polls_projection_version: 2,
@@ -188,12 +188,13 @@ describe('poll negotiation', () => {
     assert.equal(remoteIngressNegotiationArguments().check_job_version, 2)
   })
 
-  it('asks for notice channel version 2, the first that carries findings about its own work', () => {
+  it('asks for notice channel version 3, which labels every notice it sends', () => {
     // DevSpec sends server_notice (confirmed findings, pending-edit outcomes) only
-    // to a channel that negotiated 2 and records the version on the connection; at
-    // 1 the Agents page shows "Not receiving findings" (1fd34942, item 0b26f6ea).
-    assert.equal(SYSTEM_NOTICE_CHANNEL_VERSION, 2)
-    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
+    // to a channel that negotiated 2 or more and records the version on the
+    // connection; at 1 the Agents page shows "Not receiving findings" (1fd34942,
+    // item 0b26f6ea). 3 adds DevSpec's label, audience, to every notice (a868f41f).
+    assert.equal(SYSTEM_NOTICE_CHANNEL_VERSION, 3)
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 3)
   })
 
   it('never asks for room context without the full ladder below it, which the server refuses', () => {

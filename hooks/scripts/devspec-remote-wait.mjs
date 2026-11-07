@@ -576,10 +576,12 @@ function validateAutomationInboxRecord(record, connectionId) {
   )
 }
 
+/** Check-job envelope version 2 (item 1d89fe56): no `high_risk`, three more record types. */
 const CHECK_JOB_KEYS = [
-  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'high_risk', 'yours',
+  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'yours',
   'offered_at', 'delivery_connection_id',
 ]
+const CHECK_RECORD_TYPES = ['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan']
 
 function exactKeys(value, keys) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
@@ -602,11 +604,10 @@ function validateCheckJobInboxRecord(record, connectionId) {
     typeof d.id === 'string' && INBOX_UUID.test(d.id) && d.check_job_id === d.id &&
     ['conflict', 'conflict_decisions', 'duplicate', 'staleness'].includes(d.check_kind) &&
     exactKeys(r, ['type', 'id', 'title']) &&
-    ['task', 'memory', 'artifact', 'proposal'].includes(r.type) &&
+    CHECK_RECORD_TYPES.includes(r.type) &&
     typeof r.id === 'string' && INBOX_UUID.test(r.id) &&
     typeof r.title === 'string' &&
     Number.isInteger(d.entries) && d.entries >= 0 &&
-    Number.isInteger(d.high_risk) && d.high_risk >= 0 && d.high_risk <= d.entries &&
     typeof d.yours === 'boolean' &&
     typeof d.offered_at === 'string' && !Number.isNaN(Date.parse(d.offered_at)) &&
     d.delivery_connection_id === connectionId,
@@ -1069,11 +1070,25 @@ export function buildAutomationRunEvents(batch, { inboxFile } = {}) {
  * definition to rule by); this only says one is waiting, and on what. The title is
  * the record's own text, quoted and kept on one line; a record with no title is
  * named by its type and id.
+ *
+ * Version 2's three new records (item 1d89fe56) are not what the check is about but
+ * what raised it: open tasks are checked for being out of date against a settled
+ * discussion point or a changed Goal, and the manual scan checks the whole backlog.
+ * So they are named for what they are, rather than as the record being checked.
  */
 export function checkJobWakeText(d) {
+  const type = d?.record?.type
+  const id = d?.record?.id ?? ''
   const title = typeof d?.record?.title === 'string' ? d.record.title.replace(/\s+/g, ' ').trim() : ''
-  const subject = title ? `"${title}"` : `${d?.record?.type ?? 'record'} ${d?.record?.id ?? ''}`.trim()
-  return `A check is waiting on ${subject}: take it with claim_check_job, rule every entry with record_check_rulings, then carry on.`
+  const quoted = title ? `"${title}"` : ''
+  const rest = 'take it with claim_check_job, rule every entry with record_check_rulings, then carry on.'
+  if (type === 'discussion_point') {
+    return `An out-of-date check is waiting, raised by the settled discussion point ${quoted || id}: ${rest}`
+  }
+  if (type === 'goal') return `An out-of-date check is waiting, raised by a change to the Goal ${quoted || id}: ${rest}`
+  if (type === 'backlog_scan') return `The whole-backlog out-of-date scan${quoted ? ` ${quoted}` : ''} is waiting: ${rest}`
+  const subject = quoted || `${type ?? 'record'} ${id}`.trim()
+  return `A check is waiting on ${subject}: ${rest}`
 }
 
 /**
@@ -1092,7 +1107,6 @@ export function buildCheckJobEvents(batch, { inboxFile } = {}) {
       content: checkJobWakeText(d),
       check_kind: d.check_kind,
       entries: d.entries,
-      high_risk: d.high_risk,
       yours: d.yours,
       session_id: batch.session_id ?? null,
       authoritative: false,

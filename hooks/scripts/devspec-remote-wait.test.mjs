@@ -214,7 +214,7 @@ function automationBatch(connectionId = CONNECTION) {
   }
 }
 
-/** A check job dispatch exactly as DevSpec shapes it (CHECK_JOB_WAKE_KEYS). */
+/** A check job dispatch exactly as DevSpec shapes it at version 2 (CHECK_JOB_WAKE_KEYS[2]). */
 function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
   const id = '92000000-0000-4000-8000-000000000009'
   return {
@@ -224,7 +224,6 @@ function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
     check_kind: 'conflict',
     record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: 'Sign in with a passkey' },
     entries: 2,
-    high_risk: 1,
     yours: true,
     offered_at: '2026-11-04T12:00:00.000Z',
     delivery_connection_id: connectionId,
@@ -268,6 +267,29 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
     assert.equal(event.authoritative, false)
     assert.equal(wake.type, 'wake')
     assert.equal(wake.executable, false)
+    // Version 2 never carries a high-risk count, so nothing shows one.
+    assert.equal(Object.hasOwn(event, 'high_risk'), false)
+  })
+
+  // Item 1d89fe56: version 2's three new records are what RAISED an open-task
+  // out-of-date check, or the manual scan itself, so they are named for what they
+  // are rather than as the record being checked.
+  it('names a settled discussion point, a Goal and the whole-backlog scan for what they are', () => {
+    const record = (type, title) => ({ record: { type, id: '93000000-0000-4000-8000-000000000009', title } })
+    const shown = (type, title) => delivered(checkJobDispatch(CONNECTION, { check_kind: 'staleness', ...record(type, title) }))[0].content
+    const rest = 'take it with claim_check_job, rule every entry with record_check_rulings, then carry on.'
+    assert.equal(shown('discussion_point', 'Ship passkeys first'),
+      `An out-of-date check is waiting, raised by the settled discussion point "Ship passkeys first": ${rest}`)
+    assert.equal(shown('goal', 'Launch in Europe'),
+      `An out-of-date check is waiting, raised by a change to the Goal "Launch in Europe": ${rest}`)
+    assert.equal(shown('backlog_scan', 'Out-of-date scan, 7 Nov'),
+      `The whole-backlog out-of-date scan "Out-of-date scan, 7 Nov" is waiting: ${rest}`)
+    // Untitled: the point and the Goal by id, the scan by what it is.
+    assert.match(checkJobWakeText(checkJobDispatch(CONNECTION, record('discussion_point', ''))),
+      /^An out-of-date check is waiting, raised by the settled discussion point 93000000-0000-4000-8000-000000000009: /)
+    assert.match(checkJobWakeText(checkJobDispatch(CONNECTION, record('goal', ' '))),
+      /^An out-of-date check is waiting, raised by a change to the Goal 93000000-0000-4000-8000-000000000009: /)
+    assert.equal(checkJobWakeText(checkJobDispatch(CONNECTION, record('backlog_scan', ''))), `The whole-backlog out-of-date scan is waiting: ${rest}`)
   })
 
   it('keeps the wake to one line, and names an untitled record by its type and id', () => {
@@ -295,7 +317,9 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
       { ...good, dispatch: { ...good.dispatch, check_job_id: '92000000-0000-4000-8000-0000000000ff' } },
       { ...good, dispatch: { ...good.dispatch, delivery_connection_id: '10000000-0000-4000-8000-0000000000aa' } },
       { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, text: 'x' } } },
-      { ...good, dispatch: { ...good.dispatch, high_risk: 3 } },
+      // A version-1 envelope: this plugin negotiates 2, which never carries high_risk.
+      { ...good, dispatch: { ...good.dispatch, high_risk: 0 } },
+      { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, type: 'session' } } },
       { ...good, type: 'automation_run' },
       { ...good, connection_id: '10000000-0000-4000-8000-0000000000aa' },
     ]

@@ -175,15 +175,17 @@ describe('poll negotiation', () => {
       sender_style_version: 1,
       room_context_version: 1,
       session_polls_projection_version: 2,
-      check_job_version: 1,
+      check_job_version: 2,
     })
   })
 
   it('says it reads check jobs on every poll, since a poll without it tells DevSpec it stopped', () => {
     // Item f7b8c8d3: the server records the version from each poll and clears it
-    // when a poll leaves it out, and only then stops offering check jobs.
-    assert.equal(CHECK_JOB_VERSION, 1)
-    assert.equal(remoteIngressNegotiationArguments().check_job_version, 1)
+    // when a poll leaves it out, and only then stops offering check jobs. Version 2
+    // (item 1d89fe56) is the one that carries discussion points, Goals and the
+    // whole-backlog scan; a poll at 1 would never be offered those.
+    assert.equal(CHECK_JOB_VERSION, 2)
+    assert.equal(remoteIngressNegotiationArguments().check_job_version, 2)
   })
 
   it('asks for notice channel version 2, the first that carries findings about its own work', () => {
@@ -561,7 +563,7 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
     delivery_connection_id: connectionId,
     requester: null,
   }
-  // Exactly CHECK_JOB_WAKE_KEYS, as DevSpec's shapeCheckJobWake builds it.
+  // Exactly CHECK_JOB_WAKE_KEYS[2], as DevSpec's shapeCheckJobWake builds it at version 2.
   const checkJob = {
     id: '60000000-0000-4000-8000-000000000006',
     kind: 'check_job',
@@ -569,7 +571,6 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
     check_kind: 'conflict_decisions',
     record: { type: 'task', id: '70000000-0000-4000-8000-000000000007', title: 'Sign in with a passkey' },
     entries: 3,
-    high_risk: 1,
     yours: true,
     offered_at: '2026-11-04T12:00:01.000Z',
     delivery_connection_id: connectionId,
@@ -589,7 +590,9 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
     for (const kind of ['conflict', 'conflict_decisions', 'duplicate', 'staleness']) {
       assert.equal(validateCheckJobDispatch({ ...checkJob, check_kind: kind }, connectionId).ok, true, kind)
     }
-    for (const type of ['task', 'memory', 'artifact', 'proposal']) {
+    // Version 2 adds the three records an open-task out-of-date check or the manual
+    // scan names (item 1d89fe56).
+    for (const type of ['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan']) {
       assert.equal(validateCheckJobDispatch({ ...checkJob, record: { ...checkJob.record, type } }, connectionId).ok, true, type)
     }
     // A record with no title arrives with an empty one.
@@ -608,7 +611,9 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
       ['unknown check kind', { ...checkJob, check_kind: 'everything' }],
       ['unknown record type', { ...checkJob, record: { ...checkJob.record, type: 'session' } }],
       ['entries not a count', { ...checkJob, entries: '3' }],
-      ['more high risk than entries', { ...checkJob, high_risk: 4 }],
+      // The version-1 envelope: this poller negotiates 2, which has no high_risk.
+      ['a version-1 high_risk count', { ...checkJob, high_risk: 1 }],
+      ['a record type no version carries', { ...checkJob, record: { ...checkJob.record, type: 'outcome' } }],
       ['yours not a boolean', { ...checkJob, yours: 'yes' }],
       ['bad offered_at', { ...checkJob, offered_at: 'soon' }],
       ['another connection', { ...checkJob, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }],

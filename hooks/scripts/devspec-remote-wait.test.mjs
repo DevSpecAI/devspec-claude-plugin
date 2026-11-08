@@ -28,6 +28,9 @@ import {
   buildCanonicalControlEvents,
   buildCanonicalSystemNoticeEvents,
   NOTICE_HANDLING,
+  FOR_THE_RECORD_HANDLING,
+  NOTICE_AUDIENCE_RULES,
+  noticeAudienceLine,
   formatSystemNoticeContent,
   buildAutomationRunEvents,
   buildCheckJobEvents,
@@ -56,6 +59,7 @@ import {
 import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
 import { appendWakeDispatches, appendCanonicalInbox, countUnconsumedCommands, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
 import { continuationDelivered } from './interaction-events.mjs'
+import { replyLine } from './notice-reply.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
@@ -214,7 +218,7 @@ function automationBatch(connectionId = CONNECTION) {
   }
 }
 
-/** A check job dispatch exactly as DevSpec shapes it (CHECK_JOB_WAKE_KEYS). */
+/** A check job dispatch exactly as DevSpec shapes it at version 2 (CHECK_JOB_WAKE_KEYS[2]). */
 function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
   const id = '92000000-0000-4000-8000-000000000009'
   return {
@@ -224,7 +228,6 @@ function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
     check_kind: 'conflict',
     record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: 'Sign in with a passkey' },
     entries: 2,
-    high_risk: 1,
     yours: true,
     offered_at: '2026-11-04T12:00:00.000Z',
     delivery_connection_id: connectionId,
@@ -268,6 +271,29 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
     assert.equal(event.authoritative, false)
     assert.equal(wake.type, 'wake')
     assert.equal(wake.executable, false)
+    // Version 2 never carries a high-risk count, so nothing shows one.
+    assert.equal(Object.hasOwn(event, 'high_risk'), false)
+  })
+
+  // Item 1d89fe56: version 2's three new records are what RAISED an open-task
+  // out-of-date check, or the manual scan itself, so they are named for what they
+  // are rather than as the record being checked.
+  it('names a settled discussion point, a Goal and the whole-backlog scan for what they are', () => {
+    const record = (type, title) => ({ record: { type, id: '93000000-0000-4000-8000-000000000009', title } })
+    const shown = (type, title) => delivered(checkJobDispatch(CONNECTION, { check_kind: 'staleness', ...record(type, title) }))[0].content
+    const rest = 'take it with claim_check_job, rule every entry with record_check_rulings, then carry on.'
+    assert.equal(shown('discussion_point', 'Ship passkeys first'),
+      `An out-of-date check is waiting, raised by the settled discussion point "Ship passkeys first": ${rest}`)
+    assert.equal(shown('goal', 'Launch in Europe'),
+      `An out-of-date check is waiting, raised by a change to the Goal "Launch in Europe": ${rest}`)
+    assert.equal(shown('backlog_scan', 'Out-of-date scan, 7 Nov'),
+      `The whole-backlog out-of-date scan "Out-of-date scan, 7 Nov" is waiting: ${rest}`)
+    // Untitled: the point and the Goal by id, the scan by what it is.
+    assert.match(checkJobWakeText(checkJobDispatch(CONNECTION, record('discussion_point', ''))),
+      /^An out-of-date check is waiting, raised by the settled discussion point 93000000-0000-4000-8000-000000000009: /)
+    assert.match(checkJobWakeText(checkJobDispatch(CONNECTION, record('goal', ' '))),
+      /^An out-of-date check is waiting, raised by a change to the Goal 93000000-0000-4000-8000-000000000009: /)
+    assert.equal(checkJobWakeText(checkJobDispatch(CONNECTION, record('backlog_scan', ''))), `The whole-backlog out-of-date scan is waiting: ${rest}`)
   })
 
   it('keeps the wake to one line, and names an untitled record by its type and id', () => {
@@ -295,7 +321,9 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
       { ...good, dispatch: { ...good.dispatch, check_job_id: '92000000-0000-4000-8000-0000000000ff' } },
       { ...good, dispatch: { ...good.dispatch, delivery_connection_id: '10000000-0000-4000-8000-0000000000aa' } },
       { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, text: 'x' } } },
-      { ...good, dispatch: { ...good.dispatch, high_risk: 3 } },
+      // A version-1 envelope: this plugin negotiates 2, which never carries high_risk.
+      { ...good, dispatch: { ...good.dispatch, high_risk: 0 } },
+      { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, type: 'session' } } },
       { ...good, type: 'automation_run' },
       { ...good, connection_id: '10000000-0000-4000-8000-0000000000aa' },
     ]
@@ -1782,6 +1810,57 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // Item a868f41f: from channel version 3 every notice carries DevSpec's label. The
+  // model is shown it, right behind the id, and only a notice that needs a person
+  // comes with the call that replies to it in the room.
+  it('shows DevSpec\'s label, and hands a for-the-record notice over with no room reply to make', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sys-notice-'))
+    const file = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+    const delivered = (audience, envelopeId) => {
+      const [notice] = NOTICE_ENVELOPE.system_notices
+      const envelope = { ...NOTICE_ENVELOPE, envelope_id: envelopeId, system_notices: [{ ...notice, notice_id: envelopeId.replace(/^6/, '7'), audience }] }
+      fs.rmSync(file, { force: true })
+      const writeRecord = (_cid, rec) => { fs.appendFileSync(file, JSON.stringify(rec) + '\n', { mode: 0o600 }); return true }
+      assert.equal(appendCanonicalInbox(CONNECTION, envelope, scanPersistedInboxRecords(''), { sessionId: null, channel: 'system_notice', writeRecord }).appended, true)
+      const [batch] = parseInboxBatches(fs.readFileSync(file, 'utf8').trim().split('\n'), CONNECTION)
+      assert.ok(batch, `${audience}: the labelled notice survives revalidation`)
+      return buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })[0]
+    }
+    try {
+      const quiet = delivered('for_the_record', '60000000-0000-4000-8000-0000000000a1')
+      assert.equal(quiet.audience, 'for_the_record')
+      assert.ok(JSON.stringify(quiet).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS).includes('"audience":"for_the_record"'))
+      assert.ok(JSON.stringify(quiet).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS).includes(`"inbox":${JSON.stringify(file)}`))
+      assert.ok(quiet.content.includes(noticeAudienceLine('for_the_record')))
+      assert.ok(quiet.content.includes(NOTICE_AUDIENCE_RULES))
+      assert.ok(quiet.content.includes(FOR_THE_RECORD_HANDLING))
+      assert.equal(quiet.content.includes(replyLine([quiet.notice_id])), false, 'no reply line: DevSpec refuses one')
+      assert.doesNotMatch(quiet.content, /system_notice_ids/)
+      assert.equal(quiet.content.includes(NOTICE_HANDLING), false, 'none of the speech a notice for a person asks for')
+      // Its records are still there to do any housekeeping it asks for.
+      assert.match(quiet.content, /All remote deliveries must use the canonical ingress envelope\./)
+
+      const loud = delivered('needs_person', '60000000-0000-4000-8000-0000000000a2')
+      assert.equal(loud.audience, 'needs_person')
+      assert.ok(loud.content.includes(noticeAudienceLine('needs_person')))
+      assert.ok(loud.content.includes(NOTICE_HANDLING))
+      assert.ok(loud.content.includes(replyLine([loud.notice_id])))
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a for-the-record notice of a kind this version cannot read asks nobody to be told', () => {
+    const later = { version: 1, kind: 'requirement_outcome', notice_id: '71000000-0000-4000-8000-0000000000a3', contract_uri: INGRESS_RESOURCE }
+    const quiet = formatSystemNoticeContent({ ...later, audience: 'for_the_record' })
+    assert.doesNotMatch(quiet, /Tell the person/)
+    assert.equal(quiet.includes(replyLine([later.notice_id])), false)
+    assert.ok(quiet.includes(noticeAudienceLine('for_the_record')))
+    const loud = formatSystemNoticeContent({ ...later, audience: 'needs_person' })
+    assert.match(loud, /Tell the person plainly/)
+    assert.ok(loud.includes(replyLine([later.notice_id])))
   })
 
   it('holds check_job and canonical_system_notices in --stream mode while a turn is active, then emits them one turn at a time in FIFO order', async () => {

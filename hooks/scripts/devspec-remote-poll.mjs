@@ -116,8 +116,13 @@ export const ACTIVE_PLAN_PROJECTION_VERSION = 1
  * finding and the Agents page shows it "Not receiving findings" (1fd34942, item
  * 0b26f6ea). Version 2 adds kinds and changes none: every notice still arrives with
  * its own `version: 1` body, validated by `isSystemNoticeV1` in remote-ingress-v1.mjs.
+ *
+ * 3 adds DevSpec's label to every notice, `audience: 'needs_person' | 'for_the_record'`
+ * (item a868f41f), and changes nothing else. The wait stream shows a for-the-record
+ * notice without the call that replies to it in the room; what the label means is
+ * the served contract's `semantics.notice_audience`.
  */
-export const SYSTEM_NOTICE_CHANNEL_VERSION = 2
+export const SYSTEM_NOTICE_CHANNEL_VERSION = 3
 export const SENDER_STYLE_VERSION = 1
 /**
  * Check jobs on the wake channel (item f7b8c8d3, DevSpec item 55d71b0c, decision
@@ -128,8 +133,14 @@ export const SENDER_STYLE_VERSION = 1
  * untaken or unfinished job when the agent's turn ends; this host's busy is its turn,
  * from Claude Code's own prompt and Stop hooks (mirror-turn.mjs), which the poller
  * re-asserts while that turn is live.
+ *
+ * Version 2 (DevSpec item 1d89fe56): the envelope drops `high_risk`, and a job may
+ * also name a settled discussion point, a Goal, or the manual whole-backlog
+ * out-of-date scan. The version sets the exact envelope and which records a job may
+ * name (the served contract's `semantics.check_job.envelope` and `.records`), so this
+ * poller reads version 2 only: a job its version does not carry is never sent.
  */
-export const CHECK_JOB_VERSION = 1
+export const CHECK_JOB_VERSION = 2
 
 /**
  * The ingress ladder we ask for, and it is nested: each tier requires the one
@@ -624,19 +635,25 @@ export function validateAutomationRunDispatch(dispatch, connectionId) {
 }
 
 /**
- * The check-job wake envelope, exactly (CHECK_JOB_WAKE_KEYS in DevSpec's
- * coherence/check-jobs.ts, item 55d71b0c): inbox metadata only, never record text.
- * Which record, which kind of check, how many entries and how many of those are high
- * risk, and whether this agent made the change. The job itself (what to rule, by
- * which definition) is only ever read through claim_check_job.
+ * The check-job wake envelope of version 2, exactly (CHECK_JOB_WAKE_KEYS[2] in
+ * DevSpec's coherence/check-jobs.ts, items 55d71b0c and 1d89fe56): inbox metadata
+ * only, never record text. Which record, which kind of check, how many entries, and
+ * whether this agent made the change. The job itself (what to rule, by which
+ * definition) is only ever read through claim_check_job.
  */
 const CHECK_JOB_KEYS = [
-  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'high_risk', 'yours',
+  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'yours',
   'offered_at', 'delivery_connection_id',
 ]
 const CHECK_JOB_RECORD_KEYS = ['type', 'id', 'title']
 const CHECK_KINDS = ['conflict', 'conflict_decisions', 'duplicate', 'staleness']
-const CHECK_RECORD_TYPES = ['task', 'memory', 'artifact', 'proposal']
+/**
+ * What a version-2 job may name: a task, a decision (memory), a document (artifact)
+ * or a pending version (proposal), and, new in 2, the settled discussion point or
+ * Goal an open-task out-of-date check was raised by, or the manual whole-backlog
+ * out-of-date scan's own record.
+ */
+export const CHECK_RECORD_TYPES = Object.freeze(['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan'])
 
 function hasExactKeys(value, keys) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
@@ -663,7 +680,6 @@ export function validateCheckJobDispatch(dispatch, connectionId) {
     // A record with no title arrives with an empty one, never a missing key.
     typeof record.title === 'string' &&
     Number.isInteger(dispatch.entries) && dispatch.entries >= 0 &&
-    Number.isInteger(dispatch.high_risk) && dispatch.high_risk >= 0 && dispatch.high_risk <= dispatch.entries &&
     typeof dispatch.yours === 'boolean' &&
     typeof dispatch.offered_at === 'string' && !Number.isNaN(Date.parse(dispatch.offered_at)) &&
     dispatch.delivery_connection_id === connectionId

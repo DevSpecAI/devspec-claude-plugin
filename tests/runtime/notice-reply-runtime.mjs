@@ -7,6 +7,10 @@
  *  - a notice reply with complete_turn leaves the turn Working; the command's own
  *    final answer still ends it
  *  - a refused notice reply reaches the model with DevSpec's reason
+ *  - a reply DevSpec refuses as for_the_record (it named only notices labelled for
+ *    the record, item a868f41f) reaches the model as DevSpec wrote it and nothing
+ *    else: no hook posts, records or surfaces anything for it, and the turn and its
+ *    command are untouched
  *
  * No paid inference, real credentials, live DevSpec records, or shared state: a
  * disposable HOME holds the bond and the connection.
@@ -24,12 +28,13 @@ const root = fileURLToPath(new URL('../..', import.meta.url))
 const home = mkdtempSync(join(tmpdir(), 'claude-notice-reply-runtime-'))
 const work = join(home, 'work')
 const localId = randomUUID(), connectionId = randomUUID(), sessionId = randomUUID()
-const NOTICE_A = randomUUID(), NOTICE_B = randomUUID()
+const NOTICE_A = randomUUID(), NOTICE_B = randomUUID(), NOTICE_C = randomUUID()
 const connections = join(home, '.devspec/remote-control/connections')
 const turnMarker = join(connections, `${connectionId}.turn`)
 const requestLog = join(connections, `${connectionId}.requests.jsonl`)
 const commandRequest = randomUUID()
 const NOT_ATTACHED = 'Your connection is not attached to a room, so there is nowhere to post this reply. Nothing was posted: tell the person at your terminal instead.'
+const FOR_THE_RECORD = 'Nothing was posted, and nothing needs to be: every notice this reply names is for the record, so it stays on the record and in Review, not in the room. Do not post about it another way. If handling it changed someone else\'s record, that write\'s result says the person must be told; tell them in an ordinary message.'
 
 const posts = [], seen = {}
 let requests = 0
@@ -58,6 +63,10 @@ function postSessionMessage(args) {
   }
   if (!Array.isArray(args.system_notice_ids)) return { content: [{ type: 'text', text: `system_notice_ids: must be an array; got a ${typeof args.system_notice_ids}` }], isError: true }
   if (args.system_notice_ids.includes(NOTICE_B)) return textResult({ delivery: { status: 'rejected', reason: 'not_attached' }, error: NOT_ATTACHED }, true)
+  // NOTICE_C is labelled for the record: DevSpec stores nothing and refuses (notice-reply-post.ts).
+  if (args.system_notice_ids.every((id) => id === NOTICE_C)) {
+    return textResult({ delivery: { status: 'rejected', reason: 'for_the_record', retryable: false }, error: FOR_THE_RECORD, notice_ids: args.system_notice_ids }, true)
+  }
   const messageId = randomUUID()
   return textResult({ delivery: { status: 'stored', message_id: messageId }, message_id: messageId, session_id: sessionId, connection_id: connectionId,
     message_type: 'external_agent', phase: 'answer', notice_reply: { notice_ids: args.system_notice_ids }, turn_effect: 'none', complete_turn: false,
@@ -86,9 +95,20 @@ const server = createServer(async (req, res) => {
         seen.workingAfterNoticeReply = existsSync(turnMarker)
         seen.commandAnsweredByNoticeReply = readFileSync(requestLog, 'utf8').includes('"op":"answered"')
         respondModel(res, body, post('nr_refused', { message: 'Another finding.', system_notice_ids: [NOTICE_B] }), 'tool_use')
-      } else if (!results.has('nr_answer')) {
+      } else if (!results.has('nr_for_the_record')) {
         const refused = results.get('nr_refused')
         seen.refusalReachedModel = refused.is_error === true && resultText(refused).includes('not_attached') && resultText(refused).includes('tell the person at your terminal instead')
+        respondModel(res, body, post('nr_for_the_record', { message: 'Noted, nothing to change.', system_notice_ids: [NOTICE_C], complete_turn: true }), 'tool_use')
+      } else if (!results.has('nr_answer')) {
+        const quiet = results.get('nr_for_the_record')
+        const text = resultText(quiet)
+        // What the model reads is DevSpec's own refusal, whole and alone: no hook text was added to it.
+        seen.forTheRecordReachedModelAsSent = quiet.is_error === true && text.includes('"reason":"for_the_record"') && text.includes(FOR_THE_RECORD) &&
+          text === JSON.stringify({ delivery: { status: 'rejected', reason: 'for_the_record', retryable: false }, error: FOR_THE_RECORD, notice_ids: [NOTICE_C] })
+        seen.postsAfterForTheRecord = posts.length
+        seen.workingAfterForTheRecord = existsSync(turnMarker)
+        seen.commandAnsweredByForTheRecord = readFileSync(requestLog, 'utf8').includes('"op":"answered"')
+        seen.explicitReplyAfterForTheRecord = existsSync(join(connections, `${connectionId}.explicit-reply`))
         respondModel(res, body, post('nr_answer', { message: 'Here is the answer to your command.', complete_turn: true }), 'tool_use')
       } else {
         // Once: a Stop the fixture leaves blocked (no listener armed) opens the turn again.
@@ -152,8 +172,8 @@ try {
     '--model', 'sonnet', '--permission-mode', 'manual',
     '--allowedTools', 'mcp__devspec__post_session_message', '--output-format', 'json'])
   assert(result.includes('NOTICE-REPLY-RUNTIME-PASS'), result.slice(-2000))
-  const [noticeReply, refused, answer] = posts
-  assert.equal(posts.length, 3, JSON.stringify(posts))
+  const [noticeReply, refused, forTheRecord, answer] = posts
+  assert.equal(posts.length, 4, JSON.stringify(posts))
   assert.deepEqual(noticeReply.system_notice_ids, [NOTICE_A], 'the ids reached DevSpec as an array, from a tool list that predates them')
   assert.equal(noticeReply.connection_id, connectionId, 'the conversation\'s own connection was stamped')
   assert.equal(Object.hasOwn(noticeReply, 'request_ref'), false, 'a notice reply names no request')
@@ -164,6 +184,12 @@ try {
   assert.equal(seen.workingAfterNoticeReply, true, 'a notice reply with complete_turn left the turn Working')
   assert.equal(seen.commandAnsweredByNoticeReply, false, 'a notice reply did not answer the command the turn serves')
   assert.equal(seen.refusalReachedModel, true, 'the refusal reached the model with DevSpec\'s reason')
+  assert.deepEqual(forTheRecord.system_notice_ids, [NOTICE_C])
+  assert.equal(seen.forTheRecordReachedModelAsSent, true, 'the for_the_record refusal reached the model exactly as DevSpec sent it')
+  assert.equal(seen.postsAfterForTheRecord, 3, 'nothing was posted for it another way before the model went on')
+  assert.equal(seen.workingAfterForTheRecord, true, 'a for_the_record refusal left the turn Working')
+  assert.equal(seen.commandAnsweredByForTheRecord, false, 'a for_the_record refusal did not answer the command')
+  assert.equal(seen.explicitReplyAfterForTheRecord, false, 'a for_the_record refusal was not counted as a reply')
   assert.equal(seen.answerEndedTurn, true, 'the command\'s own final answer ended the turn')
   const version = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8')).version
   console.log(JSON.stringify({ result: 'PASS', host: execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim(),

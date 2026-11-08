@@ -29,7 +29,6 @@ const job = {
   check_kind: 'duplicate',
   record: { type: 'memory', id: '70000000-0000-4000-8000-000000000007', title: 'Retry policy' },
   entries: 2,
-  high_risk: 0,
   yours: false,
   offered_at: '2026-11-04T12:00:00.000Z',
   delivery_connection_id: CONNECTION,
@@ -110,7 +109,7 @@ describe('check jobs through the running poller (item f7b8c8d3)', () => {
       assert.ok(await until(() => stub.polls().length >= 4), poller.stderr())
       stub.world.quiet = true
       const polls = stub.polls()
-      for (const poll of polls) assert.equal(poll.args.check_job_version, 1)
+      for (const poll of polls) assert.equal(poll.args.check_job_version, 2)
       assert.ok(polls.slice(1).every((poll) => poll.args.dispatch_cursor === 'dispatch-cursor-1'))
 
       const lines = poller.inboxLines()
@@ -141,6 +140,43 @@ describe('check jobs through the running poller (item f7b8c8d3)', () => {
       assert.deepEqual(poller.inboxLines(), [])
       assert.equal(poller.state().dispatch_cursor ?? null, null)
       assert.ok(stub.polls().every((poll) => poll.args.dispatch_cursor === undefined))
+    } finally {
+      poller.stop()
+      await stub.close()
+    }
+  })
+
+  // Item 1d89fe56: version 2 carries open-task out-of-date checks raised by a settled
+  // discussion point or a Goal change, and the manual whole-backlog scan.
+  it('keeps the version-2 jobs that name a discussion point, a Goal and the backlog scan', async () => {
+    const jobs = ['discussion_point', 'goal', 'backlog_scan'].map((type, i) => ({
+      ...job,
+      id: `6000000${i}-0000-4000-8000-00000000000${i}`,
+      check_job_id: `6000000${i}-0000-4000-8000-00000000000${i}`,
+      check_kind: 'staleness',
+      record: { type, id: `7000000${i}-0000-4000-8000-00000000000${i}`, title: `About ${type}` },
+    }))
+    const stub = await stubServer(jobs)
+    const poller = startPoller(stub)
+    try {
+      assert.ok(await until(() => poller.inboxLines().length === 3), poller.stderr())
+      stub.world.quiet = true
+      const batches = parseInboxBatches(poller.inboxLines(), CONNECTION)
+      assert.deepEqual(batches.map((batch) => batch.dispatch.record.type), ['discussion_point', 'goal', 'backlog_scan'])
+      assert.doesNotMatch(poller.stderr(), /rejected dispatch/)
+    } finally {
+      poller.stop()
+      await stub.close()
+    }
+  })
+
+  it('rejects a batch carrying a version-1 envelope whole, since it negotiated 2', async () => {
+    const stub = await stubServer([{ ...job, high_risk: 0 }])
+    const poller = startPoller(stub)
+    try {
+      assert.ok(await until(() => /rejected dispatch/.test(poller.stderr())), poller.stderr())
+      stub.world.quiet = true
+      assert.deepEqual(poller.inboxLines(), [])
     } finally {
       poller.stop()
       await stub.close()

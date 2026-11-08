@@ -109,19 +109,33 @@ describe('mark-explicit-reply (PostToolUse) after a notice reply', () => {
   })
   afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
 
-  const posted = (toolInput) => {
+  const posted = (toolInput, toolResponse = {}) => {
     const run = spawnSync(process.execPath, [path.join(HERE, 'mark-explicit-reply.mjs')], {
-      input: JSON.stringify({ session_id: CONVERSATION, tool_name: POST, tool_input: toolInput, tool_response: {} }),
+      input: JSON.stringify({ session_id: CONVERSATION, tool_name: POST, tool_input: toolInput, tool_response: toolResponse }),
       env: { PATH: process.env.PATH, HOME: home },
       encoding: 'utf8',
     })
     assert.equal(run.status, 0, run.stderr)
+    return run
   }
 
   it('leaves the command\'s turn open even with complete_turn', () => {
     posted({ message: 'DevSpec found a clash', system_notice_ids: [NOTICE_A], complete_turn: true, connection_id: CONNECTION })
     assert.equal(fs.existsSync(turnMarker()), true, 'the turn is still Working')
     assert.equal(readRequestState(CONNECTION, { dir }).open.get(COMMAND).answered, undefined, 'the command still waits for its answer')
+  })
+
+  // Item a868f41f: DevSpec refuses a reply naming only for-the-record notices
+  // (delivery.reason for_the_record, isError; apps/web/lib/mcp/notice-reply-post.ts).
+  // That is an expected outcome: the hook neither surfaces it nor records anything.
+  it('stays quiet when DevSpec refuses the reply as for_the_record', () => {
+    const refusal = { isError: true, content: [{ type: 'text', text: JSON.stringify({ delivery: { status: 'skipped', reason: 'for_the_record' }, notice_ids: [NOTICE_A] }) }] }
+    const run = posted({ message: 'Noted.', system_notice_ids: [NOTICE_A], complete_turn: true, connection_id: CONNECTION }, refusal)
+    assert.equal(run.stdout, '', 'nothing surfaced to the model')
+    assert.equal(run.stderr, '', 'nothing surfaced at the terminal')
+    assert.equal(fs.existsSync(path.join(dir, `${CONNECTION}.explicit-reply`)), false, 'not counted as a reply')
+    assert.equal(fs.existsSync(turnMarker()), true, 'the turn is untouched')
+    assert.equal(readRequestState(CONNECTION, { dir }).open.get(COMMAND).answered, undefined, 'the command is untouched')
   })
 
   it('still ends the turn on the command\'s own final answer', () => {
@@ -141,9 +155,22 @@ describe('the notice the model is handed', () => {
       { version: 1, kind: 'requirement_outcome', notice_id: NOTICE_A, contract_uri: 'devspec://product/remote-ingress-contract' },
     ]
     for (const notice of notices) {
-      const content = formatSystemNoticeContent(notice)
-      assert.ok(content.includes(replyLine([NOTICE_A])), notice.kind)
-      assert.ok(content.includes(`"system_notice_ids": ["${NOTICE_A}"]`), notice.kind)
+      for (const labelled of [notice, { ...notice, audience: 'needs_person' }]) {
+        const content = formatSystemNoticeContent(labelled)
+        assert.ok(content.includes(replyLine([NOTICE_A])), `${notice.kind} ${labelled.audience}`)
+        assert.ok(content.includes(`"system_notice_ids": ["${NOTICE_A}"]`), `${notice.kind} ${labelled.audience}`)
+      }
+      // Item a868f41f: DevSpec refuses a reply naming only for-the-record notices,
+      // so a notice labelled that way is never handed the call.
+      const quiet = formatSystemNoticeContent({ ...notice, audience: 'for_the_record' })
+      assert.equal(quiet.includes(replyLine([NOTICE_A])), false, `${notice.kind} for_the_record`)
+      assert.doesNotMatch(quiet, /system_notice_ids/, `${notice.kind} for_the_record`)
     }
+  })
+
+  it('says a for_the_record refusal is expected, and points at the rule rather than restating it', () => {
+    const line = replyLine([NOTICE_A])
+    assert.match(line, /for_the_record is expected, not a failure/)
+    assert.match(line, /semantics\.notice_reply\.only_when_needed/)
   })
 })

@@ -47,9 +47,8 @@ function connectedHome() {
     '--codename', 'Cosmic Raven',
     '--local-id', CONVERSATION_ID,
     '--cwd', cwd,
-    '--host-token', 'dvs_terminal_status_test',
     '--no-poller',
-  ], { env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home }, encoding: 'utf8' })
+  ], { env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, DEVSPEC_MCP_TOKEN: 'dvs_terminal_status_test' }, encoding: 'utf8' })
   assert.equal(run.status, 0, run.stderr)
   saveConversationProject(CONVERSATION_ID, ENDPOINT, {
     id: '24c4abaa-2cb9-496a-8492-cf1f1aa1090b',

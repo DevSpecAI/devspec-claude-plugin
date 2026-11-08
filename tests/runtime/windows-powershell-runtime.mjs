@@ -116,8 +116,9 @@ async function conversation({ name, powershellTool, steps, check }) {
     ANTHROPIC_API_KEY: 'sk-ant-fixture-not-real', ANTHROPIC_BASE_URL: origin,
     DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: endpoint,
     // The plugin's own settings, as Claude Code hands them to its hooks: the plugin then
-    // carries its settings session to later commands in the environment file.
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'fixture-not-real', CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: endpoint,
+    // carries its settings session to later commands in the environment file. There is no
+    // token setting since browser sign-in; DEVSPEC_MCP_TOKEN above stands in for one.
+    CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: endpoint,
     CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DEVSPEC_CLAUDE_STATE_DIR: join(home, 'provenance state'),
     PATH: String(process.env.PATH || '').split(WINDOWS ? ';' : ':').filter((dir) => !dir.includes('git-observer')).join(WINDOWS ? ';' : ':'),

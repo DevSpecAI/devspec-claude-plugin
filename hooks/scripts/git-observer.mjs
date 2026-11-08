@@ -37,6 +37,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { connectionCredential, recordedIdentity } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 import { McpToolRefusalError, isRetryableHttpFailure, mcpToolsCall } from './mcp-call.mjs'
 import { findProjectPin } from './devspec-scope.mjs'
@@ -397,12 +398,19 @@ export async function drainObserver({ sessionId, home = os.homedir(), now = Date
       queue = queue.slice(-LIMITS.queue)
     }
     const state = boundConnection(sessionId)
+    // The connection's credential as it is now, resolved once per drain and only when
+    // something is due (item 47f0dbdf): a browser sign-in renews, never another identity.
+    let credential = null
+    const credentialNow = async () => {
+      credential ??= await connectionCredential(state)
+      return credential
+    }
     const kept = []
     let sent = 0
     for (const item of queue) {
       if (now - item.queued_at > LIMITS.ttlMs) { log(item, 'dropped', 'not reported within a day'); continue }
       if (!item.connection_id) { log(item, 'skipped', 'this conversation was not connected to DevSpec when the commit was made'); continue }
-      if (!state?.connection_id || !state.token || !state.mcp_url) {
+      if (!state?.connection_id || !recordedIdentity(state) || !state.mcp_url) {
         if (final) log(item, 'dropped', 'the conversation ended while not connected to DevSpec')
         else kept.push(item)
         continue
@@ -411,11 +419,17 @@ export async function drainObserver({ sessionId, home = os.homedir(), now = Date
       if ((item.next_at > now && !final) || sent >= LIMITS.perDrain) { kept.push(item); continue }
       const prepared = reportArguments(item, state.connection_id)
       if (prepared.skip) { log(item, 'skipped', prepared.skip); continue }
+      const current = await credentialNow()
+      if (!current.ok) {
+        if (final) log(item, 'dropped', 'DevSpec sign-in is not available')
+        else kept.push(item)
+        continue
+      }
       sent += 1
       try {
         const result = await call({
-          mcpUrl: state.mcp_url,
-          token: state.token,
+          mcpUrl: current.mcp_url,
+          token: current.token,
           connectionCapability: state.connection_capability ?? null,
           name: 'report_commit_provenance',
           arguments: prepared.args,

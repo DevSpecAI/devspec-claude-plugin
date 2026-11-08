@@ -27,6 +27,8 @@ If an `owner_message` names `instruction_context_file`, read that complete immut
 
 Do **not** arm a Monitor for these messages yourself when the listener is already running: two readers would race for one inbox. The Stop hook tells you if nothing is listening, and hands you the exact command if something needs arming.
 
+A `session_ended` event with `reason: "signed_out"` means DevSpec refused this computer's sign-in, so the connection stood down. Tell the person at this terminal its `message` word for word: it says what to run. Do not try to reconnect until they have signed in again.
+
 ## 1. The command, and the room it arrived in
 
 Authority, wake, delivery and attachment policy is the served resource

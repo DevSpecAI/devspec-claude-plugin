@@ -768,11 +768,11 @@ describe('wake stream delivery', () => {
 })
 
 describe('question bridge', () => {
-  it('needs an attached, enabled, capability-bearing connection', () => {
+  it('needs an attached, enabled, capability-bearing connection', async () => {
     const { home, dir } = stateHome()
     try {
       const state = readQuestionConnectionState(CONNECTION, dir)
-      assert.deepEqual(questionRequestOptions(state), {
+      assert.deepEqual(await questionRequestOptions(state), {
         mcpUrl: state.mcp_url,
         token: state.token,
         connectionCapability: state.connection_capability,

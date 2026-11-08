@@ -1479,6 +1479,14 @@ async function main() {
   while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
     if (live && live.enabled === false) {
+      // A connection stood down because DevSpec refused its sign-in says so, once, as its
+      // last event: the person has to sign in again, and nothing else would tell them
+      // (item 47f0dbdf). Every other stand-down stays silent here.
+      if (live.end_reason === 'signed_out' && typeof live.end_message === 'string' && live.end_message) {
+        process.stdout.write(
+          JSON.stringify({ type: 'session_ended', reason: 'signed_out', recoverable: true, connection_id: connectionId, message: live.end_message }) + '\n',
+        )
+      }
       process.stderr.write('devspec-remote-wait: disabled — exit 1\n')
       process.exit(EXIT_TERMINAL)
     }

@@ -54,7 +54,7 @@ import { execFileSync } from 'node:child_process'
 import { findProjectPin, gitRemoteOrigin, workTreeRootFrom } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { readConversationProject } from './conversation-project.mjs'
-import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 import { REQUESTED_ITEM, conversationClaimState, gitIn, noClaimText, projectScope, severalClaimsText, unrecordedClaimText } from './commit-stamp.mjs'
 import { observerActive } from './git-observer.mjs'
@@ -613,8 +613,8 @@ export function referenceIn(message) {
  * an HTTP error, an MCP error, a project that could not be resolved, the timeout, a body
  * we cannot parse) lands there and allows.
  *
- * Credentials and the endpoint are resolved from `env` and the folder's own MCP
- * configuration, never from a value this module holds.
+ * Credentials and the endpoint are resolved from `env` and the plugin's browser
+ * sign-in, never from a value this module holds.
  */
 export async function confirmReferenceOnline(commitMessage, options = {}) {
   const {
@@ -628,7 +628,7 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
     call = mcpToolsCall,
   } = options
 
-  const auth = resolveAuth(cwd, mainWorktree, env)
+  const auth = await resolveAuth(cwd, env)
   if (!auth) return 'unavailable'
 
   // Jurisdiction hints, so the server answers for the project this folder belongs to
@@ -684,7 +684,7 @@ export async function resolveShortCodeOnline(shortCode, options = {}) {
   } = options
   const code = typeof shortCode === 'string' ? shortCode.toLowerCase() : ''
   if (!SHORT_CODE_RE.test(code)) return null
-  const auth = resolveAuth(cwd, mainWorktree, env)
+  const auth = await resolveAuth(cwd, env)
   if (!auth) return null
   const args = { task_id: code }
   try {
@@ -777,28 +777,19 @@ function recoveryText(claims) {
 }
 
 /**
- * Credentials for the one call, from the cwd chain and then from the repository's main
- * working tree.
- *
- * The second place is not a nicety. `.mcp.json` and `.claude/settings.local.json` are
- * normally untracked, so a linked worktree carries neither — and the implementation
- * contract *requires* work to happen in one. Looking only at the cwd would leave this
- * check silently inert for exactly the workflow it exists to protect, which is the same
- * mistake 0.16.0 made about the commit shape. Jurisdiction already consults the main
- * worktree for the same reason (`repositoryJurisdiction`).
+ * Credentials for the one call: the plugin's browser sign-in for its server, or
+ * DEVSPEC_MCP_TOKEN (item 47f0dbdf). Before browser sign-in this also searched the cwd
+ * chain and the repository's main working tree for a `.mcp.json` key, because a linked
+ * worktree carries none; the sign-in does not depend on the folder, so every worktree
+ * has it.
  */
-function resolveAuth(cwd, mainWorktree, env) {
-  const hostToken = hostTokenFromEnv(env)
-  for (const dir of [cwd, mainWorktree]) {
-    if (!dir) continue
-    try {
-      const auth = resolveDevspecMcpAuth(dir, { env, hostToken })
-      if (auth?.ok && auth.token && auth.mcp_url) return auth
-    } catch {
-      /* an unreadable config is simply not a source of credentials */
-    }
+async function resolveAuth(cwd, env) {
+  try {
+    const auth = await resolveDevspecMcpAuth(cwd, { env })
+    return auth?.ok && auth.token && auth.mcp_url ? auth : null
+  } catch {
+    return null
   }
-  return null
 }
 
 /**

@@ -132,7 +132,7 @@ describe('manage_poll client guard (item f4dd7be1)', () => {
     }).ok, true)
   })
 
-  it('loads only an attached, enabled, capability-bound connection', () => {
+  it('loads only an attached, enabled, capability-bound connection', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-poll-state-'))
     try {
       const state = {
@@ -148,7 +148,7 @@ describe('manage_poll client guard (item f4dd7be1)', () => {
       assert.deepEqual(readPollConnectionState(CONNECTION, dir), state)
       // Reading repairs a loose mode before any byte is used.
       assert.equal(fs.statSync(statePath).mode & 0o777, 0o600)
-      assert.deepEqual(managePollRequestOptions(state), {
+      assert.deepEqual(await managePollRequestOptions(state), {
         mcpUrl: state.mcp_url,
         token: state.token,
         connectionCapability: state.connection_capability,

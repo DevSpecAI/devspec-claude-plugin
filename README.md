@@ -37,7 +37,7 @@ Inside Claude Code, run:
 /devspec:devspec.login
 ```
 
-Your browser opens DevSpec's approval page; approve **Claude Code** there and you are done. There is no token to create or copy, and the sign-in serves everything the plugin does: Claude Code's own DevSpec tools, remote control and commit tracking. It renews itself and lasts until you sign out (`/devspec:devspec.logout`) or disconnect Claude Code on your [Agent setup](https://app.devspec.ai/settings/agents) page; if it ever stops working, Claude Code tells you when it starts and asks you to run `/devspec:devspec.login` again. Then reconnect DevSpec's tools in `/mcp` (choose **devspec** → **Reconnect**) or start a new session.
+Your browser opens DevSpec's approval page; approve **Claude Code** there, then restart Claude Code (or reconnect DevSpec's tools in `/mcp` → **devspec** → **Reconnect**). That one sign-in serves everything the plugin does: Claude Code's own DevSpec tools, remote control and commit tracking. It renews itself and lasts until you sign out (`/devspec:devspec.logout`) or disconnect Claude Code on your [Agent setup](https://app.devspec.ai/settings/agents) page; if it ever stops working, Claude Code tells you when it starts and asks you to run `/devspec:devspec.login` again.
 
 - **On a machine your browser cannot reach** (over SSH, or a remote dev box), the command shows a link instead; open it anywhere, approve, and paste back the code DevSpec's page shows. Run `/devspec:devspec.login --code` to choose this yourself.
 - **Staging and production** are signed in separately and both sign-ins are kept, so switching the plugin's DevSpec server never needs a fresh sign-in.

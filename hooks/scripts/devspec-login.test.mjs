@@ -85,9 +85,9 @@ describe('login through the browser', () => {
     assert.equal(result.ok, true, result.message)
     assert.equal(
       result.message,
-      `Signed in to DevSpec (${label()}) as Ada Lovelace. Start a new Claude Code session to use it everywhere. ` +
-        "To use it in this session, open /mcp, choose devspec and Reconnect for Claude Code's DevSpec tools, " +
-        'and run /devspec:devspec.remote for remote control.',
+      `Signed in to DevSpec (${label()}) as Ada Lovelace. Restart Claude Code to finish connecting ` +
+        "(or in this session, open /mcp, choose devspec and Reconnect for Claude Code's DevSpec tools, " +
+        'and run /devspec:devspec.remote for remote control).',
     )
     const state = loginState(fake.mcpUrl)
     assert.equal(state.kind, 'active')

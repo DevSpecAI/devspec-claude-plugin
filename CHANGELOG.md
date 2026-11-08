@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.1 - 2026-11-08
+
+- **Browser sign-in polish.** The local browser callback page now renders with the DevSpec logo and adapts cleanly to light and dark mode, `/devspec:devspec.login` places the browser link on its own line with a clearer remote-machine `--code` hint, sign-in confirmation prompts you to restart Claude Code to finish connecting, and command/README copy no longer mentions the retired token setup to new users.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.54.0 - 2026-11-08
 
 - Claude Code now signs in to DevSpec through your browser. Installing the plugin no longer asks for a token: run `/devspec:devspec.login`, approve Claude Code on DevSpec's page, and that one sign-in serves Claude Code's own DevSpec tools, remote control and commit tracking. It renews itself before it expires and lasts until you run `/devspec:devspec.logout` or disconnect Claude Code on DevSpec's Agent setup page. After signing in, reconnect DevSpec's tools in `/mcp` (choose devspec, then Reconnect) or start a new session.

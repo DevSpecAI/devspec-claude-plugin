@@ -147,8 +147,8 @@ export async function verifyAndSave({ endpoint, discovery, clientId, tokens }, {
     signedInAs: who ?? undefined,
   })
   return `Signed in to DevSpec (${serverLabel(endpoint)})${who ? ` as ${who}` : ''}. ` +
-    'Start a new Claude Code session to use it everywhere. To use it in this session, open /mcp, choose ' +
-    "devspec and Reconnect for Claude Code's DevSpec tools, and run /devspec:devspec.remote for remote control."
+    'Restart Claude Code to finish connecting (or in this session, open /mcp, choose ' +
+    "devspec and Reconnect for Claude Code's DevSpec tools, and run /devspec:devspec.remote for remote control)."
 }
 
 async function discover(endpoint, fetchImpl, clientIds) {
@@ -188,7 +188,9 @@ export async function startLogin({ env = process.env, code = false } = {}, deps 
     if (browserCanReachThisMachine(env)) open(flow.url)
     return [
       `Sign in to DevSpec (${label}): open this link in a browser, approve, then copy the code the page shows.`,
+      '',
       flow.url,
+      '',
       'Paste the code here when you have it. The link works for 10 minutes.',
     ]
   }
@@ -198,8 +200,10 @@ export async function startLogin({ env = process.env, code = false } = {}, deps 
   open(report.url)
   return [
     `Approve DevSpec (${label}) in your browser. If it did not open, open this link:`,
+    '',
     report.url,
-    `Waiting up to 10 minutes for the approval. On a machine your browser cannot reach, run ${LOGIN_COMMAND} --code instead.`,
+    '',
+    `Waiting up to 10 minutes for the approval. Running Claude Code on a remote machine where a browser cannot open locally? Run ${LOGIN_COMMAND} --code instead.`,
   ]
 }
 

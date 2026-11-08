@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "DevSpec for Claude Code — shared team memory, live remote control from phone or web, and automatic task & commit provenance.",
-  "version": "0.54.0",
+  "version": "0.54.1",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -43,7 +43,7 @@
       "url": "${user_config.devspec_mcp_url}?model_tools=heartbeat_connection,detach_connection",
       "headers": {
         "Authorization": "Bearer ${DEVSPEC_MCP_TOKEN:-}",
-        "x-devspec-plugin": "claude_code/0.54.0"
+        "x-devspec-plugin": "claude_code/0.54.1"
       },
       "headersHelper": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mcp-headers.mjs\""
     }

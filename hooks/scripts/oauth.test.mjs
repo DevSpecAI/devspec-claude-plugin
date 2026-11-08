@@ -103,7 +103,13 @@ describe('loopback sign-in', () => {
     // The person presses Allow: the browser follows the redirect to the listener.
     const page = await fetch(pending.url)
     assert.equal(page.status, 200)
-    assert.match(await page.text(), /go back to Claude Code/)
+    const html = await page.text()
+    assert.match(html, /Signed in to DevSpec/)
+    assert.match(html, /go back to Claude Code/)
+    assert.match(html, /Restart Claude Code to finish connecting\./)
+    assert.match(html, /color-scheme:light dark/)
+    assert.match(html, /@media \(prefers-color-scheme:dark\)/)
+    assert.match(html, /logo-icon\.png/)
     const tokens = await pending.done
     assert.match(tokens.accessToken, /^oat_/)
     assert.match(tokens.refreshToken, /^rt_/)

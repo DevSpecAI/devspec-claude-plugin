@@ -1,6 +1,6 @@
 ---
 name: devspec.login
-description: Sign Claude Code in to DevSpec through your browser — one approval, no token to copy. Add --code on a machine your browser cannot reach (over SSH that happens by itself).
+description: Sign Claude Code in to DevSpec through your browser. Add --code on a remote machine where a browser cannot open locally (over SSH that happens by itself).
 argument-hint: "[--code]"
 allowed-tools: Bash
 ---

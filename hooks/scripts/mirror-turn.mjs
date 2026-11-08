@@ -25,7 +25,7 @@ import path from 'node:path'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { fitRoomMessage } from './room-message.mjs'
 import { parseTurnFailure, turnFailureMessage } from './turn-failure.mjs'
-import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { connectionCredential } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
 import {
@@ -348,14 +348,12 @@ export function parseSessionCrons(hookInput) {
 }
 
 /** The auth a hook posts with: the connection's own token and server, as main() uses. */
-function hookAuth(state) {
-  let token = state.token
-  let mcpUrl = state.mcp_url
-  if (!token) {
-    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
-    token = auth.token
-    mcpUrl = mcpUrl || auth.mcp_url
-  }
+async function hookAuth(state) {
+  // The connection's own credential as it is now: a browser sign-in renews, and
+  // is never swapped for another identity (item 47f0dbdf).
+  const credential = await connectionCredential(state ?? {})
+  let token = credential.ok ? credential.token : null
+  let mcpUrl = credential.mcp_url || state?.mcp_url
   return token ? { token, mcpUrl: mcpUrl || 'https://api.devspec.ai/api/mcp' } : null
 }
 
@@ -369,12 +367,14 @@ export async function updateDelegationTrail(state, {
   dir = CONNECTIONS_DIR,
   marker = readTurnMarker(state?.connection_id, dir),
   call = mcpToolsCall,
-  auth = hookAuth(state || {}),
+  auth: authOption,
 } = {}) {
   const connectionId = state?.connection_id
-  if (!connectionId || !state.session_id || !marker || !auth) return { posted: 0 }
+  if (!connectionId || !state.session_id || !marker) return { posted: 0 }
   const children = () => delegatedChildren(readOwnedLines(connectionId, marker, dir), marker.startedAt)
   if (children().length === 0) return { posted: 0 }
+  const auth = authOption === undefined ? await hookAuth(state || {}) : authOption
+  if (!auth) return { posted: 0 }
   const trail = ensureTrailState(connectionId, {
     dir,
     turn: marker.startedAt,
@@ -1177,13 +1177,11 @@ async function main() {
     }
   }
 
-  let token = state.token
-  let mcpUrl = state.mcp_url
-  if (!token) {
-    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
-    token = auth.token
-    mcpUrl = mcpUrl || auth.mcp_url
-  }
+  // The connection's own credential as it is now: a browser sign-in renews, and
+  // is never swapped for another identity (item 47f0dbdf).
+  const credential = await connectionCredential(state ?? {})
+  let token = credential.ok ? credential.token : null
+  let mcpUrl = credential.mcp_url || state?.mcp_url
   if (!token) process.exit(0) // silent — skill still posts instructionally
 
   mcpUrl = mcpUrl || 'https://api.devspec.ai/api/mcp'

@@ -13,9 +13,8 @@ const ITEM_ID = 'c6dcb524-b140-49ce-ab54-456849d1ce86'
 const BOND = `${HOME}/.devspec/remote-control/local/claude-code/${CONVERSATION_ID}.json`
 const CONNECTION = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.json`
 
-// The manifest requires a token, and Claude Code admits the module only with
-// options that fit it.
-const OPTIONS = { options: { devspec_token: 'dvs_terminal_status_test' } }
+// The manifest's own defaults: nothing is required since browser sign-in (item 47f0dbdf).
+const OPTIONS = {}
 
 const connected = {
   connection_id: CONNECTION_ID,

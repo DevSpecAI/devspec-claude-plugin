@@ -96,7 +96,7 @@ describe('manage_plan client guard', () => {
     }).ok, false)
   })
 
-  it('loads only an attached enabled capability-bound connection', () => {
+  it('loads only an attached enabled capability-bound connection', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-plan-state-'))
     try {
       const state = {
@@ -111,7 +111,7 @@ describe('manage_plan client guard', () => {
       fs.writeFileSync(statePath, JSON.stringify(state), { mode: 0o644 })
       assert.deepEqual(readPlanConnectionState(CONNECTION, dir), state)
       assert.equal(fs.statSync(statePath).mode & 0o777, 0o600)
-      assert.deepEqual(managePlanRequestOptions(state), {
+      assert.deepEqual(await managePlanRequestOptions(state), {
         mcpUrl: state.mcp_url,
         token: state.token,
         connectionCapability: state.connection_capability,

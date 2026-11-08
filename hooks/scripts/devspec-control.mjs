@@ -18,7 +18,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { mcpToolsCall } from './mcp-call.mjs'
-import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { connectionCredential } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { readPrivateJson } from './private-state.mjs'
 import { parsePendingControl, pendingControlPath } from './control-relay.mjs'
@@ -30,13 +30,11 @@ const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export async function ackControl({ connectionId, controlId, home = os.homedir(), call = mcpToolsCall }) {
   if (!ID.test(connectionId ?? '') || !ID.test(controlId ?? '')) return { ok: false, reason: 'bad_id' }
   const state = readPrivateJson(path.join(home, '.devspec', 'remote-control', 'connections', `${connectionId}.json`))
-  let token = state?.token
-  let mcpUrl = state?.mcp_url
-  if (!token) {
-    const auth = resolveDevspecMcpAuth(state?.cwd || process.cwd())
-    token = auth.token
-    mcpUrl = mcpUrl || auth.mcp_url
-  }
+  // The connection's own credential as it is now: a browser sign-in renews, and
+  // is never swapped for another identity (item 47f0dbdf).
+  const credential = await connectionCredential(state ?? {})
+  let token = credential.ok ? credential.token : null
+  let mcpUrl = credential.mcp_url || state?.mcp_url
   if (!token) return { ok: false, reason: 'no_token' }
   await call({
     mcpUrl: mcpUrl || 'https://api.devspec.ai/api/mcp',

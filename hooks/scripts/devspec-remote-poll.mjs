@@ -32,7 +32,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { openRequest } from './requests.mjs'
-import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
+import { connectionCredential } from './resolve-mcp-auth.mjs'
+import { refusedCredentialMessage } from './sign-in-notices.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { captureInstructionContext } from './instruction-tiers.mjs'
 import { carriedControls, carriedControlsPath, pendingControlPath } from './control-relay.mjs'
@@ -962,6 +963,24 @@ export function disabledStatePatch(reason) {
   }
 }
 
+/**
+ * Stand this connection down because its DevSpec sign-in no longer works, recording the
+ * plain sentence for the person. The wake reader (devspec-remote-wait.mjs) prints it
+ * once as this connection's last event, so a refused sign-in is never silent. A person
+ * fixes it by signing in again and reconnecting; nothing here retries.
+ */
+export function standDownSignedOut(connectionId, message, paths = {}) {
+  const said = typeof message === 'string' && message.trim()
+    ? message.trim()
+    : 'DevSpec no longer accepts this sign-in. Run /devspec:devspec.login to sign in again.'
+  process.stderr.write(`devspec-remote-poll: sign-in refused — standing down: ${said}\n`)
+  try {
+    patchConnectionState(connectionId, { ...disabledStatePatch('signed_out'), end_message: said }, paths)
+  } catch (e) {
+    process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
+  }
+}
+
 /** Disable THIS connection only — never other remotes on the machine. */
 function disableLocalState({ connectionId, reason }) {
   try {
@@ -1505,30 +1524,20 @@ async function main() {
     process.exit(1)
   }
 
-  let token = state?.token || null
-  let mcpUrl = state?.mcp_url || null
-  if (!token) {
-    // Write caches the proven pair. Without it, guessing among multiple keys is
-    // how the poller used to heartbeat the wrong identity (item 8bb707fd).
-    const { pairs } = enumerateCredentialPairs(state?.cwd || process.cwd(), {
-      hostToken: hostTokenFromEnv(process.env),
-    })
-    const only = distinctTokenPairs(pairs)
-    if (only.length !== 1) {
-      process.stderr.write(
-        'devspec-remote-poll: no proven token in state. Re-run connect / write — the poller will not guess among multiple DevSpec keys.\n',
-      )
-      process.exit(1)
+  // The credential this connection was registered with, as it is now (item 47f0dbdf).
+  // A browser sign-in's access token changes at every renewal, so it is fetched again
+  // before every call below rather than held from here; the identity never changes.
+  const initialCredential = await connectionCredential(state ?? {})
+  if (!initialCredential.ok) {
+    process.stderr.write(`devspec-remote-poll: ${initialCredential.error || 'no DevSpec credential for this connection'}\n`)
+    if (initialCredential.reason === 'signed_out' || initialCredential.reason === 'identity_changed') {
+      standDownSignedOut(connectionId, initialCredential.error)
     }
-    token = only[0].token
-    mcpUrl = only[0].mcp_url
-  }
-  if (!token) {
-    process.stderr.write(
-      'devspec-remote-poll: no token. Run remote-control-state.mjs write after connect, or set DEVSPEC_MCP_TOKEN.\n',
-    )
     process.exit(1)
   }
+  let token = initialCredential.token
+  let mcpUrl = initialCredential.mcp_url
+  const credentialSource = initialCredential.source
   mcpUrl = mcpUrl || 'https://api.devspec.ai/api/mcp'
   // Identity is a fixed property of THIS plugin — never trust state/args for it.
   const agentName = AGENT_NAME
@@ -2447,6 +2456,14 @@ async function main() {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
       process.exit(1)
     }
+    // The current token for this connection's own sign-in, renewed past half its life.
+    const credentialNow = await connectionCredential(liveState ?? state ?? {})
+    if (credentialNow.ok) {
+      token = credentialNow.token
+    } else if (credentialNow.reason === 'signed_out' || credentialNow.reason === 'identity_changed') {
+      standDownSignedOut(connectionId, credentialNow.error)
+      process.exit(1)
+    }
     refreshSessionTitle(liveState)
     // A reconnect may rotate the capability, and the Stop hook or the model-facing
     // bridge may have resolved the continuation since the last tick. Both facts live
@@ -2551,6 +2568,21 @@ async function main() {
         needsSeed = true
         patchState({ catch_up_cursor: null })
         continue
+      }
+      // DevSpec refused the credential itself (the person disconnected Claude Code on the
+      // Agent setup page, or the sign-in is no longer valid): retrying cannot fix that,
+      // so stand down and say what to do, once, where the model will see it.
+      const refused = refusedCredentialMessage(e, { endpoint: mcpUrl, source: credentialSource })
+      if (refused) {
+        // Another process may have renewed the sign-in while this call was in flight:
+        // a newer token for the same sign-in is worth one more try before giving up.
+        const renewed = await connectionCredential(readState(connectionId) ?? state ?? {})
+        if (e?.serverCode !== 'signed_out' && renewed.ok && renewed.token !== token) {
+          token = renewed.token
+          continue
+        }
+        standDownSignedOut(connectionId, refused)
+        process.exit(1)
       }
       consecutiveErrors++
       const rateLimited = /rate limit/i.test(e?.message || '')

@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { saveLogin } from './auth-store.mjs'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import {
   CONTRACT_URI,
@@ -110,11 +111,10 @@ beforeEach(() => {
   // Real credentials in the developer's shell would otherwise send these tests at the
   // live server. The online block below supplies its own endpoint explicitly. Run from
   // inside a Claude Code session, the plugin's exported settings file
-  // (DEVSPEC_PLUGIN_SETTINGS_SESSION) and option pairs would win over the credentials a
-  // test supplies itself, so they go too (item 9a4c0d6a).
+  // (DEVSPEC_PLUGIN_SETTINGS_SESSION) and server option would choose the server instead
+  // of the test, so they go too (item 9a4c0d6a).
   const {
-    DEVSPEC_MCP_TOKEN: _t, DEVSPEC_TOKEN: _t2, DEVSPEC_MCP_URL: _u,
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: _p, CLAUDE_PLUGIN_OPTION_devspec_token: _p2,
+    DEVSPEC_MCP_TOKEN: _t, DEVSPEC_MCP_URL: _u,
     CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: _pu, CLAUDE_PLUGIN_OPTION_devspec_mcp_url: _pu2,
     DEVSPEC_PLUGIN_SETTINGS_SESSION: _s, ...ambient
   } = process.env
@@ -958,13 +958,13 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
   })
 
   /**
-   * Found by driving the real server, not by reading the code: credentials live in an
-   * untracked `.mcp.json`, a linked worktree therefore has none, and the contract
-   * REQUIRES work to happen in one. Resolving only from the cwd left the check inert
-   * for the only workflow it protects — the same mistake 0.16.0 made about the commit
-   * shape, one layer down.
+   * Found by driving the real server, not by reading the code: the contract REQUIRES
+   * work to happen in a linked worktree, so a check that only worked in the main one
+   * would be inert for the only workflow it protects. Credentials used to live in an
+   * untracked `.mcp.json` a linked worktree lacks; the browser sign-in (item 47f0dbdf)
+   * belongs to the person, not the folder, so every worktree has it.
    */
-  it('finds credentials from the main worktree when the linked one has none', async () => {
+  it('uses the browser sign-in from a linked worktree', async () => {
     const worktree = path.join(sandbox, 'linked')
     const git = (...args) => spawnSync('git', [
       '-C', repo,
@@ -977,24 +977,30 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
     assert.equal(seeded.status, 0, seeded.stderr)
     const added = git('worktree', 'add', '--detach', worktree)
     assert.equal(added.status, 0, added.stderr)
-    fs.writeFileSync(
-      path.join(repo, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          devspec: { type: 'http', url: endpoint(), headers: { Authorization: 'Bearer from-main-worktree' } },
-        },
-      }),
-    )
-    assert.ok(!fs.existsSync(path.join(worktree, '.mcp.json')), 'the linked worktree carries no config')
 
-    reply = (res) => sendJson(res, answer('not_found'))
-    const result = await handlePre(
-      input('Bash', { command: `git commit -m "from a worktree [devspec:${ITEM}]"` }, { cwd: worktree }),
-      { env },
-    )
-    assert.equal(decision(result), 'deny', 'the check must reach the server from a worktree')
-    assert.equal(requests.length, 1)
-    assert.equal(requests[0].authorization, 'Bearer from-main-worktree')
+    const realHome = process.env.HOME
+    process.env.HOME = path.join(sandbox, 'home')
+    try {
+      const issuedAt = Date.now()
+      await saveLogin({
+        endpoint: endpoint(),
+        tokens: { accessToken: 'oat_from_sign_in', refreshToken: 'rt_unused', issuedAt, expiresAt: issuedAt + 86_400_000 },
+        issuer: 'https://issuer.example',
+        tokenEndpoint: 'https://issuer.example/oauth/token',
+        clientId: 'claude-code-client',
+        resource: endpoint(),
+      })
+      reply = (res) => sendJson(res, answer('not_found'))
+      const result = await handlePre(
+        input('Bash', { command: `git commit -m "from a worktree [devspec:${ITEM}]"` }, { cwd: worktree }),
+        { env: { ...env, CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: endpoint() } },
+      )
+      assert.equal(decision(result), 'deny', 'the check must reach the server from a worktree')
+      assert.equal(requests.length, 1)
+      assert.equal(requests[0].authorization, 'Bearer oat_from_sign_in')
+    } finally {
+      process.env.HOME = realHome
+    }
   })
 
   it('bounds itself well inside the manifest hook timeout', () => {

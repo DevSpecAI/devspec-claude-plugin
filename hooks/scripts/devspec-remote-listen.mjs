@@ -37,7 +37,7 @@
  * that DevSpec already tracks. So when the only reason to stand down is that the
  * folder names no project, the listener waits — silently, on a few stat calls every
  * few seconds, never git or the network — and connects the moment that changes. Every
- * other reason to stand down (switched off, no key, a refused key) stays dormant.
+ * other reason to stand down (switched off, not signed in, a refused sign-in) stays dormant.
  *
  * ## Once connected, it keeps the connection — and only its own (item 7e35d818)
  *
@@ -162,25 +162,21 @@ export function connectAtStartupEnabled(env = process.env, fileValue = undefined
 }
 
 /**
- * The plugin's configuration as the SessionStart hook recorded it for this session.
+ * The plugin's configuration as the SessionStart hook recorded it for this session: its
+ * DevSpec server and whether to connect at startup.
  *
  * Claude Code gives plugin settings to HOOKS, not to monitors. The SessionStart hook
- * files them privately, keyed by conversation (`plugin-settings.mjs`), and never puts
- * the key itself in the session environment, because Claude Code starts a monitor
- * with that environment's text on its command line (item 4d40407b). This reads the
- * file, waiting briefly for it: whichever of the two starts first, the listener still
- * finds its configuration.
+ * files them privately, keyed by conversation (`plugin-settings.mjs`), because Claude
+ * Code starts a monitor with the session environment's text on its command line (item
+ * 4d40407b). This reads the file, waiting briefly for it: whichever of the two starts
+ * first, the listener still finds its configuration. The credential itself is never in
+ * it: the listener uses the plugin's browser sign-in for that server (item 47f0dbdf).
  */
 export async function readStartupConfig(sessionId, { env = process.env, waitMs = STARTUP_FILE_WAIT_MS, dir = SESSION_SETTINGS_DIR, sleepFn = sleep } = {}) {
-  // Any key the resolver already reads from the environment — the plugin's own, or an
-  // explicit override — means there is nothing to wait for.
-  const envToken =
-    env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN ||
-    env.CLAUDE_PLUGIN_OPTION_devspec_token ||
-    env.DEVSPEC_MCP_TOKEN ||
-    env.DEVSPEC_TOKEN
+  // A process already handed the plugin's settings has nothing to wait for.
+  if (env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL || env.CLAUDE_PLUGIN_OPTION_devspec_mcp_url) return null
   const file = sessionSettingsPath(sessionId, dir)
-  if (envToken || !file) return null
+  if (!file) return null
   const deadline = Date.now() + waitMs
   for (;;) {
     const read = readPrivateJsonResult(file)
@@ -190,14 +186,10 @@ export async function readStartupConfig(sessionId, { env = process.env, waitMs =
   }
 }
 
-/** Merge a startup file into the environment connect() reads, without overriding env. */
+/** Merge a startup file's server into the environment connect() reads, without overriding env. */
 export function envWithStartupConfig(env, config) {
-  if (!config?.token) return env
-  return {
-    ...env,
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: config.token,
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: config.mcp_url || env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL,
-  }
+  if (!config?.mcp_url || env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL) return env
+  return { ...env, CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: config.mcp_url }
 }
 
 function sleep(ms) {

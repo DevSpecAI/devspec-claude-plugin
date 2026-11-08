@@ -2,7 +2,7 @@
   "name": "devspec",
   "displayName": "DevSpec",
   "description": "DevSpec for Claude Code — shared team memory, live remote control from phone or web, and automatic task & commit provenance.",
-  "version": "0.53.0",
+  "version": "0.54.0",
   "author": {
     "name": "DevSpecAI",
     "url": "https://devspec.ai"
@@ -22,13 +22,6 @@
     "automation"
   ],
   "userConfig": {
-    "devspec_token": {
-      "type": "string",
-      "title": "DevSpec API token",
-      "description": "Your DevSpec API token with read_write scope. Create one on DevSpec's Agent setup page (https://app.devspec.ai/settings/agents): choose Create your token and pick Read & write. It starts with 'dvs_' and is account-wide — reuse the same token everywhere.",
-      "sensitive": true,
-      "required": true
-    },
     "devspec_mcp_url": {
       "type": "string",
       "title": "DevSpec server",
@@ -49,9 +42,10 @@
       "type": "http",
       "url": "${user_config.devspec_mcp_url}?model_tools=heartbeat_connection,detach_connection",
       "headers": {
-        "Authorization": "Bearer ${user_config.devspec_token}",
-        "x-devspec-plugin": "claude_code/0.53.0"
-      }
+        "Authorization": "Bearer ${DEVSPEC_MCP_TOKEN:-}",
+        "x-devspec-plugin": "claude_code/0.54.0"
+      },
+      "headersHelper": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/mcp-headers.mjs\""
     }
   },
   "commands": [

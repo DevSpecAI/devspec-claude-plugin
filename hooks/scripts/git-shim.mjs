@@ -340,8 +340,8 @@ function inspectCommit(realGit, worktree, previousHead, amend, startedAt, endedA
 /**
  * Is a reference the model wrote to a task that exists? (6fa0241e, kept by item
  * e597bc18.) The plugin's own check from 0.17.0, run from where the plugin is
- * installed: the same transport and credentials (mcp-call.mjs, resolve-mcp-auth.mjs,
- * credentials following the repository's main working tree), the same project hints
+ * installed: the same transport and credentials (mcp-call.mjs, resolve-mcp-auth.mjs:
+ * the plugin's browser sign-in, or DEVSPEC_MCP_TOKEN), the same project hints
  * and the same 2.5 second bound. Only a definitive answer that it resolves to nothing
  * stops the commit; anything else, including the plugin not being where it was, lets
  * it through. Returns the text to stop with, or null.

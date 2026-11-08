@@ -26,6 +26,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { connectionCredential, recordedIdentity } from './resolve-mcp-auth.mjs'
 import { mcpToolsCall, mcpToolsList } from './mcp-call.mjs'
 import { clearTurnMarker } from './devspec-remote-wait.mjs'
 import { readPrivateJson, writePrivateJson } from './private-state.mjs'
@@ -203,7 +204,7 @@ export function readQuestionConnectionState(connectionId, dir = CONNECTIONS_DIR)
   if (!state.session_id) {
     throw new Error('a directed question needs an attached DevSpec session — there is nobody to ask')
   }
-  if (!state.token || !state.mcp_url) throw new Error('connection MCP authentication is unavailable')
+  if (recordedIdentity(state) === null || !state.mcp_url) throw new Error('connection MCP authentication is unavailable')
   if (!state.connection_capability) {
     throw new Error(
       'this connection has no question capability; reconnect with the current plugin so ' +
@@ -213,10 +214,13 @@ export function readQuestionConnectionState(connectionId, dir = CONNECTIONS_DIR)
   return state
 }
 
-export function questionRequestOptions(state) {
+/** The connection's credential as it is now (a browser sign-in renews; item 47f0dbdf). */
+export async function questionRequestOptions(state, { credential = connectionCredential } = {}) {
+  const current = await credential(state)
+  if (!current.ok) throw new Error(current.error || 'connection MCP authentication is unavailable')
   return {
-    mcpUrl: state.mcp_url,
-    token: state.token,
+    mcpUrl: current.mcp_url,
+    token: current.token,
     connectionCapability: state.connection_capability,
     timeoutMs: 30_000,
   }
@@ -256,7 +260,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (!args.command) throw new Error('expected describe, use, status or respond')
   const state = readQuestionConnectionState(args.connectionId)
-  const options = questionRequestOptions(state)
+  const options = await questionRequestOptions(state)
   const continuation = activeContinuation(state.interaction_continuation, {
     connectionId: args.connectionId,
     sessionId: state.session_id,

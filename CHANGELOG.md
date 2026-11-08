@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.54.0 - 2026-11-08
+
+- Claude Code now signs in to DevSpec through your browser. Installing the plugin no longer asks for a token: run `/devspec:devspec.login`, approve Claude Code on DevSpec's page, and that one sign-in serves Claude Code's own DevSpec tools, remote control and commit tracking. It renews itself before it expires and lasts until you run `/devspec:devspec.logout` or disconnect Claude Code on DevSpec's Agent setup page. After signing in, reconnect DevSpec's tools in `/mcp` (choose devspec, then Reconnect) or start a new session.
+- On a machine your browser cannot reach, such as over SSH, the login command shows a link instead of opening a browser. Approve it anywhere, then paste back the code DevSpec's page shows. `/devspec:devspec.login --code` chooses this yourself.
+- Staging and production sign-ins are kept side by side, so switching the plugin's DevSpec server never needs a fresh sign-in. The sign-in is saved in `~/.devspec/claude-code/auth.json`, readable only by you, and only for the server that approved it.
+- When the sign-in stops working, Claude Code says so plainly: at startup if you are not signed in to the plugin's server, if the sign-in has ended, or if DevSpec says Claude Code was disconnected, and whenever DevSpec refuses it during remote control. Each message says to run `/devspec:devspec.login`. A remote control connection whose sign-in is refused now stops and tells you, rather than retrying out of sight.
+- `DEVSPEC_MCP_TOKEN` stays for machines with no browser, such as CI, and still takes precedence over a browser sign-in. The login command will not run while it is set, and startup says so when it overrides a saved sign-in, with how to remove it. Claude Code does not pass that variable to a plugin's sign-in helper, so on a machine with both, Claude Code's own DevSpec tools keep using the browser sign-in while the plugin's background features use the token.
+- Retired: the plugin's DevSpec token setting, reading DevSpec tokens from a project `.mcp.json` or `~/.claude.json`, the warning about more than one DevSpec key, and the startup warning about an empty token field.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.53.0 - 2026-11-07
 
 - Claude Code can now rule three more kinds of DevSpec check: open tasks that may be out of date because a discussion point was settled, open tasks that may be out of date because a Goal or one of its outcomes changed, and the whole-backlog out-of-date scan started from the Tasks page. Each one says what it is when it arrives, for example "an out-of-date check is waiting, raised by the settled discussion point …". Claude rules them like any other check. The plugin now asks DevSpec for version 2 of check jobs, which carries these. Checks no longer show a high-risk count, because version 2 does not send one.

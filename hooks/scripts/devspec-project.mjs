@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { detectLocalId } from './remote-control-state.mjs'
 import { findProjectPin, gitRoot } from './devspec-scope.mjs'
 import { readConversationProject, saveConversationProject, projectCandidate, matchingProjects } from './conversation-project.mjs'
-import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
+import { credentialMcpUrl, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
@@ -45,8 +45,8 @@ export function manageProjectDefault(action, { cwd, state = null, confirm = fals
 }
 export async function prepareFreshConversation(selector, { cwd = process.cwd(), env = process.env, home = os.homedir(), call = mcpToolsCall, resolveAuth = resolveDevspecMcpAuth } = {}) {
   if (typeof selector !== 'string' || !selector.trim()) throw new Error('prepare requires --project <name-or-id>.')
-  const auth = resolveAuth(cwd, { hostToken: hostTokenFromEnv(env), env })
-  if (!auth.ok || !auth.token) throw new Error('Connect your DevSpec account before preparing a project choice.')
+  const auth = await resolveAuth(cwd, { env })
+  if (!auth.ok || !auth.token) throw new Error(auth.error || 'Sign in to DevSpec with /devspec:devspec.login before preparing a project choice.')
   const listing = await call({ mcpUrl: auth.mcp_url, token: auth.token, name: 'list_projects', arguments: {}, timeoutMs: 30000 })
   if (!Array.isArray(listing.projects)) throw new Error('DevSpec did not return project choices.')
   const candidates = listing.projects.map(projectCandidate)
@@ -72,14 +72,14 @@ async function main() {
   if (action === 'prepare') {
     process.stdout.write(JSON.stringify(await prepareFreshConversation(options.project, { cwd: options.cwd })) + '\n'); return
   }
-  const auth = resolveDevspecMcpAuth(options.cwd, { hostToken: hostTokenFromEnv(process.env) })
   if (action === 'list') {
-    if (!auth.ok || !auth.token) throw new Error('Connect your DevSpec account before listing projects.')
+    const auth = await resolveDevspecMcpAuth(options.cwd)
+    if (!auth.ok || !auth.token) throw new Error(auth.error || 'Sign in to DevSpec with /devspec:devspec.login before listing projects.')
     const result = await mcpToolsCall({ mcpUrl: auth.mcp_url, token: auth.token, name: 'list_projects', arguments: {}, timeoutMs: 30000 })
     process.stdout.write(JSON.stringify(result) + '\n'); return
   }
   const localId = detectLocalId({ 'local-id': options.localId }).local_id
-  const state = readConversationProject(localId, { endpoint: auth.mcp_url })
+  const state = readConversationProject(localId, { endpoint: credentialMcpUrl(process.env) })
   process.stdout.write(JSON.stringify(manageProjectDefault(action, { ...options, state })) + '\n')
 }
 if (isEntryPoint(import.meta.url)) {

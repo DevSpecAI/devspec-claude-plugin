@@ -29,11 +29,19 @@ Inside Claude Code, run:
 
 Then open `/plugin` → **Marketplaces** → **devspec** and choose **Enable auto-update** so Claude Code installs new plugin releases automatically when it starts.
 
-### 2. Enter your DevSpec token
+### 2. Sign in through your browser
 
-When Claude Code installs the plugin, it prompts you for your DevSpec API token. Create a **Read & write** token on your [Agent setup](https://app.devspec.ai/settings/agents) page and paste your `dvs_…` token when asked.
+Inside Claude Code, run:
 
-*(To update your token later, open `/plugin` → **Installed** → **DevSpec** in Claude Code.)*
+```text
+/devspec:devspec.login
+```
+
+Your browser opens DevSpec's approval page; approve **Claude Code** there and you are done. There is no token to create or copy, and the sign-in serves everything the plugin does: Claude Code's own DevSpec tools, remote control and commit tracking. It renews itself and lasts until you sign out (`/devspec:devspec.logout`) or disconnect Claude Code on your [Agent setup](https://app.devspec.ai/settings/agents) page; if it ever stops working, Claude Code tells you when it starts and asks you to run `/devspec:devspec.login` again. Then reconnect DevSpec's tools in `/mcp` (choose **devspec** → **Reconnect**) or start a new session.
+
+- **On a machine your browser cannot reach** (over SSH, or a remote dev box), the command shows a link instead; open it anywhere, approve, and paste back the code DevSpec's page shows. Run `/devspec:devspec.login --code` to choose this yourself.
+- **Staging and production** are signed in separately and both sign-ins are kept, so switching the plugin's DevSpec server never needs a fresh sign-in.
+- **Machines with no browser at all** (CI, cloud workers) can set `DEVSPEC_MCP_TOKEN` instead. It always takes precedence over a browser sign-in, so remove it from your shell profile on a machine where you sign in through the browser; Claude Code says so at startup when both are present.
 
 ### 3. Connect to your project
 
@@ -54,6 +62,8 @@ The plugin also adds these slash commands inside Claude Code:
 
 | Command | What it does |
 |---|---|
+| `/devspec:devspec.login` | Signs Claude Code in to DevSpec through your browser (`--code` on a machine your browser cannot reach). |
+| `/devspec:devspec.logout` | Signs Claude Code out of DevSpec on this computer, for the server the plugin is set to. |
 | `/devspec:devspec.remote` | Connects this Claude Code conversation to DevSpec and waits on the **Agents** page outside any session. |
 | `/devspec:devspec.remote --new` | Connects and starts a fresh shared DevSpec session room (`--new --private` for a private room). |
 | `/devspec:devspec.remote --session <id>` | Connects and joins an existing DevSpec session room. |
@@ -70,7 +80,8 @@ To turn off automatic connection at startup, switch off **Make Claude Code avail
 
 For transparency and security review, here is what the plugin runs, stores locally, and sends to DevSpec:
 
-- **MCP Server Connection:** Communicates over HTTPS with `https://api.devspec.ai/api/mcp` (or the URL configured in `devspec_mcp_url`) authenticated via your `devspec_token` from Claude Code's `userConfig`.
+- **MCP Server Connection:** Communicates over HTTPS with `https://api.devspec.ai/api/mcp` (or the URL configured in `devspec_mcp_url`). Claude Code gets the `Authorization` header from the plugin's `headersHelper` (`mcp-headers.mjs`), which reads your browser sign-in for that server; on a machine with no browser, `DEVSPEC_MCP_TOKEN` is sent instead.
+- **Browser sign-in (`devspec-login.mjs`, `oauth.mjs`, `auth-store.mjs`):** OAuth 2.1 authorization code with PKCE through DevSpec's sign-in server, using Claude Code's own registered sign-in app. The approval comes back to a listener on `127.0.0.1` that closes after ten minutes, or, on a machine your browser cannot reach, as a code you paste. The plugin never polls a server for the result. Access is renewed with a single-use renewal key under a lock shared by every Claude Code process on the machine.
 - **Hooks & Modules (`hooks/hooks.json`, `hooks/terminal-status.ts`, `hooks/local-prompt.ts`, `hooks/devspec-control.ts`, `hooks/devspec-telemetry.ts`):**
   - On `SessionStart` (`startup-listener.mjs`) and monitor startup (`devspec-remote-listen.mjs`), spawns a background Node poller (`devspec-remote-poll.mjs`) when `connect_at_startup` is enabled or when `/devspec:devspec.remote` is invoked.
   - On `UserPromptSubmit` and `Stop` (`mirror-turn.mjs`), mirrors prompts and turn completion to the attached DevSpec session room so your web/phone transcript stays synchronized, and relays runtime telemetry (`agent-telemetry.mjs`) for the active DevSpec turn: model, effort, context fill, token counts, and, for a Pro or Max plan, how much of the 5-hour and weekly usage limits is used and when each resets.
@@ -78,6 +89,7 @@ For transparency and security review, here is what the plugin runs, stores local
   - On `PreToolUse` (`devspec-tool-input.mjs`, `git-observer.mjs`) and `PostToolUse` (`mark-explicit-reply.mjs`, `repo-link-nudge.mjs`), attaches the active connection/session identity to `mcp__devspec__*` tool calls and prepends a lightweight `git` wrapper (`git-shim.mjs`) on `Bash` commands so commits in linked project repositories (including Git worktrees) and `.devspec/project.json`-pinned folders are tagged with `[devspec:<id>]` when a single task is claimed and recorded against that task.
   - When a remote control action is triggered from the DevSpec Agents page, the status module (`terminal-status.ts`, `devspec-control.ts`) updates the terminal status line and runs `/devspec:devspec.remote` or `/devspec:devspec.remote-stop` on your behalf.
 - **Local Files Written:**
+  - `~/.devspec/claude-code/auth.json` (permissions `0600` / `0700`): your browser sign-in, one entry per DevSpec server. Only this plugin reads it. `/devspec:devspec.logout` removes the entry and cancels it at DevSpec's sign-in server.
   - `~/.devspec/remote-control/` (permissions `0600` / `0700`): stores per-connection state, session room transcript cache, and project instruction tiers.
   - `.devspec/project.json`: written in the repository root only when you explicitly run `/devspec:devspec.project remember` to pin a default project for that folder.
 

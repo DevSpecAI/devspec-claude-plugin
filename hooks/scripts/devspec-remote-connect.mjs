@@ -32,7 +32,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mcpToolsCall, isRetryableHttpFailure } from './mcp-call.mjs'
-import { resolveDevspecMcpAuth, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
+import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { refusedCredentialMessage } from './sign-in-notices.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { waitHolderOwnerPid, waitHolderPid } from './devspec-remote-wait.mjs'
 import { renderTiers, renderTiersPointer, saveTiersText, storeTiers, hasStoredTiers, mergeInstructionTiers } from './instruction-tiers.mjs'
@@ -40,7 +41,6 @@ import { renderRepositoryContext, storeRepositoryContext, takeRepositoryContext 
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { claudeProcessOf, readOwnerListenerStatus, startupListenerAlive } from './startup-listener.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
-import { PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, PLUGIN_SETTINGS_KEY_VAR } from './session-env-credentials.mjs'
 import { PROJECT_ID, projectCandidate, matchingProjects, readProjectSelection, readConversationProject, saveConversationProject, blockConversationProject } from './conversation-project.mjs'
 import {
   detectLocalId,
@@ -245,13 +245,11 @@ export async function connect(options = {}, deps = {}) {
     })
   }
 
-  const auth = resolveAuth(cwd, { hostToken: hostTokenFromEnv(env), env })
+  // The plugin's browser sign-in for its configured server, or DEVSPEC_MCP_TOKEN on a
+  // machine with no browser (item 47f0dbdf). Its error is the plain sentence to show.
+  const auth = await resolveAuth(cwd, { env })
   if (!auth.ok || !auth.token) {
-    throw new ConnectError(
-      `DevSpec MCP auth could not be resolved: ${auth.error || 'no token found'}\n` +
-        'Fix MCP auth (DEVSPEC_MCP_TOKEN, the plugin token, .mcp.json or ~/.claude.json) and retry.',
-      { reason: 'auth' },
-    )
+    throw new ConnectError(auth.error || 'Claude Code is not signed in to DevSpec. Run /devspec:devspec.login.', { reason: 'auth' })
   }
 
   if (previousProject && previousProject.endpoint !== auth.mcp_url) {
@@ -348,6 +346,10 @@ export async function connect(options = {}, deps = {}) {
         : ''
     // `unreachable` is the one failure worth trying again later: the server never gave
     // a verdict. Anything else is an answer — an unlinked folder, a refused token.
+    // A refused sign-in is said plainly, with what to do next (signed_out: the person
+    // disconnected Claude Code on DevSpec's Agent setup page).
+    const refused = refusedCredentialMessage(e, { endpoint: auth.mcp_url, source: auth.source })
+    if (refused) throw new ConnectError(refused, { reason: 'auth' })
     const projectSelection = readProjectSelection(e.details)
     if (projectSelection || projectSelector !== null) blockConversationProject(localId, auth.mcp_url, 'Choose a project explicitly with Remote --project before using project-scoped DevSpec tools.', { home: projectHome })
     throw new ConnectError(`register_connection failed: ${e.message}${hint}`, {
@@ -442,6 +444,7 @@ export async function connect(options = {}, deps = {}) {
         : null,
     connectionCapability,
     noPoller: !!noPoller,
+    credential: auth,
     env,
   })
 
@@ -495,12 +498,8 @@ export async function connect(options = {}, deps = {}) {
     auth_ok: written.auth_ok,
     auth_source: written.auth_source,
     warning: written.warning || null,
-    warning_tokens: written.warning_tokens || null,
     warning_poller: written.warning_poller || null,
     warning_local: written.warning_local || null,
-    // The session-start hook's marker (item 721f9c67): only it can see the plugin
-    // settings. Absent means unknown, never "set".
-    plugin_settings_key_missing: env[PLUGIN_SETTINGS_KEY_VAR] === 'missing',
     poller: written.poller || null,
     bond_action: bond.action,
     state_path: written.path,
@@ -550,9 +549,7 @@ export function renderStatusBlock(summary, { listenerArmed = false, startupListe
   lines.push(`poller: ${pollerText} · host: ${summary.mcp_url}`)
   lines.push(`plans: ${summary.connection_capability_present ? 'manage_plan ready' : 'UNAVAILABLE — server did not negotiate capability v1'}`)
   if (!summary.auth_ok) lines.push(`auth: FAILED — ${summary.warning}`)
-  if (summary.warning_tokens) lines.push(`warning: ${summary.warning_tokens}`)
   if (!summary.local_id) lines.push(`warning: ${summary.warning_local}`)
-  if (summary.plugin_settings_key_missing) lines.push(`warning: ${PLUGIN_SETTINGS_KEY_MISSING_MESSAGE}`)
   if (!summary.owner_pid && !noPoller) {
     lines.push(
       'warning: no owner pid resolved — pass --owner-pid "$PPID". Without an owner anchor a poller' +

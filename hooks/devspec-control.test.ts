@@ -17,9 +17,8 @@ const CONTROL_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_I
 const REPORT_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.controls.json`
 const TELEMETRY_FILE = `${HOME}/.devspec/remote-control/connections/${CONNECTION_ID}.telemetry.json`
 
-// The manifest requires a token, and Claude Code admits the module only with
-// options that fit it.
-const OPTIONS = { options: { devspec_token: 'dvs_devspec_control_test' } }
+// The manifest's own defaults: nothing is required since browser sign-in (item 47f0dbdf).
+const OPTIONS = {}
 
 type TestOn = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
 

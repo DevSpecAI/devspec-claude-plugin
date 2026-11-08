@@ -1863,6 +1863,84 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
     assert.ok(loud.includes(replyLine([later.notice_id])))
   })
 
+  it('renders unlinked_commit_item_review without Prompt: undefined while server_notice still shows its prompt', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sys-notice-kinds-'))
+    const file = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+    const UNLINKED_ID = '71000000-0000-4000-8000-0000000000a4'
+    const SERVER_ID = '71000000-0000-4000-8000-0000000000a5'
+    const unlinkedNotice = {
+      version: 1,
+      kind: 'unlinked_commit_item_review',
+      notice_id: UNLINKED_ID,
+      commit_sha: 'a'.repeat(40),
+      task_id: '81000000-0000-4000-8000-000000000003',
+      task_title: 'Sign in with a passkey',
+      branch: 'feat/passkeys',
+      contract_uri: INGRESS_RESOURCE,
+      allowed_outcomes: [
+        'correct_item',
+        'link_item',
+        'resolve_duplicate',
+        'dismiss_item',
+        'confirm_item_correct',
+        'defer_follow_up',
+      ],
+      allowed_tools: ['get_task', 'update_task', 'link_tasks', 'supersede_task'],
+    }
+    const serverNotice = {
+      ...NOTICE_ENVELOPE.system_notices[0],
+      notice_id: SERVER_ID,
+    }
+    try {
+      const envelope = {
+        ...NOTICE_ENVELOPE,
+        envelope_id: '60000000-0000-4000-8000-0000000000a4',
+        system_notices: [unlinkedNotice, serverNotice],
+      }
+      const writeRecord = (_cid, rec) => {
+        fs.appendFileSync(file, JSON.stringify(rec) + '\n', { mode: 0o600 })
+        return true
+      }
+      const appended = appendCanonicalInbox(CONNECTION, envelope, scanPersistedInboxRecords(''), {
+        sessionId: null,
+        channel: 'system_notice',
+        writeRecord,
+      })
+      assert.equal(appended.ok, true)
+      assert.equal(appended.appended, true)
+      assert.deepEqual(appended.executeNoticeIds, [UNLINKED_ID, SERVER_ID])
+
+      const [batch] = parseInboxBatches(fs.readFileSync(file, 'utf8').trim().split('\n'), CONNECTION)
+      const events = buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })
+      assert.equal(events.length, 3)
+
+      const unlinkedEvent = events[0]
+      assert.equal(unlinkedEvent.kind, 'unlinked_commit_item_review')
+      assert.equal(Object.hasOwn(unlinkedEvent, 'prompt'), false)
+      assert.doesNotMatch(unlinkedEvent.content, /undefined/)
+      assert.doesNotMatch(unlinkedEvent.content, /^Prompt:/m)
+      assert.match(unlinkedEvent.content, /\[DevSpec System Notice: unlinked_commit_item_review\]/)
+      assert.match(
+        unlinkedEvent.content,
+        /Your push of commit a{40} on branch feat\/passkeys did not carry a \[devspec:<id>\] tag, while you hold claimed item "Sign in with a passkey" \(81000000-0000-4000-8000-000000000003\)\./,
+      )
+      assert.match(
+        unlinkedEvent.content,
+        /Allowed outcomes: correct_item, link_item, resolve_duplicate, dismiss_item, confirm_item_correct, defer_follow_up/,
+      )
+      assert.match(unlinkedEvent.content, /Allowed tools: get_task, update_task, link_tasks, supersede_task/)
+
+      const serverEvent = events[1]
+      assert.equal(serverEvent.kind, 'server_notice')
+      assert.equal(serverEvent.prompt, 'Review the protected record and your reversing record below.')
+      assert.match(serverEvent.content, /\[DevSpec System Notice: coherence_finding \/ reversal\]/)
+      assert.match(serverEvent.content, /Summary: Protected decision reversed by new record/)
+      assert.match(serverEvent.content, /Review the protected record and your reversing record below\./)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('holds check_job and canonical_system_notices in --stream mode while a turn is active, then emits them one turn at a time in FIFO order', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-fifo-queue-'))
     const connDir = path.join(home, '.devspec', 'remote-control', 'connections')

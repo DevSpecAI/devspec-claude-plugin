@@ -790,7 +790,6 @@ export function formatSystemNoticeContent(notice) {
   return labelled([
     '[DevSpec System Notice: unlinked_commit_item_review]',
     `Your push of commit ${notice?.commit_sha}${branchSuffix} did not carry a [devspec:<id>] tag, while you hold claimed item "${notice?.task_title}" (${notice?.task_id}).`,
-    `Prompt: ${notice?.prompt}`,
     `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
     `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
     ...(quiet ? [FOR_THE_RECORD_HANDLING] : [NOTICE_HANDLING, replyLine([notice?.notice_id])]),
@@ -861,7 +860,6 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
             allowed_tools: notice.allowed_tools,
           }
         : {
-            prompt: notice.prompt,
             allowed_outcomes: notice.allowed_outcomes,
             allowed_tools: notice.allowed_tools,
           }),

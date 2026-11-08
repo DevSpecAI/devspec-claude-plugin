@@ -150,7 +150,7 @@ describe('the notice the model is handed', () => {
     const records = [{ label: 'Your change', record_type: 'task', record_id: NOTICE_B, title: 'T', text: 'body', url: null }]
     const notices = [
       { kind: 'server_notice', notice_id: NOTICE_A, topic: 'conflict', notice_type: 'decision_conflict', summary: 'S', prompt: 'P', records, allowed_outcomes: [], allowed_tools: [] },
-      { kind: 'unlinked_commit_item_review', notice_id: NOTICE_A, commit_sha: 'abc1234', task_id: NOTICE_B, task_title: 'T', prompt: 'P', allowed_outcomes: ['link'], allowed_tools: ['add_commit_reference'] },
+      { kind: 'unlinked_commit_item_review', notice_id: NOTICE_A, commit_sha: 'abc1234', task_id: NOTICE_B, task_title: 'T', branch: 'feat/x', allowed_outcomes: ['link'], allowed_tools: ['add_commit_reference'] },
       // A kind this version cannot read: the person is still told, as a reply to it.
       { version: 1, kind: 'requirement_outcome', notice_id: NOTICE_A, contract_uri: 'devspec://product/remote-ingress-contract' },
     ]

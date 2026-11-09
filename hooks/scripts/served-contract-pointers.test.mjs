@@ -86,7 +86,12 @@ describe('the served contract sections this plugin points at', () => {
     const contract = servedContract(checkout.root)
     const named = pointers()
     // The commit messages name both; a scan that finds neither is broken, not clean.
-    assert.ok(named.has('work_entry_contract') && named.has('commit_provenance_contract'), 'the scan found the commit messages\' pointers')
+    assert.ok(
+      named.has('core_implementation_contract') &&
+        named.has('work_entry_contract') &&
+        named.has('commit_provenance_contract'),
+      'the scan found the implementation contract pointers',
+    )
     assert.deepEqual(missingFrom(contract, named), [], `contract ${contract.contract_version} has no such section`)
   })
 

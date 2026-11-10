@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.55.0 - 2026-11-09
+
+- **Universal pull-request delivery and Merge when cleared.** `devspec-remote-command` and `/devspec:devspec.remote` now pre-approve `get_pull_request` and point at `core_implementation_contract` (`core.push-safely`) in `devspec://product/implementation-contract`: Claude builds every change on its own branch, opens a pull request into the repository's tracking branch wherever pull requests are supported (small changes and unprotected branches included), switches on DevSpec's Merge when cleared (`get_pull_request` with `merge_when_cleared: true`, or GitHub auto-merge where DevSpec's check is required), never merges before DevSpec's check passes, and ends its turn instead of polling checks so its main thread stays free to rule the pull request's check job.
+- **One-shot clear-to-merge fallback wake.** When a pull request with Merge when cleared has passed DevSpec's check and all GitHub checks/approvals on its current head SHA and the GitHub App cannot merge it directly, DevSpec delivers a one-shot `pr_ready_to_merge` system notice wake guiding Claude to merge that cleared commit with its owner's GitHub credentials.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.54.1 - 2026-11-08
 
 - **Browser sign-in polish.** The local browser callback page now renders with the DevSpec logo and adapts cleanly to light and dark mode, `/devspec:devspec.login` places the browser link on its own line with a clearer remote-machine `--code` hint, sign-in confirmation prompts you to restart Claude Code to finish connecting, and command/README copy no longer mentions the retired token setup to new users.

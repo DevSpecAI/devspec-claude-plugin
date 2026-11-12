@@ -11,6 +11,7 @@
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
@@ -55,6 +56,7 @@ import {
   heldInboxRecords,
   heldRecordRanges,
   isConnectionTurnRunning,
+  isHeldCheckJobStillPending,
 } from './devspec-remote-wait.mjs'
 import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
 import { appendWakeDispatches, appendCanonicalInbox, countUnconsumedCommands, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
@@ -2128,7 +2130,7 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
   }
 
   /** One connection's files, and a wait stream on them that can be stopped and started again. */
-  function connectionHome() {
+  function connectionHome(stateExtra = {}) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-queue-'))
     const dir = path.join(home, '.devspec', 'remote-control', 'connections')
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -2137,7 +2139,7 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
     const turnFile = path.join(dir, `${CONNECTION}.turn`)
     fs.writeFileSync(
       stateFile,
-      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0 }),
+      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0, ...stateExtra }),
       { mode: 0o600 },
     )
     fs.writeFileSync(inbox, '', { mode: 0o600 })
@@ -2403,6 +2405,169 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
       assert.deepEqual(heldInboxRecords(path.join(dir, 'missing.jsonl'), [a], cursor, CONNECTION), [])
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('isHeldCheckJobStillPending drops settled check jobs and fails open on pending or lookup errors', async () => {
+    const check = checkJob('revalidation-unit')
+    const id = check.dispatch.check_job_id
+    const state = {
+      token: 'dvs_test_token',
+      auth_source: 'env',
+      mcp_url: 'http://127.0.0.1:9/api/mcp',
+      connection_capability: 'dvsc_cap_1',
+    }
+    const resolveCredential = async () => ({
+      ok: true,
+      token: 'dvs_test_token',
+      mcp_url: state.mcp_url,
+      source: 'env',
+      principal: null,
+    })
+
+    let capturedCall = null
+    assert.equal(
+      await isHeldCheckJobStillPending(check, {
+        connectionId: CONNECTION,
+        state,
+        resolveCredential,
+        call: async (opts) => {
+          capturedCall = opts
+          return { connection_id: CONNECTION, dispatches: [] }
+        },
+      }),
+      false,
+      'empty dispatches array confirms the held check job is settled',
+    )
+    assert.equal(capturedCall.name, 'get_connection_dispatch')
+    assert.equal(capturedCall.connectionCapability, 'dvsc_cap_1')
+    assert.deepEqual(capturedCall.arguments, { connection_id: CONNECTION, dispatch_id: id })
+
+    assert.equal(
+      await isHeldCheckJobStillPending(check, {
+        connectionId: CONNECTION,
+        state,
+        resolveCredential,
+        call: async () => ({ dispatches: [{ check_job_id: uuidFor('other-check', '9') }] }),
+      }),
+      false,
+      'non-matching dispatch id also treats target check job as settled',
+    )
+
+    assert.equal(
+      await isHeldCheckJobStillPending(check, {
+        connectionId: CONNECTION,
+        state,
+        resolveCredential,
+        call: async () => ({ dispatches: [{ check_job_id: id }] }),
+      }),
+      true,
+      'matching check_job_id stays deliverable',
+    )
+
+    assert.equal(
+      await isHeldCheckJobStillPending(check, {
+        connectionId: CONNECTION,
+        state,
+        resolveCredential,
+        call: async () => {
+          throw new Error('MCP HTTP 503: upstream unavailable')
+        },
+      }),
+      true,
+      'transient lookup failure fails open so real checks are not lost',
+    )
+
+    let offlineCalled = false
+    assert.equal(
+      await isHeldCheckJobStillPending(check, {
+        connectionId: CONNECTION,
+        state: { enabled: true, connection_id: CONNECTION },
+        call: async () => {
+          offlineCalled = true
+          return { dispatches: [] }
+        },
+      }),
+      true,
+      'state without recorded credential/server delivers without hitting network',
+    )
+    assert.equal(offlineCalled, false)
+  })
+
+  it('skips an already-settled held check job in --stream mode while transient lookup failures still deliver', async () => {
+    const settled = checkJob('settled-held')
+    const transientFail = checkJob('transient-fail-held')
+    const lookupIds = []
+    const server = http.createServer((req, res) => {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        const rpc = JSON.parse(body)
+        const dispatchId = rpc.params?.arguments?.dispatch_id
+        lookupIds.push(dispatchId)
+        if (dispatchId === settled.dispatch.check_job_id) {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: rpc.id,
+              result: {
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      connection_id: CONNECTION,
+                      dispatches: [],
+                      count: 0,
+                      dispatch_id: dispatchId,
+                      identity_complete: true,
+                    }),
+                  },
+                ],
+              },
+            }),
+          )
+          return
+        }
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ code: 'auth_validation_unavailable', retryable: true }))
+      })
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const mcpUrl = `http://127.0.0.1:${server.address().port}/api/mcp`
+    const conn = connectionHome({
+      token: 'dvs_stream_stub',
+      auth_source: 'env',
+      mcp_url: mcpUrl,
+    })
+    const pickupMs = 300
+    try {
+      conn.turn()
+      conn.append(settled)
+      conn.append(noticeRecord(NOTICE_A))
+      conn.append(transientFail)
+      await conn.start({ pickupMs })
+      await until(() => conn.held().length === 3, 'all three queued records to be held')
+
+      // Ending the running turn skips the settled check job without waking Claude Code
+      // and immediately delivers NOTICE_A on the same tick.
+      conn.endTurn()
+      await until(() => conn.queued().length === 1, 'NOTICE_A delivered immediately past settled check')
+      assert.deepEqual(conn.queued(), [NOTICE_A], 'settled check job did not wake the model')
+      assert.deepEqual(lookupIds, [settled.dispatch.check_job_id])
+
+      // Simulate Claude Code running NOTICE_A's turn, then finishing so transientFail drains.
+      conn.turn()
+      await sleep(pickupMs + 150)
+      assert.equal(conn.held().length, 1)
+      conn.endTurn()
+      await until(() => conn.queued().length === 2, 'transient-failure check job delivered')
+      assert.deepEqual(conn.queued(), [NOTICE_A, transientFail.dispatch.check_job_id])
+      await until(() => conn.held().length === 0, 'held list emptied and persisted')
+      assert.deepEqual(lookupIds, [settled.dispatch.check_job_id, transientFail.dispatch.check_job_id])
+    } finally {
+      await conn.cleanup()
+      await new Promise((resolve) => server.close(resolve))
     }
   })
 })

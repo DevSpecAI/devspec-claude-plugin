@@ -220,7 +220,7 @@ Every decision a person can make in Review has a tool:
 
 - `get_review_queue`: what is waiting, with the ids and revisions the others need. Read it first.
 - `decide_proposal`: accept or decline a proposed change, or a request to confirm. Pass its `proposal_id`, and its `proposal_revision` as the `revision` argument, exactly as the queue listed them.
-- `manage_protected_intent`: answer on work that would undo a decision (go ahead, decline, not a reversal, keep, undo), let an experiment land, adopt, take ownership. Another person's agreement is theirs: `request_confirmation` asks them.
+- `manage_protected_intent`: answer on work that would undo a decision (go ahead, decline, not a reversal, keep, undo), let an experiment land, or adopt. Another person's agreement is theirs: `request_confirmation` asks them.
 - `resolve_memory_flag`, `resolve_resource_flag`, `resolve_task_flag`: a memory, document, or open task flagged out of date is still valid. If it really is out of date, correct it (`update_memory`, `supersede_memory`, `update_resource`, `supersede_resource`, `update_task`) or retire/dismiss it instead.
 - `resolve_duplicate` (preview first): close a duplicate once what only it had is in the one kept. `record_duplicate_nonmatch`: they are not duplicates.
 

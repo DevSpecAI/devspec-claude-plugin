@@ -24,7 +24,9 @@
  *  - A commit is inspected only when it arrives in a shape this can read with
  *    certainty (see `simpleGitCommit`). Anything else — aliases, compound shell,
  *    `--amend`, `-F`, expansions, GUI commits, merge/rebase/cherry-pick — is allowed
- *    untouched. That is a deliberate hole: the analyzer reconciles it server-side.
+ *    untouched. That is a deliberate hole: server commit ingestion and mechanical
+ *    unlinked-work accountability (`devspec://product/implementation-contract`)
+ *    reconcile it without creating automatic tasks.
  *  - The test is a well-formed REFERENCE, not a live claim. A link stays a link after
  *    `record_implementation` releases the claim, across repositories, and on
  *    follow-up work.
@@ -272,7 +274,8 @@ function names(requested, id) {
  * and denied when unsure. This asks "is this exactly the shape I can read with
  * certainty?" and allows when unsure. Every `return null` below is an ALLOW.
  *
- * Refused outright (→ allowed, reconciled by the analyzer instead): anything with
+ * Refused outright (→ allowed, reconciled server-side via commit ingestion and
+ * unlinked-work accountability instead): anything with
  * shell structure or expansion, any path-qualified or aliased git, message sources
  * this cannot see (`-F`, `--file`, `--reuse-message`, `-c`, `-C`, `--template`), and
  * history-rewriting or message-inheriting forms (`--amend`, `--squash`, `--fixup`,
@@ -333,8 +336,8 @@ export function simpleGitCommit(command, { onInvocation } = {}) {
     }
     // Unquoted shell structure or expansion: not a shape this can read honestly.
     // Refused only OUTSIDE quotes — a commit message may legitimately contain braces,
-    // parentheses or a semicolon, and refusing those would hand every ordinary message
-    // to the analyzer for no reason.
+    // parentheses or a semicolon, and refusing those would skip local tagging on ordinary
+    // messages for no reason.
     if ('|;<>(){}`$\\\n\r'.includes(char)) return null
     if (/\s/.test(char)) {
       endWord(index)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.1 - 2026-11-12
+
+- **Skip settled held check jobs before waking Claude Code.** When a check job waited behind a running turn, the wake stream now revalidates it against `get_connection_dispatch` right before releasing it. If DevSpec confirms the check job is already settled or withdrawn, the listener drops it without opening a turn and moves straight on to the next held item; transient lookup failures still deliver the check job so real checks are never lost.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.55.0 - 2026-11-09
 
 - **Universal pull-request delivery and Merge when cleared.** `devspec-remote-command` and `/devspec:devspec.remote` now pre-approve `get_pull_request` and point at `core_implementation_contract` (`core.push-safely`) in `devspec://product/implementation-contract`: Claude builds every change on its own branch, opens a pull request into the repository's tracking branch wherever pull requests are supported (small changes and unprotected branches included), switches on DevSpec's Merge when cleared (`get_pull_request` with `merge_when_cleared: true`, or GitHub auto-merge where DevSpec's check is required), never merges before DevSpec's check passes, and ends its turn instead of polling checks so its main thread stays free to rule the pull request's check job.

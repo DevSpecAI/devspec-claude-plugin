@@ -62,6 +62,8 @@ import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
 import { replyLine } from './notice-reply.mjs'
 import { readTurnActivity, turnIsRunning, turnMarkerFile } from './turn-liveness.mjs'
+import { mcpToolsCall } from './mcp-call.mjs'
+import { connectionCredential, recordedIdentity } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
@@ -1341,6 +1343,56 @@ export function heldRecordRanges(held) {
   return held.map(({ start, end }) => ({ start, end }))
 }
 
+/**
+ * Whether a held check job is still waiting on the server right before waking Claude Code
+ * (item e6985316). A check held behind a running turn may settle or be withdrawn before
+ * that turn ends; when `get_connection_dispatch` confirms it is no longer in `dispatches`,
+ * the listener drops it silently instead of opening a turn on a settled check. Any
+ * missing credential or transient lookup failure fails open so a real check is not lost.
+ */
+export async function isHeldCheckJobStillPending(
+  batch,
+  {
+    connectionId,
+    state,
+    call = mcpToolsCall,
+    resolveCredential = connectionCredential,
+    timeoutMs = 5_000,
+  } = {},
+) {
+  if (batch?.type !== 'check_job') return true
+  const checkJobId =
+    typeof batch.dispatch?.check_job_id === 'string' && batch.dispatch.check_job_id
+      ? batch.dispatch.check_job_id
+      : null
+  if (!checkJobId || !connectionId) return true
+  const mcpUrl =
+    typeof state?.mcp_url === 'string' && state.mcp_url.trim() ? state.mcp_url.trim() : null
+  const credential = recordedIdentity(state) && mcpUrl ? await resolveCredential(state) : null
+  if (!credential?.ok) return true
+  const connectionCapability =
+    typeof state?.connection_capability === 'string' && state.connection_capability
+      ? state.connection_capability
+      : null
+  try {
+    const res = await call({
+      mcpUrl: credential.mcp_url,
+      token: credential.token,
+      ...(connectionCapability ? { connectionCapability } : {}),
+      name: 'get_connection_dispatch',
+      arguments: {
+        connection_id: connectionId,
+        dispatch_id: checkJobId,
+      },
+      timeoutMs,
+    })
+    if (!Array.isArray(res?.dispatches)) return true
+    return res.dispatches.some((d) => (d?.check_job_id ?? d?.id) === checkJobId)
+  } catch {
+    return true
+  }
+}
+
 /** The stdout events one inbox batch becomes. */
 function eventsForBatch(batch, { inboxFile, connectionId }) {
   if (batch.type === 'canonical_commands') {
@@ -1517,6 +1569,14 @@ async function main() {
     let released = false
     while (held.length > 0 && !queuedWorkWaits()) {
       const [next] = held
+      if (
+        next.batch?.type === 'check_job' &&
+        !(await isHeldCheckJobStillPending(next.batch, { connectionId, state: live }))
+      ) {
+        held.shift()
+        released = true
+        continue
+      }
       await writeEventSequence(eventsForBatch(next.batch, { inboxFile: file, connectionId }))
       held.shift()
       released = true

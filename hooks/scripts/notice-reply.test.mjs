@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 import { normalizeNoticeIds, replyLine } from './notice-reply.mjs'
 import { prepareDevspecToolInput } from './devspec-tool-input.mjs'
 import { appendRequestEvent, readRequestState } from './requests.mjs'
-import { formatSystemNoticeContent } from './devspec-remote-wait.mjs'
+import { formatSystemNoticeContent, NOTICE_HANDLING } from './devspec-remote-wait.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const NOTICE_A = 'aaaaaaaa-1111-4111-8111-111111111111'
@@ -172,5 +172,17 @@ describe('the notice the model is handed', () => {
     const line = replyLine([NOTICE_A])
     assert.match(line, /for_the_record is expected, not a failure/)
     assert.match(line, /semantics\.notice_reply\.only_when_needed/)
+    assert.match(line, /unresolved choice, hold, rejection, or block still needs the person/)
+  })
+
+  it('requires post-action room silence once findings are settled under conversation intent', () => {
+    const skill = fs.readFileSync(path.resolve(HERE, '../../skills/devspec-remote-command/SKILL.md'), 'utf8')
+    for (const prose of [NOTICE_HANDLING, skill]) {
+      assert.match(prose, /semantics\.notice_audience/)
+      assert.match(prose, /semantics\.notice_reply/)
+      assert.match(prose, /unresolved choice, hold, rejection, or block/)
+      assert.doesNotMatch(prose, /confirm briefly in context/i)
+      assert.doesNotMatch(prose, /mention what you updated in one brief sentence/i)
+    }
   })
 })

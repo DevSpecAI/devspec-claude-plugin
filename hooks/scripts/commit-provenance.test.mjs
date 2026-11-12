@@ -284,7 +284,7 @@ describe('reading a commit message only where it is unambiguous', () => {
   })
 
   it('keeps shell-special characters that are legitimate message text', () => {
-    // Refusing these would hand ordinary messages to the analyzer for no reason.
+    // Refusing these would skip local tagging on ordinary messages for no reason.
     assert.equal(simpleGitCommit('git commit -m "fix(api): handle {a,b}; done"').message, 'fix(api): handle {a,b}; done')
     assert.equal(simpleGitCommit("git commit -m 'cost is $5 & rising'").message, 'cost is $5 & rising')
   })

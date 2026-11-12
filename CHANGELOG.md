@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.2 - 2026-11-12
+
+- **Passive `project_incidents` turn context and incident MCP tools (`core.respect-incidents-and-escalate-delivery-blockers`).** The poller and Monitor wake stream now validate and materialize `project_incidents` from changed `poll_connection` responses into `room_state` and emit compact (<500-char) passive `project_incidents` awareness on command and automation wakes without waking idle connections. `devspec-remote-command` and `/devspec:devspec.remote` pre-approve `get_incidents`, `get_incident`, `report_incident`, and `manage_incident`, `hooks/scripts/request-ref.mjs` stamps `request_ref` onto `report_incident` and `manage_incident`, and `devspec-remote-command` points at `semantics.project_incidents` (`devspec://product/remote-ingress-contract`) and `core_implementation_contract` (`core.respect-incidents-and-escalate-delivery-blockers` in `devspec://product/implementation-contract`).
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.55.1 - 2026-11-12
 
 - **Skip settled held check jobs before waking Claude Code.** When a check job waited behind a running turn, the wake stream now revalidates it against `get_connection_dispatch` right before releasing it. If DevSpec confirms the check job is already settled or withdrawn, the listener drops it without opening a turn and moves straight on to the next held item; transient lookup failures still deliver the check job so real checks are never lost.

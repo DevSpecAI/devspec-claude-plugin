@@ -53,6 +53,7 @@ import {
   isSessionEventsV1,
   isSessionPollsProjection,
   isStillToDiscussProjectionV1,
+  isProjectIncidentsProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_RESOURCE_URI,
@@ -829,6 +830,7 @@ export function appendCanonicalInbox(
     instructionContextFile = null,
     channel = 'context',
     questionHandoff = null,
+    projectIncidents = null,
     writeRecord = appendDurableRecord,
   } = {},
 ) {
@@ -887,6 +889,9 @@ export function appendCanonicalInbox(
     ...(channel === 'command' && questionHandoff && executeMessageIds.includes(questionHandoff.source_message_id)
       ? { question_handoff: questionHandoff }
       : {}),
+    ...(channel === 'command' && isProjectIncidentsProjectionV1(projectIncidents)
+      ? { project_incidents: projectIncidents }
+      : {}),
   }
   if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
   index.envelopeIds.add(ingress.envelope_id)
@@ -917,6 +922,7 @@ export function appendWakeDispatches(
   index,
   sessionId,
   writeRecord = appendDurableRecord,
+  { projectIncidents = null } = {},
 ) {
   const validated = []
   for (const offered of Array.isArray(dispatches) ? dispatches : []) {
@@ -924,6 +930,7 @@ export function appendWakeDispatches(
     if (!parsed.ok) return { ok: false, appended: 0, checkJobs: 0, error: parsed.error }
     validated.push(parsed.dispatch)
   }
+  const validIncidents = isProjectIncidentsProjectionV1(projectIncidents) ? projectIncidents : null
   let appended = 0
   let checkJobs = 0
   for (const dispatch of validated) {
@@ -936,6 +943,7 @@ export function appendWakeDispatches(
       received_at: new Date().toISOString(),
       dispatch_cursor: dispatchCursor,
       dispatch,
+      ...(type === 'automation_run' && validIncidents ? { project_incidents: validIncidents } : {}),
     }
     if (!writeRecord(connectionId, record)) {
       return { ok: false, appended, checkJobs, error: `${type} inbox persistence failed` }
@@ -1068,6 +1076,7 @@ export function roomChangesSince(res, activity, seen = {}) {
     session_polls: isSessionPollsProjection(res?.session_polls) ? JSON.stringify(res.session_polls) : null,
     still_to_discuss: isStillToDiscussProjectionV1(res?.still_to_discuss) ? JSON.stringify(res.still_to_discuss) : null,
     active_session_plans: isActiveSessionPlansProjectionV1(plans) ? JSON.stringify(plans) : null,
+    project_incidents: isProjectIncidentsProjectionV1(res?.project_incidents) ? JSON.stringify(res.project_incidents) : null,
     // The references and how many events are held: a new event is a change.
     session_activity: activity ? JSON.stringify({ items: activity.items, events: activity.events.length }) : null,
   }
@@ -1119,6 +1128,7 @@ export function writeRoomState(
   const polls = isSessionPollsProjection(res?.session_polls) ? res.session_polls : null
   const discuss = isStillToDiscussProjectionV1(res?.still_to_discuss) ? res.still_to_discuss : null
   const plans = isActiveSessionPlansProjectionV1(ingress?.active_session_plans) ? ingress.active_session_plans : null
+  const incidents = isProjectIncidentsProjectionV1(res?.project_incidents) ? res.project_incidents : null
   const notices = Array.isArray(ingress?.system_notices) ? ingress.system_notices : null
   const body = {
     advisory: true,
@@ -1131,6 +1141,7 @@ export function writeRoomState(
     session_polls: polls,
     still_to_discuss: discuss,
     active_session_plans: plans,
+    project_incidents: incidents,
     system_notices: notices ?? [],
     session_activity: activity,
     transcript,
@@ -1138,6 +1149,7 @@ export function writeRoomState(
       session_polls: polls ? 'present' : 'none_or_unavailable',
       still_to_discuss: discuss ? 'present' : 'none_or_unavailable',
       active_session_plans: plans ? 'present' : ingress ? 'none' : 'not_sent',
+      project_incidents: incidents ? 'present' : 'none_or_unavailable',
       system_notices: notices === null ? 'not_sent' : notices.length > 0 ? 'present' : 'none',
       // References and observed changes. `unavailable` means the last read failed;
       // what was seen before still stands as history.
@@ -2301,6 +2313,7 @@ async function main() {
       questionHandoff: sentCommandHandoff?.question_id
         ? { question_id: sentCommandHandoff.question_id, source_message_id: sentCommandHandoff.ready.source_message_id }
         : null,
+      projectIncidents: isProjectIncidentsProjectionV1(res?.project_incidents) ? res.project_incidents : null,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
 
@@ -2387,6 +2400,12 @@ async function main() {
       nextDispatchCursor,
       persistedInbox,
       sessionId,
+      appendDurableRecord,
+      {
+        projectIncidents: isProjectIncidentsProjectionV1(res?.project_incidents)
+          ? res.project_incidents
+          : null,
+      },
     )
     if (!persisted.ok) {
       process.stderr.write(`devspec-remote-poll: rejected dispatch (${persisted.error})\n`)

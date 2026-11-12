@@ -401,8 +401,10 @@ describe('stamping a DevSpec write', () => {
   })
 
   it('covers exactly the DevSpec tools that take a request', () => {
-    assert.equal(REQUEST_REF_TOOLS.size, 37)
+    assert.equal(REQUEST_REF_TOOLS.size, 39)
     assert.equal(REQUEST_REF_TOOLS.has('manage_goals'), true)
+    assert.equal(REQUEST_REF_TOOLS.has('manage_incident'), true)
+    assert.equal(REQUEST_REF_TOOLS.has('report_incident'), true)
     for (const name of ['post_session_message', 'reserve_work_items', 'claim_work_item', 'report_request']) {
       assert.equal(REQUEST_REF_TOOLS.has(name), false, name)
     }

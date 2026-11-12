@@ -79,10 +79,10 @@ export function prepareNoticeReply(args) {
  */
 export function replyLine(noticeIds) {
   return [
-    `To tell the person in your room, reply to this notice: post_session_message with your message and "system_notice_ids": ${JSON.stringify(noticeIds)},`,
+    `When an unresolved choice, hold, rejection, or block still needs the person in your room after you act, reply to this notice: post_session_message with your message and "system_notice_ids": ${JSON.stringify(noticeIds)},`,
     'and no turn fields such as local_turn (one post may answer several notices: list every one it is about, and no other).',
     'It is your own message, labelled as a reply to the notice. It is no command\'s answer: it opens, answers and completes no turn, complete_turn has no effect on it, and a command you are working on still needs its own answer.',
-    'If DevSpec refuses it, the result says why; not_attached means you are in no room, so tell the person at your terminal instead.',
+    'If DevSpec refuses it, the result says why; not_attached means you are in no room, so tell the person at your terminal instead when they still need to hear from you.',
     'for_the_record is expected, not a failure: leave it there (semantics.notice_reply.only_when_needed).',
     `Rules: ${NOTICE_REPLY_RULES}.`,
   ].join(' ')

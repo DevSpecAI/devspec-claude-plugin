@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.2 - 2026-11-12
+
+- **Post-action room silence on settled notices.** `devspec-remote-command`, `NOTICE_HANDLING`, and the notice-reply wake prompt now align with `semantics.notice_audience` and `semantics.notice_reply` in `devspec://product/remote-ingress-contract`: findings covered by clear conversation intent are settled quietly in place, and a room notice reply is posted only when an unresolved choice, hold, rejection, or block still needs a person after acting (or a write carries `tell_person`).
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.55.1 - 2026-11-12
 
 - **Skip settled held check jobs before waking Claude Code.** When a check job waited behind a running turn, the wake stream now revalidates it against `get_connection_dispatch` right before releasing it. If DevSpec confirms the check job is already settled or withdrawn, the listener drops it without opening a turn and moves straight on to the next held item; transient lookup failures still deliver the check job so real checks are never lost.

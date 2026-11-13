@@ -31,11 +31,11 @@ export const REQUEST_REF_TOOLS = new Set([
   'create_task', 'create_automation', 'create_resource', 'delete_automation',
   'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_goals', 'manage_incident', 'manage_knowledge_links',
   'decide_proposal', 'manage_protected_intent', 'record_completed_work', 'record_criterion_verdicts',
-  'record_duplicate_nonmatch', 'record_implementation', 'record_memory',
+  'record_duplicate_nonmatch', 'record_implementation', 'record_memory', 'record_requirement',
   'release_work_item', 'reopen_task', 'report_incident', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag', 'resolve_task_flag',
-  'retract_memory', 'spin_off_task', 'supersede_task', 'supersede_memory',
-  'supersede_resource', 'unlink_tasks', 'update_task', 'update_automation',
-  'update_memory', 'update_resource', 'write_project_instruction_rule',
+  'retract_memory', 'retract_requirement', 'spin_off_task', 'supersede_task', 'supersede_memory',
+  'supersede_requirement', 'supersede_resource', 'unlink_tasks', 'update_task', 'update_automation',
+  'update_memory', 'update_requirement', 'update_resource', 'write_project_instruction_rule',
 ])
 
 /**

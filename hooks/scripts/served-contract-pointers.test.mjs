@@ -29,6 +29,8 @@ const SECTIONS = ['instruction_boundary', 'core_implementation_contract', 'work_
 const POINTER = new RegExp(`\\b(${SECTIONS.join('|')})((?:\\.[a-z_]+)*)`, 'g')
 const INGRESS_CONTRACT = 'packages/core/src/mcp/remote-ingress-contract.ts'
 const INGRESS_POINTER = /\bsemantics(?:\.[a-z_]+)+/g
+// A contract rule named by its id, such as `core.push-safely`.
+const RULE_POINTER = /\bcore\.[a-z]+(?:-[a-z]+)+/g
 
 function serverCheckout() {
   const named = process.env.DEVSPEC_V2_ROOT?.trim()
@@ -107,5 +109,21 @@ describe('the served contract sections this plugin points at', () => {
     // The notice reply has pointed here since 8ad9f857; a scan that misses it is broken.
     assert.ok(named.has('semantics.notice_reply') && named.has('semantics.notice_audience'), 'the scan found the notice pointers')
     assert.deepEqual(missingFrom(contract, named), [], `remote ingress contract ${contract.contract_version} has no such section`)
+  })
+
+  it('and every contract rule it names by id is one the contract has', (t) => {
+    const checkout = serverCheckout()
+    if (!checkout.root || !fs.existsSync(path.join(checkout.root, CONTRACT))) {
+      if (checkout.named) assert.fail(`DEVSPEC_V2_ROOT names ${checkout.root}, which has no ${CONTRACT}`)
+      t.skip('no devspecv2 checkout beside this repo')
+      return
+    }
+    const contract = servedContract(checkout.root)
+    const rules = new Set(contract.core_implementation_contract.rules.map((rule) => rule.id))
+    const named = pointers(RULE_POINTER)
+    // The pull-request step has pointed here since 0.55.0; a scan that misses it is broken.
+    assert.ok(named.has('core.push-safely'), 'the scan found the rule pointers')
+    const missing = [...named].filter(([id]) => !rules.has(id)).map(([id, files]) => `${id} (${[...files].join(', ')})`)
+    assert.deepEqual(missing, [], `contract ${contract.contract_version} has no such rule`)
   })
 })

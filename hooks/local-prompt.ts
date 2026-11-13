@@ -12,39 +12,42 @@
  * before the turn starts, so the owner's turn is still admitted before the model
  * writes anything (item 718825fc).
  *
- * Awaited before `next(e)`, as the command hook was. A failure never holds the prompt
- * back: it enters regardless, unmirrored. A build without the function-hooks API runs
- * no module, and so mirrors no prompt.
+ * Awaited before the prompt enters, as the command hook was. A failure never holds the
+ * prompt back: it enters regardless, unmirrored. A build without the function-hooks
+ * API runs no module, and so mirrors no prompt.
  *
- * A plugin has exactly one hooks module, so terminal-status.ts registers this.
+ * turn-recall.ts runs this beside the prompt's recall, in the one `prompt.submit` hook
+ * the module registers: a plugin has exactly one hooks module, so terminal-status.ts
+ * registers that.
  */
-import type { Register } from 'claude-code'
+import type { Hook } from 'claude-code'
 
 import { boundConnectionId } from './scripts/terminal-status.mjs'
 
-export function mirrorPromptsToTheRoom(on: Parameters<Register>[0]): void {
-  on('prompt.submit', async ($, e, next) => {
-    try {
-      const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE'))
-      const conversationId = await $.session.id()
-      const readText = (path: string) => $.fs.read(path).then((text) => String(text), () => null)
-      if (await boundConnectionId({ home, conversationId, readText })) {
-        await $.process.run(['node', `${$.plugin.root}/hooks/scripts/mirror-turn.mjs`, 'user_prompt'], {
-          stdin: JSON.stringify({
-            hook_event_name: 'UserPromptSubmit',
-            session_id: conversationId,
-            prompt: e.text,
-            origin: e.origin,
-            // Set when the prompt is delivered into, or typed over, a running turn:
-            // what it carries then joins that turn (item 7a4d04fd).
-            turn_id: e.turnId ?? null,
-          }),
-          timeoutMs: 30_000,
-        })
-      }
-    } catch {
-      /* the prompt is the person's; DevSpec never stands in its way */
+type Api = Parameters<Hook<'prompt.submit'>>[0]
+type Submitted = Parameters<Hook<'prompt.submit'>>[1]
+
+/** Hand the prompt to the room's mirror when this conversation is connected. Never throws. */
+export async function mirrorPrompt($: Api, e: Submitted): Promise<void> {
+  try {
+    const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE'))
+    const conversationId = await $.session.id()
+    const readText = (path: string) => $.fs.read(path).then((text) => String(text), () => null)
+    if (await boundConnectionId({ home, conversationId, readText })) {
+      await $.process.run(['node', `${$.plugin.root}/hooks/scripts/mirror-turn.mjs`, 'user_prompt'], {
+        stdin: JSON.stringify({
+          hook_event_name: 'UserPromptSubmit',
+          session_id: conversationId,
+          prompt: e.text,
+          origin: e.origin,
+          // Set when the prompt is delivered into, or typed over, a running turn:
+          // what it carries then joins that turn (item 7a4d04fd).
+          turn_id: e.turnId ?? null,
+        }),
+        timeoutMs: 30_000,
+      })
     }
-    return next(e)
-  })
+  } catch {
+    /* the prompt is the person's; DevSpec never stands in its way */
+  }
 }

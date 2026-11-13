@@ -20,7 +20,7 @@ type TestOn = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
 
 function harness(on: TestOn, files: Map<string, string>, { runFails = false } = {}) {
   mock.env(on, { HOME })
-  const seen = { order: [] as string[], runs: [] as Array<{ argv: readonly string[]; stdin: unknown }> }
+  const seen = { order: [] as string[], runs: [] as Array<{ argv: readonly string[]; stdin: unknown }>, recalls: 0 }
   on('fs.read', ($, e) => {
     const text = files.get(e.path)
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -28,6 +28,11 @@ function harness(on: TestOn, files: Map<string, string>, { runFails = false } = 
   })
   on('session.id', () => ({ value: CONVERSATION_ID }))
   on('process.run', ($, e) => {
+    // The prompt's recall runs beside the mirror (turn-recall.test.ts); counted apart.
+    if (String(e.argv[1]).endsWith('/hooks/scripts/turn-recall.mjs')) {
+      seen.recalls++
+      return { value: { exitCode: 0, stdout: '{}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     seen.order.push('mirror')
     seen.runs.push({ argv: e.argv, stdin: e.init?.stdin })
     if (runFails) throw new Error('spawn node ENOENT')

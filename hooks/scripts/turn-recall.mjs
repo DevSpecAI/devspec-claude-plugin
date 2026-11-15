@@ -50,7 +50,10 @@
  *
  * Every failure injects nothing and lets the prompt through: signed out, no project
  * for this folder, DevSpec slow or down, a bad answer. The request is abandoned at
- * 2.8 s and the process exits by itself at 3 s, inside the host's limits. The sign-in
+ * 4.8 s and the process exits by itself at 5 s, inside the host's limits (the command
+ * hook's 10 s in hooks.json, the module's process limit in ../turn-recall.ts). A
+ * lookup that is ready sooner is used as soon as it arrives; the limit only gives the
+ * slow first lookup after an idle spell room to bring its cards (item b2b70df7). The sign-in
  * is read, never renewed here: a renewal cut off by that exit could lose the rotated
  * renewal key, so one that is due runs in its own detached process.
  *
@@ -76,10 +79,14 @@ import { readPrivateJsonResult, STATE_OK, writePrivateJson } from './private-sta
 
 /** Shortest prompt worth a recall: anything shorter is an acknowledgement (7c87f509 minQueryChars; the server skips it too). */
 export const MIN_PROMPT_CHARS = 18
-/** The request is abandoned here, inside the server's own 2.4 s recall budget plus the trip (7c87f509). */
-export const RECALL_HTTP_TIMEOUT_MS = 2_800
-/** The process ends itself here whatever is in flight, printing `{}` (7c87f509). */
-export const RECALL_HARD_EXIT_MS = 3_000
+/**
+ * The request is abandoned here. DevSpec gives up 400 ms sooner, counted from when the
+ * request reached it, so its answer is back before this (7c87f509; raised from 2.8 s
+ * by item b2b70df7).
+ */
+export const RECALL_HTTP_TIMEOUT_MS = 4_800
+/** The process ends itself here whatever is in flight, printing `{}` (7c87f509, b2b70df7). */
+export const RECALL_HARD_EXIT_MS = 5_000
 /** How long the module's stamp tells the command hook the prompt was already handled (7c87f509). */
 export const MODULE_STAMP_WINDOW_MS = 10_000
 /** Seen keys kept per conversation: the most DevSpec accepts in one request (7c87f509, RECALL_LIMITS.seenKeysPerRequest). */

@@ -307,7 +307,7 @@
         "hooks": [{
           "type": "command",
           "command": "[ -n \"${CURSOR_PLUGIN_ROOT:-}\" ] && { printf '{}\\n'; exit 0; }; command -v node >/dev/null 2>&1 && node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/turn-recall.mjs\" user-prompt-submit || true",
-          "timeout": 5
+          "timeout": 10
         }]
       },
       {

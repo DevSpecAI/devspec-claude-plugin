@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.57.1 - 2026-11-15
+
+- **Project recall gets 5 seconds instead of 3.** After a quiet spell the first lookup on a prompt can take over 2.5 seconds, and at the old 2.8-second limit that prompt went ahead with no cards. The request is now abandoned at 4.8 s and the helper exits by itself at 5 s; DevSpec's own limit moved up in step and now counts from when the request reached it, so it has answered or given up before the plugin stops waiting. A lookup that comes back sooner is used as soon as it arrives, so the normal case is no slower, and signed out, no project, or DevSpec slow or down still lets the prompt through with nothing added.
+- The `UserPromptSubmit` hook's limit in `hooks/hooks.json` is 10 s (was 5 s) and the hooks module's process limit 5.5 s (was 3.5 s), so the helper's own 5 s exit, not the host, decides when to give up.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.57.0 - 2026-11-13
 
 - **Decisions and requirements are recorded only when the person confirms them.** `devspec-remote-command` section 6 now points at `core.record-decisions-only-on-confirmation`, `core.ask-before-recording-requirements` and `core.prefer-existing-records-on-overlap` in `devspec://product/implementation-contract`: Claude asks whether a choice was deliberate and why, records nothing on a no or no answer, and never records a decision on its own initiative or infers its reason from the code. A task's `intent` carries the person's own reason in their everyday words (`core.write-the-persons-intent`), replacing the old "synthesized rationale" wording.

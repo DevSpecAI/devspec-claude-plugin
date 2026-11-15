@@ -14,7 +14,7 @@
  * It runs beside the room's copy of the prompt (local-prompt.ts) rather than after
  * it, so a connected conversation waits for the slower of the two, not both. Neither
  * ever holds the prompt back: each fails on its own and the prompt enters regardless.
- * The script gives up by itself at 3 s; the process limit here is only a backstop.
+ * The script gives up by itself at 5 s; the process limit here is only a backstop.
  *
  * Prompts the script would skip on their text alone (empty, a slash command, shorter
  * than 18 characters) start no process. The UserPromptSubmit command hook skips the
@@ -28,8 +28,8 @@ import { mirrorPrompt } from './local-prompt'
 
 /** scripts/turn-recall.mjs MIN_PROMPT_CHARS. */
 const MIN_PROMPT_CHARS = 18
-/** Above the script's own 3 s exit, so the script, not this, decides when to give up. */
-const RECALL_PROCESS_TIMEOUT_MS = 3_500
+/** Above the script's own exit (scripts/turn-recall.mjs RECALL_HARD_EXIT_MS, 5 s), so the script, not this, decides when to give up. */
+const RECALL_PROCESS_TIMEOUT_MS = 5_500
 
 type Hooks = Parameters<Register>[0]
 type Api = Parameters<Hook<'prompt.submit'>>[0]

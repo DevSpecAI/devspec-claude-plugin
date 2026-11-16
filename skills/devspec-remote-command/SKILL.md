@@ -101,11 +101,15 @@ hear from you. A write result carrying `tell_person` asks you to tell your perso
 you changed (`semantics.notice_audience.telling_anyway`).
 
 **Check jobs** (`type: check_job`). DevSpec sends every check on a change — your own
-changes included — as a check job on your wake channel. Take it with
-`claim_check_job`, rule every entry with `record_check_rulings` using the definition
-it carries (read any linked supporting document or uploaded file in full with
-`get_resource` first), then carry on with what you were doing. If you cannot rule
-it, hand it back. Never post in the room about ruling one
+changes included — as a check job on your wake channel. While you work it reaches you
+at your next step, and every check job and notice waiting at that moment arrives
+together: deal with them all in that one pause, then carry on with what you were
+doing. Before you take the first one, read how a check job is taken and ruled, and by
+whom: `semantics.check_job.helpers` in `devspec://product/remote-ingress-contract`
+(every `claim_check_job` reply repeats it as `helpers`). Each entry is ruled with
+`record_check_rulings` using the definition the claim carries (read any linked
+supporting document or uploaded file in full with `get_resource` first). If you
+cannot rule it, hand it back. Never post in the room about ruling one
 (`semantics.check_job.room`).
 
 **A duplicate of a task you wrote** is resolved then and there instead of being left

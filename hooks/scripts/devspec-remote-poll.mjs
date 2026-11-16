@@ -2432,11 +2432,12 @@ async function main() {
       writeTurnMarker(connectionId)
     }
     // A check job opens no turn here. Busy follows the turn the wake starts (or
-    // the one it is delivered into), from Claude Code's own prompt and Stop hooks,
-    // so it never says Working before the agent is, and never restarts a running
-    // turn's clock, which would detach that turn's own background work
-    // (mirror-turn.mjs). DevSpec drops an untaken job when a turn ends, so busy
-    // has to be the turn and nothing else.
+    // the one it is delivered into, which it leaves as it is: item 108de10f), from
+    // Claude Code's own prompt and Stop hooks, so it never says Working before the
+    // agent is, and never restarts a running turn's clock, which would detach that
+    // turn's own background work (mirror-turn.mjs). DevSpec reads busy to decide
+    // when a job has been left (`semantics.check_job.busy` in the remote ingress
+    // contract), so busy has to be the turn and nothing else.
     if (persisted.checkJobs > 0) {
       process.stdout.write(JSON.stringify({
         type: 'wake',

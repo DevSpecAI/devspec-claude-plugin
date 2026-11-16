@@ -10,9 +10,15 @@
  * authority: it is the mechanical response to a question this agent asked, and it
  * names the one operation that finishes the turn it opened
  * (devspec://product/interaction-event-contract).
- * In `--stream` mode check jobs and system notices wait behind the turn Claude Code is
- * running and go one per turn in arrival order; everything else is delivered as it
- * arrives, past any held record (isQueuedBehindTurn, heldInboxRecords).
+ * Every record is delivered as it arrives, in arrival order, whatever Claude Code is
+ * doing (item 108de10f, decision b8abe2bb). Claude Code hands a Monitor event to a
+ * running turn between steps (after the step in progress, before the next one, never
+ * part-way through one) and to an idle session at once. So a check job or a notice
+ * about the agent's own work reaches a working agent at its next step, through the
+ * channel commands have always used, and everything waiting at one moment is printed in
+ * one pass and so arrives together. Listeners before 0.58.0 held those two back until
+ * the turn ended and released one per turn (item d36ac887); what such a listener still
+ * held when it stopped is delivered once at the next start (heldInboxRecords).
  * Active room plans and typed context are rendered first as explicitly advisory model
  * awareness; complete canonical commands follow as model-visible owner_message events, including validated
  * server-owned delegated project scope. Summaries and previews are explicitly
@@ -62,9 +68,6 @@ import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
 import { replyLine } from './notice-reply.mjs'
-import { readTurnActivity, turnIsRunning, turnMarkerFile } from './turn-liveness.mjs'
-import { mcpToolsCall } from './mcp-call.mjs'
-import { connectionCredential, recordedIdentity } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
@@ -1171,12 +1174,25 @@ export function buildAutomationRunEvents(batch, { inboxFile } = {}) {
 }
 
 /**
- * The one line a check job wakes the agent with (item f7b8c8d3; DevSpec item
- * 55d71b0c, contract text). What a check is and how to rule it is the
- * devspec-remote-command skill's and the job's own (claim_check_job returns the
- * definition to rule by); this only says one is waiting, and on what. The title is
- * the record's own text, quoted and kept on one line; a record with no title is
- * named by its type and id.
+ * Where DevSpec says how a check job is taken and ruled, helper agents included
+ * (decision 1d5a9c56). Pointed at, never restated: the words are the server's, and
+ * every claim_check_job reply carries the same ones as `helpers`.
+ */
+export const CHECK_JOB_HELPERS_RULE = 'semantics.check_job.helpers in devspec://product/remote-ingress-contract'
+
+/**
+ * The one line a check job reaches the agent with (item f7b8c8d3; DevSpec item
+ * 55d71b0c, contract text). What a check is and how to rule it is the served
+ * contract's and the job's own (claim_check_job returns the definition to rule by);
+ * this only says one is waiting, where the ruling instruction is, and on what.
+ *
+ * The pointer comes before the agent takes the job (item 108de10f): the instruction
+ * decides who takes it, so an agent that claimed first would already hold the entries
+ * the instruction keeps out of its conversation. It also comes before the title, the
+ * one part of the line with no fixed length, so a line the host cuts
+ * (HOST_NOTIFICATION_LINE_MAX_CHARS) loses the end of a long title and nothing else.
+ * The title is the record's own text, quoted and kept on one line; a record with no
+ * title is named by its type and id.
  *
  * Version 2's three new records (item 1d89fe56) are not what the check is about but
  * what raised it: open tasks are checked for being out of date against a settled
@@ -1188,14 +1204,16 @@ export function checkJobWakeText(d) {
   const id = d?.record?.id ?? ''
   const title = typeof d?.record?.title === 'string' ? d.record.title.replace(/\s+/g, ' ').trim() : ''
   const quoted = title ? `"${title}"` : ''
-  const rest = 'take it with claim_check_job, rule every entry with record_check_rulings, then carry on.'
+  const how =
+    `Before you take it, read ${CHECK_JOB_HELPERS_RULE} (claim_check_job repeats it as \`helpers\`) ` +
+    'and rule it as that says, then carry on.'
   if (type === 'discussion_point') {
-    return `An out-of-date check is waiting, raised by the settled discussion point ${quoted || id}: ${rest}`
+    return `An out-of-date check is waiting. ${how} The settled discussion point ${quoted || id} raised it.`
   }
-  if (type === 'goal') return `An out-of-date check is waiting, raised by a change to the Goal ${quoted || id}: ${rest}`
-  if (type === 'backlog_scan') return `The whole-backlog out-of-date scan${quoted ? ` ${quoted}` : ''} is waiting: ${rest}`
+  if (type === 'goal') return `An out-of-date check is waiting. ${how} A change to the Goal ${quoted || id} raised it.`
+  if (type === 'backlog_scan') return `The whole-backlog out-of-date scan is waiting. ${how}${quoted ? ` It is ${quoted}.` : ''}`
   const subject = quoted || `${type ?? 'record'} ${id}`.trim()
-  return `A check is waiting on ${subject}: ${rest}`
+  return `A check is waiting. ${how} It is on ${subject}.`
 }
 
 /**
@@ -1317,42 +1335,21 @@ export function buildOwnerMessageEvents(batch, { inboxFile, attachmentDir, write
 }
 
 /**
- * Check jobs and system notices about the agent's own work wait for its turn: in
- * `--stream` mode they queue in arrival order behind the turn Claude Code is running
- * and are delivered one per turn (item d36ac887, decision ff1bcabe). Nothing else
- * queues. Commands, controls and question answers are delivered as they arrive.
- */
-export function isQueuedBehindTurn(batch) {
-  return batch?.type === 'check_job' || batch?.type === 'canonical_system_notices'
-}
-
-/**
- * Whether queued work must keep waiting for this connection's turn: Claude Code is
- * running one. A turn the Stop hook only holds open for background work does not
- * count (item d0b8eeb1). Claude Code is idle then and takes the next prompt, and
- * holding queued work for the whole background job would leave the check unruled.
- */
-export function isConnectionTurnRunning(connectionId, dir = CONNECTIONS_DIR, now = Date.now()) {
-  const markerResult = readPrivateJsonResult(turnMarkerFile(connectionId, dir))
-  if (markerResult.status !== STATE_OK) return false
-  const activity = readTurnActivity(connectionId, dir)
-  return turnIsRunning(markerResult.value, { activity, now })
-}
-
-/**
- * The queued records a previous listener on this connection was holding, read back
- * from the inbox (item d0b8eeb1).
+ * The check jobs and notices a listener before 0.58.0 set aside and never delivered,
+ * read back from the inbox (items d0b8eeb1, 108de10f).
  *
- * The cursor moves past a held record so the scan can carry on to what follows it,
- * which means the cursor alone can no longer say what is still owed. The state file
- * keeps the held records' byte ranges beside the cursor, written in the same patch,
- * so a restarted listener delivers each one exactly once and never replays the
- * commands that were delivered past it.
+ * Such a listener held a check job or a notice back until the running turn ended. Its
+ * cursor moved past a held record so the scan could carry on, and the state file kept
+ * the held records' byte ranges beside the cursor (`inbox_held_records`). Nothing is
+ * held now, so nothing writes that list any more; a listener that starts on a state
+ * file still carrying one delivers each record once, ahead of anything newer, and
+ * clears the list with its first cursor write. A notice in particular reaches a
+ * connection once only, so dropping it here would lose a finding for good.
  *
  * The ranges came from a file, so each is revalidated: it must sit wholly before the
- * cursor, cover exactly one complete record, and that record must still parse as
- * queued work for this connection. Anything else is dropped and said so; the inbox is
- * append-only, so a range that no longer checks out points at nothing we wrote.
+ * cursor, cover exactly one complete record, and that record must still parse as a
+ * check job or notices for this connection. Anything else is dropped and said so; the
+ * inbox is append-only, so a range that no longer checks out points at nothing we wrote.
  *
  * @returns {Array<{ start: number, end: number, batch: object }>} in arrival order
  */
@@ -1385,7 +1382,8 @@ export function heldInboxRecords(file, ranges, cursor, connectionId) {
         const whole = read === bytes.length && bytes.at(-1) === 0x0a && !bytes.subarray(0, -1).includes(0x0a)
         if (whole) [batch] = parseInboxBatches([bytes.subarray(0, -1).toString('utf8')], connectionId)
       }
-      if (!batch || !isQueuedBehindTurn(batch)) {
+      // Only these two kinds were ever held.
+      if (batch?.type !== 'check_job' && batch?.type !== 'canonical_system_notices') {
         process.stderr.write(`devspec-remote-wait: held record at ${start}-${end} no longer checks out — dropped\n`)
         continue
       }
@@ -1395,61 +1393,6 @@ export function heldInboxRecords(file, ranges, cursor, connectionId) {
     fs.closeSync(fd)
   }
   return held
-}
-
-/** What the state file keeps of the held records: their byte ranges, in order. */
-export function heldRecordRanges(held) {
-  return held.map(({ start, end }) => ({ start, end }))
-}
-
-/**
- * Whether a held check job is still waiting on the server right before waking Claude Code
- * (item e6985316). A check held behind a running turn may settle or be withdrawn before
- * that turn ends; when `get_connection_dispatch` confirms it is no longer in `dispatches`,
- * the listener drops it silently instead of opening a turn on a settled check. Any
- * missing credential or transient lookup failure fails open so a real check is not lost.
- */
-export async function isHeldCheckJobStillPending(
-  batch,
-  {
-    connectionId,
-    state,
-    call = mcpToolsCall,
-    resolveCredential = connectionCredential,
-    timeoutMs = 5_000,
-  } = {},
-) {
-  if (batch?.type !== 'check_job') return true
-  const checkJobId =
-    typeof batch.dispatch?.check_job_id === 'string' && batch.dispatch.check_job_id
-      ? batch.dispatch.check_job_id
-      : null
-  if (!checkJobId || !connectionId) return true
-  const mcpUrl =
-    typeof state?.mcp_url === 'string' && state.mcp_url.trim() ? state.mcp_url.trim() : null
-  const credential = recordedIdentity(state) && mcpUrl ? await resolveCredential(state) : null
-  if (!credential?.ok) return true
-  const connectionCapability =
-    typeof state?.connection_capability === 'string' && state.connection_capability
-      ? state.connection_capability
-      : null
-  try {
-    const res = await call({
-      mcpUrl: credential.mcp_url,
-      token: credential.token,
-      ...(connectionCapability ? { connectionCapability } : {}),
-      name: 'get_connection_dispatch',
-      arguments: {
-        connection_id: connectionId,
-        dispatch_id: checkJobId,
-      },
-      timeoutMs,
-    })
-    if (!Array.isArray(res?.dispatches)) return true
-    return res.dispatches.some((d) => (d?.check_job_id ?? d?.id) === checkJobId)
-  } catch {
-    return true
-  }
 }
 
 /** The stdout events one inbox batch becomes. */
@@ -1533,22 +1476,27 @@ async function main() {
     fs.writeFileSync(file, '', { mode: 0o600 })
   }
 
-  // `offset` is the scan cursor: every record before it was delivered, set aside as
-  // obsolete, or is in `held`, the queued work still waiting for its turn.
+  // `offset` is the scan cursor: every record before it was delivered or set aside as
+  // obsolete. The one exception is `owed`: what a listener before 0.58.0 held back for
+  // the end of a turn and never delivered (heldInboxRecords). Those go first, once.
   let offset = 0
-  let held = []
+  let owed = []
+  // That listener's list is still in the state file: emptied with the next cursor write.
+  let clearHeldList = Array.isArray(state?.inbox_held_records) && state.inbox_held_records.length > 0
+  const cursorPatch = () => ({ inbox_byte_offset: offset, ...(clearHeldList ? { inbox_held_records: [] } : {}) })
   if (args.pending) {
     offset = typeof state?.inbox_byte_offset === 'number' ? state.inbox_byte_offset : 0
-    held = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
+    owed = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
   } else if (args.fromEnd) {
     offset = fileSize(file)
-    // A first arm discards the backlog, and queued work is part of it.
+    // A first arm discards the backlog, and what an older listener held is part of it.
     if (readDismissalState(connectionId)) {
-      writeStatePatch(connectionId, { inbox_byte_offset: offset, inbox_held_records: [] })
+      writeStatePatch(connectionId, cursorPatch())
+      clearHeldList = false
     }
   } else if (typeof state?.inbox_byte_offset === 'number') {
     offset = state.inbox_byte_offset
-    held = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
+    owed = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
   } else {
     offset = fileSize(file)
   }
@@ -1573,17 +1521,6 @@ async function main() {
 
   // Retain completed delivery accounting across a deferred suffix, including one-shot mode.
   let delivered = 0
-  // One queued record per turn: after one is delivered, the next waits until Claude Code
-  // has had time to start the turn it opens (which then holds the queue itself).
-  let holdQueuedUntil = 0
-  const queuedTurnPickupMs = Math.max(
-    pollMs * 2,
-    Number(process.env.DEVSPEC_WAIT_TURN_PICKUP_MS ?? 400),
-  )
-  // Only the stream queues. A one-shot arm exits on its first wake, so it delivers
-  // queued work, a previous stream's held records included, as it would anything else.
-  const queuedWorkWaits = () =>
-    args.stream && (Date.now() < holdQueuedUntil || isConnectionTurnRunning(connectionId))
   let nextOwnerCheck = Date.now() + OWNER_CHECK_MS
   while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
@@ -1624,27 +1561,20 @@ async function main() {
       process.exit(EXIT_TERMINAL)
     }
 
-    // Held work first, oldest first: it arrived before anything the scan below finds.
-    let released = false
-    while (held.length > 0 && !queuedWorkWaits()) {
-      const [next] = held
-      if (
-        next.batch?.type === 'check_job' &&
-        !(await isHeldCheckJobStillPending(next.batch, { connectionId, state: live }))
-      ) {
-        held.shift()
-        released = true
-        continue
-      }
+    // What an older listener still owed, oldest first: it arrived before anything the
+    // scan below finds.
+    while (owed.length > 0) {
+      const [next] = owed
       await writeEventSequence(eventsForBatch(next.batch, { inboxFile: file, connectionId }))
-      held.shift()
-      released = true
+      owed.shift()
       delivered += deliveryCount(next.batch)
-      if (args.stream) holdQueuedUntil = Date.now() + queuedTurnPickupMs
     }
 
+    // Everything waiting is delivered in this one pass, in arrival order, whatever kind
+    // it is and whether or not a turn is running (item 108de10f): Claude Code hands the
+    // lines to a working agent at its next step, and to an idle one at once.
     const records = readInboxRecords(file, offset)
-    if (records.length > 0 || released) {
+    if (records.length > 0 || clearHeldList) {
       let deferred = false
       for (const record of records) {
         const [batch] = parseInboxBatches([record.line], connectionId)
@@ -1654,14 +1584,6 @@ async function main() {
             if (decision === 'defer') { deferred = true; break }
             // Keep the immutable record on disk, but tombstone it by advancing the cursor.
             if (decision === 'obsolete') { offset = record.endOffset; continue }
-          }
-          // Queued work that must wait is set aside and the scan carries on past it
-          // (item d0b8eeb1): a command, control or answer behind it is never held up.
-          // Anything already held keeps its place ahead of a newer arrival.
-          if (isQueuedBehindTurn(batch) && (held.length > 0 || queuedWorkWaits())) {
-            held.push({ start: record.startOffset, end: record.endOffset, batch })
-            offset = record.endOffset
-            continue
           }
           const events = eventsForBatch(batch, { inboxFile: file, connectionId })
           if (batch.type === DISMISSAL_RECORD_TYPE) {
@@ -1675,7 +1597,6 @@ async function main() {
             if (deferred) break
             if (!emitted) { offset = record.endOffset; continue }
           } else await writeEventSequence(events)
-          if (args.stream && isQueuedBehindTurn(batch)) holdQueuedUntil = Date.now() + queuedTurnPickupMs
           delivered += deliveryCount(batch)
         }
         // Commit only complete records, never a partially emitted canonical batch.
@@ -1684,9 +1605,11 @@ async function main() {
         offset = record.endOffset
       }
 
-      // The cursor and the held records are one fact, so they are written together.
+      // The cursor, and with it the end of an older listener's held list: what that
+      // list named was delivered above.
       if (readDismissalState(connectionId)) {
-        writeStatePatch(connectionId, { inbox_byte_offset: offset, inbox_held_records: heldRecordRanges(held) })
+        writeStatePatch(connectionId, cursorPatch())
+        clearHeldList = false
       }
       if (args.stream && delivered > 0) {
         // The wake was the stdout line above. Staying alive is the whole point.

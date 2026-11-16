@@ -11,7 +11,10 @@
 //
 // The same holds for the remote ingress contract's `semantics` sections the plugin
 // points at (devspec://product/remote-ingress-contract), such as
-// `semantics.notice_audience` and `semantics.check_job.room` (item a868f41f).
+// `semantics.notice_audience` and `semantics.check_job.room` (item a868f41f), and
+// `semantics.check_job.helpers`, where DevSpec says how a check job is taken and
+// ruled: the line that announces a check points there and restates none of it
+// (item 108de10f).
 //
 // With no checkout beside it the test skips, as server-tool-names.test.mjs does.
 // Name one with DEVSPEC_V2_ROOT; once named, it must be there.
@@ -108,6 +111,12 @@ describe('the served contract sections this plugin points at', () => {
     const named = pointers(INGRESS_POINTER)
     // The notice reply has pointed here since 8ad9f857; a scan that misses it is broken.
     assert.ok(named.has('semantics.notice_reply') && named.has('semantics.notice_audience'), 'the scan found the notice pointers')
+    // The check-job announcement and the skill have pointed here since 108de10f.
+    const helpers = named.get('semantics.check_job.helpers') ?? new Set()
+    assert.ok(
+      helpers.has('hooks/scripts/devspec-remote-wait.mjs') && helpers.has('skills/devspec-remote-command/SKILL.md'),
+      'the scan found the check-job ruling pointer in the announcement and the skill',
+    )
     assert.deepEqual(missingFrom(contract, named), [], `remote ingress contract ${contract.contract_version} has no such section`)
   })
 

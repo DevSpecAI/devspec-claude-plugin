@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.58.0 - 2026-11-16
+
+- **Checks and notices reach Claude Code at its next step.** When DevSpec sends a check to rule, or a notice about Claude Code's own work, while Claude Code is busy, it now arrives as soon as the step in progress finishes. Until now it waited for the whole turn to end. It never arrives part-way through a step, and when Claude Code is idle it arrives straight away, as before.
+- **Everything waiting arrives together.** All the checks and notices waiting at that moment are handed over at once, so Claude Code deals with them in one pause and then carries on with what it was doing. They used to arrive one per turn.
+- **The request in progress is left alone.** A check or notice that arrives while Claude Code is answering someone changes nothing about that request: its work is still recorded for the person who asked, the room shows the same working state, and nothing extra is posted in the room. Taking a check and recording its rulings count as the check's own work, whoever's request is in progress.
+- **Claude Code is told where to read how a check is ruled before it takes one.** The message announcing a check now points to DevSpec's own instruction for ruling it, which covers handing a check to a helper agent so its entries stay out of the main conversation.
+- Commands, Stop and other controls, and answers to a question Claude asked are delivered as before.
+- A check or notice that an earlier version was still holding back when its listener stopped is handed over once, the next time the listener starts.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up.
+
 ## 0.57.1 - 2026-11-15
 
 - **Project recall gets 5 seconds instead of 3.** After a quiet spell the first lookup on a prompt can take over 2.5 seconds, and at the old 2.8-second limit that prompt went ahead with no cards. The request is now abandoned at 4.8 s and the helper exits by itself at 5 s; DevSpec's own limit moved up in step and now counts from when the request reached it, so it has answered or given up before the plugin stops waiting. A lookup that comes back sooner is used as soon as it arrives, so the normal case is no slower, and signed out, no project, or DevSpec slow or down still lets the prompt through with nothing added.

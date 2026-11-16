@@ -7,7 +7,9 @@
  * user_prompt → busy/heartbeat + turn marker; and, for a prompt a person submitted,
  *               the owner's own turn plus a local_prompt bubble when attached
  *               (literal owner text). Run by the hooks module (hooks/local-prompt.ts)
- *               with Claude Code's origin for the prompt.
+ *               with Claude Code's origin for the prompt. A check job or a notice
+ *               about the agent's own work that Claude Code delivers into a running
+ *               turn is nobody's request and changes none of this (item 108de10f).
  * stop        → busy/heartbeat + turn marker only (NO assistant text)
  * stop_failure → the StopFailure hook: an error from Anthropic's service ended the
  *               turn before the model could answer. Tells the room in Claude Code's
@@ -1210,6 +1212,7 @@ async function main() {
   // wake continues whatever started what woke it. Anything Claude Code delivers
   // into a running turn joins it instead of replacing what it serves.
   let typedRequest = null
+  let leavesTurnAsItIs = false
   if (mode === 'user_prompt' && connectionId) {
     try {
       const midTurn = promptTurnId(raw) !== null
@@ -1222,10 +1225,18 @@ async function main() {
       })
       for (const event of arrival.events) appendRequestEvent(connectionId, event, { dir: CONNECTIONS_DIR })
       if (arrival.typedId) typedRequest = { id: arrival.typedId, midTurn }
+      leavesTurnAsItIs = arrival.leavesTurnAsItIs === true
     } catch {
       /* an unrecorded request only leaves DevSpec to resolve who asked itself */
     }
   }
+
+  // A check job or a notice about the agent's own work, delivered into a running turn
+  // (item 108de10f, decision b8abe2bb): nobody's request, so the turn it lands in is
+  // left exactly as it was. Nothing below runs for it: no marker is written, so a
+  // command the agent already answered is not shown as working again; busy stays what
+  // the turn already made it; and nothing is posted, opened or completed.
+  if (leavesTurnAsItIs) process.exit(0)
 
   // Consume any explicit-reply marker so it cannot bleed into a later turn.
   // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full

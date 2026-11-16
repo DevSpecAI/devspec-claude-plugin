@@ -29,7 +29,7 @@ import {
   setCurrentRequest,
   turnAmbiguity,
 } from './requests.mjs'
-import { REQUEST_REF_TOOLS, stampRequest } from './request-ref.mjs'
+import { CHECK_OWN_WORK_TOOLS, REQUEST_REF_TOOLS, stampRequest } from './request-ref.mjs'
 import { launchGuard } from './launch-guard.mjs'
 import { markCommandsAnswered } from './mark-explicit-reply.mjs'
 
@@ -384,6 +384,25 @@ describe('stamping a DevSpec write', () => {
     assert.deepEqual(stampRequest('report_request', {}, CONN, null, { home }), { args: {} })
   })
 
+  // Item 108de10f: a check job reaches a working agent at its next step, so it is taken
+  // and ruled inside a command's turn, or by a helper that turn started. That is the
+  // check's own work and serves no request, whatever the turn carries.
+  it('names no request on a check\'s own work, in a command\'s turn, a helper it launched, or an undecided turn', () => {
+    assert.deepEqual([...CHECK_OWN_WORK_TOOLS].sort(), ['claim_check_job', 'record_check_rulings'])
+    const job = { check_job_id: 'a0000000-0000-4000-8000-00000000000a', connection_id: CONN }
+    const serving = homeWith(openA, { op: 'current', ref: A }, { op: 'launch', key: 'helper1', kind: 'subagent', request: A, also: [] })
+    const undecided = homeWith(openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B })
+    for (const tool of CHECK_OWN_WORK_TOOLS) {
+      assert.deepEqual(stampRequest(tool, job, CONN, null, { home: serving }), { args: job }, `${tool} in the command's turn`)
+      assert.deepEqual(stampRequest(tool, job, CONN, 'helper1', { home: serving }), { args: job }, `${tool} from a helper`)
+      assert.deepEqual(stampRequest(tool, { ...job, request_ref: A }, CONN, null, { home: serving }), { args: job }, `${tool}: one the model wrote is dropped`)
+      assert.deepEqual(stampRequest(tool, job, CONN, null, { home: undecided }), { args: job }, `${tool} is never held for a request to be named`)
+    }
+    // The command's own writes in that same turn still name the command.
+    assert.equal(stampRequest('update_memory', {}, CONN, null, { home: serving }).args.request_ref, A)
+    assert.equal(stampRequest('update_memory', {}, CONN, 'helper1', { home: serving }).args.request_ref, A)
+  })
+
   it('refuses a write that could serve two people\'s requests, with the command that names one', () => {
     const home = homeWith(openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B })
     const refused = stampRequest('record_implementation', {}, CONN, null, { home })
@@ -435,8 +454,8 @@ describe('what reaches a running turn joins it', () => {
 
   it('a prompt typed over a running turn joins it as the owner\'s typed request', () => {
     const state = reduceRequestLog(log(openB, { op: 'current', ref: B }))
-    assert.deepEqual(promptArrival({ fromAPerson: true, midTurn: true, state, newId: fixedId }), { events: [{ op: 'joined', id: T }], typedId: T })
-    assert.deepEqual(promptArrival({ fromAPerson: true, midTurn: false, state, newId: fixedId }), { events: [{ op: 'current', ref: T }], typedId: T })
+    assert.deepEqual(promptArrival({ fromAPerson: true, midTurn: true, state, newId: fixedId }), { events: [{ op: 'joined', id: T }], typedId: T, leavesTurnAsItIs: false })
+    assert.deepEqual(promptArrival({ fromAPerson: true, midTurn: false, state, newId: fixedId }), { events: [{ op: 'current', ref: T }], typedId: T, leavesTurnAsItIs: false })
   })
 
   it('an automation run, or something not known, delivered mid-turn makes the turn undecided', () => {
@@ -453,7 +472,7 @@ describe('what reaches a running turn joins it', () => {
   // would refuse that command's next write until the agent named a request.
   it('a check job delivered mid-turn joins nothing, so the command it interrupts keeps its writes', () => {
     const state = reduceRequestLog(log(openA, { op: 'current', ref: A }))
-    const job = '<task-notification>\n<event>{"type":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a","content":"A check is waiting on \\"T\\": …"}</event>\n</task-notification>'
+    const job = '<task-notification>\n<event>{"type":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a","content":"A check is waiting. …"}</event>\n</task-notification>'
     const midTurn = promptArrival({ origin: { kind: 'task-notification' }, text: job, midTurn: true, state })
     assert.deepEqual(midTurn.events, [])
     const after = reduceRequestLog(log(openA, { op: 'current', ref: A }, ...midTurn.events))
@@ -471,6 +490,73 @@ describe('what reaches a running turn joins it', () => {
     assert.deepEqual(promptArrival({ origin: 'task-notification', text: notice, midTurn: false, state }).events, [{ op: 'current', ref: null }])
     assert.deepEqual(promptArrival({ origin: { kind: 'task-notification' }, text: notice, midTurn: true, state }).events, [])
     assert.deepEqual(requestForWake({ origin: 'task-notification', text: `${wakeFor(MSG_A)}\n${notice}`, state }), { ref: A, also: [] })
+  })
+
+  // Item 108de10f, decision b8abe2bb: check jobs and notices now reach a working agent
+  // at its next step, every one waiting at that moment together, so this is their
+  // usual arrival. It is nobody's request: the turn it lands in is told to be left as
+  // it is, and nothing about what that turn serves moves.
+  describe('check jobs and notices delivered together into a running turn', () => {
+    // As Claude Code hands them over: the listener's own task id, then each line it printed.
+    const together = [
+      '<task-notification>',
+      '<task-id>listener1</task-id>',
+      '<event>{"type":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a","content":"A check is waiting. …"}</event>',
+      '<event>{"type":"wake","reason":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a"}</event>',
+      '<event>{"type":"check_job","check_job_id":"b0000000-0000-4000-8000-00000000000b","content":"A check is waiting. …"}</event>',
+      '<event>{"type":"wake","reason":"check_job","check_job_id":"b0000000-0000-4000-8000-00000000000b"}</event>',
+      '<event>{"type":"system_notice","kind":"server_notice","notice_id":"71000000-0000-4000-8000-000000000001","content":"[DevSpec System Notice: checks / conflict_found]"}</event>',
+      '</task-notification>',
+    ].join('\n')
+    const carried = (state) => ({
+      current: state.current,
+      joined: [...state.joined],
+      chosen: state.chosen,
+      open: [...state.open.keys()],
+      started: [...state.started],
+    })
+
+    it('neither joins nor replaces the command the turn serves, and says to leave the turn as it is', () => {
+      const before = [openA, { op: 'current', ref: A }]
+      const arrival = promptArrival({ origin: { kind: 'task-notification' }, text: together, midTurn: true, state: reduceRequestLog(log(...before)) })
+      assert.equal(arrival.leavesTurnAsItIs, true)
+      assert.equal(arrival.typedId, null)
+      // Only the bookkeeping that the listener's notification was seen: nothing a turn carries.
+      assert.deepEqual(arrival.events, [{ op: 'notified', key: 'listener1' }])
+      const after = reduceRequestLog(log(...before, ...arrival.events))
+      assert.deepEqual(carried(after), carried(reduceRequestLog(log(...before))))
+      assert.equal(requestRefForWrite(after), A, 'the command\'s writes are still the command\'s')
+      assert.equal(turnAmbiguity(after), null, 'and no write is refused for a request to be named')
+    })
+
+    it('leaves a turn that carries two people\'s requests exactly as the agent had settled it', () => {
+      // Brandon's command joined Ali's turn and the agent named Brandon's as what it serves.
+      const before = [openA, openB, { op: 'current', ref: A }, { op: 'joined', id: B }, { op: 'serve', ref: B }]
+      const arrival = promptArrival({ origin: { kind: 'task-notification' }, text: together, midTurn: true, state: reduceRequestLog(log(...before)) })
+      const after = reduceRequestLog(log(...before, ...arrival.events))
+      assert.deepEqual(carried(after), carried(reduceRequestLog(log(...before))))
+      assert.equal(after.chosen, true, 'the agent is not asked to name the request again')
+      assert.equal(requestRefForWrite(after), B)
+    })
+
+    it('a turn they start themselves, with Claude Code idle, stands for nobody known, as before', () => {
+      const state = reduceRequestLog(log(openA, { op: 'current', ref: A }))
+      const arrival = promptArrival({ origin: { kind: 'task-notification' }, text: together, midTurn: false, state })
+      assert.equal(arrival.leavesTurnAsItIs, false)
+      assert.deepEqual(arrival.events.filter((event) => event.op !== 'notified'), [{ op: 'current', ref: null }])
+      assert.equal(requestRefForWrite(reduceRequestLog(log(openA, { op: 'current', ref: A }, ...arrival.events))), null)
+    })
+
+    it('only a delivery that carries no request leaves the turn alone: with a command beside it, the command joins', () => {
+      const state = reduceRequestLog(log(openA, openB, { op: 'current', ref: A }))
+      const arrival = promptArrival({ origin: { kind: 'task-notification' }, text: `${wakeFor(MSG_B)}\n${together}`, midTurn: true, state })
+      assert.equal(arrival.leavesTurnAsItIs, false)
+      assert.deepEqual(arrival.events.filter((event) => event.op === 'joined'), [{ op: 'joined', id: B }])
+      // An automation run or a prompt nothing here knows is never mistaken for one either.
+      const run = promptArrival({ origin: 'task-notification', text: '<event>{"type":"automation_run"}</event>', midTurn: true, state })
+      assert.equal(run.leavesTurnAsItIs, false)
+      assert.equal(promptArrival({ origin: 'peer', text: 'hi', midTurn: true, state }).leavesTurnAsItIs, false)
+    })
   })
 
   it('a new turn from a prompt nothing here knows starts unstated, never as the last turn\'s request', () => {

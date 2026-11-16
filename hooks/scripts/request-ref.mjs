@@ -6,8 +6,10 @@
  * `request_ref` is a host-only parameter DevSpec hides from the model; a tool that
  * does not declare it simply drops it. The model never states attribution: a
  * request_ref it wrote is dropped before the host's is stamped. A call whose
- * subject is a connection is left unstamped. Nothing known stamps nothing, which
- * leaves DevSpec to resolve who asked itself.
+ * subject is a connection is left unstamped, and so is a check's own work (taking
+ * a check job, recording its rulings), which serves no request whatever turn it
+ * happens in. Nothing known stamps nothing, which leaves DevSpec to resolve who
+ * asked itself.
  *
  * When the turn carries more than one person's request and the agent has not said
  * which it is working on, a write that records who asked is refused, with the
@@ -20,6 +22,15 @@ import path from 'node:path'
 import { readRequestState, requestRefForWrite, selectableRequests, servableCarried, turnAmbiguity, undecidedTurnMessage } from './requests.mjs'
 
 const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive|complete|request)$/
+
+/**
+ * A check's own work (item 108de10f, decision b8abe2bb). A check job reaches the
+ * agent at its next step, so it is usually taken and ruled inside the turn of the
+ * command whose change it is about, or by a helper that turn started. Neither call
+ * is that command's work or anyone's request, so neither names one
+ * (`semantics.check_job.own_work` in devspec://product/remote-ingress-contract).
+ */
+export const CHECK_OWN_WORK_TOOLS = new Set(['claim_check_job', 'record_check_rulings'])
 
 /**
  * The DevSpec tools that record who asked for a write and take `request_ref` (the
@@ -49,7 +60,7 @@ export function stampRequest(toolName, args, connectionId, agentId = null, { hom
     const { request_ref: _written, ...rest } = args
     own = rest
   }
-  if (!connectionId || CONNECTION_SUBJECT.test(toolName)) return { args: own }
+  if (!connectionId || CONNECTION_SUBJECT.test(toolName) || CHECK_OWN_WORK_TOOLS.has(toolName)) return { args: own }
   const dir = path.join(home, '.devspec', 'remote-control', 'connections')
   const state = readRequestState(connectionId, { dir })
   const agent = typeof agentId === 'string' && agentId ? agentId : null

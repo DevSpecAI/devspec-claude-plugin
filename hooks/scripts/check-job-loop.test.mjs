@@ -15,6 +15,7 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { isPushStreamRequest, refusePushStream } from './fixtures/push-stream.mjs'
 import { buildCheckJobEvents, CHECK_JOB_HELPERS_RULE, parseInboxBatches } from './devspec-remote-wait.mjs'
 
 const POLL_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'devspec-remote-poll.mjs')
@@ -47,6 +48,8 @@ async function stubServer(dispatches) {
   const requests = []
   const world = { quiet: false }
   const server = http.createServer((request, response) => {
+    // The poller opens DevSpec's push stream as it starts; refused, it holds polls (b0d90f3b).
+    if (isPushStreamRequest(request)) return refusePushStream(response)
     let body = ''
     request.on('data', (chunk) => { body += chunk })
     request.on('end', async () => {

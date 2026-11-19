@@ -10,6 +10,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isPushStreamRequest, refusePushStream } from './fixtures/push-stream.mjs'
 import { describe, it } from 'node:test'
 import {
   detectLocalId,
@@ -403,6 +404,8 @@ describe('a connect never touches another connection (item 7e35d818)', () => {
     const dir = path.join(home, '.devspec', 'remote-control', 'connections')
     fs.mkdirSync(dir, { recursive: true })
     const server = http.createServer((request, response) => {
+      // The poller opens DevSpec's push stream as it starts; refused, it holds polls (b0d90f3b).
+      if (isPushStreamRequest(request)) return refusePushStream(response)
       let body = ''
       request.on('data', (chunk) => { body += chunk })
       request.on('end', () => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.59.0 - 2026-11-19
+
+- **A connected Claude Code that is waiting for work now listens instead of asking.** With remote control on, the plugin keeps one connection open to DevSpec, and DevSpec tells it the moment something arrives for it. While nothing is happening, it no longer asks DevSpec every 25 to 30 seconds whether anything has changed. It checks in once every 45 seconds, so DevSpec can keep showing it as connected. This takes a large share of routine load off DevSpec for every agent that sits connected and idle.
+- **Messages still arrive straight away.** When DevSpec pushes something, the plugin fetches it at once. When you start working in the terminal, or a turn ends, the plugin tells DevSpec within about a second, as before.
+- **Nothing is missed if the open connection drops.** The plugin reconnects. If it cannot, it goes back to asking DevSpec every 25 to 30 seconds, the way earlier versions did.
+- Both manifests are bumped because Claude Code runs hooks from a version-keyed cache. Update the plugin and start a new conversation to pick this up. A conversation that is already connected keeps the earlier behaviour until it is restarted.
+
 ## 0.58.0 - 2026-11-16
 
 - **Checks and notices reach Claude Code at its next step.** When DevSpec sends a check to rule, or a notice about Claude Code's own work, while Claude Code is busy, it now arrives as soon as the step in progress finishes. Until now it waited for the whole turn to end. It never arrives part-way through a step, and when Claude Code is idle it arrives straight away, as before.

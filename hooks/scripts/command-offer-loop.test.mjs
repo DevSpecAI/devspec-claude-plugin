@@ -13,6 +13,7 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { isPushStreamRequest, refusePushStream } from './fixtures/push-stream.mjs'
 import {
   REMOTE_INGRESS_ROOM_CONTEXT_CONTRACT_VERSION,
   REMOTE_INGRESS_ROOM_CONTEXT_POLICY_VERSION,
@@ -150,6 +151,8 @@ async function stubServer({ question = true, deliverOnReady = true } = {}) {
   const requests = []
   const world = { answerServed: !question, held: false, delivered: false }
   const server = http.createServer((request, response) => {
+    // The poller opens DevSpec's push stream as it starts; refused, it holds polls (b0d90f3b).
+    if (isPushStreamRequest(request)) return refusePushStream(response)
     let body = ''
     request.on('data', (chunk) => { body += chunk })
     request.on('end', async () => {

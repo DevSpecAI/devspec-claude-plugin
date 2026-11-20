@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.60.1 - 2026-11-20
+
+- **Claude now suggests turning a recurring problem into a requirement when one comes up.** Before, the instructions told Claude that a requirement is only ever asked for, so it waited for you to use the word "requirement" yourself. Now, when you point out a mistake that keeps creeping back in across tasks, or state a non-negotiable project-wide "always" or "never" rule that can be checked against what future work actually delivers, Claude explains what a requirement is and asks whether you want to record one — while still never saving a requirement without your yes.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.0 - 2026-11-20
 
 - **Updating from a version before 0.54.0? Run `/devspec:devspec.login` once after you update.** Claude Code signs in to DevSpec through your browser, and is signed out of DevSpec until you do (see 0.54.0).

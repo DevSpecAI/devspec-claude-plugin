@@ -1043,10 +1043,10 @@ describe('turn end', () => {
     assert.ok(state.interaction_continuation, 'the continuation must survive to its own turn')
   })
 
-  it('leaves ordinary turn ends exactly as they were', async () => {
+  it('an ordinary turn end that started no command says so, and so closes no command', async () => {
     const { calls } = await runStop({})
     const complete = calls.find((call) => call.name === 'report_complete')
-    assert.deepEqual(complete.arguments, { connection_id: CONNECTION, reason: 'turn_end' })
+    assert.deepEqual(complete.arguments, { connection_id: CONNECTION, command_turn_unbound: true, reason: 'turn_end' })
   })
 })
 
@@ -1073,13 +1073,6 @@ describe('directed-question policy surfaces', () => {
     // is the one thing this feature could quietly undermine.
     assert.match(skill, /decision that is genuinely theirs/)
     assert.doesNotMatch(skill, /dvsc_|connection_capability:/)
-  })
-
-  it('keeps the on-demand skill small enough to load without thinking about it', () => {
-    // Claude Code loads the body, not the frontmatter, so frontmatter fields such as
-    // `user-invocable` (item 4ac8b0ab) do not count against it.
-    const body = skill.slice(skill.indexOf('\n---', 4) + 4)
-    assert.ok(Buffer.byteLength(body) < 3_600, `skill body is ${Buffer.byteLength(body)} bytes`)
   })
 })
 

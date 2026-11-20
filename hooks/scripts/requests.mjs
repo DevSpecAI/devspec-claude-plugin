@@ -294,7 +294,7 @@ function tag(text, name) {
 }
 
 /** The DevSpec command message ids a listener wake carries, oldest first. */
-function ownerMessageIds(text) {
+export function ownerMessageIds(text) {
   const ids = []
   for (const line of String(text || '').split('\n')) {
     const start = line.indexOf('{')

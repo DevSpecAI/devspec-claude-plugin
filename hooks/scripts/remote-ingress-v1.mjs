@@ -832,6 +832,11 @@ function exactStringTuple(value, expected) {
   )
 }
 
+/**
+ * One record a server notice names, held to DevSpec's own limits for it
+ * (ServerNoticeRecordV1Schema in packages/core/src/connections/system-notices.ts):
+ * a notice within them must never fail closed here.
+ */
 function serverNoticeRecord(value) {
   return (
     exactKeys(value, ['label', 'record_type', 'record_id', 'title', 'text', 'url']) &&
@@ -840,7 +845,7 @@ function serverNoticeRecord(value) {
     nonempty(value.record_id) && value.record_id.length <= 200 &&
     nullable(value.title, (title) => nonempty(title) && title.length <= 500) &&
     nonempty(value.text) && value.text.length <= 8000 &&
-    nullable(value.url, (url) => nonempty(url) && url.length <= 500)
+    nullable(value.url, (url) => nonempty(url) && url.length <= 1000)
   )
 }
 

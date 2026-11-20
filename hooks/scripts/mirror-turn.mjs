@@ -53,6 +53,7 @@ import {
   commandsAnsweredNow,
   launchForRequest,
   openRequest,
+  ownerMessageIds,
   promptArrival,
   readRequestState,
   requestFinished,
@@ -83,6 +84,15 @@ import {
 } from './delegation-trail.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
 import { readTurnActivity, turnActivityPath, turnIsLive } from './turn-liveness.mjs'
+import {
+  clearTurnCommands,
+  commandsInInbox,
+  completionArguments,
+  pickupArguments,
+  readTurnCommands,
+  recordTurnCommands,
+} from './turn-commands.mjs'
+import { isUsageRefusal, standingRefusal, usageRefusedUntil } from './usage-refusal.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
 // `background_launch` is the PostToolUse hook that records a background job a turn
@@ -506,6 +516,7 @@ export function clearTurnMarker(connectionId) {
   } catch {
     /* ignore */
   }
+  clearTurnCommands(connectionId, { dir: CONNECTIONS_DIR })
 }
 
 function readStdin() {
@@ -1105,6 +1116,52 @@ export function prepareAgentMirrorText(text) {
 }
 
 /**
+ * Start, by name, each DevSpec room command a prompt hands the model
+ * (turn-commands.mjs): the listener's wake carries each command's message id, and
+ * the inbox its command turn. Into a new turn or one already running alike, since
+ * Claude Code hands a command over at a running turn's next step, and only the host
+ * naming it starts it (DevSpec item 6d767a58). Recorded for the turn's end, which
+ * names what it finishes. `call(args)` performs report_pickup; a pickup that fails
+ * leaves the command waiting until its answer closes it.
+ */
+export async function namePromptCommands({ connectionId, text, call, dir = CONNECTIONS_DIR }) {
+  const messageIds = ownerMessageIds(text)
+  if (!connectionId || messageIds.length === 0) return []
+  let inbox = ''
+  try {
+    inbox = fs.readFileSync(inboxPathFor(connectionId, dir), 'utf8')
+  } catch {
+    return []
+  }
+  const commands = commandsInInbox(inbox, messageIds)
+  recordTurnCommands(connectionId, commands, { dir })
+  for (const command of commands) {
+    try {
+      await call(pickupArguments(connectionId, command))
+    } catch {
+      /* Working is a view: the command still runs, and its answer closes it */
+    }
+  }
+  return commands
+}
+
+/**
+ * What a turn's end tells DevSpec about a usage refusal (usage-refusal.mjs), and
+ * what it keeps for the poller to repeat: a turn Anthropic refused for usage is
+ * reported until the cool-off ends; a turn that ran clears an earlier report; any
+ * other moment repeats one that still stands. `{}` says nothing.
+ */
+export function usageRefusalForTurn({ mode, failure, stored, nowMs }) {
+  if (mode === 'stop_failure' && isUsageRefusal(failure)) {
+    const until = usageRefusedUntil(nowMs)
+    return { args: { usage_refused_until: until }, store: until }
+  }
+  if (mode === 'stop' && stored) return { args: { usage_refused_until: null }, store: null }
+  const standing = standingRefusal(stored, nowMs)
+  return { args: standing ? { usage_refused_until: standing } : {}, store: undefined }
+}
+
+/**
  * Answer the room commands a failed turn carries with Claude Code's own error
  * (item b6a38d81, turn-failure.mjs). Only a command this turn carries that nobody
  * has answered: a prompt typed at this terminal is already in front of its owner,
@@ -1334,6 +1391,15 @@ async function main() {
       }
     }
 
+    // A DevSpec room command Claude Code is handing the model now: start it by name.
+    if (mode === 'user_prompt' && !fromAPerson && connectionId && promptOrigin(raw) === 'task-notification') {
+      await namePromptCommands({
+        connectionId,
+        text,
+        call: (args) => mcpToolsCall({ mcpUrl, token, name: 'report_pickup', arguments: args, timeoutMs: 5_000 }),
+      })
+    }
+
     // The typed request recorded above, opened on DevSpec before the turn runs, with
     // the connection capability, so DevSpec knows it is this host's observation,
     // not the model's. One that cannot be opened leaves its turn's writes unstated,
@@ -1374,6 +1440,8 @@ async function main() {
     // So does a stop that is waiting on the agent's own background work.
     const turnActive = mode === 'user_prompt' || !!blockReason || !!backgroundHold
     let stopDecisionAction = null
+    // What the turn started, read before the turn's end removes the record of it.
+    const turnCommands = turnActive ? [] : readTurnCommands(connectionId, { dir: CONNECTIONS_DIR })
     if (turnActive) writeTurnMarker(connectionId, { held: !!backgroundHold })
     else clearTurnMarker(connectionId)
 
@@ -1381,6 +1449,13 @@ async function main() {
     // server broadcasts agent_status for the attached session, so no session-keyed
     // heartbeat is needed.
     if (connectionId) {
+      const usage = usageRefusalForTurn({
+        mode,
+        failure: mode === 'stop_failure' ? parseTurnFailure(raw) : null,
+        stored: state.usage_refused_until ?? null,
+        nowMs: Date.now(),
+      })
+      if (usage.store !== undefined) patchOwnState(connectionId, { usage_refused_until: usage.store })
       await mcpToolsCall({
         mcpUrl,
         token,
@@ -1390,6 +1465,7 @@ async function main() {
           agent_name: agentName,
           status: 'live',
           busy: turnActive,
+          ...usage.args,
         },
       })
       // End the activity attempt immediately on Stop. The poller also emits
@@ -1416,33 +1492,44 @@ async function main() {
         // wakes the model immediately and that turn's end completes exactly — whereas
         // sealing an attempt whose answer the model never saw is unrecoverable.
         stopDecisionAction = stopDecision.action
-        if (stopDecision.action !== 'hold') {
-          // A terminal turn this connection admitted closes exactly; anything else
-          // keeps the connection-scoped completion it always had.
-          const localAttempt = localTurnToComplete(state.local_turn, sessionId)
+        if (stopDecision.action === 'complete') {
           try {
             await mcpToolsCall({
               mcpUrl,
               token,
-              ...(stopDecision.action === 'complete'
-                ? { connectionCapability: state.connection_capability }
-                : {}),
+              connectionCapability: state.connection_capability,
               name: 'report_complete',
-              arguments: stopDecision.action === 'complete'
-                ? {
-                    connection_id: connectionId,
-                    attempt_id: stopDecision.continuation.attempt_id,
-                    reason: 'turn_end',
-                    ...continuationIdentity(stopDecision.continuation),
-                  }
-                : localAttempt
-                  ? { connection_id: connectionId, attempt_id: localAttempt, reason: 'turn_end' }
-                  : { connection_id: connectionId, reason: 'turn_end' },
+              arguments: {
+                connection_id: connectionId,
+                attempt_id: stopDecision.continuation.attempt_id,
+                reason: 'turn_end',
+                ...continuationIdentity(stopDecision.continuation),
+              },
             })
-            if (stopDecision.action === 'complete') clearStoredContinuation(connectionId)
+            clearStoredContinuation(connectionId)
           } catch {
             /* non-fatal — the poller's marker-driven backstop still runs */
           }
+        } else if (stopDecision.action !== 'hold') {
+          // Each thing the turn finishes, by name (turn-commands.mjs): the room
+          // commands it started and the local attempt a prompt typed here opened, or,
+          // when it started neither, only an activity no command started. So a command
+          // that arrived as the turn ended is never finished by it.
+          const calls = completionArguments({
+            connectionId,
+            commands: turnCommands,
+            localAttemptId: localTurnToComplete(state.local_turn, sessionId),
+            reason: 'turn_end',
+          })
+          for (const args of calls) {
+            try {
+              await mcpToolsCall({ mcpUrl, token, name: 'report_complete', arguments: args })
+            } catch {
+              /* non-fatal — the poller's marker-driven backstop still runs */
+            }
+          }
+        }
+        if (stopDecision.action !== 'hold') {
           // The turn is over whether or not the completion landed: never carry it
           // into the next one.
           if (state.local_turn) patchOwnState(connectionId, { local_turn: null })

@@ -80,11 +80,14 @@ test('real hook CLI supplies startup and local prompt context; orient supplies r
  assert.equal(cli('SessionStart'),'','a mismatched connection cannot leak either repository data or project rules')
 }))
 
-// Item 1dbb6d5c / decision 86111641: Claude Code shows a hook string of up to 10,000
-// characters, and past that the model gets a 2,000-character preview. The rules always
-// go to a file the hook points at, with the same line at every size, so the block leads
-// with the rules and never comes near the cap.
-test('the real hook points at the rules at every size, leads with them, and never exceeds the hook cap',()=>temp(home=>{
+// Claude Code's own ceiling, not a budget of ours (convention 8faf5044): a hook's
+// additionalContext is capped at 10,000 characters, and past that Claude gets a file
+// path and a 2,000-character preview instead (code.claude.com/docs/en/hooks, "Hook
+// output"). Item 1dbb6d5c / decision 86111641: the rules always go to a file the hook
+// points at, with the same line at every size, so the block leads with the rules and
+// is never cut, however large the rules grow.
+const CLAUDE_CODE_HOOK_OUTPUT_MAX_CHARS=10_000
+test('the real hook points at the rules at every size, leads with them, and is never cut by Claude Code',()=>temp(home=>{
  const dir=path.join(home,'.devspec','remote-control','connections'),connection='fixture-connection'
  writePrivateJson(path.join(dir,`${connection}.json`),{connection_id:connection,session_id:null,session_codename:'Test Agent'})
  storeRepositoryContext(connection,registration,{dir})
@@ -101,7 +104,7 @@ test('the real hook points at the rules at every size, leads with them, and neve
   storeTiers(connection,{project_agent_rules:rules,instruction_tiers_hash:hash,instruction_tiers_version:1},{dir})
   const local=`conv-${hash}`
   const block=hook(local)
-  assert.ok(block.length<=10_000,`hook block is ${block.length}`)
+  assert.ok(block.length<=CLAUDE_CODE_HOOK_OUTPUT_MAX_CHARS,`hook block is ${block.length} characters; Claude Code would replace it with a preview`)
   const file=fileIn(block)
   assert.ok(file,'the hook points at the rules file');assert.ok(!block.includes(end),'the rules themselves are never inline')
   assert.match(fs.readFileSync(file,'utf8'),new RegExp(end),'the file holds the complete rules')

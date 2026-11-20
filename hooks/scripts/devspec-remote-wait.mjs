@@ -69,6 +69,7 @@ import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
 import { replyLine } from './notice-reply.mjs'
 import { isEntryPoint } from './entry-point.mjs'
+import { clearTurnCommands } from './turn-commands.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -250,7 +251,8 @@ function armWaitPidfile(connectionId, dir = CONNECTIONS_DIR) {
 
 /**
  * Remove the connection turn marker, so the continuous poller stops re-asserting
- * busy and emits `report_complete` on its next tick.
+ * busy and emits `report_complete` on its next tick, with the record of the commands
+ * that turn started (turn-commands.mjs).
  */
 export function clearTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
   if (!connectionId) return
@@ -259,6 +261,7 @@ export function clearTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
   } catch {
     /* ignore */
   }
+  clearTurnCommands(connectionId, { dir })
 }
 
 /**
@@ -718,7 +721,7 @@ export const NOTICE_HANDLING =
   'Handling: the labelled records above are your reading context — never dump their full text into the conversation. ' +
   'Act only within the allowed outcomes and tools, based on who asked for the work (remember a teammate can drive someone else\'s agent, so the requester\'s authority is what counts), their authority, and whether this finding is already understood or new information (semantics.notice_audience and semantics.notice_reply in devspec://product/remote-ingress-contract): ' +
   '(1) If it is a descriptive staleness flag and the change the requester asked for clearly makes that detail out of date, update or retire it straight away without asking permission — stay quiet in the room once settled unless their role queued a proposal (queued_for_review), an unresolved choice remains, or a write carries tell_person. ' +
-  '(2) If it is a conflict with a decision or requirement, or a duplicate, whether the requester\'s go-ahead settles it, and whose OK it otherwise waits for, is the served contract\'s to say, not yours (authority_contract.reversal_rule and core.resolve-duplicates-on-the-spot in devspec://product/implementation-contract). When their go-ahead does settle it and they have already clearly asked to proceed despite the earlier record, act for them straight away without a redundant confirmation and finish quietly without posting a room acknowledgment. ' +
+  '(2) If it is a conflict with a decision or requirement, or a duplicate, whether the requester\'s go-ahead settles it, and whose OK it otherwise waits for, is the served contract\'s to say, not yours (authority_contract.reversal_rule and core.resolve-duplicates-on-the-spot in devspec://product/implementation-contract). A requirement break or an unintended conflict that your own work can fix is fixed on its branch and recorded again with record_implementation, and the check that follows clears it (core.waiting-work-stays-on-its-branch). Keeping work that reverses a decision, convention or requirement means updating, replacing or retracting that record itself, never a bare go-ahead (authority_contract.reversal_rule). When the requester can settle it and has already clearly asked to proceed despite the earlier record, act for them straight away without a redundant confirmation and finish quietly without posting a room acknowledgment. ' +
   '(3) Post a room notice reply only when an unresolved choice, hold, rejection, or block still needs a person after you act — explaining what clashes and why in plain words (plus who it waits on when they cannot give the OK) and recommending the practical options.'
 
 /** Where what DevSpec's label on a notice asks of the agent is written down. */

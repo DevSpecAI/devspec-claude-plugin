@@ -325,6 +325,34 @@ describe('a message sent while Claude works on an answer (item a11d27fa)', () =>
     }
   })
 
+  // DevSpec starts a delivered command only when the host names it (DevSpec item
+  // 6d767a58): a bare pickup takes whichever command is newest, and busy starts none.
+  // So the command that starts a turn is started by name, and when the poller is the
+  // one that sees the turn end, it finishes that command by name too (item 4cc685f1).
+  it('starts a command that arrives while Claude Code is idle by name, and finishes it by name', async () => {
+    const stub = await stubServer({ question: false })
+    const poller = startPoller(stub)
+    const named = { connection_id: CONNECTION, command_turn_id: 'd0000000-0000-4000-8000-00000000000d', command_message_id: HELD }
+    try {
+      assert.ok(await until(() => stub.polls().some((p) => p.args.command_offer_version === 1)), poller.stderr())
+      stub.world.held = true
+      assert.ok(await until(() => stub.requests.some((r) => r.name === 'report_pickup')), poller.stderr())
+      const pollsAtPickup = stub.polls().length
+      assert.ok(await until(() => stub.polls().length >= pollsAtPickup + 2), 'the turn has started on the poller\'s side')
+      assert.deepEqual(stub.requests.filter((r) => r.name === 'report_pickup').map((r) => r.args), [named],
+        'one pickup, naming the command, and no bare one beside it')
+
+      // The turn ends with no Stop hook to report it: the poller finishes it, by name.
+      fs.rmSync(path.join(stub.world.dir, `${CONNECTION}.turn`))
+      assert.ok(await until(() => stub.requests.some((r) => r.name === 'report_complete')), poller.stderr())
+      assert.deepEqual(stub.requests.filter((r) => r.name === 'report_complete').map((r) => r.args),
+        [{ ...named, reason: 'turn_marker_cleared' }])
+    } finally {
+      poller.stop()
+      await stub.close()
+    }
+  })
+
   it('opens the command\'s request before the record that wakes anybody (item 7a4d04fd)', async () => {
     const stub = await stubServer({ question: false })
     const poller = startPoller(stub)

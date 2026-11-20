@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { normalizeRemote, noClaimText, parseCommitArgs, severalClaimsText, stampedText, tagMessage, unrecordedClaimText } from './commit-stamp.mjs'
+import { normalizeRemote, parseCommitArgs, severalClaimsText, stampedText, tagMessage, unlinkedCommitText, unrecordedClaimText } from './commit-stamp.mjs'
 import { observerDir, startObserver } from './git-observer.mjs'
 import { handlePost } from './commit-provenance.mjs'
 
@@ -167,16 +167,29 @@ describe('in one of the project\'s repositories, with one task claimed', () => {
 })
 
 describe('the commit check, before git runs', () => {
-  it('stops a commit with no task claimed, with nothing for the model to type, and leaves the repository as it was', () => {
-    const head = git(['rev-parse', 'HEAD'])
-    for (const command of ['git commit --allow-empty -q -m "unclaimed"', `git commit --allow-empty -q -F - <<'EOF'\nunclaimed heredoc\n\nbody\nEOF`]) {
+  it('lets a commit with no task claimed through exactly as written, standard input included, with a note (item 4cc685f1)', () => {
+    // The served contract never refuses repository work because a claim is absent: a
+    // dependency-only update or an automation run needs no task, and its commits land.
+    for (const [command, message] of [
+      ['git commit --allow-empty -q -m "unclaimed"', 'unclaimed'],
+      [`git commit --allow-empty -q -F - <<'EOF'\nunclaimed heredoc\n\n  indented body\nEOF`, 'unclaimed heredoc\n\n  indented body'],
+    ]) {
+      const head = git(['rev-parse', 'HEAD'])
       const result = shell(command)
-      assert.equal(result.status, 1, command)
-      assert.equal(result.stderr.trim(), noClaimText())
-      assert.equal(git(['rev-parse', 'HEAD']), head, 'no commit was made')
+      assert.equal(result.status, 0, `${command}: ${result.stderr}`)
+      assert.notEqual(git(['rev-parse', 'HEAD']), head, 'the commit was made')
+      assert.equal(body(), message, 'with exactly the message written')
+      assert.equal(result.stderr.trim(), unlinkedCommitText())
     }
-    assert.match(noClaimText(), /retry the same commit/)
-    assert.equal(/<full-uuid>/.test(noClaimText()), false)
+    assert.match(unlinkedCommitText(), /claim_work_item/)
+    assert.equal(/<full-uuid>/.test(unlinkedCommitText()), false, 'nothing for the model to type')
+    assert.doesNotMatch(unlinkedCommitText(), /_contract\b|devspec:\/\/|Authority:/, 'a person reads it: no internal rule names or contract address')
+  })
+
+  it('says nothing about a commit git did not make', () => {
+    const result = shell('git commit -q -m "nothing staged"')
+    assert.notEqual(result.status, 0)
+    assert.equal(result.stderr.includes('DevSpec'), false, result.stderr)
   })
 
   it('with several claims, stops and asks for the right tag, because it never guesses', () => {
@@ -262,9 +275,13 @@ describe('what is not the project\'s', () => {
     init(pinned, null)
     fs.mkdirSync(path.join(pinned, '.devspec'))
     fs.writeFileSync(path.join(pinned, '.devspec', 'project.json'), JSON.stringify({ project_id: PROJECT }))
-    assert.equal(shell('git commit --allow-empty -q -m pinned', { cwd: pinned }).status, 1, 'in scope by its pin: no claim stops it')
+    const inScope = shell('git commit --allow-empty -q -m pinned', { cwd: pinned })
+    assert.equal(inScope.status, 0, inScope.stderr)
+    assert.equal(inScope.stderr.trim(), unlinkedCommitText(), 'in scope by its pin: the no-claim note')
     fs.writeFileSync(path.join(pinned, '.devspec', 'project.json'), JSON.stringify({ project_id: '55555555-5555-4555-8555-555555555555' }))
-    assert.equal(shell('git commit --allow-empty -q -m "pinned elsewhere"', { cwd: pinned }).status, 0)
+    const elsewhere = shell('git commit --allow-empty -q -m "pinned elsewhere"', { cwd: pinned })
+    assert.equal(elsewhere.status, 0, elsewhere.stderr)
+    assert.equal(elsewhere.stderr.includes('DevSpec'), false, 'another project\'s pin: nothing said')
   })
 
   it('does nothing while the conversation is not connected', () => {
@@ -331,8 +348,9 @@ describe('a reference the model wrote is confirmed online before git runs (6fa02
     assert.equal((await shellAsync(`git commit --allow-empty -q -m "no credentials [devspec:${OTHER_TASK}]"`)).status, 0)
   })
 
-  it('makes no network call for a commit without a reference, whether it tags it or stops it', async () => {
-    assert.equal((await shellAsync('git commit --allow-empty -q -m "no claim, no reference"', devspec())).status, 1)
+  it('makes no network call for a commit without a reference, whether it tags it or lets it through untagged', async () => {
+    assert.equal((await shellAsync('git commit --allow-empty -q -m "no claim, no reference"', devspec())).status, 0)
+    assert.equal(subject(), 'no claim, no reference')
     claim(TASK)
     assert.equal((await shellAsync('git commit --allow-empty -q -m "tagged by the stand-in"', devspec())).status, 0)
     assert.equal(subject(), `tagged by the stand-in [devspec:${TASK}]`)

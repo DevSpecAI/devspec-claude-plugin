@@ -19,8 +19,10 @@
  * command is never read. Observation failing never changes what git does.
  *
  * Before git runs, a plain `git commit` in one of the connected project's
- * repositories gets the task tag added, or is stopped with what to do instead
- * (commit-stamp.mjs, item e597bc18). It works on git's own arguments, after the shell
+ * repositories gets the task tag added, or, when it cannot tell which task the commit
+ * belongs to, is stopped with what to do instead (commit-stamp.mjs, item e597bc18). A
+ * commit with no task claimed runs as written, with a note (item 4cc685f1). It works on
+ * git's own arguments, after the shell
  * has evaluated them, so every way of writing the message is the same here. A
  * reference the model wrote itself is confirmed online first, as decided in 6fa0241e.
  *
@@ -41,8 +43,8 @@ import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
 import {
-  ANY_REFERENCE, boundConnectionId, conversationClaimState, gitIn, noClaimText, parseCommitArgs, projectScope,
-  severalClaimsText, stampedText, tagMessage, unrecordedClaimText,
+  ANY_REFERENCE, boundConnectionId, conversationClaimState, gitIn, parseCommitArgs, projectScope,
+  severalClaimsText, stampedText, tagMessage, unlinkedCommitText, unrecordedClaimText,
 } from './commit-stamp.mjs'
 import { MAX_STAND_IN_DEPTH, STAND_IN_DEPTH_ENV, isMarkedStandIn, loopStoppedText, standInDepth } from './git-stand-in.mjs'
 
@@ -330,14 +332,6 @@ function inspectCommit(realGit, worktree, previousHead, amend, startedAt, endedA
 }
 
 /**
- * What to run for this invocation. A plain `git commit` in the connected project's
- * repositories, with no reference in its message, gets the tag of the one task this
- * conversation has claimed, or is stopped: with no claim, with several, and while a
- * claim it made could not be recorded (item c12783b9). Anything
- * else runs exactly as written, and a message read from standard input is passed on
- * byte for byte. Never throws.
- */
-/**
  * Is a reference the model wrote to a task that exists? (6fa0241e, kept by item
  * e597bc18.) The plugin's own check from 0.17.0, run from where the plugin is
  * installed: the same transport and credentials (mcp-call.mjs, resolve-mcp-auth.mjs:
@@ -368,6 +362,17 @@ async function unresolvedReference(text, { cwd, git, config }) {
   }
 }
 
+/**
+ * What to run for this invocation. A plain `git commit` in the connected project's
+ * repositories, with no reference in its message, gets the tag of the one task this
+ * conversation has claimed. It is stopped only where the stand-in cannot tell which
+ * task it belongs to: with several claims, and while a claim it made could not be
+ * recorded (item c12783b9). With no task claimed it runs as written, with a note
+ * (`notice`) shown once git has made it: the served contract never refuses repository
+ * work for want of a claim, and work that needs no task commits like any other (item
+ * 4cc685f1). Anything else runs exactly as written, and a message read from standard
+ * input is passed on byte for byte. Never throws.
+ */
 async function planCommit(realGit, args, config, dir) {
   let input = null
   try {
@@ -417,7 +422,8 @@ async function planCommit(realGit, args, config, dir) {
     // A claim the plugin could not record may be the one this commit belongs to: ask,
     // never tag with another (item c12783b9).
     if (unrecorded.length > 0) return { stop: unrecordedClaimText(claims, unrecorded) }
-    if (claims.length === 0) return { stop: noClaimText() }
+    // No task claimed: nothing to add, so nothing to stop. git gets exactly what it was given.
+    if (claims.length === 0) return { args, input, notice: unlinkedCommitText() }
     if (claims.length > 1) return { stop: severalClaimsText(claims) }
     const id = claims[0]
     const next = [...args]
@@ -494,6 +500,7 @@ const result = await delegate(realGit, plan.args, childEnv, plan.input ?? null)
 const endedAt = Date.now()
 if (plan.copy) { try { rmSync(plan.copy, { force: true }) } catch { /* removed with the conversation */ } }
 if (plan.stamped && result.code === 0 && !result.signal) process.stderr.write(`${stampedText(plan.stamped)}\n`)
+if (plan.notice && result.code === 0 && !result.signal) process.stderr.write(`${plan.notice}\n`)
 const trace = capture ? await capture.finish().catch(() => null) : null
 
 try {

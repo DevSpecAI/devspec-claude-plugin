@@ -1962,7 +1962,9 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
     }
   })
 
-  it('delivers a one-shot pr_ready_to_merge fallback wake as a for_the_record server_notice', () => {
+  // As DevSpec sends it (packages/core/src/git/checks/pr-merge-when-cleared.ts): topic
+  // pr_merge_when_cleared, notice type merge_when_cleared_fallback, for the record.
+  it('delivers the one-shot clear-to-merge notice as a for_the_record server_notice', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-pr-merge-wake-'))
     const file = path.join(dir, `${CONNECTION}.inbox.jsonl`)
     const MERGE_NOTICE_ID = '71000000-0000-4000-8000-0000000000a6'
@@ -1971,24 +1973,24 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       kind: 'server_notice',
       notice_id: MERGE_NOTICE_ID,
       audience: 'for_the_record',
-      topic: 'pr_ready_to_merge',
-      notice_type: 'pr_ready_to_merge',
-      summary: 'Pull request #1241 is cleared to merge at head 1234567890ab',
+      topic: 'pr_merge_when_cleared',
+      notice_type: 'merge_when_cleared_fallback',
+      summary: 'Pull request #1241 in DevSpecAI/DevSpecV2 is clear at 1234567 and ready to merge.',
       prompt:
-        'Pull request #1241 (feat/track-1 -> staging) has passed DevSpec\'s check and all GitHub checks/approvals at head commit 1234567890abcdef1234567890abcdef12345678, and Merge when cleared is enabled. The DevSpec GitHub App does not have write permission to merge this repository directly. Merge this cleared head commit now using your owner\'s GitHub credentials (`gh pr merge 1241 --repo DevSpecAI/DevSpecV2 --match-head-commit 1234567890abcdef1234567890abcdef12345678`).',
+        'Pull request #1241 (feat/track-1 -> staging) in DevSpecAI/DevSpecV2 is clear at commit 1234567890abcdef1234567890abcdef12345678: DevSpec\'s check and all commit checks on this pull request have passed.\nMerge when cleared is enabled, and the repository\'s GitHub App installation has not yet granted the write permissions DevSpec needs to merge on the server (pull_requests, contents, workflows).\nMerge this cleared pull request now using your owner\'s credentials pinned to 1234567890abcdef1234567890abcdef12345678:\n  gh pr merge 1241 --repo DevSpecAI/DevSpecV2 --merge --match-head-commit 1234567890abcdef1234567890abcdef12345678\nDo not merge if the pull request has moved to a newer commit than 1234567890abcdef1234567890abcdef12345678.',
       contract_uri: INGRESS_RESOURCE,
       records: [
         {
           label: 'Pull request',
           record_type: 'pull_request',
           record_id: 'ed8b2ac8-38cf-46e7-9ebd-80e52f4473e6',
-          title: 'PR #1241: Track 1 PR workflow',
-          text: 'DevSpecAI/DevSpecV2#1241 (feat/track-1 -> staging) cleared at head 1234567890abcdef1234567890abcdef12345678.',
-          url: 'https://github.com/DevSpecAI/DevSpecV2/pull/1241',
+          title: 'PR #1241 in DevSpecAI/DevSpecV2',
+          text: 'Pull request #1241 in DevSpecAI/DevSpecV2 is clear at 1234567 and ready to merge.',
+          url: null,
         },
       ],
-      allowed_outcomes: ['merge_pull_request', 'report_merge_blocked'],
-      allowed_tools: ['get_pull_request'],
+      allowed_outcomes: [],
+      allowed_tools: ['get_pull_request', 'get_task', 'record_implementation', 'add_implementation_note', 'bash', 'read'],
     }
     try {
       const envelope = {
@@ -2011,13 +2013,13 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
       const events = buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })
       assert.equal(events[0].type, 'system_notice')
       assert.equal(events[0].kind, 'server_notice')
-      assert.equal(events[0].topic, 'pr_ready_to_merge')
-      assert.equal(events[0].notice_type, 'pr_ready_to_merge')
+      assert.equal(events[0].topic, 'pr_merge_when_cleared')
+      assert.equal(events[0].notice_type, 'merge_when_cleared_fallback')
       assert.equal(events[0].audience, 'for_the_record')
-      assert.match(events[0].content, /\[DevSpec System Notice: pr_ready_to_merge \/ pr_ready_to_merge\]/)
-      assert.match(events[0].content, /Merge this cleared head commit now using your owner's GitHub credentials/)
-      assert.match(events[0].content, /Allowed outcomes: merge_pull_request, report_merge_blocked/)
-      assert.match(events[0].content, /Allowed tools: get_pull_request/)
+      assert.match(events[0].content, /\[DevSpec System Notice: pr_merge_when_cleared \/ merge_when_cleared_fallback\]/)
+      assert.match(events[0].content, /Merge this cleared pull request now using your owner's credentials/)
+      assert.match(events[0].content, /gh pr merge 1241 --repo DevSpecAI\/DevSpecV2 --merge --match-head-commit/)
+      assert.match(events[0].content, /Allowed tools: get_pull_request, get_task, record_implementation/)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

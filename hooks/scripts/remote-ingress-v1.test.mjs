@@ -783,6 +783,15 @@ describe('strict 1.4 system notices', () => {
     assert.equal(isSystemNoticeV1(serverNotice()), true)
   })
 
+  // A record's link may be as long as DevSpec allows it to be (1,000 characters,
+  // ServerNoticeRecordV1Schema). A shorter limit here turned such a notice into
+  // "not readable by this plugin version" (item 4cc685f1).
+  it('reads a record whose link is as long as DevSpec allows, and no longer', () => {
+    const withUrl = (length) => serverNotice({ records: [{ ...serverNotice().records[0], url: `https://devspec.example/${'a'.repeat(length - 24)}` }] })
+    assert.equal(isSystemNoticeV1(withUrl(1000)), true)
+    assert.equal(isSystemNoticeV1(withUrl(1001)), false)
+  })
+
   it('rejects malformed server_notice payloads (missing records, extra keys, bad contract_uri)', () => {
     for (const bad of [
       serverNotice({ records: [] }),

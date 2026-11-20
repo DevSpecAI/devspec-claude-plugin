@@ -420,8 +420,11 @@ describe('stamping a DevSpec write', () => {
   })
 
   it('covers exactly the DevSpec tools that take a request', () => {
-    assert.equal(REQUEST_REF_TOOLS.size, 43)
+    assert.equal(REQUEST_REF_TOOLS.size, 47)
     assert.equal(REQUEST_REF_TOOLS.has('manage_goals'), true)
+    for (const name of ['record_dependency_review', 'record_inventory_entry', 'revise_inventory_entry', 'retract_inventory_entry']) {
+      assert.equal(REQUEST_REF_TOOLS.has(name), true, name)
+    }
     for (const name of ['record_requirement', 'update_requirement', 'supersede_requirement', 'retract_requirement']) {
       assert.equal(REQUEST_REF_TOOLS.has(name), true, name)
     }

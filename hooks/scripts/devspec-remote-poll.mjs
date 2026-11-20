@@ -96,6 +96,8 @@ import {
 import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
 import { attachmentFromPoll } from './local-turn.mjs'
 import { readTurnActivity, turnIsLive } from './turn-liveness.mjs'
+import { clearTurnCommands, completionArguments, deliveredCommands, pickupArguments, recordTurnCommands } from './turn-commands.mjs'
+import { usageRefusalArguments } from './usage-refusal.mjs'
 import {
   commandHandoffDecision,
   commandHandoffKey,
@@ -392,6 +394,8 @@ function clearTurnMarker(connectionId) {
   } catch {
     /* ignore — next tick re-reads it anyway */
   }
+  // Nothing is working, so the commands that turn started are already closed.
+  clearTurnCommands(connectionId, { dir: CONNECTIONS_DIR })
 }
 
 /**
@@ -1320,13 +1324,12 @@ export function splitRoomWindow({ commands, ownerAmbient, roomContext, seed = fa
 
 /**
  * Map a turn-active transition (previous loop tick → this loop tick) to the
- * connection activity verb the poller emits DIRECTLY (item 71a8b201). This is the
- * clean end state: the poller drives the activity state machine from its own
- * turn-active signal instead of leaving the server to translate the legacy
- * busy-heartbeat (syncActivityFromBusy). Driven by the poller's turn marker, so it
- * is host-agnostic (Grok works too — no per-host Stop hook needed).
+ * connection activity verb the poller emits DIRECTLY (item 71a8b201): the poller
+ * drives the activity state machine from its own turn-active signal, because busy
+ * never starts a room command (DevSpec item 6d767a58).
  *
- *   false → true  = a turn just started (owner-command pickup / local turn) → 'pickup'
+ *   false → true  = a turn just started (room commands, already named as they
+ *                   were handed over, or a turn no command started)          → 'pickup'
  *   true  → true  = still working this turn (per heartbeat/loop tick)        → 'keepalive'
  *   true  → false = the turn ended (marker cleared by Stop / wait re-arm)    → 'complete'
  *   false → false = idle, nothing to report                                  → null
@@ -1884,12 +1887,20 @@ async function main() {
     })
   }
 
-  // Emit a connection-scoped activity verb DIRECTLY (item 71a8b201). Best-effort:
-  // this is ADDITIVE to the busy-heartbeat above (the server's syncActivityFromBusy
-  // translation stays the safety net during rollout), so a failed verb must NEVER
-  // break the poll loop — log to stderr and move on. attempt_id is omitted; the
-  // server resolves this connection's current attempt (pickup opens one for a
-  // locally-initiated turn; keepalive/complete refresh/close the working attempt).
+  // Emit a connection-scoped activity verb DIRECTLY (item 71a8b201). Best-effort: a
+  // failed verb must NEVER break the poll loop — log to stderr and move on. Busy
+  // never starts a room command (DevSpec item 6d767a58), so these verbs are what
+  // start and end the turn's activity:
+  //
+  // - pickup: a turn the poller started by handing over room commands was already
+  //   named as it did (nameCommandPickups), so nothing more is sent. Any other turn
+  //   (an automation run, a background job's wake) is the connection's current one.
+  // - keepalive: the working attempt, whichever it is.
+  // - complete: the backstop for a turn whose end no Stop hook reported. It names
+  //   the commands this poller started that turn with; a turn it started none for
+  //   finishes only an activity no command started (turn-commands.mjs), because a
+  //   command the prompt hook named is the Stop hook's to finish, and one delivered
+  //   just as the turn ended belongs to the next turn.
   //
   // While an exact directed-question continuation is open, the generic verbs are the
   // wrong writer for it (see interactionActivityPlan): pickup/complete would touch an
@@ -1898,6 +1909,12 @@ async function main() {
   // Working stays truthful for as long as the model really is working.
   async function emitActivityVerb(verb) {
     if (!verb) return
+    // The turn is over however its end is reported: what it started goes with it.
+    const startedThisTurn = verb === 'complete' ? turnCommandsNamed : []
+    if (verb === 'complete') {
+      turnCommandsNamed = []
+      turnStartNamed = false
+    }
     const plan = interactionActivityPlan({ verb, continuation: interactionContinuation })
     if (plan.kind === 'suppress') return
     if (plan.kind === 'exact_keepalive') {
@@ -1906,34 +1923,57 @@ async function main() {
     }
     const name = ACTIVITY_VERB_TOOL[verb]
     if (!name) return
-    try {
-      await mcpToolsCall({
-        mcpUrl,
-        token,
-        name,
-        arguments: {
-          connection_id: connectionId,
-          // Name the reason. A completion with none lands as `done`/NULL, which is
-          // indistinguishable from the server's own not-busy sweep — and that ambiguity
-          // is exactly why a 40-minute delay could not be attributed to anything
-          // (item 79c4aa63). This path is the poller seeing the turn marker disappear.
-          ...(verb === 'complete' ? { reason: 'turn_marker_cleared' } : {}),
-        },
-        timeoutMs: 10_000,
-      })
-    } catch (e) {
-      process.stderr.write(`devspec-remote-poll: activity verb ${verb} (${name}) failed: ${e.message}\n`)
-      // The server has no working attempt for us, so our turn marker is stale —
-      // something already completed this turn (typically the agent's own
-      // complete_turn). Keep re-asserting busy and the indicator flickers between
-      // our keepalive and that completion until the turn stops looking live. Drop the marker
-      // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
-      if (isNoWorkingAttemptRefusal(e)) {
-        clearTurnMarker(connectionId)
-        process.stderr.write(
-          'devspec-remote-poll: server reports no working attempt — clearing the stale turn marker\n',
-        )
+    if (verb === 'pickup' && turnStartNamed) {
+      turnStartNamed = false
+      return
+    }
+    // Name the reason. A completion with none lands as `done`/NULL, which is
+    // indistinguishable from the server's own not-busy sweep — and that ambiguity is
+    // exactly why a 40-minute delay could not be attributed to anything (item
+    // 79c4aa63). This path is the poller seeing the turn marker disappear.
+    const calls = verb === 'complete'
+      ? completionArguments({ connectionId, commands: startedThisTurn, reason: 'turn_marker_cleared' })
+      : [{ connection_id: connectionId }]
+    for (const args of calls) {
+      try {
+        await mcpToolsCall({ mcpUrl, token, name, arguments: args, timeoutMs: 10_000 })
+      } catch (e) {
+        activityVerbFailed(verb, name, e)
       }
+    }
+  }
+
+  /**
+   * Start each room command this poller hands over to start a turn, by name
+   * (turn-commands.mjs), and keep them for the turn's end. Best-effort, in the order
+   * they were sent: a pickup that does not land leaves the command waiting, as it was.
+   */
+  async function nameCommandPickups(commands) {
+    if (commands.length === 0) return
+    recordTurnCommands(connectionId, commands, { dir: CONNECTIONS_DIR })
+    turnCommandsNamed.push(...commands)
+    turnStartNamed = true
+    for (const command of commands) {
+      try {
+        await mcpToolsCall({ mcpUrl, token, name: 'report_pickup', arguments: pickupArguments(connectionId, command), timeoutMs: 10_000 })
+      } catch (e) {
+        process.stderr.write(`devspec-remote-poll: report_pickup for message ${command.messageId} failed: ${e.message}\n`)
+      }
+    }
+  }
+
+  function activityVerbFailed(verb, name, e) {
+    process.stderr.write(`devspec-remote-poll: activity verb ${verb} (${name}) failed: ${e.message}\n`)
+    // The server has no working attempt for us, so our turn marker is stale —
+    // something already completed this turn (typically the agent's own
+    // complete_turn). Keep re-asserting busy and the indicator flickers between
+    // our keepalive and that completion until the turn stops looking live. Drop the marker
+    // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
+    if (isNoWorkingAttemptRefusal(e)) {
+      clearTurnMarker(connectionId)
+      process.stderr.write(
+        'devspec-remote-poll: server reports no working attempt — clearing the stale turn marker\n',
+      )
     }
   }
 
@@ -1997,6 +2037,14 @@ async function main() {
   const persistedInbox = readInboxDeliveryIndex(connectionId, sessionId)
   let lastTier = null
   let lastBusySent = null
+  // The usage refusal the last poll reported (usage-refusal.mjs), so a cleared one is
+  // sent as null once rather than never.
+  let lastUsageRefusalSent = null
+  // The room commands this poller named as it handed them over to start a turn
+  // (turn-commands.mjs). That turn's start is then already reported, and its end, if
+  // the poller is the one to see it, names them.
+  let turnCommandsNamed = []
+  let turnStartNamed = false
   // Which room-file sections the last delivered command was told had changed, as
   // serialised JSON (roomChangesSince). Empty on boot, so a reconnecting agent is
   // told once what the room holds rather than never.
@@ -2383,6 +2431,10 @@ async function main() {
       catchUp,
     })
     const handoff = offersNegotiable && !ack ? pendingCommandHandoff : null
+    // Anthropic refusing this agent for usage, recorded by the StopFailure hook
+    // (usage-refusal.mjs): every poll says so while it stands, so DevSpec sends this
+    // agent's check jobs to another agent.
+    const usageRefusal = usageRefusalArguments(listenerState?.usage_refused_until, lastUsageRefusalSent, Date.now())
     if (handoff) {
       sentCommandHandoff = { ready: handoff, question_id: interactionContinuation?.question_id ?? null }
       lastSentHandoffKey = commandHandoffKey(handoff)
@@ -2414,6 +2466,7 @@ async function main() {
         ...(catchUp ? { catch_up: true } : {}),
         ...(listenerArmed !== null ? { listener_armed: listenerArmed } : {}),
         unread_commands: unreadCommands,
+        ...usageRefusal,
       },
       // A held request MUST have a client ceiling — fetch has no default timeout, so
       // a silently-dropped connection would wedge the loop with no heartbeat at all.
@@ -2423,6 +2476,7 @@ async function main() {
       // showing Live for the length of a hold after the terminal is gone.
       isAlive: () => !ownerAnchor || ownerAlive(ownerAnchor),
     })
+    if (Object.hasOwn(usageRefusal, 'usage_refused_until')) lastUsageRefusalSent = usageRefusal.usage_refused_until
     // Only a poll that actually returned carried the ACK. A thrown poll leaves it
     // queued, and a lost ACK is recovered by the dedupe path on redelivery anyway —
     // at-least-once means the answer is never the thing that gets lost.
@@ -2624,7 +2678,13 @@ async function main() {
         authoritative: false,
         executable: false,
       }) + '\n')
+      // Commands that start a turn are started by name as they are handed over. One
+      // handed over while a turn is running reaches the model at its next step, and the
+      // prompt hook names it then (mirror-turn.mjs): naming it here would start it
+      // before the model has it, and a turn ending meanwhile would finish it unseen.
+      const startsTurn = !turnIsLive(readTurnMarker(connectionId), { activity: readTurnActivity(connectionId, CONNECTIONS_DIR) })
       writeTurnMarker(connectionId)
+      if (startsTurn) await nameCommandPickups(deliveredCommands(ingress, persisted.executeMessageIds))
       patchState({ last_owner_wake_at: new Date().toISOString() })
       if (persisted.handedOff) {
         // The server retired the question's attempt in the same transaction that opened
@@ -2881,13 +2941,12 @@ async function main() {
     if (turnActive) busyArg = true
     else if (lastBusySent === true) busyArg = false
 
-    // ADDITIVE (item 71a8b201): emit the connection activity verb DIRECTLY off the
-    // turn-active transition (pickup / keepalive / complete). This is ON TOP of the
-    // busy signal the poll carries — both feed the same server-side activity attempt
-    // idempotently, so leaving the busy path untouched keeps the server's
-    // syncActivityFromBusy translation as the safety net during rollout. One tick =
-    // one keepalive (≈25s while a turn runs, well inside the 5-minute working lease).
-    // Best-effort inside emitActivityVerb — a failed verb never breaks the loop.
+    // Emit the connection activity verb off the turn-active transition (pickup /
+    // keepalive / complete, item 71a8b201). The busy signal the poll carries keeps an
+    // activity alive but never starts a room command (DevSpec item 6d767a58), so these
+    // verbs are what start and end one (emitActivityVerb). One tick = one keepalive
+    // (≈25s while a turn runs, well inside the 5-minute working lease). Best-effort
+    // inside emitActivityVerb — a failed verb never breaks the loop.
     await emitActivityVerb(verbForTurnTransition(prevTurnActive, turnActive))
     prevTurnActive = turnActive
 

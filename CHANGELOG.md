@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.60.4 - 2026-11-20
+
+- **Going ahead on a decision conflict follows what DevSpec accepts.** The notice-handling prompt no longer tells Claude that a bare **Go ahead** on work that conflicts with a decision, convention or requirement is refused until the record is edited first. When you let the work go ahead, DevSpec accepts the answer and marks the overruled record as needing an update.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.3 - 2026-11-20
 
 - **A commit made when no task is claimed now goes through, with a note, instead of being stopped.** Updates and automation work that need no task commit normally. The note tells Claude the commit carries no task reference, and that if the work does belong to a task, claiming it before the next commit gets the reference added automatically.
@@ -22,7 +27,7 @@
 - **A message sent while Claude Code is busy is now started.** When you send Claude Code a message from DevSpec while it is already working, it receives the message at its next step, and DevSpec now shows that message as being worked on. Before, DevSpec could leave it showing as waiting for the whole turn. Claude Code now tells DevSpec which message it has started each time it picks one up, and which ones it has finished when a turn ends, so a message that arrives just as a turn ends is never marked finished before Claude Code has seen it.
 - **Checks move on when Anthropic stops Claude Code for a usage limit.** If a turn ends because Anthropic refused Claude Code for a usage or rate limit, Claude Code tells DevSpec, and for the next 15 minutes checks go to another agent instead of waiting on this one. The first turn that runs again clears it.
 - **Merge when cleared now switches on.** Claude switches on DevSpec's Merge when cleared as it records its work on a task, or as it records its review of a Dependabot or Renovate update. Earlier versions told it to switch it on in a place that did nothing.
-- **Held work clears the way DevSpec clears it.** When work is held because it breaks a requirement or clashes with a decision by accident, Claude fixes it on its branch and records the work again, and DevSpec's next check clears the hold with no one's OK needed. Only work that reverses someone's decision waits for an OK, and to keep such work Claude updates, replaces or retracts the decision itself, as DevSpec requires.
+- **Held work clears the way DevSpec clears it.** When work is held because it breaks a requirement or clashes with a decision by accident, Claude fixes it on its branch and records the work again, and DevSpec's next check clears the hold with no one's OK needed. Only work that reverses someone's decision waits for an OK.
 - **Checks on Claude's own changes.** DevSpec offers a check to a spare agent first, and to the agent that made the change only when none is free. Claude no longer expects every check on its own work to come to it, and rules any that DevSpec says are still waiting for it before carrying on.
 - **More of DevSpec works in a session you drive from your phone or the web without stopping for approval:** reading and updating the project's inventory, recording a review of a Dependabot or Renovate update, reading tasks, decisions, conventions, discussion points, automation runs and a task's testing brief, and spinning off a task. Inventory changes and dependency reviews are recorded for the person who asked, like every other DevSpec change.
 - **Tickets from other tools.** When a task resolves a ticket, issue or error from another tool, Claude links it to the task.

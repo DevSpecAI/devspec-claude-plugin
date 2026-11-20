@@ -18,9 +18,12 @@
  * The contract, in one line: **block only on certainty, and only when the agent can
  * recover unaided; allow everything else.** Concretely —
  *
- *  - Edits and execution are NEVER denied for want of a claim. No allowlist, no
- *    tokenizer over arbitrary commands, no path rules. Nothing to bypass, because
- *    nothing is blocked.
+ *  - Edits, execution and commits are NEVER denied for want of a claim. No allowlist,
+ *    no tokenizer over arbitrary commands, no path rules. Nothing to bypass, because
+ *    nothing is blocked. A commit with no task claimed goes through as written, with a
+ *    note beside it (`unlinkedCommitText`, item 4cc685f1): with no claim there is no
+ *    reference this could have added, which is the only case the served contract lets
+ *    a host refuse a commit for (commit_provenance_contract.stamping).
  *  - A commit is inspected only when it arrives in a shape this can read with
  *    certainty (see `simpleGitCommit`). Anything else — aliases, compound shell,
  *    `--amend`, `-F`, expansions, GUI commits, merge/rebase/cherry-pick — is allowed
@@ -58,7 +61,7 @@ import { mcpToolsCall } from './mcp-call.mjs'
 import { readConversationProject } from './conversation-project.mjs'
 import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
-import { REQUESTED_ITEM, conversationClaimState, gitIn, noClaimText, projectScope, severalClaimsText, unrecordedClaimText } from './commit-stamp.mjs'
+import { REQUESTED_ITEM, conversationClaimState, gitIn, projectScope, severalClaimsText, unlinkedCommitText, unrecordedClaimText } from './commit-stamp.mjs'
 import { observerActive } from './git-observer.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
@@ -756,11 +759,8 @@ function nudge(message) {
  * How a denial reads matters as much as when it fires: the work is already written by
  * the time a commit is refused, so the message must be a complete recipe the agent can
  * follow alone. It never terminates the turn and never demands a full criteria set.
- * It used to call "a thin last-mile item" with a one-line description fine; since the
- * server requires a substantive description and a stated reason on every create_task
- * (and refuses thin ones before writing), following that advice mid-commit got the
- * agent refused a second time (item 9a4c0d6a). Which item to reuse, reopen or create
- * is the served contract's work_entry_contract, so this points there instead.
+ * Only a commit with at least one task claimed reaches here: one with none goes
+ * through with `unlinkedCommitText` instead (item 4cc685f1).
  */
 function recoveryText(claims) {
   // The one case the agent writes the tag itself: the plugin never guesses between claims.
@@ -769,14 +769,11 @@ function recoveryText(claims) {
   // With one claim, every commit shape this reads is tagged for the agent (item
   // 3e24523e); the agent never types an id it could get wrong. The only one-claim
   // commit that reaches here is a bare, unquoted -m word, which cannot take a tag.
-  if (claims.length === 1) {
-    return [
-      'DevSpec: this commit has no [devspec:<id>] reference, and its message is a bare word the tag cannot be added to.',
-      'Put the message in quotes (-m "…") and retry the commit: the tag for the task you have claimed is added for you.',
-      'Nothing else is blocked.',
-    ].join(' ')
-  }
-  return noClaimText()
+  return [
+    'DevSpec: this commit has no [devspec:<id>] reference, and its message is a bare word the tag cannot be added to.',
+    'Put the message in quotes (-m "…") and retry the commit: the tag for the task you have claimed is added for you.',
+    'Nothing else is blocked.',
+  ].join(' ')
 }
 
 /**
@@ -1116,6 +1113,11 @@ export async function handlePre(input, options = {}) {
   // other: the commit may be that task's, so the agent names it (item c12783b9).
   if (conversation.unrecorded.length > 0) return deny(unrecordedClaimText(conversation.claims, conversation.unrecorded))
 
+  // No task claimed: there is no reference to add, so the commit runs exactly as
+  // written, and the note says how to link the next one if the work delivers a task
+  // (commit_provenance_contract early_claiming, edit_behavior and stamping; item 4cc685f1).
+  if (claims.length === 0) return nudge(unlinkedCommitText())
+
   if (claims.length === 1 && commit.appendable) {
     const id = claims[0]
     const updated = `${command.slice(0, commit.insertOffset)} [devspec:${id}]${command.slice(commit.insertOffset)}`
@@ -1141,12 +1143,14 @@ function maybeNudge(scope, { env, now, platform }) {
   // reason to do the right thing now, and the right thing now is cheap: claim an
   // existing task, or create one properly. "Write one thin item" was the old advice;
   // the server now refuses thin creates (item 9a4c0d6a). Once one task is claimed the
-  // plugin tags the commits itself, so the agent is not asked to (item 3e24523e).
+  // plugin tags the commits itself, so the agent is not asked to (item 3e24523e). Work
+  // that needs no task, such as a dependency-only update, commits without one, so the
+  // advice is conditional and says committing is never blocked either (item 4cc685f1).
   return nudge(
     'DevSpec: no task is claimed in this conversation, so work done here has nothing to trace it to. ' +
-    'Claim one before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
+    'If the work delivers a task, claim it before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
     'with a real description and the reason it is needed, and claim it. With one task claimed, your commits ' +
-    `in the project's repositories are tagged for you. Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
+    `in the project's repositories are tagged for you. Editing and committing are never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }
 

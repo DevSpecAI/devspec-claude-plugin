@@ -74,6 +74,10 @@ const bash = (command, overrides, extra = {}) =>
   handlePre(input('Bash', { command }, overrides), { env, ...extra })
 const decision = (result) => result?.hookSpecificOutput?.permissionDecision ?? null
 const updated = (result) => result?.hookSpecificOutput?.updatedInput?.command ?? null
+/** The note beside a commit let through as written (no decision, no rewrite), or null. */
+const note = (result) => (result && decision(result) === null && updated(result) === null
+  ? result.hookSpecificOutput?.additionalContext ?? null
+  : null)
 
 function claim(itemId = ITEM, cwd = repo, toolName = 'mcp__devspec__claim_work_item') {
   return handlePost({
@@ -167,6 +171,22 @@ describe('nothing is ever denied for lack of a claim', () => {
     for (const tool of ['Write', 'Edit', 'NotebookEdit']) {
       const key = tool === 'NotebookEdit' ? 'notebook_path' : 'file_path'
       assert.equal(await handlePre(input(tool, { [key]: path.join(repo, 'x.ts') }), { env }), null, tool)
+    }
+  })
+
+  it('never denies a commit for lack of a claim: it runs exactly as written, with a note (item 4cc685f1)', async () => {
+    // Dependency-only updates and automation runs need no task, and the served contract
+    // never refuses repository work because a claim is absent.
+    for (const command of [
+      'git commit -m "chore(deps): bump a dependency"',
+      'git commit -m bare',
+      `git commit -q -F - <<'MSG'\nchore(deps): bump a dependency\n\nbody\nMSG`,
+      `git add -A && git commit -q -m "$(cat <<'MSG'\nautomation run\nMSG\n)"`,
+    ]) {
+      const result = await bash(command)
+      assert.equal(decision(result), null, command)
+      assert.equal(updated(result), null, `${command}: left exactly as written`)
+      assert.match(note(result), /no task is claimed/i, command)
     }
   })
 
@@ -393,6 +413,7 @@ describe('stamping, only when exactly one claim is unambiguous', () => {
     const reason = result.hookSpecificOutput.permissionDecisionReason
     assert.match(reason, new RegExp(ITEM))
     assert.match(reason, new RegExp(OTHER))
+    assert.deepEqual(Object.keys(result), ['hookSpecificOutput'], 'a refused commit never ends the turn')
   })
 
   it('resumes stamping once the ambiguity is resolved', async () => {
@@ -411,56 +432,47 @@ describe('stamping, only when exactly one claim is unambiguous', () => {
   })
 })
 
-describe('denial is non-terminating and independently recoverable', () => {
-  it('denies an unreferenced commit with a complete recovery route', async () => {
+/**
+ * The served contract never refuses repository work because a claim is absent, and lets
+ * a host refuse a commit with no reference only where it could have added one; with no
+ * claim it could not (commit_provenance_contract early_claiming, edit_behavior and
+ * stamping). Refusing here stopped dependency-only updates and automation runs, which
+ * need no task at all (item 4cc685f1).
+ */
+describe('a commit with no task claimed goes through, with a note (item 4cc685f1)', () => {
+  it('is not refused, and runs exactly as written', async () => {
     const result = await bash('git commit -m "untracked work"')
-    assert.equal(decision(result), 'deny')
-    const reason = result.hookSpecificOutput.permissionDecisionReason
-    for (const expected of [/create_task|search_tasks/, /\[devspec:/, /retry/i, /Nothing else is blocked/]) {
-      assert.match(reason, expected)
-    }
-    assert.match(reason, new RegExp(CONTRACT_URI.replace(/[/:]/g, '\\$&')))
+    assert.equal(decision(result), null)
+    assert.equal(updated(result), null)
+    for (const field of ['terminate', 'continue', 'stopReason', 'decision']) assert.equal(result[field], undefined, field)
   })
 
-  it('carries no field that would end the turn', async () => {
+  it('tells the agent, and the terminal, how to link the next commit and that work needing no task needs nothing', async () => {
     const result = await bash('git commit -m "untracked work"')
-    assert.equal(result.terminate, undefined)
-    assert.equal(result.continue, undefined)
-    assert.equal(result.stopReason, undefined)
-    assert.equal(result.decision, undefined)
-    assert.deepEqual(Object.keys(result), ['hookSpecificOutput'])
+    const text = note(result)
+    assert.equal(result.systemMessage, text, 'the terminal is told what the agent is told')
+    assert.match(text, /no task is claimed/i)
+    assert.match(text, /not stopped/)
+    assert.match(text, /claim_work_item/)
+    assert.match(text, /reference is added for you/)
+    assert.match(text, /needs no task, there is nothing to do/)
+    assert.equal(/<full-uuid>|<id>\] to the|in the message/.test(text), false, 'never asks the agent to type an id')
   })
 
-  it('does not demand a full criteria set merely to commit', async () => {
-    const reason = (await bash('git commit -m "x"')).hookSpecificOutput.permissionDecisionReason
-    assert.match(reason, /smallest adequate task/)
-    assert.equal(/acceptance|criteria/i.test(reason), false)
-  })
-
-  it('never advises a task the server would refuse to create', async () => {
-    // create_task requires a substantive description and the reason for the work, and
-    // refuses thin or title-only content before writing anything. Advice to make "a thin
-    // last-mile item" sent an agent that was already blocked on a commit into a second
-    // refusal (item 9a4c0d6a).
-    const reason = (await bash('git commit -m "x"')).hookSpecificOutput.permissionDecisionReason
-    assert.equal(/thin last-mile|one-line description/i.test(reason), false)
-    assert.match(reason, /description/)
-    assert.match(reason, /reason it is needed/)
-    assert.match(reason, /work_entry_contract/)
+  it('names no internal contract rule or contract address, because a person reads it as command output', async () => {
+    const text = note(await bash('git commit -m "untracked work"'))
+    assert.doesNotMatch(text, /_contract\b|devspec:\/\/|core\.[a-z-]+|Authority:/)
   })
 })
 
 describe('the agent writes a tag only when it must choose between claims (item 3e24523e)', () => {
-  it('after no claim: claim, retry the same commit, and it is tagged for the agent', async () => {
+  it('after no claim: the commit goes through untagged; claim, and the next one is tagged for the agent', async () => {
     const command = 'git commit -m "untracked work"'
-    const reason = (await bash(command)).hookSpecificOutput.permissionDecisionReason
-    assert.match(reason, /claim/)
-    assert.match(reason, /retry the same commit/)
-    assert.match(reason, /tag is added for you/)
-    assert.match(reason, /commit_provenance_contract/)
-    assert.equal(/<full-uuid>|<id>\] to the|in the message/.test(reason), false, 'never asks the agent to type an id')
+    const text = note(await bash(command))
+    assert.match(text, /claim_work_item/)
+    assert.match(text, /added for you/)
     claim(ITEM)
-    assert.equal(updated(await bash(command)), `git commit -m "untracked work [devspec:${ITEM}]"`, 'exactly as the refusal said')
+    assert.equal(updated(await bash(command)), `git commit -m "untracked work [devspec:${ITEM}]"`, 'exactly as the note said')
   })
 
   it('with one claim and a bare message: quote it and retry, never type the id', async () => {
@@ -508,7 +520,8 @@ describe('one nudge per session and repository, never more', () => {
     // reason to do the cheap correct thing now. The text must not offer that comfort,
     // and must not promise a refusal that only holds for the shapes this can read.
     const { additionalContext: text } = (await handlePre(editInput(), { env })).hookSpecificOutput
-    assert.match(text, /Claim one before you commit/i)
+    assert.match(text, /If the work delivers a task, claim it before you commit/)
+    assert.match(text, /Editing and committing are never blocked/)
     assert.match(text, /create_task/)
     // With one task claimed the plugin tags the commits itself (item 3e24523e).
     assert.match(text, /tagged for you/)
@@ -542,9 +555,9 @@ describe('jurisdiction is positive and local', () => {
     gitInit(pinned)
     fs.mkdirSync(path.join(pinned, '.devspec'))
     fs.writeFileSync(path.join(pinned, '.devspec', 'project.json'), JSON.stringify({ project_id: OTHER }))
-    assert.equal(
-      decision(await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: pinned }), { env })),
-      'deny',
+    assert.match(
+      note(await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: pinned }), { env })),
+      /no task is claimed/,
     )
   })
 
@@ -554,9 +567,9 @@ describe('jurisdiction is positive and local', () => {
     const added = spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', '--detach', worktree], { encoding: 'utf8' })
     assert.equal(added.status, 0, added.stderr)
     assert.equal(fs.existsSync(path.join(worktree, '.devspec')), false, 'pin genuinely absent')
-    assert.equal(
-      decision(await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: worktree }), { env })),
-      'deny',
+    assert.match(
+      note(await handlePre(input('Bash', { command: 'git commit -m "x"' }, { cwd: worktree }), { env })),
+      /no task is claimed/,
     )
   })
 
@@ -577,7 +590,7 @@ describe('jurisdiction is positive and local', () => {
     fs.writeFileSync(path.join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { devspec: { type: 'http', url: 'https://example.invalid/api/mcp' } } }))
     fs.mkdirSync(path.join(repo, '.claude'))
     fs.writeFileSync(path.join(repo, '.claude', 'settings.local.json'), JSON.stringify({ enabledMcpjsonServers: ['devspec'], enabledPlugins: { 'devspec@devspec': true } }))
-    assert.equal(await bash('git commit -m "not the project\'s"'), null, 'no claim: not stopped')
+    assert.equal(await bash('git commit -m "not the project\'s"'), null, 'no claim: no note')
     assert.equal(await handlePre(input('Write', { file_path: path.join(repo, 'x.ts') }), { env }), null, 'no reminder')
     claim()
     assert.equal(await bash('git commit -m "still not the project\'s"'), null, 'one claim: not tagged')
@@ -696,13 +709,13 @@ describe('the installed hook, run the way Claude runs it', () => {
     assert.equal(parsed.hookSpecificOutput.updatedInput.command, `git commit -m "real commit [devspec:${ITEM}]"`)
   })
 
-  it('denies an unreferenced commit and survives malformed input', () => {
-    const denied = run('PreToolUse', {
+  it('lets an unreferenced, unclaimed commit through with a note, and survives malformed input', () => {
+    const unlinked = run('PreToolUse', {
       session_id: SESSION, cwd: repo, hook_event_name: 'PreToolUse',
       tool_name: 'Bash', tool_input: { command: 'git commit -m "unlinked"' },
     })
-    assert.equal(denied.status, 0, denied.stderr)
-    assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, 'deny')
+    assert.equal(unlinked.status, 0, unlinked.stderr)
+    assert.match(note(JSON.parse(unlinked.stdout)), /no task is claimed/)
 
     const malformed = spawnSync('/bin/sh', ['-c', manifest('PreToolUse')], {
       cwd: repo, input: '{not json', encoding: 'utf8',
@@ -769,13 +782,13 @@ describe('the shapes the DevSpec server actually returns', () => {
     handlePost(fixture('post-terminal-success.json'), { env })
     assert.deepEqual(readClaims(scope(repo, FIXTURE_SESSION), { env }), [])
     assert.equal(await fixtureBash(`git commit -m "after recording [devspec:${ITEM}]"`), null)
-    assert.equal(decision(await fixtureBash('git commit -m "after recording, unlinked"')), 'deny')
+    assert.match(note(await fixtureBash('git commit -m "after recording, unlinked"')), /no task is claimed/, 'the released claim is not stamped')
   })
 
   it('keeps one session\'s claim invisible to another', async () => {
     handlePost(fixture('post-claim-success.json'), { env })
     assert.deepEqual(readClaims(scope(), { env }), [], 'a different session must not inherit it')
-    assert.equal(decision(await bash('git commit -m "other session"')), 'deny')
+    assert.match(note(await bash('git commit -m "other session"')), /no task is claimed/)
   })
 
   it('allows the real captured unclaimed Write payload', async () => {
@@ -936,7 +949,7 @@ describe('confirming a present reference online (item 6fa0241e)', () => {
   })
 
   it('leaves the no-reference path entirely local', async () => {
-    assert.equal(decision(await commit('unlinked work')), 'deny')
+    assert.match(note(await commit('unlinked work')), /no task is claimed/)
     claim()
     assert.equal(
       updated(await commit('stamped work')),
@@ -1115,11 +1128,10 @@ describe('the multi-line message forms, which is where almost every commit lives
     }
   })
 
-  it('denies an unreferenced multi-line commit, with the same recovery text', async () => {
+  it('lets an unreferenced, unclaimed multi-line commit through as written, with the same note', async () => {
+    const single = note(await bash('git commit -m "fix: subject"'))
     for (const command of [A('fix: subject'), B('fix: subject')]) {
-      const result = await bash(command)
-      assert.equal(decision(result), 'deny', command)
-      assert.match(result.hookSpecificOutput.permissionDecisionReason, /retry the same commit/)
+      assert.equal(note(await bash(command)), single, command)
     }
   })
 
@@ -1216,7 +1228,7 @@ describe('with the git stand-in (item e597bc18)', () => {
 
   it('leaves Bash commits to the stand-in where it runs, and reads the command only where it does not', async () => {
     assert.equal(await bash('git commit -m "untracked work"', undefined, { observerActive: () => true }), null)
-    assert.equal(decision(await bash('git commit -m "untracked work"', undefined, { observerActive: () => false })), 'deny')
+    assert.match(note(await bash('git commit -m "untracked work"', undefined, { observerActive: () => false })), /no task is claimed/)
   })
 
   it('nudges an edit in one of the project\'s repositories by its remote, with no marker in the folder', async () => {
@@ -1235,7 +1247,7 @@ describe('with the git stand-in (item e597bc18)', () => {
     spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:Fixture/Project.git'])
     assert.equal(await bash('git commit -m "untracked work"'), null, 'not connected: no jurisdiction')
     const connected = { ...env, HOME: connectedHome() }
-    assert.equal(decision(await handlePre(input('Bash', { command: 'git commit -m "untracked work"' }), { env: connected })), 'deny')
+    assert.match(note(await handlePre(input('Bash', { command: 'git commit -m "untracked work"' }), { env: connected })), /no task is claimed/)
     claim()
     assert.equal(
       updated(await handlePre(input('Bash', { command: 'git commit -m "tracked work"' }), { env: connected })),

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.60.3 - 2026-11-20
+
+- **A commit made when no task is claimed now goes through, with a note, instead of being stopped.** Updates and automation work that need no task commit normally. The note tells Claude the commit carries no task reference, and that if the work does belong to a task, claiming it before the next commit gets the reference added automatically.
+- With one task claimed, Claude's commits are still tagged with it automatically. With several claimed, a commit is still stopped and Claude is asked which task it belongs to, because the plugin never guesses.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.2 - 2026-11-20
 
 - **Claude now suggests turning a recurring problem into a requirement when one comes up.** Before, the instructions told Claude that a requirement is only ever asked for, so it waited for you to use the word "requirement" yourself. Now, when you point out a mistake that keeps creeping back in across tasks, or state a non-negotiable project-wide "always" or "never" rule that can be checked against what future work actually delivers, Claude explains what a requirement is and asks whether you want to record one — while still never saving a requirement without your yes.

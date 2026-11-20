@@ -3,7 +3,8 @@
  * Two conversations, each with the PowerShell tool set in settings.json, as a person sets it:
  *  - CLAUDE_CODE_USE_POWERSHELL_TOOL=0: Claude has no PowerShell tool, the plugin's
  *    session-start hook sees the setting and starts the git stand-in. Through Claude's
- *    Bash tool (Git Bash), a commit before any claim is stopped. After claim_work_item,
+ *    Bash tool (Git Bash), a commit before any claim goes through as written, with a
+ *    note. After claim_work_item,
  *    a heredoc into -F -, a plain -m commit, a script's commit and a subagent's commit
  *    in the project's repository are tagged. A background command's and a Monitor
  *    command's commits in a repository outside the project are left untagged. Every
@@ -207,10 +208,10 @@ summary.powershellOff = await conversation({
     assert.match(state.results.which.text, /\.devspec\/git-observer\/[^/]+\/bin\/git/, `the hook saw the setting and the stand-in is the git Bash runs: ${state.results.which.text}`)
     if (state.envFiles !== null) assert.match(state.envFiles, /export PATH='[^']*git-observer[^']*':"\$PATH"/)
     assert.equal(state.observerLog.some((entry) => entry.outcome === 'not observing'), false, JSON.stringify(state.observerLog))
-    assert.equal(state.results.unclaimed.error, true, `the unclaimed commit was stopped: ${state.results.unclaimed.text}`)
-    assert.match(state.results.unclaimed.text, /retry the same commit/)
+    assert.equal(state.results.unclaimed.error, false, `the unclaimed commit went through: ${state.results.unclaimed.text}`)
+    assert.match(state.results.unclaimed.text, /no task is claimed in this conversation/)
     assert.ok(state.calls.includes('claim_work_item'), 'the claim went through the host')
-    assert.equal(state.messages.some((message) => message.startsWith('before any claim')), false, 'the stopped commit was never made')
+    assert.ok(state.messages.includes('before any claim'), `the unclaimed commit was made exactly as written: ${JSON.stringify(state.messages)}`)
     const tag = `[devspec:${state.task}]`
     assert.ok(state.messages.includes(`heredoc subject ${tag}\n\nheredoc body`), JSON.stringify(state.messages))
     assert.ok(state.messages.includes(`through bash ${tag}`), JSON.stringify(state.messages))
@@ -225,7 +226,7 @@ summary.powershellOff = await conversation({
     for (const sha of state.otherCommits) assert.equal(remotes.get(sha), 'https://github.com/fixture/elsewhere.git', why(sha))
     assert.equal(state.reports.length, state.commits.length + state.otherCommits.length, 'each commit reported once')
   },
-}).then((state) => ({ powershellTool: false, standIn: true, stopped: true, tagged: ['heredoc -F -', '-m', 'script', 'subagent'],
+}).then((state) => ({ powershellTool: false, standIn: true, unclaimedLanded: true, tagged: ['heredoc -F -', '-m', 'script', 'subagent'],
   untaggedOutside: ['background', 'monitor'], reported: state.reports.length, scriptedRequests: state.requests }))
 
 if (WINDOWS) {

@@ -1,6 +1,8 @@
 /**
  * What the git stand-in (git-shim.mjs) does to a commit before git runs it (item
- * e597bc18): add the task tag, or stop the commit with what to do instead.
+ * e597bc18): add the tag of the one task claimed; with several claimed, or a claim the
+ * plugin could not record, stop the commit and ask which task it belongs to; with none
+ * claimed, let it through as written, with a note (item 4cc685f1).
  *
  * It works on git's own arguments, after the shell has evaluated the command, so a
  * message written with -m, -m "$(cat <<'EOF' …)", -F <file> or a heredoc into -F -
@@ -20,7 +22,6 @@ import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path, { join, dirname, basename, resolve } from 'node:path'
 
-export const CONTRACT_URI = 'devspec://product/implementation-contract'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** Any reference, well formed or not: the stand-in never replaces one. */
 export const ANY_REFERENCE = /\[devspec:[^\]\s]*\]/i
@@ -31,15 +32,22 @@ const FUTURE_SKEW_MS = 5 * 60 * 1000
 // The words the model is shown
 // ---------------------------------------------------------------------------
 
-export function noClaimText() {
+/**
+ * What a commit made with no task claimed is told, beside it, while it goes through as
+ * written (item 4cc685f1, after Antigravity's cf356677). The served contract never
+ * refuses repository work because a claim is absent (commit_provenance_contract
+ * early_claiming and edit_behavior), and allows refusing a commit with no reference
+ * only where a host could have added one (stamping), which with no claim it could not.
+ * Work that needs no task, such as a dependency-only update or an automation run,
+ * commits like any other; commit ingestion and the unlinked-work heads-up recover a
+ * commit that should have carried one. A person reads this as command output, so it
+ * names no contract rule and no contract address (Antigravity's 20 Nov final check).
+ */
+export function unlinkedCommitText() {
   return [
-    'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
-    'Recover without leaving this turn: search_tasks for the task this work belongs to and claim it;',
-    'if none fits, create_task for the smallest adequate task, with a real description of the change and the reason it is needed',
-    '(DevSpec refuses a thin or title-only task), and claim that. Then retry the same commit:',
-    'with one task claimed, its tag is added for you. Whether to reuse, reopen or create is the',
-    `work_entry_contract, and how commits link to work the commit_provenance_contract, in ${CONTRACT_URI}.`,
-    'Nothing else is blocked, and no other command is affected.',
+    'DevSpec: no task is claimed in this conversation, so this commit carries no [devspec:<id>] reference. It was not stopped.',
+    'If the work delivers a task, claim that task (claim_work_item) before your next commit and the reference is added for you;',
+    'if it needs no task, there is nothing to do.',
   ].join(' ')
 }
 

@@ -15,7 +15,7 @@
  *
  * Covered, as on Linux: a plain commit, a heredoc into -F -, -m with a command
  * substitution and -F <file> are tagged with the one claimed task and reported; with no
- * claim the commit is stopped before git runs; a repository outside the project is left
+ * claim the commit runs as written, with a note; a repository outside the project is left
  * untouched; git -C works with both spellings of a Windows path (C:/… and /c/…); and
  * the online check of a reference the model wrote stops one that resolves to nothing
  * and lets the commit through when DevSpec cannot be reached.
@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
 import { drainObserver, observerActive, observerDir, startObserver, toBashPath } from './git-observer.mjs'
 import { handlePost } from './commit-provenance.mjs'
-import { noClaimText } from './commit-stamp.mjs'
+import { unlinkedCommitText } from './commit-stamp.mjs'
 
 const WINDOWS = process.platform === 'win32'
 const SESSION = 'conversation-4054ff58'
@@ -132,12 +132,13 @@ describe(`the git stand-in on ${process.platform}`, () => {
     assert.equal(found.stdout.trim(), `${WINDOWS ? toBashPath(bin) : bin}/git`)
   })
 
-  it('stops a commit when no task is claimed, before git runs', async () => {
+  it('lets a commit through as written when no task is claimed, with a note', async () => {
     const head = git(['rev-parse', 'HEAD'])
     const result = await shell('git commit --allow-empty -q -m "no claim yet"')
-    assert.equal(result.status, 1, result.stderr)
-    assert.equal(result.stderr.trim(), noClaimText())
-    assert.equal(git(['rev-parse', 'HEAD']), head)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stderr.trim(), unlinkedCommitText())
+    assert.notEqual(git(['rev-parse', 'HEAD']), head)
+    assert.equal(body(), 'no claim yet')
   })
 
   it('tags a plain commit, a heredoc into -F -, -m with a command substitution and -F <file>', async () => {
@@ -232,9 +233,9 @@ describe(`the git stand-in on ${process.platform}`, () => {
     // Every commit after each repository's first, oldest first.
     const made = (cwd) => git(['rev-list', '--reverse', 'HEAD'], cwd).split('\n').slice(1)
     const project = made(repo)
-    // plain, heredoc, substituted, file, from elsewhere, written by hand, and any reference
-    // check a slow runner let through.
-    assert.ok(project.length >= 6, String(project.length))
+    // no claim yet, plain, heredoc, substituted, file, from elsewhere, written by hand, and
+    // any reference check a slow runner let through.
+    assert.ok(project.length >= 7, String(project.length))
     assert.deepEqual(calls.filter((report) => report.git_remote === 'git@github.com:Fixture/Project.git').map((report) => report.commit_sha), project)
     assert.deepEqual(calls.filter((report) => report.git_remote === 'https://github.com/fixture/elsewhere.git').map((report) => report.commit_sha), made(outside))
     assert.equal(calls.length, project.length + made(outside).length, 'each commit reported once')

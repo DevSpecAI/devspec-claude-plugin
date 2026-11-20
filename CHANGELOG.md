@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.60.1 - 2026-11-20
+
+- **Claude's instructions defer to DevSpec on held work.** When work is held, and when work that reverses a decision can be kept, Claude now follows what DevSpec tells it at that moment instead of a copy of the rule written into the plugin, so its guidance stays right when DevSpec's rules change.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.0 - 2026-11-20
 
 - **Updating from a version before 0.54.0? Run `/devspec:devspec.login` once after you update.** Claude Code signs in to DevSpec through your browser, and is signed out of DevSpec until you do (see 0.54.0).

@@ -1,8 +1,13 @@
 # Changelog
 
-## 0.60.1 - 2026-11-20
+## 0.60.2 - 2026-11-20
 
 - **Claude now suggests turning a recurring problem into a requirement when one comes up.** Before, the instructions told Claude that a requirement is only ever asked for, so it waited for you to use the word "requirement" yourself. Now, when you point out a mistake that keeps creeping back in across tasks, or state a non-negotiable project-wide "always" or "never" rule that can be checked against what future work actually delivers, Claude explains what a requirement is and asks whether you want to record one — while still never saving a requirement without your yes.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.60.1 - 2026-11-20
+
+- **Claude's instructions defer to DevSpec on held work.** When work is held, and when work that reverses a decision can be kept, Claude now follows what DevSpec tells it at that moment instead of a copy of the rule written into the plugin, so its guidance stays right when DevSpec's rules change.
 - Update the plugin and start a new conversation to pick this up.
 
 ## 0.60.0 - 2026-11-20

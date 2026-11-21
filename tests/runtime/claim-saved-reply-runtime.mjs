@@ -6,9 +6,11 @@
  *  - Claude Code saves the reply to a file and passes PostToolUse only its notice ("Error:
  *    result (…) exceeds maximum allowed tokens. Output has been saved to <file>."). A claim
  *    made by short code is recorded from that file, and the next commit is tagged with it.
- *  - When the reply could not be saved either, the claim cannot be recorded. With an older
- *    claim still held, the next commit is stopped before git runs and the agent is asked
- *    which task it belongs to; it is never tagged with the older claim.
+ *  - When the reply could not be saved either, the claim cannot be recorded, and DevSpec's
+ *    lookup of the short code names no task, so the claim is not confirmed. With an older
+ *    claim still held, the next commit goes through untagged with a note: it is never
+ *    tagged with the older claim, and never stopped on a claim DevSpec did not confirm
+ *    (item 57db162d).
  *
  * The scripted DevSpec server answers count_tokens honestly, which is what makes Claude Code
  * take the MCP oversize path at all. No paid inference, real credentials, live DevSpec
@@ -142,15 +144,16 @@ assert.match(saved.results.claim.text, /exceeds maximum allowed tokens\. Output 
 assert.equal(saved.results.commit.error, false, saved.results.commit.text)
 assert.equal(saved.subject, `work on the short-code task [devspec:${saved.task}]`)
 
-// 2. The reply could not be saved and an older claim is held: the commit is stopped, never tagged with the older claim.
+// 2. The reply could not be saved, DevSpec did not confirm the claim, and an older claim is held:
+//    the commit goes through untagged, with a note, never tagged with the older claim (item 57db162d).
 const older = randomUUID()
 const unsaved = await conversation({ older, unsaved: true })
 assert.match(unsaved.results.claim.text, /exceeds maximum allowed tokens\. Failed to save output to file/, `saving failed: ${unsaved.results.claim.text.slice(0, 300)}`)
-assert.equal(unsaved.results.commit.error, true, `the commit was stopped: ${unsaved.results.commit.text}`)
+assert.equal(unsaved.results.commit.error, false, `the commit was not stopped: ${unsaved.results.commit.text}`)
 assert.match(unsaved.results.commit.text, /could not be recorded/)
-assert.ok(unsaved.results.commit.text.includes(`claimed as ${unsaved.task.slice(0, 8)}`) && unsaved.results.commit.text.includes(`[devspec:${older}]`), unsaved.results.commit.text)
-assert.equal(unsaved.subject, 'base', 'no commit was made, and none tagged with the older claim')
+assert.equal(unsaved.results.commit.text.includes(`[devspec:${older}]`), false, unsaved.results.commit.text)
+assert.equal(unsaved.subject, 'work on the short-code task', 'made as written, and not tagged with the older claim')
 
 console.log(JSON.stringify({ result: 'PASS', host: execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim(), pluginRoot: root,
   pluginVersion: JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8')).version,
-  savedReplyTagged: true, unsavedReplyStopped: true, paidInference: 0, liveDevspecRecords: 0 }))
+  savedReplyTagged: true, unsavedReplyUntagged: true, paidInference: 0, liveDevspecRecords: 0 }))

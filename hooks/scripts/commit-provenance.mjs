@@ -40,8 +40,12 @@
  *    call, after a claim, resolves a short code whose claim reply could not be read.)
  *  - Where exactly one claim is unambiguously active, the reference is APPENDED for
  *    the agent (`hookSpecificOutput.updatedInput`) and reported, rather than refused.
- *    A claim the plugin saw but could not record makes it ambiguous (item c12783b9):
- *    the agent is asked, as with several claims, never tagged with another.
+ *    A claim the plugin saw but could not record makes it ambiguous (item c12783b9),
+ *    so the commit is never tagged with another claim. The agent is asked, as with
+ *    several claims, only when DevSpec confirmed that claim and named its task; when
+ *    DevSpec could not be reached or failed while the claim was read, the commit goes
+ *    through untagged with a note (item 57db162d). That was settled when the claim was
+ *    read: the commit itself makes no call for it.
  *  - Offline, server error, ambiguous claim set, uncertain jurisdiction: allow.
  *
  * This is cooperative provenance, not a security boundary — a plugin can be removed,
@@ -207,10 +211,13 @@ export function readClaims(scope, options = {}) {
 
 /**
  * This session's record for this repository: the claims it holds, and the claims it
- * made that could not be recorded (`unrecorded`, item c12783b9), each `{ requested, at }`
- * with the task as the agent named it. The git stand-in reads the same file
- * (commit-stamp.mjs `conversationClaimState`), which is why both live in one record:
- * an older stand-in that knows only `claims` still reads it.
+ * made that could not be recorded (`unrecorded`, item c12783b9), each
+ * `{ requested, at, confirmed, task_id }` with the task as the agent named it. `confirmed`
+ * says DevSpec answered while the claim was read and named its task, whose full id is
+ * then `task_id` (item 57db162d); it is false when DevSpec could not be reached, failed,
+ * or did not name it, and for a record written before it was kept. The git stand-in
+ * reads the same file (commit-stamp.mjs `conversationClaimState`), which is why both
+ * live in one record: an older stand-in that knows only `claims` still reads it.
  */
 export function readClaimState(scope, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
   const none = { claims: [], unrecorded: [] }
@@ -227,7 +234,10 @@ export function readClaimState(scope, { env = process.env, now = Date.now(), pla
     if (parsed.session_id !== scope.sessionId || parsed.repo_root !== scope.repoRoot) return none
     const unrecorded = (Array.isArray(parsed.unrecorded) ? parsed.unrecorded : [])
       .filter((entry) => entry && typeof entry.at === 'number' && entry.at <= now + FUTURE_SKEW_MS && now - entry.at <= CLAIM_MAX_AGE_MS)
-      .map((entry) => ({ requested: requestedItemFrom(entry.requested), at: entry.at }))
+      .map((entry) => unrecordedEntry(requestedItemFrom(entry.requested), entry.at, {
+        confirmed: entry.confirmed === true,
+        taskId: typeof entry.task_id === 'string' ? entry.task_id : null,
+      }))
     return {
       claims: parsed.claims.filter((id) => typeof id === 'string' && UUID_RE.test(id)).map((id) => id.toLowerCase()),
       unrecorded,
@@ -251,6 +261,15 @@ function writeClaimState(scope, { claims, unrecorded }, { env = process.env, now
     ...(unrecorded.length > 0 ? { unrecorded } : {}),
     updated_at: now,
   }, platform)
+}
+
+/**
+ * One claim that could not be recorded. It is `confirmed` only with the full id of the
+ * task DevSpec named (`task_id`): that is what lets the agent be told the tag to write.
+ */
+function unrecordedEntry(requested, at, { confirmed = false, taskId = null } = {}) {
+  const id = typeof taskId === 'string' && UUID_RE.test(taskId) ? taskId.toLowerCase() : null
+  return confirmed && id ? { requested, at, confirmed: true, task_id: id } : { requested, at, confirmed: false }
 }
 
 /** The task as the agent named it (short code or full id), lower case, or null. */
@@ -704,8 +723,25 @@ export async function resolveShortCodeOnline(shortCode, options = {}) {
   } catch {
     return null
   }
-  const id = typeof result?.id === 'string' ? result.id.toLowerCase() : null
+  const id = taskIdIn(result)
   return id && UUID_RE.test(id) && id.startsWith(code) ? id : null
+}
+
+/**
+ * The task's id in a get_task answer. DevSpec appends a notice (a paused project, an
+ * account with no funds) as a block of its own after the task, which mcp-call.mjs then
+ * hands back unparsed: the task is still its first block, and DevSpec still named it.
+ */
+function taskIdIn(answer) {
+  if (typeof answer?.id === 'string') return answer.id.toLowerCase()
+  const blocks = Array.isArray(answer?.result?.content) ? answer.result.content : []
+  const first = blocks.find((block) => block?.type === 'text' && typeof block.text === 'string')
+  try {
+    const task = first ? JSON.parse(first.text) : null
+    return typeof task?.id === 'string' ? task.id.toLowerCase() : null
+  } catch {
+    return null
+  }
 }
 
 /* ---------- *
@@ -829,6 +865,13 @@ export function handleSessionStart() {
  * it is outstanding no commit is tagged for the agent: before item c12783b9 an
  * unreadable claim was simply not a claim, so a conversation still holding one older
  * claim had its next commit tagged with that one, confidently and wrongly.
+ *
+ * With it goes whether DevSpec confirmed it (item 57db162d), decided here and never
+ * again at commit time. Wherever DevSpec answers with the claimed task's full id, in
+ * the claim's reply or in the short-code lookup, the claim is recorded from it, so a
+ * claim left unrecorded here is one DevSpec did not confirm: the reply read as an
+ * error, DevSpec could not be reached or failed, or it named no such task. Such a claim
+ * never lets a commit be tagged with another, and never stops one either.
  */
 export async function handlePost(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
@@ -869,17 +912,18 @@ export async function handlePost(input, options = {}) {
       ? {
           claims: [...current.claims, itemId],
           // The claim that could not be recorded has now been recorded.
-          unrecorded: current.unrecorded.filter((entry) => !names(entry.requested, itemId)),
+          unrecorded: current.unrecorded.filter((entry) => !entryIs(entry, itemId)),
         }
       : {
           claims: current.claims,
-          unrecorded: [...current.unrecorded.filter((entry) => entry.requested !== requested), { requested, at: now }],
+          // Not confirmed: DevSpec did not name the task (see above).
+          unrecorded: [...current.unrecorded.filter((entry) => entry.requested !== requested), unrecordedEntry(requested, now)],
         }
   } else {
     // A release by short code whose reply named nothing is still the one held claim
     // with that short code, when there is exactly one.
     const released = itemId ?? (requested && !reply.errorText ? onlyHeldNamed(current.claims, requested) : null)
-    const settles = (entry) => (released ? names(entry.requested, released) : requested !== null && entry.requested === requested)
+    const settles = (entry) => (released ? entryIs(entry, released) : requested !== null && entry.requested === requested)
     next = {
       claims: released ? current.claims.filter((id) => id !== released) : current.claims,
       unrecorded: current.unrecorded.filter((entry) => !settles(entry)),
@@ -898,6 +942,11 @@ export async function handlePost(input, options = {}) {
 function onlyHeldNamed(claims, requested) {
   const matching = claims.filter((id) => names(requested, id))
   return matching.length === 1 ? matching[0] : null
+}
+
+/** Whether an unrecorded claim is the task `id`: as DevSpec named it, or as the agent did. */
+function entryIs(entry, id) {
+  return entry.task_id === id || names(entry.requested, id)
 }
 
 /**
@@ -1110,8 +1159,17 @@ export async function handlePre(input, options = {}) {
   }
 
   // A claim this conversation made could not be recorded, in this repository or any
-  // other: the commit may be that task's, so the agent names it (item c12783b9).
-  if (conversation.unrecorded.length > 0) return deny(unrecordedClaimText(conversation.claims, conversation.unrecorded))
+  // other, and DevSpec confirmed it: the commit may be that task's, so the agent names
+  // it (items c12783b9, 57db162d). Read from local state: no call is made here for it.
+  if (conversation.confirmed.length > 0) return deny(unrecordedClaimText(conversation.claims, conversation.confirmed))
+
+  // Several claimed: the agent names the one, as before.
+  if (claims.length > 1) return deny(recoveryText(claims))
+
+  // One DevSpec could not confirm, because it could not be reached or failed while the
+  // claim was read: being offline never stops work, so the commit runs as written, and
+  // is never tagged with an older claim (item 57db162d).
+  if (conversation.unrecorded.length > 0) return nudge(unlinkedCommitText({ unrecorded: true }))
 
   // No task claimed: there is no reference to add, so the commit runs exactly as
   // written, and the note says how to link the next one if the work delivers a task

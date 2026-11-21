@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.60.5 - 2026-11-21
+
+- **A commit is no longer stopped because DevSpec could not be reached when Claude claimed a task.** If Claude claims a task and the plugin cannot record the claim, for example because the claim's reply was too large to read and DevSpec could not be reached to look the task up, Claude's next commit now goes through, with a note on how to link it to the task. Before, every commit without a task reference was stopped until then, even while you were offline.
+- A commit is still never tagged with an older task while a newer claim could not be recorded. If DevSpec did confirm the newer claim, the commit is stopped and Claude is asked which task it belongs to, as before. With several tasks claimed, a commit is still stopped and Claude is asked which one, and with one claimed, Claude's commits are still tagged with it automatically.
+- Checking a commit still makes no call to DevSpec: whether the claim was confirmed is settled when Claude claims the task.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.4 - 2026-11-20
 
 - **Going ahead on a decision conflict follows what DevSpec accepts.** The notice-handling prompt no longer tells Claude that a bare **Go ahead** on work that conflicts with a decision, convention or requirement is refused until the record is edited first. When you let the work go ahead, DevSpec accepts the answer and marks the overruled record as needing an update.

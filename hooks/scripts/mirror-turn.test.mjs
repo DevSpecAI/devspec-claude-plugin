@@ -7,10 +7,14 @@
  * belongs to a DIFFERENT conversation must never be selected for mirroring.
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, it } from 'node:test'
+import { after, before, describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { markCommandsAnswered } from './mark-explicit-reply.mjs'
 import {
   resolveHookConversationId,
   selectBoundState,
@@ -830,5 +834,192 @@ describe('recordOwnedLaunch / readOwnedIds — a turn owns the background work i
     assert.deepEqual(recorded, [[CONNECTION, { id: 'a9f2b562e4a5fba8e', kind: 'subagent' }]])
     // A conversation with no connection records nothing.
     assert.equal(recordBackgroundLaunch(post('Bash', { backgroundTaskId: 'bx9' }), { load: () => null, record }), false)
+  })
+})
+
+// Item 108de10f, decision b8abe2bb: a check job or a notice about the agent's own work
+// reaches a working agent at its next step, so Claude Code delivers it INTO the turn of
+// the command the agent is answering. It is nobody's request. These run the real hook,
+// as the hooks module runs it for every prompt, against a stub DevSpec.
+describe('a check job or notice delivered into a running turn leaves that turn as it is (item 108de10f)', () => {
+  const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mirror-turn.mjs')
+  const CONNECTION = '11111111-1111-4111-8111-111111111111'
+  const ROOM = '22222222-2222-4222-8222-222222222222'
+  const CONVERSATION = 'conversation-108de10f'
+  const ALI = '33333333-3333-4333-8333-333333333333'
+  const REQUEST = '55555555-5555-4555-8555-555555555555'
+  const MESSAGE = '66666666-6666-4666-8666-666666666666'
+  const DELIVERY = '77777777-7777-4777-8777-777777777777'
+  const COMMAND_TURN = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const NOTIFICATION = { kind: 'task-notification' }
+  // The command's wake, then two check jobs and a notice as Claude Code hands them
+  // over together: the listener's task id and each line the wake stream printed.
+  const COMMAND_WAKE = `<task-notification>\n<task-id>listener1</task-id>\n<event>{"type":"owner_message","from":"Ali","message_id":"${MESSAGE}","body":"tidy the changelog"}</event>\n</task-notification>`
+  const CHECKS_AND_NOTICE = [
+    '<task-notification>',
+    '<task-id>listener1</task-id>',
+    '<event>{"type":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a","content":"A check is waiting. …"}</event>',
+    '<event>{"type":"wake","reason":"check_job","check_job_id":"a0000000-0000-4000-8000-00000000000a"}</event>',
+    '<event>{"type":"check_job","check_job_id":"b0000000-0000-4000-8000-00000000000b","content":"A check is waiting. …"}</event>',
+    '<event>{"type":"wake","reason":"check_job","check_job_id":"b0000000-0000-4000-8000-00000000000b"}</event>',
+    '<event>{"type":"system_notice","kind":"server_notice","notice_id":"71000000-0000-4000-8000-000000000001","content":"[DevSpec System Notice: checks / conflict_found]"}</event>',
+    '</task-notification>',
+  ].join('\n')
+
+  let server
+  let url
+  let calls = []
+  let home
+  let connections
+
+  before(async () => {
+    server = http.createServer((req, res) => {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        const rpc = JSON.parse(body)
+        const name = rpc.params?.name
+        const args = rpc.params?.arguments ?? {}
+        calls.push({ name, args })
+        const result = name === 'report_request'
+          ? { outcome: 'committed', request_id: args.request_id, status: args.action === 'open' ? 'open' : 'closed', requested_by_user_id: ALI }
+          : { ok: true }
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
+      })
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    url = `http://127.0.0.1:${server.address().port}/api/mcp`
+  })
+  after(() => server.close())
+
+  /** A connected conversation whose poller has opened Ali's command ahead of its wake. */
+  function seed() {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-own-work-'))
+    connections = path.join(home, '.devspec', 'remote-control', 'connections')
+    fs.mkdirSync(connections, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.json`), JSON.stringify({
+      enabled: true, connection_id: CONNECTION, session_id: ROOM, connection_capability: 'dvsc_hidden',
+      agent_name: 'Claude Code', local_id: CONVERSATION, token: 'dvs_test', mcp_url: url,
+    }), { mode: 0o600 })
+    // A live listener, so Stop is a real turn end rather than a refusal to stop.
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.wait.pid`), String(process.pid), { mode: 0o600 })
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.requests.jsonl`),
+      `${JSON.stringify({ op: 'open', id: REQUEST, kind: 'command', message_id: MESSAGE, provenance_ref: DELIVERY, requested_by: ALI })}\n`)
+    // The poller's record of the command, which says which command turn it is in.
+    fs.writeFileSync(path.join(connections, `${CONNECTION}.inbox.jsonl`),
+      `${JSON.stringify({ type: 'canonical_commands', connection_id: CONNECTION, ingress: { commands: [{ message_id: MESSAGE, delivery: { turn_id: COMMAND_TURN } }] } })}\n`)
+    calls = []
+  }
+  function run(mode, input) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [HOOK, mode], {
+        env: { PATH: process.env.PATH, HOME: home, CLAUDE_CODE_SESSION_ID: CONVERSATION },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      child.on('error', reject)
+      child.on('exit', (code) => resolve(code))
+      child.stdin.end(JSON.stringify({ session_id: CONVERSATION, ...input }))
+    })
+  }
+  const marker = () => {
+    try { return fs.readFileSync(turnMarkerPath(CONNECTION, connections), 'utf8') } catch { return null }
+  }
+  /** What the request log says a turn carries: everything but the note that a notification was seen. */
+  const carried = () => fs.readFileSync(path.join(connections, `${CONNECTION}.requests.jsonl`), 'utf8').trim().split('\n')
+    .map((line) => { const { at: _at, ...event } = JSON.parse(line); return event })
+    .filter((event) => event.op !== 'notified')
+
+  it('into a command\'s turn: its request, its start and the room are untouched, and its own answer still ends it', async () => {
+    seed()
+    await run('user_prompt', { prompt: COMMAND_WAKE, origin: NOTIFICATION })
+    // The command's wake starts that command, by name (item 4cc685f1).
+    assert.deepEqual(calls.filter((call) => call.name === 'report_pickup').map((call) => call.args),
+      [{ connection_id: CONNECTION, command_turn_id: COMMAND_TURN, command_message_id: MESSAGE }])
+    const turn = marker()
+    const tracking = carried()
+    assert.ok(turn, 'the command\'s wake opened the turn')
+    assert.deepEqual(tracking.at(-1), { op: 'current', ref: REQUEST })
+
+    calls = []
+    assert.equal(await run('user_prompt', { prompt: CHECKS_AND_NOTICE, origin: NOTIFICATION, turn_id: 'turn-1' }), 0)
+    // DevSpec hears nothing: no pickup, no message in the room, no request opened,
+    // joined or closed, and no turn completed.
+    assert.deepEqual(calls, [])
+    assert.equal(marker(), turn, 'the turn keeps its start, so the work it launched still belongs to it')
+    assert.deepEqual(carried(), tracking, 'what the turn serves has not moved')
+
+    // The command's final answer and Stop then finish it exactly as they would have.
+    assert.deepEqual(markCommandsAnswered(CONNECTION, { dir: connections }), [REQUEST])
+    calls = []
+    await run('stop', { last_assistant_message: 'Done.', background_tasks: [] })
+    assert.deepEqual(calls.filter((call) => call.name === 'report_complete').map((call) => call.args),
+      [{ connection_id: CONNECTION, command_turn_id: COMMAND_TURN, command_message_id: MESSAGE, reason: 'turn_end' }])
+    assert.deepEqual(calls.filter((call) => call.name === 'report_request').map((call) => [call.args.action, call.args.request_id]),
+      [['close', REQUEST]])
+    assert.equal(calls.some((call) => call.name === 'post_session_message'), false, 'no reply is posted on the agent\'s behalf')
+  })
+
+  it('after the agent has given its final answer and is still working: the room is not shown working again', async () => {
+    seed()
+    await run('user_prompt', { prompt: COMMAND_WAKE, origin: NOTIFICATION })
+    // The final answer (post_session_message with complete_turn) ends the turn for the
+    // room while Claude Code carries on with the same turn: mark-explicit-reply.mjs
+    // records the answer and clears the marker.
+    markCommandsAnswered(CONNECTION, { dir: connections })
+    fs.rmSync(turnMarkerPath(CONNECTION, connections))
+    const tracking = carried()
+
+    calls = []
+    await run('user_prompt', { prompt: CHECKS_AND_NOTICE, origin: NOTIFICATION, turn_id: 'turn-1' })
+    assert.deepEqual(calls, [])
+    assert.equal(marker(), null, 'no turn is opened for it')
+    assert.deepEqual(carried(), tracking)
+  })
+
+  it('a command delivered beside them still joins the turn: only a delivery that carries no request is left out', async () => {
+    seed()
+    const other = '88888888-8888-4888-8888-888888888888'
+    const otherMessage = '99999999-9999-4999-8999-999999999999'
+    fs.appendFileSync(path.join(connections, `${CONNECTION}.requests.jsonl`),
+      `${JSON.stringify({ op: 'open', id: other, kind: 'command', message_id: otherMessage, provenance_ref: otherMessage, requested_by: ALI })}\n`)
+    await run('user_prompt', { prompt: COMMAND_WAKE, origin: NOTIFICATION })
+    calls = []
+    const both = CHECKS_AND_NOTICE.replace('</task-notification>', `<event>{"type":"owner_message","message_id":"${otherMessage}"}</event>\n</task-notification>`)
+    await run('user_prompt', { prompt: both, origin: NOTIFICATION, turn_id: 'turn-1' })
+    assert.deepEqual(carried().at(-1), { op: 'joined', id: other })
+    assert.deepEqual(calls.map((call) => [call.name, call.args.busy]), [['heartbeat_connection', true]])
+  })
+
+  // DevSpec starts a delivered command only when the host names it (DevSpec item
+  // 6d767a58), so one Claude Code hands over at a running turn's next step is started
+  // then, by name, and the turn's end finishes each command it started (item 4cc685f1).
+  it('a command delivered into a running turn is started by name, and the turn\'s end finishes both by name', async () => {
+    seed()
+    const otherMessage = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const otherTurn = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    fs.appendFileSync(path.join(connections, `${CONNECTION}.inbox.jsonl`),
+      `${JSON.stringify({ type: 'canonical_commands', connection_id: CONNECTION, ingress: { commands: [{ message_id: otherMessage, delivery: { turn_id: otherTurn } }] } })}\n`)
+    await run('user_prompt', { prompt: COMMAND_WAKE, origin: NOTIFICATION })
+    calls = []
+    const second = `<task-notification>\n<task-id>listener1</task-id>\n<event>{"type":"owner_message","from":"Brandon","message_id":"${otherMessage}","body":"and the README"}</event>\n</task-notification>`
+    await run('user_prompt', { prompt: second, origin: NOTIFICATION, turn_id: 'turn-1' })
+    assert.deepEqual(calls.filter((call) => call.name === 'report_pickup').map((call) => call.args),
+      [{ connection_id: CONNECTION, command_turn_id: otherTurn, command_message_id: otherMessage }])
+
+    calls = []
+    await run('stop', { last_assistant_message: 'Done.', background_tasks: [] })
+    assert.deepEqual(calls.filter((call) => call.name === 'report_complete').map((call) => call.args), [
+      { connection_id: CONNECTION, command_turn_id: COMMAND_TURN, command_message_id: MESSAGE, reason: 'turn_end' },
+      { connection_id: CONNECTION, command_turn_id: otherTurn, command_message_id: otherMessage, reason: 'turn_end' },
+    ])
+  })
+
+  it('to an idle agent: it starts a turn of its own that stands for nobody known, as before', async () => {
+    seed()
+    await run('user_prompt', { prompt: CHECKS_AND_NOTICE, origin: NOTIFICATION })
+    assert.deepEqual(carried().at(-1), { op: 'current', ref: null })
+    assert.ok(marker(), 'the agent is working, and says so')
+    assert.deepEqual(calls.map((call) => [call.name, call.args.busy]), [['heartbeat_connection', true]])
   })
 })

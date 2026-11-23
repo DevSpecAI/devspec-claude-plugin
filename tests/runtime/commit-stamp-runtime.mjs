@@ -3,7 +3,8 @@
  * Proves, through Claude Code's own shell, that the git stand-in tags and checks
  * commits in the project's repositories from git's own arguments:
  *  - in an unmarked repository whose remote is the project's (no pin, no MCP entry)
- *  - a commit before any claim is stopped before git runs, with the claim-and-retry text
+ *  - a commit before any claim goes through as written, with a note saying no task is
+ *    claimed and how to link the next commit
  *  - after claim_work_item (recorded by the plugin's own PostToolUse hook), a heredoc
  *    into -F -, -m with a command substitution, and -F <file> are tagged, and the
  *    file is left as it was
@@ -136,10 +137,11 @@ try {
     '--model', 'sonnet', '--permission-mode', 'manual', '--allowedTools', ...grants, '--output-format', 'json'])
   assert(result.includes('COMMIT-STAMP-RUNTIME-PASS'), result.slice(-2000))
   assert.ok(calls.includes('claim_work_item'), 'the claim went through the host')
-  assert.equal(results.unclaimed.error, true, `the unclaimed commit was stopped: ${results.unclaimed.text}`)
-  assert.match(results.unclaimed.text, /retry the same commit/)
+  assert.equal(results.unclaimed.error, false, `the unclaimed commit went through: ${results.unclaimed.text}`)
+  assert.match(results.unclaimed.text, /no task is claimed in this conversation/)
+  assert.match(results.unclaimed.text, /claim_work_item/)
   const subjects = git(['log', '--format=%B%x00', 'main']).split('\0').map((message) => message.trim()).filter(Boolean)
-  assert.equal(subjects.some((message) => message.startsWith('before any claim')), false, 'the stopped commit was never made')
+  assert.ok(subjects.includes('before any claim'), `the unclaimed commit was made exactly as written: ${JSON.stringify(subjects)}`)
   const tag = `[devspec:${task}]`
   for (const [subject, rest] of [['heredoc subject', 'heredoc body'], ['substituted subject', 'substituted body'], ['file subject', 'file body']]) {
     assert.ok(subjects.includes(`${subject} ${tag}\n\n${rest}`), `${subject} was tagged: ${JSON.stringify(subjects)}`)
@@ -149,5 +151,5 @@ try {
   assert.equal(git(['log', '-1', '--format=%s'], outside), "not the project's", 'the repository outside the project was left untouched')
   console.log(JSON.stringify({ result: 'PASS', host: execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim(), pluginRoot: root,
     pluginVersion: JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8')).version,
-    stopped: results.unclaimed.error, tagged: ['heredoc -F -', '-m "$(cat <<EOF)"', '-F <file>'], outsideUntouched: true, paidInference: 0, liveDevspecRecords: 0, scriptedRequests: requests }))
+    unclaimedLanded: !results.unclaimed.error, tagged: ['heredoc -F -', '-m "$(cat <<EOF)"', '-F <file>'], outsideUntouched: true, paidInference: 0, liveDevspecRecords: 0, scriptedRequests: requests }))
 } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); rmSync(home, { recursive: true, force: true }) }

@@ -294,7 +294,7 @@ function tag(text, name) {
 }
 
 /** The DevSpec command message ids a listener wake carries, oldest first. */
-function ownerMessageIds(text) {
+export function ownerMessageIds(text) {
   const ids = []
   for (const line of String(text || '').split('\n')) {
     const start = line.indexOf('{')
@@ -342,9 +342,10 @@ function carriedBy(entry, state) {
  *   event is still that job.
  * - A DevSpec command (the listener's owner_message) is that command's request.
  * - An automation run DevSpec dispatched is nobody's request: the run's.
- * - A check job DevSpec sent carries no request at all (item f7b8c8d3): it sits
- *   outside provenance (remote-ingress contract, `dispatches`), so it neither
- *   joins a running turn nor stands for anyone in a new one (`carries: false`).
+ * - A check job DevSpec sent, or a notice about the agent's own work, carries no
+ *   request at all (items f7b8c8d3, 108de10f): both sit outside provenance
+ *   (remote-ingress contract, `dispatches` and `system_notice`), so neither joins
+ *   a running turn nor stands for anyone in a new one (`carries: false`).
  * - A scheduled firing is the request whose ScheduleWakeup, CronCreate or /loop
  *   recorded that prompt; several requests that scheduled the same prompt (two
  *   people's /loop) are all carried.
@@ -370,10 +371,13 @@ export function requestForWake({ origin, text, state }) {
     // An automation run DevSpec dispatched is positively nobody's request: DevSpec
     // credits the run while it is running, never a command that happens to be live.
     if (/"type"\s*:\s*"automation_run"/.test(String(text || ''))) return { ref: NO_REQUEST, also: [] }
-    // A check job or system notice is about a change the agent just made: when queued
-    // behind the active turn (`midTurn: false`) it starts unstated rather than
-    // inheriting a prior command, and if ever delivered alongside an open turn it does
-    // not join an unknown requester that would block the turn's writes.
+    // A check job or a notice about the agent's own work is nobody's request. It
+    // reaches a working agent at its next step (item 108de10f), so it usually lands
+    // INTO the turn of the command whose change it is about. There it carries nothing:
+    // it neither joins that turn (an unknown requester beside the command's would
+    // refuse the command's next write until the agent named one) nor replaces what the
+    // turn serves. When it starts a turn of its own (Claude Code was idle) that turn
+    // stands for nobody known, never for the last turn's request.
     if (
       /"type"\s*:\s*"(?:check_job|system_notice)"/.test(String(text || '')) ||
       /\[DevSpec System Notice:/.test(String(text || ''))
@@ -409,13 +413,18 @@ export function notifiedKeys(text) {
  * carries joins that turn rather than replacing what the turn serves. Written
  * before any network call, so a hook cut short leaves this turn unknown, never an
  * earlier request's.
+ *
+ * `leavesTurnAsItIs` is true for a delivery into a running turn that carries no
+ * request at all (a check job, a notice about the agent's own work). The turn it
+ * lands in is then nobody's to touch on its account: the caller changes neither
+ * what the turn serves, nor when it started, nor whether it shows as working.
  */
 export function promptArrival({ fromAPerson, origin, text, midTurn, state, newId = randomUUID }) {
   const events = []
   if (fromAPerson) {
     const id = newId()
     events.push(midTurn ? { op: 'joined', id } : { op: 'current', ref: id })
-    return { events, typedId: id }
+    return { events, typedId: id, leavesTurnAsItIs: false }
   }
   const { ref, also, carries = true } = requestForWake({ origin, text, state })
   if (midTurn) {
@@ -426,7 +435,7 @@ export function promptArrival({ fromAPerson, origin, text, midTurn, state, newId
   }
   const kind = typeof origin === 'string' ? origin : origin?.kind
   if (kind === 'task-notification') for (const key of notifiedKeys(text)) events.push({ op: 'notified', key })
-  return { events, typedId: null }
+  return { events, typedId: null, leavesTurnAsItIs: Boolean(midTurn) && !carries }
 }
 
 /**

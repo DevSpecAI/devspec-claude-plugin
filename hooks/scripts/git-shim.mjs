@@ -19,8 +19,11 @@
  * command is never read. Observation failing never changes what git does.
  *
  * Before git runs, a plain `git commit` in one of the connected project's
- * repositories gets the task tag added, or is stopped with what to do instead
- * (commit-stamp.mjs, item e597bc18). It works on git's own arguments, after the shell
+ * repositories gets the task tag added, or, when it cannot tell which task the commit
+ * belongs to, is stopped with what to do instead (commit-stamp.mjs, item e597bc18). A
+ * commit with no task claimed, or with an unrecorded claim DevSpec could not confirm,
+ * runs as written, with a note (items 4cc685f1, 57db162d). It works on
+ * git's own arguments, after the shell
  * has evaluated them, so every way of writing the message is the same here. A
  * reference the model wrote itself is confirmed online first, as decided in 6fa0241e.
  *
@@ -41,8 +44,8 @@ import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
 import {
-  ANY_REFERENCE, boundConnectionId, conversationClaims, gitIn, noClaimText, parseCommitArgs, projectScope,
-  severalClaimsText, stampedText, tagMessage,
+  ANY_REFERENCE, boundConnectionId, conversationClaimState, gitIn, parseCommitArgs, projectScope,
+  severalClaimsText, stampedText, tagMessage, unlinkedCommitText, unrecordedClaimText,
 } from './commit-stamp.mjs'
 import { MAX_STAND_IN_DEPTH, STAND_IN_DEPTH_ENV, isMarkedStandIn, loopStoppedText, standInDepth } from './git-stand-in.mjs'
 
@@ -330,17 +333,10 @@ function inspectCommit(realGit, worktree, previousHead, amend, startedAt, endedA
 }
 
 /**
- * What to run for this invocation. A plain `git commit` in the connected project's
- * repositories, with no reference in its message, gets the tag of the one task this
- * conversation has claimed, or is stopped: with no claim, and with several. Anything
- * else runs exactly as written, and a message read from standard input is passed on
- * byte for byte. Never throws.
- */
-/**
  * Is a reference the model wrote to a task that exists? (6fa0241e, kept by item
  * e597bc18.) The plugin's own check from 0.17.0, run from where the plugin is
- * installed: the same transport and credentials (mcp-call.mjs, resolve-mcp-auth.mjs,
- * credentials following the repository's main working tree), the same project hints
+ * installed: the same transport and credentials (mcp-call.mjs, resolve-mcp-auth.mjs:
+ * the plugin's browser sign-in, or DEVSPEC_MCP_TOKEN), the same project hints
  * and the same 2.5 second bound. Only a definitive answer that it resolves to nothing
  * stops the commit; anything else, including the plugin not being where it was, lets
  * it through. Returns the text to stop with, or null.
@@ -367,6 +363,19 @@ async function unresolvedReference(text, { cwd, git, config }) {
   }
 }
 
+/**
+ * What to run for this invocation. A plain `git commit` in the connected project's
+ * repositories, with no reference in its message, gets the tag of the one task this
+ * conversation has claimed. It is stopped only where the stand-in cannot tell which
+ * task it belongs to and the agent can: with several claims, and while a claim it made
+ * could not be recorded although DevSpec confirmed it (items c12783b9, 57db162d). With
+ * no task claimed, or while a claim DevSpec could not confirm is unrecorded, it runs as
+ * written, with a note (`notice`) shown once git has made it: the served contract never
+ * refuses repository work for want of a claim, work that needs no task commits like any
+ * other (item 4cc685f1), and DevSpec being unreachable never stops work. Anything else
+ * runs exactly as written, and a message read from standard input is passed on byte
+ * for byte. Never throws.
+ */
 async function planCommit(realGit, args, config, dir) {
   let input = null
   try {
@@ -412,9 +421,19 @@ async function planCommit(realGit, args, config, dir) {
       return stop ? { stop } : { args, input }
     }
 
-    const claims = conversationClaims({ sessionId: config.session_id, stateDir: config.claims_dir })
-    if (claims.length === 0) return { stop: noClaimText() }
+    // Local state only: whether DevSpec confirmed an unrecorded claim was settled when
+    // the claim was read, so a commit never waits on the network here (item 57db162d).
+    const { claims, unrecorded, confirmed } = conversationClaimState({ sessionId: config.session_id, stateDir: config.claims_dir })
+    // A claim the plugin could not record, which DevSpec confirmed, may be the one this
+    // commit belongs to: ask, never tag with another (items c12783b9, 57db162d).
+    if (confirmed.length > 0) return { stop: unrecordedClaimText(claims, confirmed) }
     if (claims.length > 1) return { stop: severalClaimsText(claims) }
+    // One DevSpec could not confirm, because it could not be reached or failed: the
+    // problem is not certain, so the commit is not stopped, and never tagged with an
+    // older claim either. git gets exactly what it was given.
+    if (unrecorded.length > 0) return { args, input, notice: unlinkedCommitText({ unrecorded: true }) }
+    // No task claimed: nothing to add, so nothing to stop. git gets exactly what it was given.
+    if (claims.length === 0) return { args, input, notice: unlinkedCommitText() }
     const id = claims[0]
     const next = [...args]
     if (file) {
@@ -490,6 +509,7 @@ const result = await delegate(realGit, plan.args, childEnv, plan.input ?? null)
 const endedAt = Date.now()
 if (plan.copy) { try { rmSync(plan.copy, { force: true }) } catch { /* removed with the conversation */ } }
 if (plan.stamped && result.code === 0 && !result.signal) process.stderr.write(`${stampedText(plan.stamped)}\n`)
+if (plan.notice && result.code === 0 && !result.signal) process.stderr.write(`${plan.notice}\n`)
 const trace = capture ? await capture.finish().catch(() => null) : null
 
 try {

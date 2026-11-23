@@ -276,12 +276,12 @@ describe('mirror-turn opens and closes the owner terminal turn (item 718825fc)',
     }
   })
 
-  it('without a recorded attachment the turn is left as before, and Stop keeps the connection-scoped completion', async () => {
+  it('without a recorded attachment no local turn is opened, and Stop finishes only an activity no command started', async () => {
     seed({ speech_attachment_id: null, attached_at: null })
     await run('user_prompt', { prompt: 'file an item', origin: TYPED })
     assert.equal(calls.some(call => call.name === 'report_pickup'), false)
     calls = []
     await run('stop', { last_assistant_message: 'Done.' })
-    assert.deepEqual(calls.find(call => call.name === 'report_complete').args, { connection_id: CONNECTION, reason: 'turn_end' })
+    assert.deepEqual(calls.find(call => call.name === 'report_complete').args, { connection_id: CONNECTION, command_turn_unbound: true, reason: 'turn_end' })
   })
 })

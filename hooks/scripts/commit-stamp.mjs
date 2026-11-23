@@ -1,6 +1,9 @@
 /**
  * What the git stand-in (git-shim.mjs) does to a commit before git runs it (item
- * e597bc18): add the task tag, or stop the commit with what to do instead.
+ * e597bc18): add the tag of the one task claimed; with several claimed, or a claim
+ * DevSpec confirmed that the plugin could not record, stop the commit and ask which task
+ * it belongs to; with none claimed, or a claim the plugin could not record and DevSpec
+ * could not confirm, let it through as written, with a note (items 4cc685f1, 57db162d).
  *
  * It works on git's own arguments, after the shell has evaluated the command, so a
  * message written with -m, -m "$(cat <<'EOF' …)", -F <file> or a heredoc into -F -
@@ -20,7 +23,6 @@ import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path, { join, dirname, basename, resolve } from 'node:path'
 
-export const CONTRACT_URI = 'devspec://product/implementation-contract'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** Any reference, well formed or not: the stand-in never replaces one. */
 export const ANY_REFERENCE = /\[devspec:[^\]\s]*\]/i
@@ -31,15 +33,31 @@ const FUTURE_SKEW_MS = 5 * 60 * 1000
 // The words the model is shown
 // ---------------------------------------------------------------------------
 
-export function noClaimText() {
+/**
+ * What a commit made with no task claimed is told, beside it, while it goes through as
+ * written (item 4cc685f1, after Antigravity's cf356677). The served contract never
+ * refuses repository work because a claim is absent (commit_provenance_contract
+ * early_claiming and edit_behavior), and allows refusing a commit with no reference
+ * only where a host could have added one (stamping), which with no claim it could not.
+ * Work that needs no task, such as a dependency-only update or an automation run,
+ * commits like any other; commit ingestion and the unlinked-work heads-up recover a
+ * commit that should have carried one. A person reads this as command output, so it
+ * names no contract rule and no contract address (Antigravity's 20 Nov final check).
+ *
+ * `unrecorded`: a claim was made in this conversation but could not be recorded, and
+ * DevSpec could not confirm it when the plugin read it (item 57db162d). The commit goes
+ * through the same way, never tagged with another claim; the one way to link the task's
+ * commits is then to write its tag, which the claim's own reply carries.
+ */
+export function unlinkedCommitText({ unrecorded = false } = {}) {
   return [
-    'DevSpec: this commit has no [devspec:<id>] reference, so it would land unlinked.',
-    'Recover without leaving this turn: search_tasks for the task this work belongs to and claim it;',
-    'if none fits, create_task for the smallest adequate task, with a real description of the change and the reason it is needed',
-    '(DevSpec refuses a thin or title-only task), and claim that. Then retry the same commit:',
-    'with one task claimed, its tag is added for you. Whether to reuse, reopen or create is the',
-    `work_entry_contract, and how commits link to work the commit_provenance_contract, in ${CONTRACT_URI}.`,
-    'Nothing else is blocked, and no other command is affected.',
+    unrecorded
+      ? 'DevSpec: a task claimed in this conversation could not be recorded, so nothing was added and this commit carries no [devspec:<id>] reference. It was not stopped.'
+      : 'DevSpec: no task is claimed in this conversation, so this commit carries no [devspec:<id>] reference. It was not stopped.',
+    unrecorded
+      ? "If the work delivers that task, end your next commit's message with its [devspec:<full id>] tag (the commit_tag its claim returned);"
+      : 'If the work delivers a task, claim that task (claim_work_item) before your next commit and the reference is added for you;',
+    'if it needs no task, there is nothing to do.',
   ].join(' ')
 }
 
@@ -48,6 +66,22 @@ export function severalClaimsText(claims) {
   return [
     `DevSpec: this commit has no [devspec:<id>] reference and ${claims.length} claims are active, so nothing was added automatically.`,
     `Pick the one this commit belongs to and put it in the message: ${claims.map((id) => `[devspec:${id}]`).join(' or ')}`,
+    'Then retry the commit. Nothing else is blocked.',
+  ].join(' ')
+}
+
+/**
+ * A claim made in this conversation could not be recorded (item c12783b9), and DevSpec
+ * confirmed it and named its task (`confirmed`, full ids; item 57db162d), so the commit
+ * may belong to it rather than to a task the plugin did record: the agent names the
+ * task, exactly as with several claims. Never a guess, and never a silent tag. A claim
+ * DevSpec could not confirm stops nothing (`unlinkedCommitText({ unrecorded: true })`).
+ */
+export function unrecordedClaimText(claims, confirmed) {
+  const choices = [...new Set([...confirmed, ...claims])].map((id) => `[devspec:${id}]`)
+  return [
+    'DevSpec: this commit has no [devspec:<id>] reference, and a task claimed in this conversation could not be recorded, so nothing was added automatically.',
+    `Pick the task this commit belongs to and put its tag in the message: ${choices.join(' or ')}.`,
     'Then retry the commit. Nothing else is blocked.',
   ].join(' ')
 }
@@ -266,10 +300,34 @@ export function projectScope({ cwd, worktree, sessionId, home, git }) {
  * (commit-provenance.mjs): every repository's, because a claim is the conversation's
  * work wherever it commits.
  */
-export function conversationClaims({ sessionId, stateDir, now = Date.now(), platform = process.platform }) {
+export function conversationClaims(options) {
+  return conversationClaimState(options).claims
+}
+
+/** A task as the agent named it when claiming: its 8-character short code or its full id. */
+export const REQUESTED_ITEM = /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i
+
+/**
+ * Everything the claim records say about this conversation: `claims`, the tasks it
+ * holds, and `unrecorded`, the claims it made that the plugin could not record (item
+ * c12783b9). A claim is unrecorded when the host handed the plugin a reply it could not
+ * read the task from, for example the notice Claude Code passes on in place of a reply
+ * too large to return inline. Each is the task as the agent named it, or null where it
+ * named none. While one is outstanding, no commit is tagged for the agent: the commit
+ * may well belong to that task and not to one the plugin did record.
+ *
+ * `confirmed` holds the full ids of the unrecorded claims DevSpec confirmed when the
+ * plugin read them (item 57db162d): only those stop a commit, because only for those is
+ * it certain a claim was made and the agent can be told its tag. The certainty was
+ * settled when the claim was read; nothing here asks DevSpec. A record from before
+ * 0.60.5 carries no certainty, and is read as not confirmed.
+ */
+export function conversationClaimState({ sessionId, stateDir, now = Date.now(), platform = process.platform }) {
   const claims = new Set()
+  const unrecorded = new Set()
+  const confirmed = new Set()
   let names = []
-  try { names = readdirSync(stateDir) } catch { return [] }
+  try { names = readdirSync(stateDir) } catch { return { claims: [], unrecorded: [], confirmed: [] } }
   for (const name of names) {
     if (!name.endsWith('.claims.json')) continue
     try {
@@ -280,9 +338,16 @@ export function conversationClaims({ sessionId, stateDir, now = Date.now(), plat
       if (record?.schema !== 1 || record.session_id !== sessionId || !Array.isArray(record.claims)) continue
       if (typeof record.updated_at !== 'number' || record.updated_at > now + FUTURE_SKEW_MS || now - record.updated_at > CLAIM_MAX_AGE_MS) continue
       for (const id of record.claims) if (typeof id === 'string' && UUID.test(id)) claims.add(id.toLowerCase())
+      for (const entry of Array.isArray(record.unrecorded) ? record.unrecorded : []) {
+        if (!entry || typeof entry.at !== 'number' || entry.at > now + FUTURE_SKEW_MS || now - entry.at > CLAIM_MAX_AGE_MS) continue
+        unrecorded.add(typeof entry.requested === 'string' && REQUESTED_ITEM.test(entry.requested) ? entry.requested.toLowerCase() : null)
+        if (entry.confirmed === true && typeof entry.task_id === 'string' && UUID.test(entry.task_id)) confirmed.add(entry.task_id.toLowerCase())
+      }
     } catch { /* not a claim record */ }
   }
-  return [...claims].sort() // the same order every time, whichever file was read first
+  // The same order every time, whichever file was read first; an unnamed claim last.
+  const named = [...unrecorded].filter((requested) => requested !== null).sort()
+  return { claims: [...claims].sort(), unrecorded: unrecorded.has(null) ? [...named, null] : named, confirmed: [...confirmed].sort() }
 }
 
 /** git in `cwd`, stdout trimmed, or null. */

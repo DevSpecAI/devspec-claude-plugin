@@ -18,22 +18,34 @@
  * The contract, in one line: **block only on certainty, and only when the agent can
  * recover unaided; allow everything else.** Concretely —
  *
- *  - Edits and execution are NEVER denied for want of a claim. No allowlist, no
- *    tokenizer over arbitrary commands, no path rules. Nothing to bypass, because
- *    nothing is blocked.
+ *  - Edits, execution and commits are NEVER denied for want of a claim. No allowlist,
+ *    no tokenizer over arbitrary commands, no path rules. Nothing to bypass, because
+ *    nothing is blocked. A commit with no task claimed goes through as written, with a
+ *    note beside it (`unlinkedCommitText`, item 4cc685f1): with no claim there is no
+ *    reference this could have added, which is the only case the served contract lets
+ *    a host refuse a commit for (commit_provenance_contract.stamping).
  *  - A commit is inspected only when it arrives in a shape this can read with
  *    certainty (see `simpleGitCommit`). Anything else — aliases, compound shell,
  *    `--amend`, `-F`, expansions, GUI commits, merge/rebase/cherry-pick — is allowed
- *    untouched. That is a deliberate hole: the analyzer reconciles it server-side.
+ *    untouched. That is a deliberate hole: server commit ingestion and mechanical
+ *    unlinked-work accountability (`devspec://product/implementation-contract`)
+ *    reconcile it without creating automatic tasks.
  *  - The test is a well-formed REFERENCE, not a live claim. A link stays a link after
  *    `record_implementation` releases the claim, across repositories, and on
  *    follow-up work.
  *  - A reference that IS present is confirmed against the server, because shape alone
  *    cannot tell a real id from a plausible one. That is the only network call this
- *    hook makes, it is bounded, and only a definitive "no such item" denies — every
- *    other answer, and every failure to get one, allows.
+ *    hook makes before a commit, it is bounded, and only a definitive "no such item"
+ *    denies — every other answer, and every failure to get one, allows. (The one other
+ *    call, after a claim, resolves a short code whose claim reply could not be read.)
  *  - Where exactly one claim is unambiguously active, the reference is APPENDED for
  *    the agent (`hookSpecificOutput.updatedInput`) and reported, rather than refused.
+ *    A claim the plugin saw but could not record makes it ambiguous (item c12783b9),
+ *    so the commit is never tagged with another claim. The agent is asked, as with
+ *    several claims, only when DevSpec confirmed that claim and named its task; when
+ *    DevSpec could not be reached or failed while the claim was read, the commit goes
+ *    through untagged with a note (item 57db162d). That was settled when the claim was
+ *    read: the commit itself makes no call for it.
  *  - Offline, server error, ambiguous claim set, uncertain jurisdiction: allow.
  *
  * This is cooperative provenance, not a security boundary — a plugin can be removed,
@@ -51,9 +63,9 @@ import { execFileSync } from 'node:child_process'
 import { findProjectPin, gitRemoteOrigin, workTreeRootFrom } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { readConversationProject } from './conversation-project.mjs'
-import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
-import { conversationClaims, gitIn, noClaimText, projectScope, severalClaimsText } from './commit-stamp.mjs'
+import { REQUESTED_ITEM, conversationClaimState, gitIn, projectScope, severalClaimsText, unlinkedCommitText, unrecordedClaimText } from './commit-stamp.mjs'
 import { observerActive } from './git-observer.mjs'
 
 export const CONTRACT_URI = 'devspec://product/implementation-contract'
@@ -69,6 +81,7 @@ export const ONLINE_TIMEOUT_MS = 2_500
 const FUTURE_SKEW_MS = 5 * 60 * 1000
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
 const UUID_RE = new RegExp(`^${UUID}$`, 'i')
+const SHORT_CODE_RE = /^[0-9a-f]{8}$/i
 
 /**
  * A DevSpec reference in a commit message. The FULL uuid is required, not the short
@@ -192,27 +205,51 @@ function statePathFor(scope, kind, env = process.env) {
  * A SET, not a single value, because the ADR forbids guessing which of several
  * claims a commit belongs to. One claim means stamping is safe; two mean it is not.
  */
-export function readClaims(scope, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
+export function readClaims(scope, options = {}) {
+  return readClaimState(scope, options).claims
+}
+
+/**
+ * This session's record for this repository: the claims it holds, and the claims it
+ * made that could not be recorded (`unrecorded`, item c12783b9), each
+ * `{ requested, at, confirmed, task_id }` with the task as the agent named it. `confirmed`
+ * says DevSpec answered while the claim was read and named its task, whose full id is
+ * then `task_id` (item 57db162d); it is false when DevSpec could not be reached, failed,
+ * or did not name it, and for a record written before it was kept. The git stand-in
+ * reads the same file (commit-stamp.mjs `conversationClaimState`), which is why both
+ * live in one record: an older stand-in that knows only `claims` still reads it.
+ */
+export function readClaimState(scope, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
+  const none = { claims: [], unrecorded: [] }
   const file = statePathFor(scope, 'claims', env)
   try {
     const stat = fs.lstatSync(file)
-    if (!stat.isFile() || stat.isSymbolicLink()) return []
-    if (enforcesPosixModes(platform) && (stat.mode & 0o077) !== 0) return []
+    if (!stat.isFile() || stat.isSymbolicLink()) return none
+    if (enforcesPosixModes(platform) && (stat.mode & 0o077) !== 0) return none
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
-    if (parsed?.schema !== 1 || !Array.isArray(parsed.claims)) return []
-    if (typeof parsed.updated_at !== 'number') return []
-    if (parsed.updated_at > now + FUTURE_SKEW_MS) return []
-    if (now - parsed.updated_at > CLAIM_MAX_AGE_MS) return []
-    if (parsed.session_id !== scope.sessionId || parsed.repo_root !== scope.repoRoot) return []
-    return parsed.claims.filter((id) => typeof id === 'string' && UUID_RE.test(id)).map((id) => id.toLowerCase())
+    if (parsed?.schema !== 1 || !Array.isArray(parsed.claims)) return none
+    if (typeof parsed.updated_at !== 'number') return none
+    if (parsed.updated_at > now + FUTURE_SKEW_MS) return none
+    if (now - parsed.updated_at > CLAIM_MAX_AGE_MS) return none
+    if (parsed.session_id !== scope.sessionId || parsed.repo_root !== scope.repoRoot) return none
+    const unrecorded = (Array.isArray(parsed.unrecorded) ? parsed.unrecorded : [])
+      .filter((entry) => entry && typeof entry.at === 'number' && entry.at <= now + FUTURE_SKEW_MS && now - entry.at <= CLAIM_MAX_AGE_MS)
+      .map((entry) => unrecordedEntry(requestedItemFrom(entry.requested), entry.at, {
+        confirmed: entry.confirmed === true,
+        taskId: typeof entry.task_id === 'string' ? entry.task_id : null,
+      }))
+    return {
+      claims: parsed.claims.filter((id) => typeof id === 'string' && UUID_RE.test(id)).map((id) => id.toLowerCase()),
+      unrecorded,
+    }
   } catch {
-    return []
+    return none
   }
 }
 
-function writeClaims(scope, claims, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
+function writeClaimState(scope, { claims, unrecorded }, { env = process.env, now = Date.now(), platform = process.platform } = {}) {
   const file = statePathFor(scope, 'claims', env)
-  if (claims.length === 0) {
+  if (claims.length === 0 && unrecorded.length === 0) {
     try { fs.unlinkSync(file) } catch { /* nothing to remove */ }
     return
   }
@@ -221,8 +258,29 @@ function writeClaims(scope, claims, { env = process.env, now = Date.now(), platf
     session_id: scope.sessionId,
     repo_root: scope.repoRoot,
     claims: [...new Set(claims.map((id) => id.toLowerCase()))],
+    ...(unrecorded.length > 0 ? { unrecorded } : {}),
     updated_at: now,
   }, platform)
+}
+
+/**
+ * One claim that could not be recorded. It is `confirmed` only with the full id of the
+ * task DevSpec named (`task_id`): that is what lets the agent be told the tag to write.
+ */
+function unrecordedEntry(requested, at, { confirmed = false, taskId = null } = {}) {
+  const id = typeof taskId === 'string' && UUID_RE.test(taskId) ? taskId.toLowerCase() : null
+  return confirmed && id ? { requested, at, confirmed: true, task_id: id } : { requested, at, confirmed: false }
+}
+
+/** The task as the agent named it (short code or full id), lower case, or null. */
+function requestedItemFrom(value) {
+  return typeof value === 'string' && REQUESTED_ITEM.test(value.trim()) ? value.trim().toLowerCase() : null
+}
+
+/** Whether a task named as `requested` (short code or full id) is the item `id`. */
+function names(requested, id) {
+  if (!requested || !id) return false
+  return requested.length === 8 ? id.startsWith(requested) : requested === id
 }
 
 /* ------------------------------------------------------------------ *
@@ -238,7 +296,8 @@ function writeClaims(scope, claims, { env = process.env, now = Date.now(), platf
  * and denied when unsure. This asks "is this exactly the shape I can read with
  * certainty?" and allows when unsure. Every `return null` below is an ALLOW.
  *
- * Refused outright (→ allowed, reconciled by the analyzer instead): anything with
+ * Refused outright (→ allowed, reconciled server-side via commit ingestion and
+ * unlinked-work accountability instead): anything with
  * shell structure or expansion, any path-qualified or aliased git, message sources
  * this cannot see (`-F`, `--file`, `--reuse-message`, `-c`, `-C`, `--template`), and
  * history-rewriting or message-inheriting forms (`--amend`, `--squash`, `--fixup`,
@@ -299,8 +358,8 @@ export function simpleGitCommit(command, { onInvocation } = {}) {
     }
     // Unquoted shell structure or expansion: not a shape this can read honestly.
     // Refused only OUTSIDE quotes — a commit message may legitimately contain braces,
-    // parentheses or a semicolon, and refusing those would hand every ordinary message
-    // to the analyzer for no reason.
+    // parentheses or a semicolon, and refusing those would skip local tagging on ordinary
+    // messages for no reason.
     if ('|;<>(){}`$\\\n\r'.includes(char)) return null
     if (/\s/.test(char)) {
       endWord(index)
@@ -579,8 +638,8 @@ export function referenceIn(message) {
  * an HTTP error, an MCP error, a project that could not be resolved, the timeout, a body
  * we cannot parse) lands there and allows.
  *
- * Credentials and the endpoint are resolved from `env` and the folder's own MCP
- * configuration, never from a value this module holds.
+ * Credentials and the endpoint are resolved from `env` and the plugin's browser
+ * sign-in, never from a value this module holds.
  */
 export async function confirmReferenceOnline(commitMessage, options = {}) {
   const {
@@ -594,7 +653,7 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
     call = mcpToolsCall,
   } = options
 
-  const auth = resolveAuth(cwd, mainWorktree, env)
+  const auth = await resolveAuth(cwd, env)
   if (!auth) return 'unavailable'
 
   // Jurisdiction hints, so the server answers for the project this folder belongs to
@@ -629,6 +688,60 @@ export async function confirmReferenceOnline(commitMessage, options = {}) {
   if (status === 'not_found') return 'not_found'
   if (status === 'valid') return 'valid'
   return 'indeterminate'
+}
+
+/**
+ * The full id of the task an agent claimed by its 8-character short code, asked of the
+ * server, for a claim whose reply the plugin could not read (item c12783b9). The same
+ * credentials, project hint and bound as `confirmReferenceOnline`. Returns the id only
+ * when the server names one that begins with that short code; every other answer, and
+ * every failure to get one, is null, and the claim is then marked unrecorded instead.
+ */
+export async function resolveShortCodeOnline(shortCode, options = {}) {
+  const {
+    cwd,
+    mainWorktree = null,
+    env = process.env,
+    timeoutMs = ONLINE_TIMEOUT_MS,
+    localId = null,
+    projectHome = os.homedir(),
+    call = mcpToolsCall,
+  } = options
+  const code = typeof shortCode === 'string' ? shortCode.toLowerCase() : ''
+  if (!SHORT_CODE_RE.test(code)) return null
+  const auth = await resolveAuth(cwd, env)
+  if (!auth) return null
+  const args = { task_id: code }
+  try {
+    const choice = readConversationProject(localId, { endpoint: auth.mcp_url, home: projectHome })
+    if (choice?.status === 'blocked') return null
+    if (choice?.status === 'selected') args.project_id = choice.project.id
+  } catch { return null }
+  let result
+  try {
+    result = await call({ mcpUrl: auth.mcp_url, token: auth.token, name: 'get_task', arguments: args, timeoutMs })
+  } catch {
+    return null
+  }
+  const id = taskIdIn(result)
+  return id && UUID_RE.test(id) && id.startsWith(code) ? id : null
+}
+
+/**
+ * The task's id in a get_task answer. DevSpec appends a notice (a paused project, an
+ * account with no funds) as a block of its own after the task, which mcp-call.mjs then
+ * hands back unparsed: the task is still its first block, and DevSpec still named it.
+ */
+function taskIdIn(answer) {
+  if (typeof answer?.id === 'string') return answer.id.toLowerCase()
+  const blocks = Array.isArray(answer?.result?.content) ? answer.result.content : []
+  const first = blocks.find((block) => block?.type === 'text' && typeof block.text === 'string')
+  try {
+    const task = first ? JSON.parse(first.text) : null
+    return typeof task?.id === 'string' ? task.id.toLowerCase() : null
+  } catch {
+    return null
+  }
 }
 
 /* ---------- *
@@ -682,11 +795,8 @@ function nudge(message) {
  * How a denial reads matters as much as when it fires: the work is already written by
  * the time a commit is refused, so the message must be a complete recipe the agent can
  * follow alone. It never terminates the turn and never demands a full criteria set.
- * It used to call "a thin last-mile item" with a one-line description fine; since the
- * server requires a substantive description and a stated reason on every create_task
- * (and refuses thin ones before writing), following that advice mid-commit got the
- * agent refused a second time (item 9a4c0d6a). Which item to reuse, reopen or create
- * is the served contract's work_entry_contract, so this points there instead.
+ * Only a commit with at least one task claimed reaches here: one with none goes
+ * through with `unlinkedCommitText` instead (item 4cc685f1).
  */
 function recoveryText(claims) {
   // The one case the agent writes the tag itself: the plugin never guesses between claims.
@@ -695,39 +805,27 @@ function recoveryText(claims) {
   // With one claim, every commit shape this reads is tagged for the agent (item
   // 3e24523e); the agent never types an id it could get wrong. The only one-claim
   // commit that reaches here is a bare, unquoted -m word, which cannot take a tag.
-  if (claims.length === 1) {
-    return [
-      'DevSpec: this commit has no [devspec:<id>] reference, and its message is a bare word the tag cannot be added to.',
-      'Put the message in quotes (-m "…") and retry the commit: the tag for the task you have claimed is added for you.',
-      'Nothing else is blocked.',
-    ].join(' ')
-  }
-  return noClaimText()
+  return [
+    'DevSpec: this commit has no [devspec:<id>] reference, and its message is a bare word the tag cannot be added to.',
+    'Put the message in quotes (-m "…") and retry the commit: the tag for the task you have claimed is added for you.',
+    'Nothing else is blocked.',
+  ].join(' ')
 }
 
 /**
- * Credentials for the one call, from the cwd chain and then from the repository's main
- * working tree.
- *
- * The second place is not a nicety. `.mcp.json` and `.claude/settings.local.json` are
- * normally untracked, so a linked worktree carries neither — and the implementation
- * contract *requires* work to happen in one. Looking only at the cwd would leave this
- * check silently inert for exactly the workflow it exists to protect, which is the same
- * mistake 0.16.0 made about the commit shape. Jurisdiction already consults the main
- * worktree for the same reason (`repositoryJurisdiction`).
+ * Credentials for the one call: the plugin's browser sign-in for its server, or
+ * DEVSPEC_MCP_TOKEN (item 47f0dbdf). Before browser sign-in this also searched the cwd
+ * chain and the repository's main working tree for a `.mcp.json` key, because a linked
+ * worktree carries none; the sign-in does not depend on the folder, so every worktree
+ * has it.
  */
-function resolveAuth(cwd, mainWorktree, env) {
-  const hostToken = hostTokenFromEnv(env)
-  for (const dir of [cwd, mainWorktree]) {
-    if (!dir) continue
-    try {
-      const auth = resolveDevspecMcpAuth(dir, { env, hostToken })
-      if (auth?.ok && auth.token && auth.mcp_url) return auth
-    } catch {
-      /* an unreadable config is simply not a source of credentials */
-    }
+async function resolveAuth(cwd, env) {
+  try {
+    const auth = await resolveDevspecMcpAuth(cwd, { env })
+    return auth?.ok && auth.token && auth.mcp_url ? auth : null
+  } catch {
+    return null
   }
-  return null
 }
 
 /**
@@ -755,22 +853,85 @@ export function handleSessionStart() {
   }
 }
 
-export function handlePost(input, options = {}) {
+/**
+ * Keep this conversation's claim record in step with what DevSpec did.
+ *
+ * A claim is recorded from the item the reply names, wherever the host put the reply:
+ * inline, or in the file Claude Code saves an oversized MCP result to, passing on only
+ * a notice that names the file (item c12783b9). Failing that, from the task the agent
+ * asked for: its full id as given, or its short code resolved by the server.
+ *
+ * A claim none of that can establish is not dropped. It is marked unrecorded, and while
+ * it is outstanding no commit is tagged for the agent: before item c12783b9 an
+ * unreadable claim was simply not a claim, so a conversation still holding one older
+ * claim had its next commit tagged with that one, confidently and wrongly.
+ *
+ * With it goes whether DevSpec confirmed it (item 57db162d), decided here and never
+ * again at commit time. Wherever DevSpec answers with the claimed task's full id, in
+ * the claim's reply or in the short-code lookup, the claim is recorded from it, so a
+ * claim left unrecorded here is one DevSpec did not confirm: the reply read as an
+ * error, DevSpec could not be reached or failed, or it named no such task. Such a claim
+ * never lets a commit be tagged with another, and never stops one either.
+ */
+export async function handlePost(input, options = {}) {
   const { env = process.env, now = Date.now(), platform = process.platform } = options
   const verb = devspecToolVerb(input?.tool_name ?? input?.toolName)
   if (verb !== CLAIM_VERB && !RELEASE_VERBS.has(verb)) return null
   let scope
   try { scope = scopeFrom(input) } catch { return null }
 
-  const itemId = claimedItemIdFrom(input)
-  if (!itemId) return null
-  const current = readClaims(scope, { env, now, platform })
-  try {
-    if (verb === CLAIM_VERB) {
-      writeClaims(scope, [...current, itemId], { env, now, platform })
-    } else {
-      writeClaims(scope, current.filter((id) => id !== itemId), { env, now, platform })
+  const reply = readItemReply(input, scope.sessionId)
+  // DevSpec said no: nothing was claimed or released, and nothing is in doubt.
+  if (reply.refused) return null
+  const requested = requestedItemFrom(input?.tool_input?.task_id)
+
+  let itemId = reply.id
+  if (!itemId && !reply.errorText && requested) {
+    if (UUID_RE.test(requested)) {
+      itemId = requested
+    } else if (verb === CLAIM_VERB) {
+      // The claim's reply could not be read and the agent named the task by its short
+      // code: ask the server which task that is. The only other network call this hook
+      // makes, bounded like the first, and only ever on this path.
+      itemId = await resolveShortCodeOnline(requested, {
+        cwd: scope.cwd,
+        mainWorktree: scope.mainWorktree,
+        localId: scope.sessionId,
+        env,
+        timeoutMs: options.timeoutMs,
+        call: options.call,
+      })
     }
+  }
+
+  // Read after any network call, so a record written meanwhile is not lost.
+  const current = readClaimState(scope, { env, now, platform })
+  let next
+  if (verb === CLAIM_VERB) {
+    next = itemId
+      ? {
+          claims: [...current.claims, itemId],
+          // The claim that could not be recorded has now been recorded.
+          unrecorded: current.unrecorded.filter((entry) => !entryIs(entry, itemId)),
+        }
+      : {
+          claims: current.claims,
+          // Not confirmed: DevSpec did not name the task (see above).
+          unrecorded: [...current.unrecorded.filter((entry) => entry.requested !== requested), unrecordedEntry(requested, now)],
+        }
+  } else {
+    // A release by short code whose reply named nothing is still the one held claim
+    // with that short code, when there is exactly one.
+    const released = itemId ?? (requested && !reply.errorText ? onlyHeldNamed(current.claims, requested) : null)
+    const settles = (entry) => (released ? entryIs(entry, released) : requested !== null && entry.requested === requested)
+    next = {
+      claims: released ? current.claims.filter((id) => id !== released) : current.claims,
+      unrecorded: current.unrecorded.filter((entry) => !settles(entry)),
+    }
+    if (next.claims.length === current.claims.length && next.unrecorded.length === current.unrecorded.length) return null
+  }
+  try {
+    writeClaimState(scope, next, { env, now, platform })
   } catch {
     // State is an optimisation for stamping only. Losing it costs a convenience,
     // never a block, so a failure here is deliberately silent.
@@ -778,37 +939,133 @@ export function handlePost(input, options = {}) {
   return null
 }
 
-/** The item id a successful DevSpec result actually carried. Never prompt text. */
-function claimedItemIdFrom(input) {
+function onlyHeldNamed(claims, requested) {
+  const matching = claims.filter((id) => names(requested, id))
+  return matching.length === 1 ? matching[0] : null
+}
+
+/** Whether an unrecorded claim is the task `id`: as DevSpec named it, or as the agent did. */
+function entryIs(entry, id) {
+  return entry.task_id === id || names(entry.requested, id)
+}
+
+/**
+ * Claude Code's notice for an MCP result too large to return inline (2.1.x):
+ *
+ *   Error: result (106,333 characters across 1,478 lines) exceeds maximum allowed
+ *   tokens. Output has been saved to /…/<session id>/tool-results/mcp-…-<ms>.txt.
+ *   Format: Plain text …
+ *
+ * It reaches PostToolUse as the whole `tool_response`, a string, in place of the reply.
+ * It is the host's word about the reply's size, not DevSpec's about the claim, so it is
+ * never read as a refusal, though it begins "Error:" (and, when saving failed, goes on
+ * "Failed to save output to file").
+ */
+const OVERSIZE_NOTICE_RE = /exceeds maximum allowed tokens/i
+const SAVED_TO_RE = /Output has been saved to (.+?)\.(?:\r?\n|$)/
+/** A claim reply is about 100 KB; past this only the start is read, which names the item. */
+const PERSISTED_READ_LIMIT = 16 * 1024 * 1024
+/** A reply cut short is not JSON, but a DevSpec item reply still begins with its id. */
+const LEADING_ID_RE = new RegExp(`^\\s*\\{\\s*"id"\\s*:\\s*"(${UUID})"`, 'i')
+const ERROR_TEXT_RE = /"error"|not found|failed/i
+
+/**
+ * What a DevSpec reply says about the item it acted on. Never prompt text.
+ *   { id }                 the item the reply names
+ *   { refused: true }      a refusal: nothing was claimed or released
+ *   { id: null, errorText } nothing could be read; errorText when it reads like an error
+ */
+function readItemReply(input, sessionId) {
   const response = input?.tool_response ?? input?.toolResponse
   const texts = []
-  const collect = (value) => {
-    if (typeof value === 'string') { texts.push(value); return }
-    if (Array.isArray(value)) { value.forEach(collect); return }
+  const notices = []
+  const collect = (value, depth = 0) => {
+    if (depth > 8) return
+    if (typeof value === 'string') {
+      if (OVERSIZE_NOTICE_RE.test(value)) notices.push(value)
+      else texts.push(value)
+      return
+    }
+    if (Array.isArray(value)) { value.forEach((item) => collect(item, depth + 1)); return }
     if (value && typeof value === 'object') {
-      if (typeof value.text === 'string') texts.push(value.text)
-      for (const nested of Object.values(value)) if (nested && typeof nested === 'object') collect(nested)
+      for (const nested of Object.values(value)) collect(nested, depth + 1)
     }
   }
   collect(response)
-  const requested = input?.tool_input?.task_id
+  for (const notice of notices) {
+    const saved = readPersistedResult(persistedResultPath(notice, sessionId))
+    if (saved !== null) texts.push(saved)
+  }
+
+  let refused = false
   for (const text of texts) {
-    let parsed
-    try { parsed = JSON.parse(text) } catch { continue }
-    const values = Array.isArray(parsed) ? parsed : [parsed]
-    for (const value of values) {
-      if (!value || typeof value !== 'object') continue
-      if (value.error || value.success === false || value.ok === false) continue
-      const id = typeof value.id === 'string' ? value.id : null
-      if (id && UUID_RE.test(id)) return id.toLowerCase()
+    const found = itemInText(text)
+    if (found.id) return { id: found.id }
+    if (found.refused) refused = true
+  }
+  if (refused) return { refused: true }
+  return { id: null, errorText: texts.some((text) => ERROR_TEXT_RE.test(text)) }
+}
+
+function itemInText(text, depth = 0) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    const leading = LEADING_ID_RE.exec(text)
+    return leading ? { id: leading[1].toLowerCase() } : {}
+  }
+  let refused = false
+  for (const value of Array.isArray(parsed) ? parsed : [parsed]) {
+    if (!value || typeof value !== 'object') continue
+    if (value.error || value.success === false || value.ok === false || value.claim_success === false) {
+      refused = true
+      continue
+    }
+    const id = typeof value.id === 'string' ? value.id : null
+    if (id && UUID_RE.test(id)) return { id: id.toLowerCase() }
+    // A result saved as its content blocks: [{ "type": "text", "text": "<the reply>" }].
+    if (depth === 0 && typeof value.text === 'string') {
+      const inner = itemInText(value.text, depth + 1)
+      if (inner.id) return inner
+      if (inner.refused) refused = true
     }
   }
-  // A response we could not parse must not invent a claim; fall back only to an
-  // explicitly requested well-formed id when the response carried no error text.
-  if (UUID_RE.test(requested || '') && !texts.some((t) => /"error"|not found|failed/i.test(t))) {
-    return requested.toLowerCase()
+  return refused ? { refused } : {}
+}
+
+/**
+ * The file a notice names, only where Claude Code saves this conversation's results:
+ * `<…>/<session id>/tool-results/<file>`. Anything else is not read.
+ */
+function persistedResultPath(notice, sessionId) {
+  const match = SAVED_TO_RE.exec(notice)
+  if (!match) return null
+  const file = match[1].trim()
+  if (!path.isAbsolute(file)) return null
+  const folder = path.dirname(file)
+  if (path.basename(folder) !== 'tool-results' || path.basename(path.dirname(folder)) !== sessionId) return null
+  return file
+}
+
+function readPersistedResult(file) {
+  if (!file) return null
+  let fd
+  try {
+    const stat = fs.lstatSync(file)
+    if (!stat.isFile()) return null // a symbolic link is not followed
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return null
+    const buffer = Buffer.alloc(Math.min(stat.size, PERSISTED_READ_LIMIT))
+    fd = fs.openSync(file, 'r')
+    const read = fs.readSync(fd, buffer, 0, buffer.length, 0)
+    return buffer.subarray(0, read).toString('utf8')
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* already closed */ }
+    }
   }
-  return null
 }
 
 /**
@@ -869,11 +1126,12 @@ export async function handlePre(input, options = {}) {
   if (!marker) return null
 
   const claims = readClaims(scope, { env, now, platform })
+  const conversation = conversationClaimState({ sessionId: scope.sessionId, stateDir: stateDir(env), now, platform })
 
   // Edits are never denied. At most one reminder per session+repository, and none
-  // once this conversation holds a claim anywhere: commits are tagged with it.
+  // once this conversation has claimed anything anywhere: commits are tagged with it.
   if (EDIT_TOOLS.has(tool)) {
-    if (claims.length > 0 || conversationClaims({ sessionId: scope.sessionId, stateDir: stateDir(env), now, platform }).length > 0) return null
+    if (claims.length > 0 || conversation.claims.length > 0 || conversation.unrecorded.length > 0) return null
     return maybeNudge(scope, { env, now, platform })
   }
 
@@ -900,6 +1158,24 @@ export async function handlePre(input, options = {}) {
     return null
   }
 
+  // A claim this conversation made could not be recorded, in this repository or any
+  // other, and DevSpec confirmed it: the commit may be that task's, so the agent names
+  // it (items c12783b9, 57db162d). Read from local state: no call is made here for it.
+  if (conversation.confirmed.length > 0) return deny(unrecordedClaimText(conversation.claims, conversation.confirmed))
+
+  // Several claimed: the agent names the one, as before.
+  if (claims.length > 1) return deny(recoveryText(claims))
+
+  // One DevSpec could not confirm, because it could not be reached or failed while the
+  // claim was read: being offline never stops work, so the commit runs as written, and
+  // is never tagged with an older claim (item 57db162d).
+  if (conversation.unrecorded.length > 0) return nudge(unlinkedCommitText({ unrecorded: true }))
+
+  // No task claimed: there is no reference to add, so the commit runs exactly as
+  // written, and the note says how to link the next one if the work delivers a task
+  // (commit_provenance_contract early_claiming, edit_behavior and stamping; item 4cc685f1).
+  if (claims.length === 0) return nudge(unlinkedCommitText())
+
   if (claims.length === 1 && commit.appendable) {
     const id = claims[0]
     const updated = `${command.slice(0, commit.insertOffset)} [devspec:${id}]${command.slice(commit.insertOffset)}`
@@ -925,12 +1201,14 @@ function maybeNudge(scope, { env, now, platform }) {
   // reason to do the right thing now, and the right thing now is cheap: claim an
   // existing task, or create one properly. "Write one thin item" was the old advice;
   // the server now refuses thin creates (item 9a4c0d6a). Once one task is claimed the
-  // plugin tags the commits itself, so the agent is not asked to (item 3e24523e).
+  // plugin tags the commits itself, so the agent is not asked to (item 3e24523e). Work
+  // that needs no task, such as a dependency-only update, commits without one, so the
+  // advice is conditional and says committing is never blocked either (item 4cc685f1).
   return nudge(
     'DevSpec: no task is claimed in this conversation, so work done here has nothing to trace it to. ' +
-    'Claim one before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
+    'If the work delivers a task, claim it before you commit: search_tasks for the task this work belongs to, or create_task for it ' +
     'with a real description and the reason it is needed, and claim it. With one task claimed, your commits ' +
-    `in the project's repositories are tagged for you. Editing is never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
+    `in the project's repositories are tagged for you. Editing and committing are never blocked. Shown once per session. Authority: ${CONTRACT_URI}`,
   )
 }
 
@@ -952,7 +1230,7 @@ async function main() {
     return
   }
   if (mode === 'pre') return emit(await handlePre(input))
-  if (mode === 'post') return emit(handlePost(input))
+  if (mode === 'post') return emit(await handlePost(input))
   throw new Error('usage: commit-provenance.mjs session-start|pre|post')
 }
 

@@ -11,11 +11,12 @@
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { normalizeRemote, noClaimText, parseCommitArgs, severalClaimsText, stampedText, tagMessage } from './commit-stamp.mjs'
+import { normalizeRemote, parseCommitArgs, severalClaimsText, stampedText, tagMessage, unlinkedCommitText, unrecordedClaimText } from './commit-stamp.mjs'
 import { observerDir, startObserver } from './git-observer.mjs'
 import { handlePost } from './commit-provenance.mjs'
 
@@ -167,16 +168,29 @@ describe('in one of the project\'s repositories, with one task claimed', () => {
 })
 
 describe('the commit check, before git runs', () => {
-  it('stops a commit with no task claimed, with nothing for the model to type, and leaves the repository as it was', () => {
-    const head = git(['rev-parse', 'HEAD'])
-    for (const command of ['git commit --allow-empty -q -m "unclaimed"', `git commit --allow-empty -q -F - <<'EOF'\nunclaimed heredoc\n\nbody\nEOF`]) {
+  it('lets a commit with no task claimed through exactly as written, standard input included, with a note (item 4cc685f1)', () => {
+    // The served contract never refuses repository work because a claim is absent: a
+    // dependency-only update or an automation run needs no task, and its commits land.
+    for (const [command, message] of [
+      ['git commit --allow-empty -q -m "unclaimed"', 'unclaimed'],
+      [`git commit --allow-empty -q -F - <<'EOF'\nunclaimed heredoc\n\n  indented body\nEOF`, 'unclaimed heredoc\n\n  indented body'],
+    ]) {
+      const head = git(['rev-parse', 'HEAD'])
       const result = shell(command)
-      assert.equal(result.status, 1, command)
-      assert.equal(result.stderr.trim(), noClaimText())
-      assert.equal(git(['rev-parse', 'HEAD']), head, 'no commit was made')
+      assert.equal(result.status, 0, `${command}: ${result.stderr}`)
+      assert.notEqual(git(['rev-parse', 'HEAD']), head, 'the commit was made')
+      assert.equal(body(), message, 'with exactly the message written')
+      assert.equal(result.stderr.trim(), unlinkedCommitText())
     }
-    assert.match(noClaimText(), /retry the same commit/)
-    assert.equal(/<full-uuid>/.test(noClaimText()), false)
+    assert.match(unlinkedCommitText(), /claim_work_item/)
+    assert.equal(/<full-uuid>/.test(unlinkedCommitText()), false, 'nothing for the model to type')
+    assert.doesNotMatch(unlinkedCommitText(), /_contract\b|devspec:\/\/|Authority:/, 'a person reads it: no internal rule names or contract address')
+  })
+
+  it('says nothing about a commit git did not make', () => {
+    const result = shell('git commit -q -m "nothing staged"')
+    assert.notEqual(result.status, 0)
+    assert.equal(result.stderr.includes('DevSpec'), false, result.stderr)
   })
 
   it('with several claims, stops and asks for the right tag, because it never guesses', () => {
@@ -204,6 +218,110 @@ describe('the commit check, before git runs', () => {
   })
 })
 
+/**
+ * The incident behind item c12783b9, through the real stand-in: a task claimed by its
+ * short code, its reply saved by Claude Code to a file and only a notice passed on, while
+ * the conversation still held one older claim. The stand-in tagged the commit with the
+ * older one. The notice is Claude Code's own text, as PostToolUse receives it.
+ */
+describe('a claim whose reply Claude Code saved to a file (item c12783b9)', () => {
+  const SHORT = TASK.slice(0, 8)
+  const results = () => path.join(home, '.claude', 'projects', 'project', SESSION, 'tool-results')
+  /** `lookup`: how DevSpec answers the plugin's get_task for the short code (default: it cannot be reached). */
+  const claimBySavedReply = (saved, { lookup = async () => { throw new Error('offline') } } = {}) => {
+    const file = path.join(results(), 'mcp-plugin_devspec_devspec-claim_work_item-1794089251356.txt')
+    if (saved) {
+      fs.mkdirSync(results(), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify({ id: TASK, description: 'long '.repeat(20000), claim_success: true, commit_tag: `[devspec:${TASK}]` }, null, 2))
+    }
+    return handlePost({
+      session_id: SESSION,
+      cwd: outside,
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__plugin_devspec_devspec__claim_work_item',
+      tool_input: { task_id: SHORT, agent_branch: 'work/x' },
+      tool_response: `Error: result (100,145 characters across 6 lines) exceeds maximum allowed tokens. Output has been saved to ${file}.\nFormat: Plain text\n`,
+    }, {
+      // Signed in, so the lookup is made; `lookup` is what DevSpec does with it.
+      env: { PATH: process.env.PATH, HOME: home, DEVSPEC_CLAUDE_STATE_DIR: stateDir, DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: 'http://127.0.0.1:9/api/mcp' },
+      call: lookup,
+    })
+  }
+  /** The claim record for `cwd`, with a claim DevSpec confirmed that the plugin could not record. */
+  const keepConfirmedUnrecorded = (taskId, cwd = outside) => {
+    const repoRoot = fs.realpathSync(path.join(cwd, '.git'))
+    const digest = createHash('sha256').update(`${SESSION}\0${repoRoot}`).digest('hex')
+    const file = path.join(stateDir, `${digest}.claims.json`)
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'))
+    record.unrecorded = [{ requested: taskId.slice(0, 8), at: Date.now(), confirmed: true, task_id: taskId }]
+    record.updated_at = Date.now()
+    fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 })
+  }
+
+  it('records the claim from the saved reply, so the next commit is tagged with that task', async () => {
+    await claimBySavedReply(true)
+    const result = shell('git commit --allow-empty -q -m "work on the short-code task"')
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(subject(), `work on the short-code task [devspec:${TASK}]`)
+  })
+
+  it('with an older claim held and DevSpec unreachable, lets the next commit through untagged, with a note, never tagged with the older claim (item 57db162d)', async () => {
+    claim(OTHER_TASK)
+    await claimBySavedReply(false) // the notice names a file that is not there, and the lookup fails offline
+    for (const [command, message] of [
+      ['git commit --allow-empty -q -m "work on the short-code task"', 'work on the short-code task'],
+      [`git commit --allow-empty -q -F - <<'EOF'\nheredoc work\n\n  body as written\nEOF`, 'heredoc work\n\n  body as written'],
+    ]) {
+      const head = git(['rev-parse', 'HEAD'])
+      const result = shell(command)
+      assert.equal(result.status, 0, `${command}: ${result.stderr}`)
+      assert.notEqual(git(['rev-parse', 'HEAD']), head, 'the commit was made')
+      assert.equal(body(), message, 'exactly as written: not tagged with the older claim')
+      assert.equal(result.stderr.trim(), unlinkedCommitText({ unrecorded: true }))
+    }
+    const named = shell(`git commit --allow-empty -q -m "named [devspec:${TASK}]"`)
+    assert.equal(named.status, 0, named.stderr)
+    assert.equal(subject(), `named [devspec:${TASK}]`, 'naming the task goes through as written')
+  })
+
+  it('the same when DevSpec fails the lookup or names no such task', async () => {
+    claim(OTHER_TASK)
+    await claimBySavedReply(false, { lookup: async () => { throw Object.assign(new Error('MCP HTTP 500: Internal Server Error'), { status: 500 }) } })
+    let result = shell('git commit --allow-empty -q -m "after a server error"')
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(subject(), 'after a server error')
+    await claimBySavedReply(false, { lookup: async () => ({ id: OTHER_TASK }) })
+    result = shell('git commit --allow-empty -q -m "after another task was named"')
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(subject(), 'after another task was named')
+    assert.equal(result.stderr.trim(), unlinkedCommitText({ unrecorded: true }))
+  })
+
+  it('DevSpec confirmed the new claim: with an older claim held, the commit is stopped and asked which, naming both, never tagged with the older', async () => {
+    claim(OTHER_TASK)
+    await claimBySavedReply(false, { lookup: async () => ({ id: TASK, title: 'resolved' }) })
+    const head = git(['rev-parse', 'HEAD'])
+    const result = shell('git commit --allow-empty -q -m "which one"')
+    assert.equal(result.status, 1, 'stopped before git runs')
+    assert.equal(result.stderr.trim(), severalClaimsText([TASK, OTHER_TASK]))
+    assert.equal(git(['rev-parse', 'HEAD']), head)
+  })
+
+  it('a claim DevSpec confirmed that the plugin could not record stops the commit and names its tag', () => {
+    claim(OTHER_TASK)
+    keepConfirmedUnrecorded(TASK)
+    const head = git(['rev-parse', 'HEAD'])
+    const result = shell('git commit --allow-empty -q -m "work on the confirmed task"')
+    assert.equal(result.status, 1, 'stopped before git runs')
+    assert.equal(result.stderr.trim(), unrecordedClaimText([OTHER_TASK], [TASK]))
+    assert.ok(result.stderr.includes(`[devspec:${TASK}]`) && result.stderr.includes(`[devspec:${OTHER_TASK}]`))
+    assert.equal(git(['rev-parse', 'HEAD']), head, 'no commit was made, and none tagged with the older claim')
+    const named = shell(`git commit --allow-empty -q -m "named [devspec:${TASK}]"`)
+    assert.equal(named.status, 0, named.stderr)
+    assert.equal(subject(), `named [devspec:${TASK}]`, 'naming the task goes through as written')
+  })
+})
+
 describe('what is not the project\'s', () => {
   it('leaves another repository untouched, with no claim and no check', () => {
     const result = shell('git commit --allow-empty -q -m "not the project\'s"', { cwd: outside })
@@ -216,9 +334,13 @@ describe('what is not the project\'s', () => {
     init(pinned, null)
     fs.mkdirSync(path.join(pinned, '.devspec'))
     fs.writeFileSync(path.join(pinned, '.devspec', 'project.json'), JSON.stringify({ project_id: PROJECT }))
-    assert.equal(shell('git commit --allow-empty -q -m pinned', { cwd: pinned }).status, 1, 'in scope by its pin: no claim stops it')
+    const inScope = shell('git commit --allow-empty -q -m pinned', { cwd: pinned })
+    assert.equal(inScope.status, 0, inScope.stderr)
+    assert.equal(inScope.stderr.trim(), unlinkedCommitText(), 'in scope by its pin: the no-claim note')
     fs.writeFileSync(path.join(pinned, '.devspec', 'project.json'), JSON.stringify({ project_id: '55555555-5555-4555-8555-555555555555' }))
-    assert.equal(shell('git commit --allow-empty -q -m "pinned elsewhere"', { cwd: pinned }).status, 0)
+    const elsewhere = shell('git commit --allow-empty -q -m "pinned elsewhere"', { cwd: pinned })
+    assert.equal(elsewhere.status, 0, elsewhere.stderr)
+    assert.equal(elsewhere.stderr.includes('DevSpec'), false, 'another project\'s pin: nothing said')
   })
 
   it('does nothing while the conversation is not connected', () => {
@@ -285,11 +407,37 @@ describe('a reference the model wrote is confirmed online before git runs (6fa02
     assert.equal((await shellAsync(`git commit --allow-empty -q -m "no credentials [devspec:${OTHER_TASK}]"`)).status, 0)
   })
 
-  it('makes no network call for a commit without a reference, whether it tags it or stops it', async () => {
-    assert.equal((await shellAsync('git commit --allow-empty -q -m "no claim, no reference"', devspec())).status, 1)
+  it('makes no network call for a commit without a reference, whether it tags it or lets it through untagged', async () => {
+    assert.equal((await shellAsync('git commit --allow-empty -q -m "no claim, no reference"', devspec())).status, 0)
+    assert.equal(subject(), 'no claim, no reference')
     claim(TASK)
     assert.equal((await shellAsync('git commit --allow-empty -q -m "tagged by the stand-in"', devspec())).status, 0)
     assert.equal(subject(), `tagged by the stand-in [devspec:${TASK}]`)
     assert.deepEqual(calls, [])
+  })
+
+  it('makes none either while a claim is unrecorded: whether DevSpec confirmed it was settled when it was read (item 57db162d)', async () => {
+    claim(OTHER_TASK)
+    // Unrecorded while DevSpec was unreachable: through, untagged.
+    await handlePost({
+      session_id: SESSION, cwd: outside, hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__plugin_devspec_devspec__claim_work_item',
+      tool_input: { task_id: TASK.slice(0, 8) },
+      tool_response: 'Error: result (100,145 characters) exceeds maximum allowed tokens. Failed to save output to file: EACCES.',
+    }, { env: { PATH: process.env.PATH, HOME: home, DEVSPEC_CLAUDE_STATE_DIR: stateDir, DEVSPEC_MCP_TOKEN: 'fixture-not-real', DEVSPEC_MCP_URL: 'http://127.0.0.1:9/api/mcp' } })
+    const through = await shellAsync('git commit --allow-empty -q -m "unconfirmed, no call"', devspec())
+    assert.equal(through.status, 0, through.stderr)
+    assert.equal(subject(), 'unconfirmed, no call')
+    assert.equal(through.stderr.trim(), unlinkedCommitText({ unrecorded: true }))
+    // Unrecorded but confirmed: stopped, still without asking DevSpec anything.
+    const repoRoot = fs.realpathSync(path.join(outside, '.git'))
+    const file = path.join(stateDir, `${createHash('sha256').update(`${SESSION}\0${repoRoot}`).digest('hex')}.claims.json`)
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'))
+    record.unrecorded = [{ requested: TASK.slice(0, 8), at: Date.now(), confirmed: true, task_id: TASK }]
+    fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 })
+    const stopped = await shellAsync('git commit --allow-empty -q -m "confirmed, no call"', devspec())
+    assert.equal(stopped.status, 1)
+    assert.equal(stopped.stderr.trim(), unrecordedClaimText([OTHER_TASK], [TASK]))
+    assert.deepEqual(calls, [], 'no commit called DevSpec')
   })
 })

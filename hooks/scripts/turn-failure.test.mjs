@@ -12,6 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseTurnFailure, turnFailureMessage } from './turn-failure.mjs'
 import { markCommandsAnswered } from './mark-explicit-reply.mjs'
+import { USAGE_REFUSAL_COOL_OFF_MS, usageRefusalArguments } from './usage-refusal.mjs'
 
 // The hook input Claude Code 2.1.314 sent for an invalid key, measured 2026-10-30.
 const MEASURED = {
@@ -188,5 +189,58 @@ describe('mirror-turn stop_failure', () => {
     calls = []
     await run('stop', { hook_event_name: 'Stop', last_assistant_message: 'Done.', background_tasks: [] })
     assert.equal(calls.some(call => call.name === 'post_session_message'), false)
+  })
+
+  // The served contract's semantics.check_job.usage_refusal (item 4cc685f1): only an
+  // actual refusal for usage is reported, with a bounded time, and a turn that then
+  // runs clears it, so DevSpec stops and resumes offering this agent check jobs.
+  it('a turn Anthropic refused for usage tells DevSpec until when, and the next turn that runs clears it', async () => {
+    seed()
+    await wakeForCommand()
+    calls = []
+    const before = Date.now()
+    await failed({ error: 'rate_limit', last_assistant_message: "You've hit your limit · resets 3pm" })
+    const reported = calls.find(call => call.name === 'heartbeat_connection').args.usage_refused_until
+    const ahead = Date.parse(reported) - before
+    assert.ok(ahead >= USAGE_REFUSAL_COOL_OFF_MS && ahead < USAGE_REFUSAL_COOL_OFF_MS + 60_000, reported)
+    const stored = () => JSON.parse(fs.readFileSync(path.join(connections, `${CONNECTION}.json`), 'utf8')).usage_refused_until
+    assert.equal(stored(), reported, 'kept for the poller to repeat on every poll')
+
+    calls = []
+    await wakeForCommand()
+    assert.equal(calls.find(call => call.name === 'heartbeat_connection').args.usage_refused_until, reported, 'repeated while it stands')
+    calls = []
+    await run('stop', { hook_event_name: 'Stop', last_assistant_message: 'Done.', background_tasks: [] })
+    assert.equal(calls.find(call => call.name === 'heartbeat_connection').args.usage_refused_until, null)
+    assert.equal(stored(), null)
+  })
+
+  it('any other failure is not a usage refusal', async () => {
+    seed()
+    await wakeForCommand()
+    calls = []
+    for (const error of ['authentication_failed', 'overloaded', 'server_error', 'billing_error']) {
+      await failed({ error })
+      assert.equal(Object.hasOwn(calls.find(call => call.name === 'heartbeat_connection').args, 'usage_refused_until'), false, error)
+      calls = []
+    }
+  })
+})
+
+// What every poll carries (devspec-remote-poll.mjs): a refusal while it stands, null
+// once when one that was sent has been cleared or has passed, so DevSpec's record never
+// outlives the refusal by a held poll; otherwise nothing.
+describe('usage_refused_until on a poll', () => {
+  const NOW = Date.parse('2026-11-20T10:00:00.000Z')
+  const AHEAD = '2026-11-20T10:15:00.000Z'
+  it('is the refusal while it stands', () => {
+    assert.deepEqual(usageRefusalArguments(AHEAD, null, NOW), { usage_refused_until: AHEAD })
+    assert.deepEqual(usageRefusalArguments(AHEAD, AHEAD, NOW), { usage_refused_until: AHEAD })
+  })
+  it('is null once after one that was sent is cleared or has passed', () => {
+    assert.deepEqual(usageRefusalArguments(null, AHEAD, NOW), { usage_refused_until: null })
+    assert.deepEqual(usageRefusalArguments('2026-11-20T09:59:00.000Z', AHEAD, NOW), { usage_refused_until: null })
+    assert.deepEqual(usageRefusalArguments(null, null, NOW), {})
+    assert.deepEqual(usageRefusalArguments('not a time', null, NOW), {})
   })
 })

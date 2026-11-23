@@ -10,9 +10,15 @@
  * authority: it is the mechanical response to a question this agent asked, and it
  * names the one operation that finishes the turn it opened
  * (devspec://product/interaction-event-contract).
- * In `--stream` mode check jobs and system notices wait behind the turn Claude Code is
- * running and go one per turn in arrival order; everything else is delivered as it
- * arrives, past any held record (isQueuedBehindTurn, heldInboxRecords).
+ * Every record is delivered as it arrives, in arrival order, whatever Claude Code is
+ * doing (item 108de10f, decision b8abe2bb). Claude Code hands a Monitor event to a
+ * running turn between steps (after the step in progress, before the next one, never
+ * part-way through one) and to an idle session at once. So a check job or a notice
+ * about the agent's own work reaches a working agent at its next step, through the
+ * channel commands have always used, and everything waiting at one moment is printed in
+ * one pass and so arrives together. Listeners before 0.58.0 held those two back until
+ * the turn ended and released one per turn (item d36ac887); what such a listener still
+ * held when it stopped is delivered once at the next start (heldInboxRecords).
  * Active room plans and typed context are rendered first as explicitly advisory model
  * awareness; complete canonical commands follow as model-visible owner_message events, including validated
  * server-owned delegated project scope. Summaries and previews are explicitly
@@ -44,8 +50,10 @@ import {
   writePrivateJson,
 } from './private-state.mjs'
 import {
+  isProjectIncidentsProjectionV1,
   isUnreadableSystemNoticeV1,
   normalizeRemoteIngressV1,
+  NOTICE_AUDIENCES,
   REMOTE_INGRESS_RESOURCE_URI,
 } from './remote-ingress-v1.mjs'
 import {
@@ -60,8 +68,8 @@ import { questionHandoffEvent, validQuestionHandoff } from './command-offer.mjs'
 import { claudeProcessOf, ownedByAnotherProcess } from './startup-listener.mjs'
 import { wakeNotice } from './room-unread.mjs'
 import { replyLine } from './notice-reply.mjs'
-import { readTurnActivity, turnIsRunning, turnMarkerFile } from './turn-liveness.mjs'
 import { isEntryPoint } from './entry-point.mjs'
+import { clearTurnCommands } from './turn-commands.mjs'
 
 // Re-exported because this script's public surface (and its test suite) has named
 // these since 0.6.2. The implementation moved to attachment-store.mjs so the POLLER
@@ -243,7 +251,8 @@ function armWaitPidfile(connectionId, dir = CONNECTIONS_DIR) {
 
 /**
  * Remove the connection turn marker, so the continuous poller stops re-asserting
- * busy and emits `report_complete` on its next tick.
+ * busy and emits `report_complete` on its next tick, with the record of the commands
+ * that turn started (turn-commands.mjs).
  */
 export function clearTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
   if (!connectionId) return
@@ -252,6 +261,7 @@ export function clearTurnMarker(connectionId, dir = CONNECTIONS_DIR) {
   } catch {
     /* ignore */
   }
+  clearTurnCommands(connectionId, { dir })
 }
 
 /**
@@ -520,7 +530,13 @@ export function readInboxRecords(file, offset) {
   }
 }
 
-const ROOM_STATE_SECTIONS = new Set(['session_polls', 'still_to_discuss', 'active_session_plans', 'session_activity'])
+const ROOM_STATE_SECTIONS = new Set([
+  'session_polls',
+  'still_to_discuss',
+  'active_session_plans',
+  'project_incidents',
+  'session_activity',
+])
 
 /**
  * The pointers the poller put beside a command (item 7fe8e3d1), revalidated rather
@@ -576,10 +592,12 @@ function validateAutomationInboxRecord(record, connectionId) {
   )
 }
 
+/** Check-job envelope version 2 (item 1d89fe56): no `high_risk`, three more record types. */
 const CHECK_JOB_KEYS = [
-  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'high_risk', 'yours',
+  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'yours',
   'offered_at', 'delivery_connection_id',
 ]
+const CHECK_RECORD_TYPES = ['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan']
 
 function exactKeys(value, keys) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
@@ -602,11 +620,10 @@ function validateCheckJobInboxRecord(record, connectionId) {
     typeof d.id === 'string' && INBOX_UUID.test(d.id) && d.check_job_id === d.id &&
     ['conflict', 'conflict_decisions', 'duplicate', 'staleness'].includes(d.check_kind) &&
     exactKeys(r, ['type', 'id', 'title']) &&
-    ['task', 'memory', 'artifact', 'proposal'].includes(r.type) &&
+    CHECK_RECORD_TYPES.includes(r.type) &&
     typeof r.id === 'string' && INBOX_UUID.test(r.id) &&
     typeof r.title === 'string' &&
     Number.isInteger(d.entries) && d.entries >= 0 &&
-    Number.isInteger(d.high_risk) && d.high_risk >= 0 && d.high_risk <= d.entries &&
     typeof d.yours === 'boolean' &&
     typeof d.offered_at === 'string' && !Number.isNaN(Date.parse(d.offered_at)) &&
     d.delivery_connection_id === connectionId,
@@ -629,8 +646,10 @@ export function parseInboxBatches(lines, connectionId) {
           : parsed.envelope.command_message_ids
         const commandIds = new Set(parsed.envelope.commands.map((command) => command.message_id))
         if (ids.length === 0 || new Set(ids).size !== ids.length || ids.some((id) => !commandIds.has(id))) continue
+        const { project_incidents: rawIncidents, ...commandRecordRest } = record
         batches.push({
-          ...record,
+          ...commandRecordRest,
+          ...(isProjectIncidentsProjectionV1(rawIncidents) ? { project_incidents: rawIncidents } : {}),
           execute_message_ids: ids,
           wake_context: validWakeContext(record.wake_context),
           question_handoff: validQuestionHandoff(record.question_handoff, new Set(ids)),
@@ -669,7 +688,12 @@ export function parseInboxBatches(lines, connectionId) {
         if (!validateInteractionAnswerRecord(record, connectionId)) continue
         batches.push(record)
       } else if (validateAutomationInboxRecord(record, connectionId)) {
-        batches.push(record)
+        if (Object.hasOwn(record, 'project_incidents') && !isProjectIncidentsProjectionV1(record.project_incidents)) {
+          const { project_incidents: _droppedIncidents, ...automationRest } = record
+          batches.push(automationRest)
+        } else {
+          batches.push(record)
+        }
       } else if (validateCheckJobInboxRecord(record, connectionId)) {
         batches.push(record)
       }
@@ -686,28 +710,72 @@ export function parseOwnerBatches(lines, connectionId) {
 }
 
 /**
- * How every readable notice is handled, carried with the notice itself so it
- * costs nothing until one arrives (item 984ca8b4). A notice is about the agent's
- * own work: a finding on it, or what happened to a change that waited on
- * someone. The agent tells its person; it never answers for one.
+ * How a readable notice that needs a person (or carries no label) is handled,
+ * carried with the notice itself so it costs nothing until one arrives (item
+ * 984ca8b4). A notice is about the agent's own work: a finding on it, or what
+ * happened to a change that waited on someone. The agent tells its person; it
+ * never answers for one. A for-the-record notice gets FOR_THE_RECORD_HANDLING
+ * instead (item a868f41f).
  */
 export const NOTICE_HANDLING =
   'Handling: the labelled records above are your reading context — never dump their full text into the conversation. ' +
-  'Act only within the allowed outcomes and tools, based on who asked for the work (remember a teammate can drive someone else\'s agent, so the requester\'s authority is what counts), their authority, and whether this finding is already understood or new information: ' +
-  '(1) If it is a descriptive staleness flag and the change the requester asked for clearly makes that detail out of date, update or retire it straight away without asking permission and mention what you updated in one brief sentence (or say it was queued if their role queues a proposal); ask only if the right change is unclear or surfaces something new. ' +
-  '(2) If it is a decision conflict or duplicate and the requester has authority to settle it and has already clearly asked to proceed despite the earlier record, act for them straight away without a redundant confirmation and confirm briefly in context. ' +
-  '(3) If the finding brings new information or a consequence the requester did not appear aware of, or if the requester does not have authority to settle it themselves, explain what clashes and why in plain words in context (plus who it waits on when they cannot give the OK) and recommend the practical options.'
+  'Act only within the allowed outcomes and tools, based on who asked for the work (remember a teammate can drive someone else\'s agent, so the requester\'s authority is what counts), their authority, and whether this finding is already understood or new information (semantics.notice_audience and semantics.notice_reply in devspec://product/remote-ingress-contract): ' +
+  '(1) If it is a descriptive staleness flag and the change the requester asked for clearly makes that detail out of date, update or retire it straight away without asking permission — stay quiet in the room once settled unless their role queued a proposal (queued_for_review), an unresolved choice remains, or a write carries tell_person. ' +
+  '(2) If it is a conflict with a decision or requirement, or a duplicate, whether the requester\'s go-ahead settles it, and whose OK it otherwise waits for, is the served contract\'s to say, not yours (authority_contract.reversal_rule and core.resolve-duplicates-on-the-spot in devspec://product/implementation-contract). A requirement break or an unintended conflict that your own work can fix is fixed on its branch and recorded again with record_implementation, and the check that follows clears it (core.waiting-work-stays-on-its-branch). When the requester can settle it and has already clearly asked to proceed despite the earlier record, act for them straight away without a redundant confirmation and finish quietly without posting a room acknowledgment. ' +
+  '(3) Post a room notice reply only when an unresolved choice, hold, rejection, or block still needs a person after you act — explaining what clashes and why in plain words (plus who it waits on when they cannot give the OK) and recommending the practical options.'
+
+/** Where what DevSpec's label on a notice asks of the agent is written down. */
+export const NOTICE_AUDIENCE_RULES = 'devspec://product/remote-ingress-contract (semantics.notice_audience)'
+
+/**
+ * DevSpec's label on a notice (system notice channel version 3, item a868f41f), or
+ * null for one the poller wrote before this plugin asked for 3. An unlabelled
+ * notice is shown exactly as before, as DevSpec itself reads one queued before
+ * labels existed: an unknown never makes a notice quiet.
+ */
+export function noticeAudience(notice) {
+  return NOTICE_AUDIENCES.includes(notice?.audience) ? notice.audience : null
+}
+
+/**
+ * The label line a labelled notice opens with. A for-the-record notice is handed
+ * over with no reply line and none of NOTICE_HANDLING's speech: DevSpec refuses a
+ * room reply that names only such notices, so offering the call would only invite
+ * a refused post. What either label asks of the agent is the served contract's,
+ * pointed at here rather than restated.
+ */
+/** A for-the-record notice's whole handling: it still asks for nothing outside its outcomes and tools. */
+export const FOR_THE_RECORD_HANDLING =
+  'Handling: the records above are your reading context. Act only within the allowed outcomes and tools, and only on your own work.'
+
+export function noticeAudienceLine(audience) {
+  if (audience === 'for_the_record') {
+    return `Audience: for_the_record (DevSpec's label). There is no room reply to make for it: ${NOTICE_AUDIENCE_RULES}.`
+  }
+  if (audience === 'needs_person') return `Audience: needs_person (DevSpec's label): ${NOTICE_AUDIENCE_RULES}.`
+  return null
+}
 
 export function formatSystemNoticeContent(notice) {
+  const audience = noticeAudience(notice)
+  const quiet = audience === 'for_the_record'
+  const labelled = (lines) => {
+    const line = noticeAudienceLine(audience)
+    return line ? [lines[0], line, ...lines.slice(1)] : lines
+  }
   if (isUnreadableSystemNoticeV1(notice)) {
-    return [
+    return labelled([
       '[DevSpec System Notice: not readable by this plugin version]',
       `DevSpec sent a notice of a kind this version of the DevSpec plugin cannot read (kind ${notice.kind}, notice ${notice.notice_id}). It may be a finding or an outcome about your own work.`,
-      'Tell the person plainly that DevSpec sent something this plugin cannot show yet: it is on the record and in the project\'s Review, and updating the DevSpec plugin will show notices like it here. Do not act on it.',
-      replyLine([notice.notice_id]),
+      ...(quiet
+        ? ['It is on the record and in the project\'s Review. Do not act on it.']
+        : [
+            'Tell the person plainly that DevSpec sent something this plugin cannot show yet: it is on the record and in the project\'s Review, and updating the DevSpec plugin will show notices like it here. Do not act on it.',
+            replyLine([notice.notice_id]),
+          ]),
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice, not a room message or new work authorization.',
-    ].join('\n')
+    ]).join('\n')
   }
   if (notice?.kind === 'server_notice') {
     const lines = [
@@ -733,26 +801,23 @@ export function formatSystemNoticeContent(notice) {
     }
     lines.push(
       '',
-      NOTICE_HANDLING,
-      replyLine([notice.notice_id]),
+      ...(quiet ? [FOR_THE_RECORD_HANDLING] : [NOTICE_HANDLING, replyLine([notice.notice_id])]),
       'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
         'This is a server-initiated notice on your own work, not a room message or new work authorization.',
     )
-    return lines.join('\n')
+    return labelled(lines).join('\n')
   }
 
   const branchSuffix = notice?.branch ? ` on branch ${notice.branch}` : ''
-  return [
+  return labelled([
     '[DevSpec System Notice: unlinked_commit_item_review]',
     `Your push of commit ${notice?.commit_sha}${branchSuffix} did not carry a [devspec:<id>] tag, while you hold claimed item "${notice?.task_title}" (${notice?.task_id}).`,
-    `Prompt: ${notice?.prompt}`,
     `Allowed outcomes: ${Array.isArray(notice?.allowed_outcomes) ? notice.allowed_outcomes.join(', ') : ''}`,
     `Allowed tools: ${Array.isArray(notice?.allowed_tools) ? notice.allowed_tools.join(', ') : ''}`,
-    NOTICE_HANDLING,
-    replyLine([notice?.notice_id]),
+    ...(quiet ? [FOR_THE_RECORD_HANDLING] : [NOTICE_HANDLING, replyLine([notice?.notice_id])]),
     'Authority: exact_connection_system_notice (devspec://product/remote-ingress-contract). ' +
       'This is a narrow server review prompt for your own claimed item and commit — not a room command or new work authorization.',
-  ].join('\n')
+  ]).join('\n')
 }
 
 export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
@@ -766,11 +831,15 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
   const events = []
 
   for (const notice of notices) {
+    // DevSpec's label rides right behind the id, inside the 500-character cap.
+    const audience = noticeAudience(notice)
+    const label = audience ? { audience } : {}
     if (isUnreadableSystemNoticeV1(notice)) {
       events.push({
         type: 'system_notice',
         kind: notice.kind,
         notice_id: notice.notice_id,
+        ...label,
         readable: false,
         inbox: inboxFile ?? null,
         session_id: sessionId,
@@ -788,6 +857,7 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
       type: 'system_notice',
       kind: notice.kind,
       notice_id: notice.notice_id,
+      ...label,
       inbox: inboxFile ?? null,
       session_id: sessionId,
       envelope_id: ingress?.envelope_id ?? null,
@@ -812,7 +882,6 @@ export function buildCanonicalSystemNoticeEvents(batch, { inboxFile } = {}) {
             allowed_tools: notice.allowed_tools,
           }
         : {
-            prompt: notice.prompt,
             allowed_outcomes: notice.allowed_outcomes,
             allowed_tools: notice.allowed_tools,
           }),
@@ -959,6 +1028,9 @@ export function buildCanonicalCommandEvents(batch, { inboxFile, unread = null } 
   if (commands.length > 0 && unread) {
     events.push({ type: 'room_unread', session_id: sessionId, advisory: true, executable: false, ...unread })
   }
+  if (commands.length > 0 && isProjectIncidentsProjectionV1(batch?.project_incidents)) {
+    events.push(compactProjectIncidentsEvent(batch.project_incidents, sessionId))
+  }
 
   events.push({
     type: 'wake',
@@ -1040,17 +1112,59 @@ function automationRunCommandText(d) {
   ].join('\n')
 }
 
+function compactProjectIncidentsEvent(p, sessionId) {
+  const items = []
+  for (const inc of p.active) {
+    const title = inc.title.length > 48 ? `${inc.title.slice(0, 47)}…` : inc.title
+    const status = inc.status_line.length > 44 ? `${inc.status_line.slice(0, 43)}…` : inc.status_line
+    items.push(`[${inc.short_code}] ${inc.kind}: ${title} (${status}, since ${inc.since})`)
+  }
+  for (const inc of p.recently_resolved) {
+    const title = inc.title.length > 48 ? `${inc.title.slice(0, 47)}…` : inc.title
+    items.push(`[${inc.short_code}] ${inc.kind}: ${title} (${inc.state} ${inc.resolved_at})`)
+  }
+  const kept = []
+  for (const entry of items) {
+    const candidate = {
+      type: 'project_incidents',
+      advisory: true,
+      executable: false,
+      active: p.active.length,
+      resolved: p.recently_resolved.length,
+      items: [...kept, entry],
+      ...(kept.length + 1 < items.length ? { more_in: 'room_state' } : {}),
+      session_id: sessionId,
+    }
+    if (JSON.stringify(candidate).length > HOST_NOTIFICATION_LINE_MAX_CHARS - 8) break
+    kept.push(entry)
+  }
+  return {
+    type: 'project_incidents',
+    advisory: true,
+    executable: false,
+    active: p.active.length,
+    resolved: p.recently_resolved.length,
+    items: kept,
+    ...(kept.length < items.length ? { more_in: 'room_state' } : {}),
+    session_id: sessionId,
+  }
+}
+
 export function buildAutomationRunEvents(batch, { inboxFile } = {}) {
+  const sessionId = batch.session_id ?? null
   return [
     {
       type: 'automation_run',
-      session_id: batch.session_id ?? null,
+      session_id: sessionId,
       authoritative: true,
       executable: true,
       channel: 'explicit_automation_dispatch',
       dispatch: batch.dispatch,
       content: automationRunCommandText(batch.dispatch),
     },
+    ...(isProjectIncidentsProjectionV1(batch?.project_incidents)
+      ? [compactProjectIncidentsEvent(batch.project_incidents, sessionId)]
+      : []),
     {
       type: 'wake',
       reason: 'automation_run',
@@ -1063,17 +1177,46 @@ export function buildAutomationRunEvents(batch, { inboxFile } = {}) {
 }
 
 /**
- * The one line a check job wakes the agent with (item f7b8c8d3; DevSpec item
- * 55d71b0c, contract text). What a check is and how to rule it is the
- * devspec-remote-command skill's and the job's own (claim_check_job returns the
- * definition to rule by); this only says one is waiting, and on what. The title is
- * the record's own text, quoted and kept on one line; a record with no title is
- * named by its type and id.
+ * Where DevSpec says how a check job is taken and ruled, helper agents included
+ * (decision 1d5a9c56). Pointed at, never restated: the words are the server's, and
+ * every claim_check_job reply carries the same ones as `helpers`.
+ */
+export const CHECK_JOB_HELPERS_RULE = 'semantics.check_job.helpers in devspec://product/remote-ingress-contract'
+
+/**
+ * The one line a check job reaches the agent with (item f7b8c8d3; DevSpec item
+ * 55d71b0c, contract text). What a check is and how to rule it is the served
+ * contract's and the job's own (claim_check_job returns the definition to rule by);
+ * this only says one is waiting, where the ruling instruction is, and on what.
+ *
+ * The pointer comes before the agent takes the job (item 108de10f): the instruction
+ * decides who takes it, so an agent that claimed first would already hold the entries
+ * the instruction keeps out of its conversation. It also comes before the title, the
+ * one part of the line with no fixed length, so a line the host cuts
+ * (HOST_NOTIFICATION_LINE_MAX_CHARS) loses the end of a long title and nothing else.
+ * The title is the record's own text, quoted and kept on one line; a record with no
+ * title is named by its type and id.
+ *
+ * Version 2's three new records (item 1d89fe56) are not what the check is about but
+ * what raised it: open tasks are checked for being out of date against a settled
+ * discussion point or a changed Goal, and the manual scan checks the whole backlog.
+ * So they are named for what they are, rather than as the record being checked.
  */
 export function checkJobWakeText(d) {
+  const type = d?.record?.type
+  const id = d?.record?.id ?? ''
   const title = typeof d?.record?.title === 'string' ? d.record.title.replace(/\s+/g, ' ').trim() : ''
-  const subject = title ? `"${title}"` : `${d?.record?.type ?? 'record'} ${d?.record?.id ?? ''}`.trim()
-  return `A check is waiting on ${subject}: take it with claim_check_job, rule every entry with record_check_rulings, then carry on.`
+  const quoted = title ? `"${title}"` : ''
+  const how =
+    `Before you take it, read ${CHECK_JOB_HELPERS_RULE} (claim_check_job repeats it as \`helpers\`) ` +
+    'and rule it as that says, then carry on.'
+  if (type === 'discussion_point') {
+    return `An out-of-date check is waiting. ${how} The settled discussion point ${quoted || id} raised it.`
+  }
+  if (type === 'goal') return `An out-of-date check is waiting. ${how} A change to the Goal ${quoted || id} raised it.`
+  if (type === 'backlog_scan') return `The whole-backlog out-of-date scan is waiting. ${how}${quoted ? ` It is ${quoted}.` : ''}`
+  const subject = quoted || `${type ?? 'record'} ${id}`.trim()
+  return `A check is waiting. ${how} It is on ${subject}.`
 }
 
 /**
@@ -1092,7 +1235,6 @@ export function buildCheckJobEvents(batch, { inboxFile } = {}) {
       content: checkJobWakeText(d),
       check_kind: d.check_kind,
       entries: d.entries,
-      high_risk: d.high_risk,
       yours: d.yours,
       session_id: batch.session_id ?? null,
       authoritative: false,
@@ -1196,42 +1338,21 @@ export function buildOwnerMessageEvents(batch, { inboxFile, attachmentDir, write
 }
 
 /**
- * Check jobs and system notices about the agent's own work wait for its turn: in
- * `--stream` mode they queue in arrival order behind the turn Claude Code is running
- * and are delivered one per turn (item d36ac887, decision ff1bcabe). Nothing else
- * queues. Commands, controls and question answers are delivered as they arrive.
- */
-export function isQueuedBehindTurn(batch) {
-  return batch?.type === 'check_job' || batch?.type === 'canonical_system_notices'
-}
-
-/**
- * Whether queued work must keep waiting for this connection's turn: Claude Code is
- * running one. A turn the Stop hook only holds open for background work does not
- * count (item d0b8eeb1). Claude Code is idle then and takes the next prompt, and
- * holding queued work for the whole background job would leave the check unruled.
- */
-export function isConnectionTurnRunning(connectionId, dir = CONNECTIONS_DIR, now = Date.now()) {
-  const markerResult = readPrivateJsonResult(turnMarkerFile(connectionId, dir))
-  if (markerResult.status !== STATE_OK) return false
-  const activity = readTurnActivity(connectionId, dir)
-  return turnIsRunning(markerResult.value, { activity, now })
-}
-
-/**
- * The queued records a previous listener on this connection was holding, read back
- * from the inbox (item d0b8eeb1).
+ * The check jobs and notices a listener before 0.58.0 set aside and never delivered,
+ * read back from the inbox (items d0b8eeb1, 108de10f).
  *
- * The cursor moves past a held record so the scan can carry on to what follows it,
- * which means the cursor alone can no longer say what is still owed. The state file
- * keeps the held records' byte ranges beside the cursor, written in the same patch,
- * so a restarted listener delivers each one exactly once and never replays the
- * commands that were delivered past it.
+ * Such a listener held a check job or a notice back until the running turn ended. Its
+ * cursor moved past a held record so the scan could carry on, and the state file kept
+ * the held records' byte ranges beside the cursor (`inbox_held_records`). Nothing is
+ * held now, so nothing writes that list any more; a listener that starts on a state
+ * file still carrying one delivers each record once, ahead of anything newer, and
+ * clears the list with its first cursor write. A notice in particular reaches a
+ * connection once only, so dropping it here would lose a finding for good.
  *
  * The ranges came from a file, so each is revalidated: it must sit wholly before the
- * cursor, cover exactly one complete record, and that record must still parse as
- * queued work for this connection. Anything else is dropped and said so; the inbox is
- * append-only, so a range that no longer checks out points at nothing we wrote.
+ * cursor, cover exactly one complete record, and that record must still parse as a
+ * check job or notices for this connection. Anything else is dropped and said so; the
+ * inbox is append-only, so a range that no longer checks out points at nothing we wrote.
  *
  * @returns {Array<{ start: number, end: number, batch: object }>} in arrival order
  */
@@ -1264,7 +1385,8 @@ export function heldInboxRecords(file, ranges, cursor, connectionId) {
         const whole = read === bytes.length && bytes.at(-1) === 0x0a && !bytes.subarray(0, -1).includes(0x0a)
         if (whole) [batch] = parseInboxBatches([bytes.subarray(0, -1).toString('utf8')], connectionId)
       }
-      if (!batch || !isQueuedBehindTurn(batch)) {
+      // Only these two kinds were ever held.
+      if (batch?.type !== 'check_job' && batch?.type !== 'canonical_system_notices') {
         process.stderr.write(`devspec-remote-wait: held record at ${start}-${end} no longer checks out — dropped\n`)
         continue
       }
@@ -1274,11 +1396,6 @@ export function heldInboxRecords(file, ranges, cursor, connectionId) {
     fs.closeSync(fd)
   }
   return held
-}
-
-/** What the state file keeps of the held records: their byte ranges, in order. */
-export function heldRecordRanges(held) {
-  return held.map(({ start, end }) => ({ start, end }))
 }
 
 /** The stdout events one inbox batch becomes. */
@@ -1362,22 +1479,27 @@ async function main() {
     fs.writeFileSync(file, '', { mode: 0o600 })
   }
 
-  // `offset` is the scan cursor: every record before it was delivered, set aside as
-  // obsolete, or is in `held`, the queued work still waiting for its turn.
+  // `offset` is the scan cursor: every record before it was delivered or set aside as
+  // obsolete. The one exception is `owed`: what a listener before 0.58.0 held back for
+  // the end of a turn and never delivered (heldInboxRecords). Those go first, once.
   let offset = 0
-  let held = []
+  let owed = []
+  // That listener's list is still in the state file: emptied with the next cursor write.
+  let clearHeldList = Array.isArray(state?.inbox_held_records) && state.inbox_held_records.length > 0
+  const cursorPatch = () => ({ inbox_byte_offset: offset, ...(clearHeldList ? { inbox_held_records: [] } : {}) })
   if (args.pending) {
     offset = typeof state?.inbox_byte_offset === 'number' ? state.inbox_byte_offset : 0
-    held = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
+    owed = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
   } else if (args.fromEnd) {
     offset = fileSize(file)
-    // A first arm discards the backlog, and queued work is part of it.
+    // A first arm discards the backlog, and what an older listener held is part of it.
     if (readDismissalState(connectionId)) {
-      writeStatePatch(connectionId, { inbox_byte_offset: offset, inbox_held_records: [] })
+      writeStatePatch(connectionId, cursorPatch())
+      clearHeldList = false
     }
   } else if (typeof state?.inbox_byte_offset === 'number') {
     offset = state.inbox_byte_offset
-    held = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
+    owed = heldInboxRecords(file, state?.inbox_held_records, offset, connectionId)
   } else {
     offset = fileSize(file)
   }
@@ -1402,21 +1524,18 @@ async function main() {
 
   // Retain completed delivery accounting across a deferred suffix, including one-shot mode.
   let delivered = 0
-  // One queued record per turn: after one is delivered, the next waits until Claude Code
-  // has had time to start the turn it opens (which then holds the queue itself).
-  let holdQueuedUntil = 0
-  const queuedTurnPickupMs = Math.max(
-    pollMs * 2,
-    Number(process.env.DEVSPEC_WAIT_TURN_PICKUP_MS ?? 400),
-  )
-  // Only the stream queues. A one-shot arm exits on its first wake, so it delivers
-  // queued work, a previous stream's held records included, as it would anything else.
-  const queuedWorkWaits = () =>
-    args.stream && (Date.now() < holdQueuedUntil || isConnectionTurnRunning(connectionId))
   let nextOwnerCheck = Date.now() + OWNER_CHECK_MS
   while (deadline === null || Date.now() < deadline) {
     const live = readState(connectionId)
     if (live && live.enabled === false) {
+      // A connection stood down because DevSpec refused its sign-in says so, once, as its
+      // last event: the person has to sign in again, and nothing else would tell them
+      // (item 47f0dbdf). Every other stand-down stays silent here.
+      if (live.end_reason === 'signed_out' && typeof live.end_message === 'string' && live.end_message) {
+        process.stdout.write(
+          JSON.stringify({ type: 'session_ended', reason: 'signed_out', recoverable: true, connection_id: connectionId, message: live.end_message }) + '\n',
+        )
+      }
       process.stderr.write('devspec-remote-wait: disabled — exit 1\n')
       process.exit(EXIT_TERMINAL)
     }
@@ -1445,19 +1564,20 @@ async function main() {
       process.exit(EXIT_TERMINAL)
     }
 
-    // Held work first, oldest first: it arrived before anything the scan below finds.
-    let released = false
-    while (held.length > 0 && !queuedWorkWaits()) {
-      const [next] = held
+    // What an older listener still owed, oldest first: it arrived before anything the
+    // scan below finds.
+    while (owed.length > 0) {
+      const [next] = owed
       await writeEventSequence(eventsForBatch(next.batch, { inboxFile: file, connectionId }))
-      held.shift()
-      released = true
+      owed.shift()
       delivered += deliveryCount(next.batch)
-      if (args.stream) holdQueuedUntil = Date.now() + queuedTurnPickupMs
     }
 
+    // Everything waiting is delivered in this one pass, in arrival order, whatever kind
+    // it is and whether or not a turn is running (item 108de10f): Claude Code hands the
+    // lines to a working agent at its next step, and to an idle one at once.
     const records = readInboxRecords(file, offset)
-    if (records.length > 0 || released) {
+    if (records.length > 0 || clearHeldList) {
       let deferred = false
       for (const record of records) {
         const [batch] = parseInboxBatches([record.line], connectionId)
@@ -1467,14 +1587,6 @@ async function main() {
             if (decision === 'defer') { deferred = true; break }
             // Keep the immutable record on disk, but tombstone it by advancing the cursor.
             if (decision === 'obsolete') { offset = record.endOffset; continue }
-          }
-          // Queued work that must wait is set aside and the scan carries on past it
-          // (item d0b8eeb1): a command, control or answer behind it is never held up.
-          // Anything already held keeps its place ahead of a newer arrival.
-          if (isQueuedBehindTurn(batch) && (held.length > 0 || queuedWorkWaits())) {
-            held.push({ start: record.startOffset, end: record.endOffset, batch })
-            offset = record.endOffset
-            continue
           }
           const events = eventsForBatch(batch, { inboxFile: file, connectionId })
           if (batch.type === DISMISSAL_RECORD_TYPE) {
@@ -1488,7 +1600,6 @@ async function main() {
             if (deferred) break
             if (!emitted) { offset = record.endOffset; continue }
           } else await writeEventSequence(events)
-          if (args.stream && isQueuedBehindTurn(batch)) holdQueuedUntil = Date.now() + queuedTurnPickupMs
           delivered += deliveryCount(batch)
         }
         // Commit only complete records, never a partially emitted canonical batch.
@@ -1497,9 +1608,11 @@ async function main() {
         offset = record.endOffset
       }
 
-      // The cursor and the held records are one fact, so they are written together.
+      // The cursor, and with it the end of an older listener's held list: what that
+      // list named was delivered above.
       if (readDismissalState(connectionId)) {
-        writeStatePatch(connectionId, { inbox_byte_offset: offset, inbox_held_records: heldRecordRanges(held) })
+        writeStatePatch(connectionId, cursorPatch())
+        clearHeldList = false
       }
       if (args.stream && delivered > 0) {
         // The wake was the stdout line above. Staying alive is the whole point.

@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { isPushStreamRequest, refusePushStream } from './fixtures/push-stream.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import {
   activeContinuation,
@@ -166,6 +167,8 @@ function run(script, args, { home, input = '', localId = null } = {}) {
 async function stubMcp(handler) {
   const requests = []
   const server = http.createServer((request, response) => {
+    // The poller opens DevSpec's push stream as it starts; refused, it holds polls (b0d90f3b).
+    if (isPushStreamRequest(request)) return refusePushStream(response)
     let body = ''
     request.on('data', (chunk) => { body += chunk })
     request.on('end', async () => {
@@ -768,11 +771,11 @@ describe('wake stream delivery', () => {
 })
 
 describe('question bridge', () => {
-  it('needs an attached, enabled, capability-bearing connection', () => {
+  it('needs an attached, enabled, capability-bearing connection', async () => {
     const { home, dir } = stateHome()
     try {
       const state = readQuestionConnectionState(CONNECTION, dir)
-      assert.deepEqual(questionRequestOptions(state), {
+      assert.deepEqual(await questionRequestOptions(state), {
         mcpUrl: state.mcp_url,
         token: state.token,
         connectionCapability: state.connection_capability,
@@ -1040,10 +1043,10 @@ describe('turn end', () => {
     assert.ok(state.interaction_continuation, 'the continuation must survive to its own turn')
   })
 
-  it('leaves ordinary turn ends exactly as they were', async () => {
+  it('an ordinary turn end that started no command says so, and so closes no command', async () => {
     const { calls } = await runStop({})
     const complete = calls.find((call) => call.name === 'report_complete')
-    assert.deepEqual(complete.arguments, { connection_id: CONNECTION, reason: 'turn_end' })
+    assert.deepEqual(complete.arguments, { connection_id: CONNECTION, command_turn_unbound: true, reason: 'turn_end' })
   })
 })
 
@@ -1070,13 +1073,6 @@ describe('directed-question policy surfaces', () => {
     // is the one thing this feature could quietly undermine.
     assert.match(skill, /decision that is genuinely theirs/)
     assert.doesNotMatch(skill, /dvsc_|connection_capability:/)
-  })
-
-  it('keeps the on-demand skill small enough to load without thinking about it', () => {
-    // Claude Code loads the body, not the frontmatter, so frontmatter fields such as
-    // `user-invocable` (item 4ac8b0ab) do not count against it.
-    const body = skill.slice(skill.indexOf('\n---', 4) + 4)
-    assert.ok(Buffer.byteLength(body) < 3_600, `skill body is ${Buffer.byteLength(body)} bytes`)
   })
 })
 

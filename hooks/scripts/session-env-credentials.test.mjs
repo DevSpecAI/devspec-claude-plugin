@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Unit tests for making plugin userConfig reachable from the plugin's own scripts
- * (item bb97c9f6) without putting the key on any command line (item 4d40407b).
- * Claude Code gives `CLAUDE_PLUGIN_OPTION_*` to hooks but not to Bash tool calls, which
- * is where every `commands/*.md` script runs, and it splices the hook-written session
- * env file into each of those calls' argv.
+ * Unit tests for making the plugin's own settings — its DevSpec server and the
+ * connect-at-startup choice — reachable from the plugin's own scripts (item bb97c9f6)
+ * with nothing on a command line beyond a conversation id (item 4d40407b). Claude Code
+ * gives `CLAUDE_PLUGIN_OPTION_*` to hooks but not to Bash tool calls, which is where
+ * every `commands/*.md` script runs. Since browser sign-in (item 47f0dbdf) no credential
+ * passes through here at all.
  * Run: node --test hooks/scripts/session-env-credentials.test.mjs
  */
 import assert from 'node:assert/strict'
@@ -16,8 +17,6 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   buildSessionEnvScript,
-  PLUGIN_SETTINGS_KEY_MISSING_MESSAGE,
-  PLUGIN_SETTINGS_KEY_VAR,
   removeSessionSettings,
   sweepSessionSettings,
   UNOWNED_SETTINGS_MAX_AGE_MS,
@@ -30,13 +29,12 @@ import {
   sessionSettingsPath,
   writeSessionSettings,
 } from './plugin-settings.mjs'
-import { enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PROD = 'https://api.devspec.ai/api/mcp'
 const STAGING = 'https://api.devspecstaging.com/api/mcp'
 const SESSION = '0b6c2a52-7a4e-4b8e-9d1c-3f0e7e2a9c11'
-const TOKEN = 'dvs_fixture_only_not_a_real_key_0123456789'
+const OLD_KEY = 'dvs_fixture_only_not_a_real_key_0123456789'
 
 /**
  * The grammar Claude Code's PowerShell tool requires of the joined session env files
@@ -66,22 +64,20 @@ after(() => {
 const mode = (file) => fs.statSync(file).mode & 0o777
 
 describe('buildSessionEnvScript', () => {
-  const env = { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: TOKEN, CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING }
+  const env = { CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING }
 
-  it('says nothing when no token is configured, or there is no conversation to name', () => {
-    assert.equal(buildSessionEnvScript({}, SESSION), null)
-    assert.equal(buildSessionEnvScript({ CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING }, SESSION), null)
-    assert.equal(buildSessionEnvScript({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: '   ' }, SESSION), null)
+  it('says nothing without a conversation to name', () => {
     assert.equal(buildSessionEnvScript(env, null), null)
+    assert.equal(buildSessionEnvScript(env, '..'), null)
   })
 
-  it('names the conversation and never carries the key or its server', () => {
+  it('names the conversation, and carries neither a credential nor the server', () => {
     // Item 4d40407b: Claude Code splices this text into every Bash tool call's argv.
-    const script = buildSessionEnvScript(env, SESSION)
-    assert.ok(!script.includes(TOKEN), 'the key must never be in the session env file')
-    assert.ok(!script.includes('dvs_'), 'nothing key-shaped either')
-    assert.doesNotMatch(script, /DEVSPEC_TOKEN|DEVSPEC_MCP_URL/)
-    assert.match(script, new RegExp(`^export ${PLUGIN_SETTINGS_SESSION_VAR}='${SESSION}'$`, 'm'))
+    for (const script of [buildSessionEnvScript(env, SESSION), buildSessionEnvScript({}, SESSION)]) {
+      assert.ok(!script.includes('dvs_'), 'nothing key-shaped')
+      assert.doesNotMatch(script, /TOKEN|DEVSPEC_MCP_URL/)
+      assert.match(script, new RegExp(`^export ${PLUGIN_SETTINGS_SESSION_VAR}='${SESSION}'$`, 'm'))
+    }
   })
 
   it('carries connect_at_startup only when it is set', () => {
@@ -124,12 +120,11 @@ describe('writeSessionEnvCredentials', () => {
 
   const hookEnv = (target, extra = {}) => ({
     CLAUDE_ENV_FILE: target,
-    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: TOKEN,
     CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
     ...extra,
   })
 
-  it('files the pair privately and points the session environment at it', () => {
+  it('files the server privately and points the session environment at it', () => {
     const target = path.join(dir, 'sessionstart-hook-0.sh')
     const result = writeSessionEnvCredentials({
       env: hookEnv(target),
@@ -138,30 +133,23 @@ describe('writeSessionEnvCredentials', () => {
       owner: { pid: 4242, started: '99' },
     })
     assert.deepEqual(result, { written: true, filed: true, reason: 'ok' })
-
-    const written = fs.readFileSync(target, 'utf8')
-    assert.ok(!written.includes(TOKEN))
-    assert.match(written, new RegExp(`${PLUGIN_SETTINGS_SESSION_VAR}='${SESSION}'`))
+    assert.match(fs.readFileSync(target, 'utf8'), new RegExp(`${PLUGIN_SETTINGS_SESSION_VAR}='${SESSION}'`))
 
     const file = sessionSettingsPath(SESSION, settingsDir)
-    assert.equal(mode(file), 0o600, 'the settings file holds the key and must be owner-only')
+    assert.equal(mode(file), 0o600)
     assert.equal(mode(settingsDir), 0o700)
     const filed = readSessionSettings(SESSION, { dir: settingsDir })
-    assert.equal(filed.token, TOKEN)
     assert.equal(filed.mcp_url, STAGING)
+    assert.equal(filed.token, undefined, 'no credential is filed')
     assert.equal(filed.owner_pid, 4242)
     assert.equal(filed.owner_started, '99')
   })
 
-  it('never writes a token without its URL — the 8bb707fd pairing invariant', () => {
-    const target = path.join(dir, 'pair.sh')
-    writeSessionEnvCredentials({
-      env: { CLAUDE_ENV_FILE: target, CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_alone' },
-      sessionId: 'pair-session',
-      dir: settingsDir,
-      owner: null,
-    })
-    assert.equal(readSessionSettings('pair-session', { dir: settingsDir }).mcp_url, PROD)
+  it('files the default server when Claude Code hands the hook no setting', () => {
+    const target = path.join(dir, 'default.sh')
+    const result = writeSessionEnvCredentials({ env: { CLAUDE_ENV_FILE: target }, sessionId: 'default-session', dir: settingsDir, owner: null })
+    assert.deepEqual(result, { written: true, filed: true, reason: 'ok' })
+    assert.equal(readSessionSettings('default-session', { dir: settingsDir }).mcp_url, PROD)
   })
 
   it('tightens a settings file that was left readable by others', () => {
@@ -175,51 +163,36 @@ describe('writeSessionEnvCredentials', () => {
     assert.equal(mode(settingsDir), 0o700)
   })
 
-  it('replaces what an earlier version left in the env file, key included', () => {
-    // Before 0.46.1 this file exported the key itself; a resumed session re-runs the
-    // hook on the same file, and nothing of the old content may survive.
+  it('replaces what an earlier version left behind, a pasted key included', () => {
+    // Before 0.46.1 the env file exported the key itself, and before 0.54.0 the settings
+    // file held it. A resumed session re-runs the hook on the same files, and nothing of
+    // the old content may survive.
     const target = path.join(dir, 'sessionstart-hook-1.sh')
-    fs.writeFileSync(target, `export CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN='${TOKEN}'\n`)
+    fs.writeFileSync(target, `export CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN='${OLD_KEY}'\n`)
+    fs.mkdirSync(settingsDir, { recursive: true })
+    fs.writeFileSync(sessionSettingsPath(SESSION, settingsDir), JSON.stringify({ token: OLD_KEY, mcp_url: PROD }), { mode: 0o600 })
     writeSessionEnvCredentials({ env: hookEnv(target), sessionId: SESSION, dir: settingsDir, owner: null })
     writeSessionEnvCredentials({ env: hookEnv(target), sessionId: SESSION, dir: settingsDir, owner: null })
     const written = fs.readFileSync(target, 'utf8')
-    assert.ok(!written.includes(TOKEN))
+    assert.ok(!written.includes(OLD_KEY))
     assert.equal(written.split('\n').filter((l) => l.startsWith('export ')).length, 1)
+    assert.ok(!fs.readFileSync(sessionSettingsPath(SESSION, settingsDir), 'utf8').includes(OLD_KEY))
   })
 
   it('still files the settings when Claude Code sets no CLAUDE_ENV_FILE', () => {
     // An older host, or a hook event that does not get one: the listener reads the
     // file by its own conversation id.
     const result = writeSessionEnvCredentials({
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: TOKEN },
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING },
       sessionId: 'no-env-file',
       dir: settingsDir,
       owner: null,
     })
     assert.deepEqual(result, { written: false, filed: true, reason: 'no_env_file' })
-    assert.equal(readSessionSettings('no-env-file', { dir: settingsDir }).token, TOKEN)
+    assert.equal(readSessionSettings('no-env-file', { dir: settingsDir }).mcp_url, STAGING)
   })
 
-  it('marks the session, and files nothing, when the plugin settings hold no key', () => {
-    // Item 721f9c67: the connect script runs as a Bash tool call and cannot see the
-    // plugin settings, so this hook is the only thing that can tell it.
-    const target = path.join(dir, 'no-key.sh')
-    const result = writeSessionEnvCredentials({ env: { CLAUDE_ENV_FILE: target }, sessionId: 'no-key', dir: settingsDir })
-    assert.deepEqual(result, { written: true, filed: false, reason: 'no_token' })
-    const written = fs.readFileSync(target, 'utf8')
-    assert.match(written, new RegExp(`^export ${PLUGIN_SETTINGS_KEY_VAR}='missing'$`, 'm'))
-    assert.doesNotMatch(written, new RegExp(PLUGIN_SETTINGS_SESSION_VAR))
-    assert.equal(fs.existsSync(sessionSettingsPath('no-key', settingsDir)), false)
-  })
-
-  it('drops the marker once the key is in the plugin settings', () => {
-    const target = path.join(dir, 'key-added.sh')
-    writeSessionEnvCredentials({ env: { CLAUDE_ENV_FILE: target }, sessionId: 'key-added', dir: settingsDir })
-    writeSessionEnvCredentials({ env: hookEnv(target), sessionId: 'key-added', dir: settingsDir, owner: null })
-    assert.doesNotMatch(fs.readFileSync(target, 'utf8'), new RegExp(PLUGIN_SETTINGS_KEY_VAR))
-  })
-
-  it('never falls back to exporting the key when the settings cannot be filed', () => {
+  it('carries only the startup choice when the settings cannot be filed', () => {
     const blocked = path.join(dir, 'not-a-directory')
     fs.writeFileSync(blocked, '')
     const target = path.join(dir, 'unfiled.sh')
@@ -231,7 +204,6 @@ describe('writeSessionEnvCredentials', () => {
     })
     assert.deepEqual(result, { written: true, filed: false, reason: 'settings_not_filed' })
     const written = fs.readFileSync(target, 'utf8')
-    assert.ok(!written.includes(TOKEN))
     assert.doesNotMatch(written, new RegExp(PLUGIN_SETTINGS_SESSION_VAR))
     assert.match(written, /CONNECT_AT_STARTUP='false'/, 'the non-secret choice is still carried')
   })
@@ -250,9 +222,9 @@ describe('writeSessionEnvCredentials', () => {
 describe('the route a Bash tool call takes, end to end', { skip: process.platform === 'win32' }, () => {
   // Run the real hook as Claude Code does, then splice the env file's text into a
   // shell's own argv exactly as Claude Code 2.1.301 builds a Bash tool call, and run
-  // the resolver there. Proves the key reaches the plugin's scripts while appearing in
-  // neither that argv nor the file it came from.
-  it("resolves the plugin's own pair, and the key is in no argv", () => {
+  // the resolver there. Proves a Bash tool call reaches the plugin's configured server,
+  // and so its browser sign-in for that server, with nothing secret on any argv.
+  it("resolves the plugin's own server and the sign-in saved for it, and the hook itself says nothing", () => {
     const home = tmpDir('devspec-session-env-route-')
     const envFile = path.join(home, 'sessionstart-hook-2.sh')
     const base = { PATH: process.env.PATH, HOME: home, USERPROFILE: home }
@@ -261,29 +233,43 @@ describe('the route a Bash tool call takes, end to end', { skip: process.platfor
         ...base,
         CLAUDE_ENV_FILE: envFile,
         CLAUDE_PID: String(process.pid),
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: TOKEN,
         CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
+        CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'true',
       },
       input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: SESSION, source: 'startup' }),
       encoding: 'utf8',
     })
     assert.equal(hook.status, 0, hook.stderr)
+    assert.equal(hook.stdout, '', 'the sign-in notice is its own hook (devspec-login.mjs session-start)')
     const settingsFile = path.join(home, '.devspec', 'remote-control', 'startup', `${SESSION}.json`)
     assert.equal(mode(settingsFile), 0o600)
 
+    // A saved sign-in for staging and one for production, side by side.
+    const authDir = path.join(home, '.devspec', 'claude-code')
+    fs.mkdirSync(authDir, { recursive: true, mode: 0o700 })
+    const login = (tag, resource) => ({
+      accessToken: `oat_${tag}`, refreshToken: `rt_${tag}`,
+      issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      issuer: 'https://issuer.example', tokenEndpoint: 'https://issuer.example/oauth/token',
+      clientId: 'claude-code', resource, loginId: `login-${tag}`, savedAt: new Date().toISOString(),
+    })
+    fs.writeFileSync(path.join(authDir, 'auth.json'), JSON.stringify({
+      version: 1, logins: { [STAGING]: login('staging', STAGING), [PROD]: login('prod', PROD) },
+    }), { mode: 0o600 })
+
     const envText = fs.readFileSync(envFile, 'utf8').trim()
     const resolver = path.join(HERE, 'resolve-mcp-auth.mjs')
+    // CONNECT_AT_STARTUP rides in the env file too; it must not hide the filed server.
     const command = `true 2>/dev/null || true && ${envText}\n: && node '${resolver}'`
-    assert.ok(!command.includes(TOKEN), 'the Bash tool argv must not carry the key')
+    assert.ok(!command.includes('oat_'), 'the Bash tool argv carries no credential')
     const call = spawnSync('sh', ['-c', command], { env: base, cwd: home, encoding: 'utf8' })
     assert.equal(call.status, 0, call.stderr)
     const resolved = JSON.parse(call.stdout)
-    assert.equal(resolved.token, TOKEN)
     assert.equal(resolved.mcp_url, STAGING)
-    // The CLI resolves as connect does, offering the plugin key as the host's own (source 2).
-    assert.equal(resolved.source, 'host')
+    assert.equal(resolved.source, 'login')
+    assert.equal(resolved.token, undefined, 'the CLI never prints a token')
 
-    // SessionEnd removes it.
+    // SessionEnd removes the settings file.
     const end = spawnSync(process.execPath, [path.join(HERE, 'session-env-credentials.mjs'), 'session-end'], {
       env: { ...base, CLAUDE_PID: String(process.pid) },
       input: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: SESSION, reason: 'other' }),
@@ -294,64 +280,34 @@ describe('the route a Bash tool call takes, end to end', { skip: process.platfor
   })
 })
 
-describe('precedence is carried, not changed (the reason for reading at source 6)', () => {
-  let projectDir
+describe('where a script finds the settings', () => {
   let settingsDir
-
   before(() => {
-    projectDir = tmpDir('devspec-session-env-proj-')
-    fs.writeFileSync(
-      path.join(projectDir, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          devspec: {
-            url: 'https://local.example/api/mcp',
-            headers: { Authorization: 'Bearer dvs_project' },
-          },
-        },
-      }),
-    )
-    settingsDir = tmpDir('devspec-session-env-settings-')
-    writeSessionSettings(SESSION, { token: 'dvs_plugin', mcp_url: STAGING }, { dir: settingsDir })
+    settingsDir = path.join(tmpDir('devspec-settings-where-'), 'startup')
+    writeSessionSettings(SESSION, { mcp_url: STAGING, connect_at_startup: 'false' }, { dir: settingsDir, owner: null })
   })
 
-  const bashEnv = { [PLUGIN_SETTINGS_SESSION_VAR]: SESSION }
-
-  it("a developer's project .mcp.json still outranks the plugin's own config", () => {
-    const { pairs } = enumerateCredentialPairs(projectDir, { env: bashEnv, pluginSettingsDir: settingsDir })
-    assert.equal(pairs[0].token, 'dvs_project')
-    assert.equal(pairs[0].mcp_url, 'https://local.example/api/mcp')
-    const plugin = pairs.find((p) => p.source === 'plugin_user_config')
-    assert.equal(plugin.token, 'dvs_plugin')
-    assert.equal(plugin.mcp_url, STAGING)
-  })
-
-  it('the filed pair resolves on its own when nothing else is configured', () => {
-    const empty = tmpDir('devspec-session-env-empty-')
-    const { pairs } = enumerateCredentialPairs(empty, { env: bashEnv, pluginSettingsDir: settingsDir })
-    assert.equal(pairs.length, 1)
-    assert.equal(pairs[0].token, 'dvs_plugin')
-    assert.equal(pairs[0].mcp_url, STAGING)
-  })
-
-  it("a hook's own environment wins over the file, and hooks read no file", () => {
+  it("a hook's own environment wins over the file", () => {
     const settings = pluginSettingsFromEnv(
-      { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_hook', ...bashEnv },
+      { CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'https://local/api/mcp', [PLUGIN_SETTINGS_SESSION_VAR]: SESSION },
       { dir: settingsDir },
     )
-    assert.equal(settings.token, 'dvs_hook')
-    assert.equal(settings.mcp_url, PROD)
+    assert.equal(settings.mcp_url, 'https://local/api/mcp')
     assert.equal(settings.carried, 'hook_environment')
   })
 
-  it('the host token is the filed key in a Bash tool call', () => {
-    assert.equal(pluginSettingsFromEnv(bashEnv, { dir: settingsDir }).carried, 'session_file')
-    assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_hook' }), 'dvs_hook')
-    assert.equal(hostTokenFromEnv({}), null)
+  it('a Bash tool call reads the file, even though the startup choice is in its environment', () => {
+    const settings = pluginSettingsFromEnv(
+      { CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false', [PLUGIN_SETTINGS_SESSION_VAR]: SESSION },
+      { dir: settingsDir },
+    )
+    assert.equal(settings.mcp_url, STAGING)
+    assert.equal(settings.carried, 'session_file')
   })
 
   it('reads nothing for a conversation that has no file', () => {
-    assert.equal(pluginSettingsFromEnv({ [PLUGIN_SETTINGS_SESSION_VAR]: 'other' }, { dir: settingsDir }), null)
+    assert.equal(pluginSettingsFromEnv({ [PLUGIN_SETTINGS_SESSION_VAR]: 'nobody' }, { dir: settingsDir }), null)
+    assert.equal(pluginSettingsFromEnv({}, { dir: settingsDir }), null)
   })
 })
 
@@ -368,9 +324,9 @@ describe('settings files do not outlive their session', () => {
 
   it('removes a file whose Claude Code process has gone, and keeps a live one', () => {
     const dir = tmpDir('devspec-sweep-')
-    const dead = file(dir, 'dead', { token: 'dvs_x', owner_pid: 111, owner_started: '5' })
-    const live = file(dir, 'live', { token: 'dvs_x', owner_pid: 222, owner_started: '7' })
-    const reused = file(dir, 'reused', { token: 'dvs_x', owner_pid: 333, owner_started: '8' })
+    const dead = file(dir, 'dead', { mcp_url: PROD, owner_pid: 111, owner_started: '5' })
+    const live = file(dir, 'live', { mcp_url: PROD, owner_pid: 222, owner_started: '7' })
+    const reused = file(dir, 'reused', { mcp_url: PROD, owner_pid: 333, owner_started: '8' })
     const removed = sweepSessionSettings({
       dir,
       now: NOW,
@@ -384,10 +340,10 @@ describe('settings files do not outlive their session', () => {
   })
 
   it('removes a file that names no owner once it is a day old', () => {
-    // Files from before 0.46.1 recorded no owner.
+    // Files from before 0.46.1 recorded no owner, and held the pasted key.
     const dir = tmpDir('devspec-sweep-unowned-')
-    const old = file(dir, 'old', { token: 'dvs_x' }, UNOWNED_SETTINGS_MAX_AGE_MS + 1000)
-    const young = file(dir, 'young', { token: 'dvs_x', owner_pid: null }, 60_000)
+    const old = file(dir, 'old', { token: OLD_KEY }, UNOWNED_SETTINGS_MAX_AGE_MS + 1000)
+    const young = file(dir, 'young', { mcp_url: PROD, owner_pid: null }, 60_000)
     sweepSessionSettings({ dir, now: NOW, isAlive: () => true, startTimeOf: () => null })
     assert.equal(fs.existsSync(old), false)
     assert.equal(fs.existsSync(young), true)
@@ -395,9 +351,9 @@ describe('settings files do not outlive their session', () => {
 
   it("never removes the starting conversation's own file, or one it cannot read", () => {
     const dir = tmpDir('devspec-sweep-keep-')
-    const own = file(dir, SESSION, { token: 'dvs_x', owner_pid: 111 })
+    const own = file(dir, SESSION, { mcp_url: PROD, owner_pid: 111 })
     const torn = path.join(dir, 'torn.json')
-    fs.writeFileSync(torn, '{"tok', { mode: 0o600 })
+    fs.writeFileSync(torn, '{"mcp', { mode: 0o600 })
     sweepSessionSettings({ dir, keep: SESSION, now: NOW, isAlive: () => false })
     assert.equal(fs.existsSync(own), true)
     assert.equal(fs.existsSync(torn), true)
@@ -405,48 +361,12 @@ describe('settings files do not outlive their session', () => {
 
   it('SessionEnd removes its own file but not one another live window re-filed', () => {
     const dir = tmpDir('devspec-session-end-')
-    writeSessionSettings('mine', { token: 'dvs_x' }, { dir, owner: { pid: 500 } })
+    writeSessionSettings('mine', { mcp_url: PROD }, { dir, owner: { pid: 500 } })
     assert.equal(removeSessionSettings('mine', { dir, ownerPid: 500, isAlive: () => true }).removed, true)
 
-    writeSessionSettings('resumed', { token: 'dvs_x' }, { dir, owner: { pid: 600 } })
+    writeSessionSettings('resumed', { mcp_url: PROD }, { dir, owner: { pid: 600 } })
     const kept = removeSessionSettings('resumed', { dir, ownerPid: 500, isAlive: () => true })
     assert.deepEqual(kept, { removed: false, reason: 'owned_by_another_process' })
     assert.equal(removeSessionSettings('resumed', { dir, ownerPid: 500, isAlive: () => false }).removed, true)
-  })
-})
-
-describe('the hook tells the person when the plugin settings hold no key (item 721f9c67)', () => {
-  // Run the real hook as Claude Code does: it is the person-facing surface, because
-  // with no key Claude Code also refuses the module that would draw the status line.
-  const script = fileURLToPath(new URL('./session-env-credentials.mjs', import.meta.url))
-  let dir
-  before(() => { dir = tmpDir('devspec-session-env-hook-') })
-
-  function runHook(extraEnv) {
-    const env = { PATH: process.env.PATH, HOME: dir, USERPROFILE: dir, CLAUDE_ENV_FILE: path.join(dir, `hook-${Math.random()}.sh`), ...extraEnv }
-    return spawnSync(process.execPath, [script], {
-      env,
-      input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'notice-session' }),
-      encoding: 'utf8',
-    })
-  }
-
-  it('shows the notice as a systemMessage when no key is set', () => {
-    const run = runHook({})
-    assert.equal(run.status, 0)
-    assert.deepEqual(JSON.parse(run.stdout), { systemMessage: PLUGIN_SETTINGS_KEY_MISSING_MESSAGE })
-  })
-
-  it('says nothing when the key is set', () => {
-    const run = runHook({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_set' })
-    assert.equal(run.status, 0)
-    assert.equal(run.stdout, '')
-  })
-
-  it('names what is off and the step that fixes it, in words a customer can act on', () => {
-    // The notice is a contract with the person reading it: the menu path must match
-    // the README's, and none of our own machinery may leak into it.
-    assert.match(PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, /\/plugin → Installed → DevSpec, press Enter/)
-    assert.doesNotMatch(PLUGIN_SETTINGS_KEY_MISSING_MESSAGE, /hooks? module|userConfig|CLAUDE_PLUGIN_OPTION|721f9c67/i)
   })
 })

@@ -29,7 +29,7 @@ import { stateDir } from './commit-provenance.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { readConversationProject } from './conversation-project.mjs'
-import { hostTokenFromEnv, resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
 const LOOKUP_TIMEOUT_MS = 8_000
@@ -100,7 +100,7 @@ export async function handleBashPost(input, deps = {}) {
   const marker = markerPath(sessionId, pin.project_id, remote, env)
   if (alreadySaid(marker)) return null
 
-  const auth = (deps.resolveAuth ?? resolveDevspecMcpAuth)(repoDir, { hostToken: hostTokenFromEnv(env), env })
+  const auth = await (deps.resolveAuth ?? resolveDevspecMcpAuth)(repoDir, { env })
   if (!auth?.ok || !auth.token) return null
   try {
     const selected = (deps.readProject ?? readConversationProject)(sessionId, { endpoint: auth.mcp_url })

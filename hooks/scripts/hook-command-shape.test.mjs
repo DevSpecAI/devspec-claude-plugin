@@ -77,12 +77,21 @@ describe('the commit-drain hooks, run the way Claude Code runs them', () => {
     return root
   }
 
-  const run = (command, { home, pluginRoot, marker }) =>
-    execFileSync('sh', ['-c', command], {
-      input: JSON.stringify({ session_id: SESSION, hook_event_name: 'Stop', tool_name: 'Bash' }),
-      env: { PATH: process.env.PATH, HOME: home, CLAUDE_PLUGIN_ROOT: pluginRoot, REPORTING_LOADED: marker },
-      encoding: 'utf8',
-    })
+  // A drain with nothing to do exits before reading its input, so under load the
+  // write can land after sh has gone and fail with EPIPE. That is the quiet exit
+  // being tested, not a failure: a clean exit with EPIPE returns what it printed.
+  const run = (command, { home, pluginRoot, marker }) => {
+    try {
+      return execFileSync('sh', ['-c', command], {
+        input: JSON.stringify({ session_id: SESSION, hook_event_name: 'Stop', tool_name: 'Bash' }),
+        env: { PATH: process.env.PATH, HOME: home, CLAUDE_PLUGIN_ROOT: pluginRoot, REPORTING_LOADED: marker },
+        encoding: 'utf8',
+      })
+    } catch (error) {
+      if (error?.code === 'EPIPE' && error.status === 0 && error.signal === null) return error.stdout ?? ''
+      throw error
+    }
+  }
 
   it('covers the four drain events', () => {
     assert.deepEqual(drains.map((d) => d.event).sort(), ['PostToolUse', 'Stop', 'StopFailure', 'SubagentStop'])

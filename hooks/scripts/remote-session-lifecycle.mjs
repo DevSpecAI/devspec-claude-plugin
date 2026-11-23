@@ -19,7 +19,8 @@
 
 import fs from 'node:fs'
 import { AGENT_NAME } from './agent-identity.mjs'
-import { pluginSettingsFromHookEnv } from './plugin-settings.mjs'
+import { DEFAULT_PLUGIN_MCP_URL, pluginSettingsFromHookEnv } from './plugin-settings.mjs'
+import { hasCredential } from './resolve-mcp-auth.mjs'
 import { findProjectPin, gitRemoteOrigin } from './devspec-scope.mjs'
 import { readConversationProject } from './conversation-project.mjs'
 import { rebondConnectionToConversation, reportConnectionEnded } from './remote-control-state.mjs'
@@ -78,15 +79,16 @@ export function onSessionStart(payload, { env = process.env, ownerPid = undefine
 /**
  * The note that tells the model what a DevSpec monitor event is, or null.
  *
- * Only when the listener will actually connect: the plugin has a key, the person has
+ * Only when the listener will actually connect: the plugin can sign in (a saved browser
+ * sign-in for its server, or DEVSPEC_MCP_TOKEN), the person has
  * not switched connecting at startup off, and the folder names a project (a git
  * remote or a pin — the server decides which). Anywhere else it would be a sentence
  * about something that cannot happen. Kept to two sentences: it rides in every such
  * session, and the protocol itself loads from the skill only when a message arrives.
  */
 export function startupNote({ env = process.env, cwd = process.cwd(), localId = null } = {}) {
-  const config = pluginSettingsFromHookEnv(env)
-  if (!config) return null
+  const config = pluginSettingsFromHookEnv(env) ?? { mcp_url: DEFAULT_PLUGIN_MCP_URL }
+  if (!hasCredential(env)) return null
   if (/^(false|0|no|off)$/i.test(String(config.connect_at_startup ?? '').trim())) return null
   let selected = false
   try { selected = readConversationProject(localId, { endpoint: config.mcp_url })?.status === 'selected' } catch {}

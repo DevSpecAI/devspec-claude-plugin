@@ -7,7 +7,9 @@
  * user_prompt → busy/heartbeat + turn marker; and, for a prompt a person submitted,
  *               the owner's own turn plus a local_prompt bubble when attached
  *               (literal owner text). Run by the hooks module (hooks/local-prompt.ts)
- *               with Claude Code's origin for the prompt.
+ *               with Claude Code's origin for the prompt. A check job or a notice
+ *               about the agent's own work that Claude Code delivers into a running
+ *               turn is nobody's request and changes none of this (item 108de10f).
  * stop        → busy/heartbeat + turn marker only (NO assistant text)
  * stop_failure → the StopFailure hook: an error from Anthropic's service ended the
  *               turn before the model could answer. Tells the room in Claude Code's
@@ -25,7 +27,7 @@ import path from 'node:path'
 import { mcpToolsCall } from './mcp-call.mjs'
 import { fitRoomMessage } from './room-message.mjs'
 import { parseTurnFailure, turnFailureMessage } from './turn-failure.mjs'
-import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { connectionCredential } from './resolve-mcp-auth.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { detectLocalId } from './remote-control-state.mjs'
 import {
@@ -51,6 +53,7 @@ import {
   commandsAnsweredNow,
   launchForRequest,
   openRequest,
+  ownerMessageIds,
   promptArrival,
   readRequestState,
   requestFinished,
@@ -81,6 +84,15 @@ import {
 } from './delegation-trail.mjs'
 import { localTurnScope, localTurnToComplete, startLocalTurn } from './local-turn.mjs'
 import { readTurnActivity, turnActivityPath, turnIsLive } from './turn-liveness.mjs'
+import {
+  clearTurnCommands,
+  commandsInInbox,
+  completionArguments,
+  pickupArguments,
+  readTurnCommands,
+  recordTurnCommands,
+} from './turn-commands.mjs'
+import { isUsageRefusal, standingRefusal, usageRefusedUntil } from './usage-refusal.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
 // `background_launch` is the PostToolUse hook that records a background job a turn
@@ -348,14 +360,12 @@ export function parseSessionCrons(hookInput) {
 }
 
 /** The auth a hook posts with: the connection's own token and server, as main() uses. */
-function hookAuth(state) {
-  let token = state.token
-  let mcpUrl = state.mcp_url
-  if (!token) {
-    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
-    token = auth.token
-    mcpUrl = mcpUrl || auth.mcp_url
-  }
+async function hookAuth(state) {
+  // The connection's own credential as it is now: a browser sign-in renews, and
+  // is never swapped for another identity (item 47f0dbdf).
+  const credential = await connectionCredential(state ?? {})
+  let token = credential.ok ? credential.token : null
+  let mcpUrl = credential.mcp_url || state?.mcp_url
   return token ? { token, mcpUrl: mcpUrl || 'https://api.devspec.ai/api/mcp' } : null
 }
 
@@ -369,12 +379,14 @@ export async function updateDelegationTrail(state, {
   dir = CONNECTIONS_DIR,
   marker = readTurnMarker(state?.connection_id, dir),
   call = mcpToolsCall,
-  auth = hookAuth(state || {}),
+  auth: authOption,
 } = {}) {
   const connectionId = state?.connection_id
-  if (!connectionId || !state.session_id || !marker || !auth) return { posted: 0 }
+  if (!connectionId || !state.session_id || !marker) return { posted: 0 }
   const children = () => delegatedChildren(readOwnedLines(connectionId, marker, dir), marker.startedAt)
   if (children().length === 0) return { posted: 0 }
+  const auth = authOption === undefined ? await hookAuth(state || {}) : authOption
+  if (!auth) return { posted: 0 }
   const trail = ensureTrailState(connectionId, {
     dir,
     turn: marker.startedAt,
@@ -504,6 +516,7 @@ export function clearTurnMarker(connectionId) {
   } catch {
     /* ignore */
   }
+  clearTurnCommands(connectionId, { dir: CONNECTIONS_DIR })
 }
 
 function readStdin() {
@@ -1103,6 +1116,52 @@ export function prepareAgentMirrorText(text) {
 }
 
 /**
+ * Start, by name, each DevSpec room command a prompt hands the model
+ * (turn-commands.mjs): the listener's wake carries each command's message id, and
+ * the inbox its command turn. Into a new turn or one already running alike, since
+ * Claude Code hands a command over at a running turn's next step, and only the host
+ * naming it starts it (DevSpec item 6d767a58). Recorded for the turn's end, which
+ * names what it finishes. `call(args)` performs report_pickup; a pickup that fails
+ * leaves the command waiting until its answer closes it.
+ */
+export async function namePromptCommands({ connectionId, text, call, dir = CONNECTIONS_DIR }) {
+  const messageIds = ownerMessageIds(text)
+  if (!connectionId || messageIds.length === 0) return []
+  let inbox = ''
+  try {
+    inbox = fs.readFileSync(inboxPathFor(connectionId, dir), 'utf8')
+  } catch {
+    return []
+  }
+  const commands = commandsInInbox(inbox, messageIds)
+  recordTurnCommands(connectionId, commands, { dir })
+  for (const command of commands) {
+    try {
+      await call(pickupArguments(connectionId, command))
+    } catch {
+      /* Working is a view: the command still runs, and its answer closes it */
+    }
+  }
+  return commands
+}
+
+/**
+ * What a turn's end tells DevSpec about a usage refusal (usage-refusal.mjs), and
+ * what it keeps for the poller to repeat: a turn Anthropic refused for usage is
+ * reported until the cool-off ends; a turn that ran clears an earlier report; any
+ * other moment repeats one that still stands. `{}` says nothing.
+ */
+export function usageRefusalForTurn({ mode, failure, stored, nowMs }) {
+  if (mode === 'stop_failure' && isUsageRefusal(failure)) {
+    const until = usageRefusedUntil(nowMs)
+    return { args: { usage_refused_until: until }, store: until }
+  }
+  if (mode === 'stop' && stored) return { args: { usage_refused_until: null }, store: null }
+  const standing = standingRefusal(stored, nowMs)
+  return { args: standing ? { usage_refused_until: standing } : {}, store: undefined }
+}
+
+/**
  * Answer the room commands a failed turn carries with Claude Code's own error
  * (item b6a38d81, turn-failure.mjs). Only a command this turn carries that nobody
  * has answered: a prompt typed at this terminal is already in front of its owner,
@@ -1177,13 +1236,11 @@ async function main() {
     }
   }
 
-  let token = state.token
-  let mcpUrl = state.mcp_url
-  if (!token) {
-    const auth = resolveDevspecMcpAuth(state.cwd || process.cwd())
-    token = auth.token
-    mcpUrl = mcpUrl || auth.mcp_url
-  }
+  // The connection's own credential as it is now: a browser sign-in renews, and
+  // is never swapped for another identity (item 47f0dbdf).
+  const credential = await connectionCredential(state ?? {})
+  let token = credential.ok ? credential.token : null
+  let mcpUrl = credential.mcp_url || state?.mcp_url
   if (!token) process.exit(0) // silent — skill still posts instructionally
 
   mcpUrl = mcpUrl || 'https://api.devspec.ai/api/mcp'
@@ -1212,6 +1269,7 @@ async function main() {
   // wake continues whatever started what woke it. Anything Claude Code delivers
   // into a running turn joins it instead of replacing what it serves.
   let typedRequest = null
+  let leavesTurnAsItIs = false
   if (mode === 'user_prompt' && connectionId) {
     try {
       const midTurn = promptTurnId(raw) !== null
@@ -1224,10 +1282,18 @@ async function main() {
       })
       for (const event of arrival.events) appendRequestEvent(connectionId, event, { dir: CONNECTIONS_DIR })
       if (arrival.typedId) typedRequest = { id: arrival.typedId, midTurn }
+      leavesTurnAsItIs = arrival.leavesTurnAsItIs === true
     } catch {
       /* an unrecorded request only leaves DevSpec to resolve who asked itself */
     }
   }
+
+  // A check job or a notice about the agent's own work, delivered into a running turn
+  // (item 108de10f, decision b8abe2bb): nobody's request, so the turn it lands in is
+  // left exactly as it was. Nothing below runs for it: no marker is written, so a
+  // command the agent already answered is not shown as working again; busy stays what
+  // the turn already made it; and nothing is posted, opened or completed.
+  if (leavesTurnAsItIs) process.exit(0)
 
   // Consume any explicit-reply marker so it cannot bleed into a later turn.
   // Agent answers are skill-posted (ADR b98a39a9); Stop no longer mirrors full
@@ -1325,6 +1391,15 @@ async function main() {
       }
     }
 
+    // A DevSpec room command Claude Code is handing the model now: start it by name.
+    if (mode === 'user_prompt' && !fromAPerson && connectionId && promptOrigin(raw) === 'task-notification') {
+      await namePromptCommands({
+        connectionId,
+        text,
+        call: (args) => mcpToolsCall({ mcpUrl, token, name: 'report_pickup', arguments: args, timeoutMs: 5_000 }),
+      })
+    }
+
     // The typed request recorded above, opened on DevSpec before the turn runs, with
     // the connection capability, so DevSpec knows it is this host's observation,
     // not the model's. One that cannot be opened leaves its turn's writes unstated,
@@ -1365,6 +1440,8 @@ async function main() {
     // So does a stop that is waiting on the agent's own background work.
     const turnActive = mode === 'user_prompt' || !!blockReason || !!backgroundHold
     let stopDecisionAction = null
+    // What the turn started, read before the turn's end removes the record of it.
+    const turnCommands = turnActive ? [] : readTurnCommands(connectionId, { dir: CONNECTIONS_DIR })
     if (turnActive) writeTurnMarker(connectionId, { held: !!backgroundHold })
     else clearTurnMarker(connectionId)
 
@@ -1372,6 +1449,13 @@ async function main() {
     // server broadcasts agent_status for the attached session, so no session-keyed
     // heartbeat is needed.
     if (connectionId) {
+      const usage = usageRefusalForTurn({
+        mode,
+        failure: mode === 'stop_failure' ? parseTurnFailure(raw) : null,
+        stored: state.usage_refused_until ?? null,
+        nowMs: Date.now(),
+      })
+      if (usage.store !== undefined) patchOwnState(connectionId, { usage_refused_until: usage.store })
       await mcpToolsCall({
         mcpUrl,
         token,
@@ -1381,6 +1465,7 @@ async function main() {
           agent_name: agentName,
           status: 'live',
           busy: turnActive,
+          ...usage.args,
         },
       })
       // End the activity attempt immediately on Stop. The poller also emits
@@ -1407,33 +1492,44 @@ async function main() {
         // wakes the model immediately and that turn's end completes exactly — whereas
         // sealing an attempt whose answer the model never saw is unrecoverable.
         stopDecisionAction = stopDecision.action
-        if (stopDecision.action !== 'hold') {
-          // A terminal turn this connection admitted closes exactly; anything else
-          // keeps the connection-scoped completion it always had.
-          const localAttempt = localTurnToComplete(state.local_turn, sessionId)
+        if (stopDecision.action === 'complete') {
           try {
             await mcpToolsCall({
               mcpUrl,
               token,
-              ...(stopDecision.action === 'complete'
-                ? { connectionCapability: state.connection_capability }
-                : {}),
+              connectionCapability: state.connection_capability,
               name: 'report_complete',
-              arguments: stopDecision.action === 'complete'
-                ? {
-                    connection_id: connectionId,
-                    attempt_id: stopDecision.continuation.attempt_id,
-                    reason: 'turn_end',
-                    ...continuationIdentity(stopDecision.continuation),
-                  }
-                : localAttempt
-                  ? { connection_id: connectionId, attempt_id: localAttempt, reason: 'turn_end' }
-                  : { connection_id: connectionId, reason: 'turn_end' },
+              arguments: {
+                connection_id: connectionId,
+                attempt_id: stopDecision.continuation.attempt_id,
+                reason: 'turn_end',
+                ...continuationIdentity(stopDecision.continuation),
+              },
             })
-            if (stopDecision.action === 'complete') clearStoredContinuation(connectionId)
+            clearStoredContinuation(connectionId)
           } catch {
             /* non-fatal — the poller's marker-driven backstop still runs */
           }
+        } else if (stopDecision.action !== 'hold') {
+          // Each thing the turn finishes, by name (turn-commands.mjs): the room
+          // commands it started and the local attempt a prompt typed here opened, or,
+          // when it started neither, only an activity no command started. So a command
+          // that arrived as the turn ended is never finished by it.
+          const calls = completionArguments({
+            connectionId,
+            commands: turnCommands,
+            localAttemptId: localTurnToComplete(state.local_turn, sessionId),
+            reason: 'turn_end',
+          })
+          for (const args of calls) {
+            try {
+              await mcpToolsCall({ mcpUrl, token, name: 'report_complete', arguments: args })
+            } catch {
+              /* non-fatal — the poller's marker-driven backstop still runs */
+            }
+          }
+        }
+        if (stopDecision.action !== 'hold') {
           // The turn is over whether or not the completion landed: never carry it
           // into the next one.
           if (state.local_turn) patchOwnState(connectionId, { local_turn: null })

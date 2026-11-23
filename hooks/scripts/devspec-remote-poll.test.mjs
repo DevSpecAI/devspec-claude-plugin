@@ -47,6 +47,13 @@ import {
   ACTIVE_PLAN_PROJECTION_VERSION,
   remoteIngressNegotiationArguments,
   knownInstructionTierArguments,
+  PUSH_HEALTHY_MS,
+  PUSH_SAFETY_MS,
+  createPushGate,
+  nextPushReconnectDelayMs,
+  openPushChannel,
+  parseSseFrame,
+  pushChannelUrl,
 } from './devspec-remote-poll.mjs'
 
 const ME = 'conn-mine-1111'
@@ -171,27 +178,30 @@ describe('poll negotiation', () => {
       ingress_version: 1,
       delegated_scope_version: 1,
       active_plan_projection_version: 1,
-      system_notice_version: 2,
+      system_notice_version: 3,
       sender_style_version: 1,
       room_context_version: 1,
       session_polls_projection_version: 2,
-      check_job_version: 1,
+      check_job_version: 2,
     })
   })
 
   it('says it reads check jobs on every poll, since a poll without it tells DevSpec it stopped', () => {
     // Item f7b8c8d3: the server records the version from each poll and clears it
-    // when a poll leaves it out, and only then stops offering check jobs.
-    assert.equal(CHECK_JOB_VERSION, 1)
-    assert.equal(remoteIngressNegotiationArguments().check_job_version, 1)
+    // when a poll leaves it out, and only then stops offering check jobs. Version 2
+    // (item 1d89fe56) is the one that carries discussion points, Goals and the
+    // whole-backlog scan; a poll at 1 would never be offered those.
+    assert.equal(CHECK_JOB_VERSION, 2)
+    assert.equal(remoteIngressNegotiationArguments().check_job_version, 2)
   })
 
-  it('asks for notice channel version 2, the first that carries findings about its own work', () => {
+  it('asks for notice channel version 3, which labels every notice it sends', () => {
     // DevSpec sends server_notice (confirmed findings, pending-edit outcomes) only
-    // to a channel that negotiated 2 and records the version on the connection; at
-    // 1 the Agents page shows "Not receiving findings" (1fd34942, item 0b26f6ea).
-    assert.equal(SYSTEM_NOTICE_CHANNEL_VERSION, 2)
-    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
+    // to a channel that negotiated 2 or more and records the version on the
+    // connection; at 1 the Agents page shows "Not receiving findings" (1fd34942,
+    // item 0b26f6ea). 3 adds DevSpec's label, audience, to every notice (a868f41f).
+    assert.equal(SYSTEM_NOTICE_CHANNEL_VERSION, 3)
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 3)
   })
 
   it('never asks for room context without the full ladder below it, which the server refuses', () => {
@@ -561,7 +571,7 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
     delivery_connection_id: connectionId,
     requester: null,
   }
-  // Exactly CHECK_JOB_WAKE_KEYS, as DevSpec's shapeCheckJobWake builds it.
+  // Exactly CHECK_JOB_WAKE_KEYS[2], as DevSpec's shapeCheckJobWake builds it at version 2.
   const checkJob = {
     id: '60000000-0000-4000-8000-000000000006',
     kind: 'check_job',
@@ -569,7 +579,6 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
     check_kind: 'conflict_decisions',
     record: { type: 'task', id: '70000000-0000-4000-8000-000000000007', title: 'Sign in with a passkey' },
     entries: 3,
-    high_risk: 1,
     yours: true,
     offered_at: '2026-11-04T12:00:01.000Z',
     delivery_connection_id: connectionId,
@@ -589,7 +598,9 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
     for (const kind of ['conflict', 'conflict_decisions', 'duplicate', 'staleness']) {
       assert.equal(validateCheckJobDispatch({ ...checkJob, check_kind: kind }, connectionId).ok, true, kind)
     }
-    for (const type of ['task', 'memory', 'artifact', 'proposal']) {
+    // Version 2 adds the three records an open-task out-of-date check or the manual
+    // scan names (item 1d89fe56).
+    for (const type of ['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan']) {
       assert.equal(validateCheckJobDispatch({ ...checkJob, record: { ...checkJob.record, type } }, connectionId).ok, true, type)
     }
     // A record with no title arrives with an empty one.
@@ -608,7 +619,9 @@ describe('check jobs on the dispatch channel (item f7b8c8d3)', () => {
       ['unknown check kind', { ...checkJob, check_kind: 'everything' }],
       ['unknown record type', { ...checkJob, record: { ...checkJob.record, type: 'session' } }],
       ['entries not a count', { ...checkJob, entries: '3' }],
-      ['more high risk than entries', { ...checkJob, high_risk: 4 }],
+      // The version-1 envelope: this poller negotiates 2, which has no high_risk.
+      ['a version-1 high_risk count', { ...checkJob, high_risk: 1 }],
+      ['a record type no version carries', { ...checkJob, record: { ...checkJob.record, type: 'outcome' } }],
       ['yours not a boolean', { ...checkJob, yours: 'yes' }],
       ['bad offered_at', { ...checkJob, offered_at: 'soon' }],
       ['another connection', { ...checkJob, delivery_connection_id: '50000000-0000-4000-8000-000000000005' }],
@@ -1544,5 +1557,115 @@ describe('writeRoomState', () => {
       assert.equal(sink.writes[0].value.session_polls, null)
       assert.equal(roomChangesSince({ session_polls: bent }, null).changed.length, 0)
     }
+  })
+})
+
+describe('SSE push channel (parseSseFrame, pushChannelUrl, nextPushReconnectDelayMs, openPushChannel, createPushGate)', () => {
+  it('builds /connection-stream URL with version query parameters', () => {
+    const url = pushChannelUrl('https://api.devspec.ai/api/mcp/', ME)
+    assert.equal(
+      url,
+      'https://api.devspec.ai/api/mcp/connection-stream?connection_id=conn-mine-1111&system_notice_version=3&interaction_event_version=1&question_dismissal_event_version=1&check_job_version=2',
+    )
+  })
+
+  it('parses comment, hello, wake, ended, and system_notice frames', () => {
+    assert.deepEqual(parseSseFrame(': keepalive'), { kind: 'comment' })
+    assert.deepEqual(parseSseFrame('event: hello\ndata: {}'), { kind: 'hello' })
+    assert.deepEqual(parseSseFrame('event: wake\ndata: {"reason":"message"}'), { kind: 'wake' })
+    assert.deepEqual(parseSseFrame('event: ended\ndata: {"end_reason":"ui"}'), {
+      kind: 'ended',
+      endReason: 'ui',
+    })
+    assert.deepEqual(
+      parseSseFrame('event: system_notice\ndata: {"notice_id":"n1","text":"hi"}'),
+      { kind: 'system_notice', notice: { notice_id: 'n1', text: 'hi' } },
+    )
+  })
+
+  it('backs off reconnect attempts and resets after a healthy stream', () => {
+    assert.deepEqual(nextPushReconnectDelayMs({ attempt: 0, openedAtMs: null }), {
+      delayMs: 1_000,
+      nextAttempt: 1,
+    })
+    assert.deepEqual(nextPushReconnectDelayMs({ attempt: 3, openedAtMs: null }), {
+      delayMs: null,
+      nextAttempt: 4,
+    })
+    assert.deepEqual(
+      nextPushReconnectDelayMs({
+        attempt: 3,
+        openedAtMs: 1_000,
+        nowMs: 1_000 + PUSH_HEALTHY_MS + 50,
+      }),
+      { delayMs: 1_000, nextAttempt: 1 },
+    )
+  })
+
+  it('falls back cleanly to poll_connection when SSE endpoint returns non-200', async () => {
+    let fallbackReason = null
+    const handle = openPushChannel({
+      mcpUrl: 'https://api.devspec.ai/api/mcp',
+      token: 'tok',
+      connectionId: ME,
+      fetchImpl: async () => ({
+        ok: false,
+        status: 404,
+        headers: new Map([['content-type', 'application/json']]),
+      }),
+      onFallback: (reason) => {
+        fallbackReason = reason
+      },
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    handle.close()
+    assert.equal(fallbackReason, 'push_http_404')
+  })
+
+  it('sleeps locally on the open SSE push channel, wakes immediately on SSE frames or local turn changes, and falls back to held waitMs on disconnect (59afbe7e)', async () => {
+    assert.equal(PUSH_SAFETY_MS, 45_000)
+    const gate = createPushGate({ safetyMs: 80, localCheckMs: 10 })
+
+    assert.equal(gate.isConnected(), false)
+    assert.equal(gate.consumePollWaitMs(25_000), 25_000)
+
+    gate.onEvent({ kind: 'hello' })
+    assert.equal(gate.isConnected(), true)
+    assert.equal(gate.consumePollWaitMs(25_000), 0)
+
+    const startSafety = Date.now()
+    await gate.waitIfIdle()
+    assert.ok(Date.now() - startSafety >= 55, 'waitIfIdle sleeps until safetyMs when quiet')
+    assert.equal(gate.consumePollWaitMs(25_000), 0)
+
+    for (const kind of ['wake', 'system_notice', 'interaction_event', 'question_dismissal_event']) {
+      const gateFrame = createPushGate({ safetyMs: 5_000, localCheckMs: 500 })
+      gateFrame.onEvent({ kind: 'hello' })
+      setTimeout(() => gateFrame.onEvent({ kind }), 15)
+      const t0 = Date.now()
+      await gateFrame.waitIfIdle()
+      assert.ok(Date.now() - t0 < 500, `SSE ${kind} frame wakes waitIfIdle immediately`)
+      assert.equal(gateFrame.consumePollWaitMs(25_000), 0)
+    }
+
+    let localTurnChanged = false
+    const gateLocal = createPushGate({ safetyMs: 5_000, localCheckMs: 10 })
+    gateLocal.onEvent({ kind: 'hello' })
+    setTimeout(() => {
+      localTurnChanged = true
+    }, 15)
+    const tLocal = Date.now()
+    await gateLocal.waitIfIdle({ shouldWakeImmediately: () => localTurnChanged })
+    assert.ok(Date.now() - tLocal < 500, 'local state change wakes waitIfIdle immediately')
+    assert.equal(gateLocal.consumePollWaitMs(25_000), 0)
+
+    const gateDrop = createPushGate({ safetyMs: 5_000, localCheckMs: 500 })
+    gateDrop.onEvent({ kind: 'hello' })
+    setTimeout(() => gateDrop.onDisconnect(), 15)
+    const tDrop = Date.now()
+    await gateDrop.waitIfIdle()
+    assert.ok(Date.now() - tDrop < 500, 'disconnect wakes waitIfIdle immediately')
+    assert.equal(gateDrop.isConnected(), false)
+    assert.equal(gateDrop.consumePollWaitMs(25_000), 25_000)
   })
 })

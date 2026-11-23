@@ -28,6 +28,9 @@ import {
   buildCanonicalControlEvents,
   buildCanonicalSystemNoticeEvents,
   NOTICE_HANDLING,
+  FOR_THE_RECORD_HANDLING,
+  NOTICE_AUDIENCE_RULES,
+  noticeAudienceLine,
   formatSystemNoticeContent,
   buildAutomationRunEvents,
   buildCheckJobEvents,
@@ -50,12 +53,12 @@ import {
   EXIT_BAD_ARGS,
   EXIT_REARM,
   heldInboxRecords,
-  heldRecordRanges,
-  isConnectionTurnRunning,
+  CHECK_JOB_HELPERS_RULE,
 } from './devspec-remote-wait.mjs'
 import { normalizeRemoteIngressV1 } from './remote-ingress-v1.mjs'
 import { appendWakeDispatches, appendCanonicalInbox, countUnconsumedCommands, scanPersistedInboxRecords } from './devspec-remote-poll.mjs'
 import { continuationDelivered } from './interaction-events.mjs'
+import { replyLine } from './notice-reply.mjs'
 
 const WAIT_SCRIPT = fileURLToPath(new URL('./devspec-remote-wait.mjs', import.meta.url))
 const INGRESS_RESOURCE = 'devspec://product/remote-ingress-contract'
@@ -214,7 +217,7 @@ function automationBatch(connectionId = CONNECTION) {
   }
 }
 
-/** A check job dispatch exactly as DevSpec shapes it (CHECK_JOB_WAKE_KEYS). */
+/** A check job dispatch exactly as DevSpec shapes it at version 2 (CHECK_JOB_WAKE_KEYS[2]). */
 function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
   const id = '92000000-0000-4000-8000-000000000009'
   return {
@@ -224,7 +227,6 @@ function checkJobDispatch(connectionId = CONNECTION, overrides = {}) {
     check_kind: 'conflict',
     record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: 'Sign in with a passkey' },
     entries: 2,
-    high_risk: 1,
     yours: true,
     offered_at: '2026-11-04T12:00:00.000Z',
     delivery_connection_id: connectionId,
@@ -256,11 +258,13 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
     return buildCheckJobEvents(record, { inboxFile: '/tmp/inbox' })
   }
 
-  it('wakes the agent with the one line saying a check is waiting on that record', () => {
+  // The words the agent reads are the contract here, so they are asserted whole.
+  const HOW = `Before you take it, read ${CHECK_JOB_HELPERS_RULE} (claim_check_job repeats it as \`helpers\`) and rule it as that says, then carry on.`
+
+  it('reaches the agent as one line: a check is waiting, where the ruling instruction is, and on what', () => {
     const [event, wake] = delivered(checkJobDispatch())
     assert.equal(event.type, 'check_job')
-    assert.equal(event.content,
-      'A check is waiting on "Sign in with a passkey": take it with claim_check_job, rule every entry with record_check_rulings, then carry on.')
+    assert.equal(event.content, `A check is waiting. ${HOW} It is on "Sign in with a passkey".`)
     assert.equal(event.check_job_id, checkJobDispatch().check_job_id)
     assert.equal(event.connection_id, CONNECTION)
     // Something to act on, never authority, a command or task work.
@@ -268,24 +272,67 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
     assert.equal(event.authoritative, false)
     assert.equal(wake.type, 'wake')
     assert.equal(wake.executable, false)
+    // Version 2 never carries a high-risk count, so nothing shows one.
+    assert.equal(Object.hasOwn(event, 'high_risk'), false)
   })
 
-  it('keeps the wake to one line, and names an untitled record by its type and id', () => {
+  // Item 108de10f, decision 1d5a9c56: how a check is ruled, helper agents included, is
+  // DevSpec's instruction. The line points at it and restates none of it, and says to
+  // read it before the job is taken, because the instruction decides who takes it.
+  it('points at the served ruling instruction, to be read before the job is taken', () => {
+    assert.equal(CHECK_JOB_HELPERS_RULE, 'semantics.check_job.helpers in devspec://product/remote-ingress-contract')
+    const record = (type) => ({ check_kind: 'staleness', record: { type, id: '93000000-0000-4000-8000-000000000009', title: 'Named record' } })
+    for (const type of ['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan']) {
+      const [{ content }] = delivered(checkJobDispatch(CONNECTION, record(type)))
+      const pointer = content.indexOf(CHECK_JOB_HELPERS_RULE)
+      assert.ok(pointer > 0, type)
+      assert.ok(content.indexOf('Before you take it') < pointer, `${type}: read first`)
+      assert.ok(pointer < content.indexOf('"Named record"'), `${type}: ahead of the title`)
+      // No rule of DevSpec's is repeated here: the line names no helper and no batch.
+      assert.doesNotMatch(content.replace(CHECK_JOB_HELPERS_RULE, '').replace('`helpers`', ''), /helper|batch|subagent/i, type)
+    }
+  })
+
+  // Item 1d89fe56: version 2's three new records are what RAISED an open-task
+  // out-of-date check, or the manual scan itself, so they are named for what they
+  // are rather than as the record being checked.
+  it('names a settled discussion point, a Goal and the whole-backlog scan for what they are', () => {
+    const record = (type, title) => ({ record: { type, id: '93000000-0000-4000-8000-000000000009', title } })
+    const shown = (type, title) => delivered(checkJobDispatch(CONNECTION, { check_kind: 'staleness', ...record(type, title) }))[0].content
+    assert.equal(shown('discussion_point', 'Ship passkeys first'),
+      `An out-of-date check is waiting. ${HOW} The settled discussion point "Ship passkeys first" raised it.`)
+    assert.equal(shown('goal', 'Launch in Europe'),
+      `An out-of-date check is waiting. ${HOW} A change to the Goal "Launch in Europe" raised it.`)
+    assert.equal(shown('backlog_scan', 'Out-of-date scan, 7 Nov'),
+      `The whole-backlog out-of-date scan is waiting. ${HOW} It is "Out-of-date scan, 7 Nov".`)
+    // Untitled: the point and the Goal by id, the scan by what it is.
+    assert.equal(checkJobWakeText(checkJobDispatch(CONNECTION, record('discussion_point', ''))),
+      `An out-of-date check is waiting. ${HOW} The settled discussion point 93000000-0000-4000-8000-000000000009 raised it.`)
+    assert.equal(checkJobWakeText(checkJobDispatch(CONNECTION, record('goal', ' '))),
+      `An out-of-date check is waiting. ${HOW} A change to the Goal 93000000-0000-4000-8000-000000000009 raised it.`)
+    assert.equal(checkJobWakeText(checkJobDispatch(CONNECTION, record('backlog_scan', ''))), `The whole-backlog out-of-date scan is waiting. ${HOW}`)
+  })
+
+  it('keeps the line to one line, and names an untitled record by its type and id', () => {
     const multiline = checkJobDispatch(CONNECTION, { record: { type: 'memory', id: '93000000-0000-4000-8000-000000000009', title: 'Retry\n  policy ' } })
     assert.equal(checkJobWakeText(multiline).includes('\n'), false)
-    assert.match(checkJobWakeText(multiline), /waiting on "Retry policy":/)
+    assert.ok(checkJobWakeText(multiline).endsWith('It is on "Retry policy".'))
     const untitled = checkJobDispatch(CONNECTION, { record: { type: 'proposal', id: '93000000-0000-4000-8000-000000000009', title: '' } })
-    assert.match(checkJobWakeText(untitled), /^A check is waiting on proposal 93000000-0000-4000-8000-000000000009: take it with claim_check_job/)
+    assert.ok(checkJobWakeText(untitled).endsWith('It is on proposal 93000000-0000-4000-8000-000000000009.'))
   })
 
-  it('puts the job id and the wake text inside what the host shows of a line', () => {
+  it('keeps the ids and the ruling instruction inside what the host shows of a line, however long the title', () => {
     // Claude Code cuts each Monitor line at 500 characters (item 725d18b2): a line
-    // that lost the job id would leave the agent nothing to claim.
-    const longTitle = 'T'.repeat(115)
-    const [event] = delivered(checkJobDispatch(CONNECTION, { record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: longTitle } }))
-    const shown = JSON.stringify(event).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS)
-    assert.ok(shown.includes(`"check_job_id":"${event.check_job_id}"`))
-    assert.ok(shown.includes(JSON.stringify(event.content)))
+    // that lost the job id would leave the agent nothing to claim, and one that lost
+    // the pointer would have it take the job before reading how. Only the title, the
+    // one part with no fixed length, may run past the cut.
+    for (const length of [20, 115, 4000]) {
+      const [event] = delivered(checkJobDispatch(CONNECTION, { record: { type: 'task', id: '93000000-0000-4000-8000-000000000009', title: 'T'.repeat(length) } }))
+      const shown = JSON.stringify(event).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS)
+      assert.ok(shown.includes(`"check_job_id":"${event.check_job_id}"`), `job id, title of ${length}`)
+      assert.ok(shown.includes(`"connection_id":"${CONNECTION}"`), `connection id, title of ${length}`)
+      assert.ok(shown.includes(HOW), `the instruction, title of ${length}`)
+    }
   })
 
   it('revalidates the inbox record: tampered, misaddressed or reshaped check jobs wake nobody', () => {
@@ -295,7 +342,9 @@ describe('check jobs reach the model (item f7b8c8d3)', () => {
       { ...good, dispatch: { ...good.dispatch, check_job_id: '92000000-0000-4000-8000-0000000000ff' } },
       { ...good, dispatch: { ...good.dispatch, delivery_connection_id: '10000000-0000-4000-8000-0000000000aa' } },
       { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, text: 'x' } } },
-      { ...good, dispatch: { ...good.dispatch, high_risk: 3 } },
+      // A version-1 envelope: this plugin negotiates 2, which never carries high_risk.
+      { ...good, dispatch: { ...good.dispatch, high_risk: 0 } },
+      { ...good, dispatch: { ...good.dispatch, record: { ...good.dispatch.record, type: 'session' } } },
       { ...good, type: 'automation_run' },
       { ...good, connection_id: '10000000-0000-4000-8000-0000000000aa' },
     ]
@@ -1784,90 +1833,206 @@ describe('canonical_system_notices delivery (server_notice & unlinked_commit_ite
     }
   })
 
-  it('holds check_job and canonical_system_notices in --stream mode while a turn is active, then emits them one turn at a time in FIFO order', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-fifo-queue-'))
-    const connDir = path.join(home, '.devspec', 'remote-control', 'connections')
-    fs.mkdirSync(connDir, { recursive: true, mode: 0o700 })
-    const stateFile = path.join(connDir, `${CONNECTION}.json`)
-    const inbox = path.join(connDir, `${CONNECTION}.inbox.jsonl`)
-    const turnFile = path.join(connDir, `${CONNECTION}.turn`)
-    fs.writeFileSync(
-      stateFile,
-      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0 }),
-      { mode: 0o600 },
-    )
-    // Turn 1 is currently active.
-    fs.writeFileSync(turnFile, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
-
-    // Append a check job first, then a system notice while Turn 1 is running.
-    const index = scanPersistedInboxRecords('')
-    let noticeRecord = null
-    appendCanonicalInbox(CONNECTION, NOTICE_ENVELOPE, index, {
-      sessionId: null,
-      channel: 'system_notice',
-      writeRecord: (_cid, rec) => {
-        noticeRecord = rec
-        return true
-      },
-    })
-    fs.writeFileSync(
-      inbox,
-      `${JSON.stringify(checkJobBatch())}\n${JSON.stringify(noticeRecord)}\n`,
-      { mode: 0o600 },
-    )
-
-    const child = spawn(
-      process.execPath,
-      [WAIT_SCRIPT, '--connection-id', CONNECTION, '--pending', '--poll-ms', '20', '--owner-pid', String(process.pid), '--stream'],
-      {
-        env: {
-          ...process.env,
-          HOME: home,
-          USERPROFILE: home,
-          DEVSPEC_WAIT_TURN_PICKUP_MS: '180',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    )
-    let stdout = ''
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk
-    })
-    const closed = new Promise((resolve) => child.once('close', resolve))
-    const events = () => stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line))
-
+  // Item a868f41f: from channel version 3 every notice carries DevSpec's label. The
+  // model is shown it, right behind the id, and only a notice that needs a person
+  // comes with the call that replies to it in the room.
+  it('shows DevSpec\'s label, and hands a for-the-record notice over with no room reply to make', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sys-notice-'))
+    const file = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+    const delivered = (audience, envelopeId) => {
+      const [notice] = NOTICE_ENVELOPE.system_notices
+      const envelope = { ...NOTICE_ENVELOPE, envelope_id: envelopeId, system_notices: [{ ...notice, notice_id: envelopeId.replace(/^6/, '7'), audience }] }
+      fs.rmSync(file, { force: true })
+      const writeRecord = (_cid, rec) => { fs.appendFileSync(file, JSON.stringify(rec) + '\n', { mode: 0o600 }); return true }
+      assert.equal(appendCanonicalInbox(CONNECTION, envelope, scanPersistedInboxRecords(''), { sessionId: null, channel: 'system_notice', writeRecord }).appended, true)
+      const [batch] = parseInboxBatches(fs.readFileSync(file, 'utf8').trim().split('\n'), CONNECTION)
+      assert.ok(batch, `${audience}: the labelled notice survives revalidation`)
+      return buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })[0]
+    }
     try {
-      await new Promise((resolve) => setTimeout(resolve, 120))
-      assert.equal(events().length, 0, 'neither check_job nor system_notice may interrupt an active turn')
+      const quiet = delivered('for_the_record', '60000000-0000-4000-8000-0000000000a1')
+      assert.equal(quiet.audience, 'for_the_record')
+      assert.ok(JSON.stringify(quiet).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS).includes('"audience":"for_the_record"'))
+      assert.ok(JSON.stringify(quiet).slice(0, HOST_NOTIFICATION_LINE_MAX_CHARS).includes(`"inbox":${JSON.stringify(file)}`))
+      assert.ok(quiet.content.includes(noticeAudienceLine('for_the_record')))
+      assert.ok(quiet.content.includes(NOTICE_AUDIENCE_RULES))
+      assert.ok(quiet.content.includes(FOR_THE_RECORD_HANDLING))
+      assert.equal(quiet.content.includes(replyLine([quiet.notice_id])), false, 'no reply line: DevSpec refuses one')
+      assert.doesNotMatch(quiet.content, /system_notice_ids/)
+      assert.equal(quiet.content.includes(NOTICE_HANDLING), false, 'none of the speech a notice for a person asks for')
+      // Its records are still there to do any housekeeping it asks for.
+      assert.match(quiet.content, /All remote deliveries must use the canonical ingress envelope\./)
 
-      // End Turn 1: check_job #1 emits first while system_notice waits for its own turn.
-      fs.unlinkSync(turnFile)
-      await awaitReader(() => events().some((e) => e.type === 'check_job'))
-      // Simulate Claude Code picking up check_job as Turn 2 within the pickup window.
-      fs.writeFileSync(turnFile, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
-      await new Promise((resolve) => setTimeout(resolve, 240))
-      assert.equal(events().filter((e) => e.type === 'check_job').length, 1)
-      assert.equal(events().some((e) => e.type === 'system_notice'), false, 'system_notice waits while check_job turn runs')
-
-      // End Turn 2: system_notice emits next in FIFO arrival order.
-      fs.unlinkSync(turnFile)
-      await awaitReader(() => events().some((e) => e.type === 'system_notice'))
-      const emittedTypes = events().map((e) => e.type)
-      assert.ok(emittedTypes.indexOf('check_job') < emittedTypes.indexOf('system_notice'))
+      const loud = delivered('needs_person', '60000000-0000-4000-8000-0000000000a2')
+      assert.equal(loud.audience, 'needs_person')
+      assert.ok(loud.content.includes(noticeAudienceLine('needs_person')))
+      assert.ok(loud.content.includes(NOTICE_HANDLING))
+      assert.ok(loud.content.includes(replyLine([loud.notice_id])))
     } finally {
-      const timer = setTimeout(() => child.kill('SIGKILL'), 500)
-      child.kill('SIGTERM')
-      await closed
-      clearTimeout(timer)
-      fs.rmSync(home, { recursive: true, force: true })
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a for-the-record notice of a kind this version cannot read asks nobody to be told', () => {
+    const later = { version: 1, kind: 'requirement_outcome', notice_id: '71000000-0000-4000-8000-0000000000a3', contract_uri: INGRESS_RESOURCE }
+    const quiet = formatSystemNoticeContent({ ...later, audience: 'for_the_record' })
+    assert.doesNotMatch(quiet, /Tell the person/)
+    assert.equal(quiet.includes(replyLine([later.notice_id])), false)
+    assert.ok(quiet.includes(noticeAudienceLine('for_the_record')))
+    const loud = formatSystemNoticeContent({ ...later, audience: 'needs_person' })
+    assert.match(loud, /Tell the person plainly/)
+    assert.ok(loud.includes(replyLine([later.notice_id])))
+  })
+
+  it('renders unlinked_commit_item_review without Prompt: undefined while server_notice still shows its prompt', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sys-notice-kinds-'))
+    const file = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+    const UNLINKED_ID = '71000000-0000-4000-8000-0000000000a4'
+    const SERVER_ID = '71000000-0000-4000-8000-0000000000a5'
+    const unlinkedNotice = {
+      version: 1,
+      kind: 'unlinked_commit_item_review',
+      notice_id: UNLINKED_ID,
+      commit_sha: 'a'.repeat(40),
+      task_id: '81000000-0000-4000-8000-000000000003',
+      task_title: 'Sign in with a passkey',
+      branch: 'feat/passkeys',
+      contract_uri: INGRESS_RESOURCE,
+      allowed_outcomes: [
+        'correct_item',
+        'link_item',
+        'resolve_duplicate',
+        'dismiss_item',
+        'confirm_item_correct',
+        'defer_follow_up',
+      ],
+      allowed_tools: ['get_task', 'update_task', 'link_tasks', 'supersede_task'],
+    }
+    const serverNotice = {
+      ...NOTICE_ENVELOPE.system_notices[0],
+      notice_id: SERVER_ID,
+    }
+    try {
+      const envelope = {
+        ...NOTICE_ENVELOPE,
+        envelope_id: '60000000-0000-4000-8000-0000000000a4',
+        system_notices: [unlinkedNotice, serverNotice],
+      }
+      const writeRecord = (_cid, rec) => {
+        fs.appendFileSync(file, JSON.stringify(rec) + '\n', { mode: 0o600 })
+        return true
+      }
+      const appended = appendCanonicalInbox(CONNECTION, envelope, scanPersistedInboxRecords(''), {
+        sessionId: null,
+        channel: 'system_notice',
+        writeRecord,
+      })
+      assert.equal(appended.ok, true)
+      assert.equal(appended.appended, true)
+      assert.deepEqual(appended.executeNoticeIds, [UNLINKED_ID, SERVER_ID])
+
+      const [batch] = parseInboxBatches(fs.readFileSync(file, 'utf8').trim().split('\n'), CONNECTION)
+      const events = buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })
+      assert.equal(events.length, 3)
+
+      const unlinkedEvent = events[0]
+      assert.equal(unlinkedEvent.kind, 'unlinked_commit_item_review')
+      assert.equal(Object.hasOwn(unlinkedEvent, 'prompt'), false)
+      assert.doesNotMatch(unlinkedEvent.content, /undefined/)
+      assert.doesNotMatch(unlinkedEvent.content, /^Prompt:/m)
+      assert.match(unlinkedEvent.content, /\[DevSpec System Notice: unlinked_commit_item_review\]/)
+      assert.match(
+        unlinkedEvent.content,
+        /Your push of commit a{40} on branch feat\/passkeys did not carry a \[devspec:<id>\] tag, while you hold claimed item "Sign in with a passkey" \(81000000-0000-4000-8000-000000000003\)\./,
+      )
+      assert.match(
+        unlinkedEvent.content,
+        /Allowed outcomes: correct_item, link_item, resolve_duplicate, dismiss_item, confirm_item_correct, defer_follow_up/,
+      )
+      assert.match(unlinkedEvent.content, /Allowed tools: get_task, update_task, link_tasks, supersede_task/)
+
+      const serverEvent = events[1]
+      assert.equal(serverEvent.kind, 'server_notice')
+      assert.equal(serverEvent.prompt, 'Review the protected record and your reversing record below.')
+      assert.match(serverEvent.content, /\[DevSpec System Notice: coherence_finding \/ reversal\]/)
+      assert.match(serverEvent.content, /Summary: Protected decision reversed by new record/)
+      assert.match(serverEvent.content, /Review the protected record and your reversing record below\./)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // As DevSpec sends it (packages/core/src/git/checks/pr-merge-when-cleared.ts): topic
+  // pr_merge_when_cleared, notice type merge_when_cleared_fallback, for the record.
+  it('delivers the one-shot clear-to-merge notice as a for_the_record server_notice', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-pr-merge-wake-'))
+    const file = path.join(dir, `${CONNECTION}.inbox.jsonl`)
+    const MERGE_NOTICE_ID = '71000000-0000-4000-8000-0000000000a6'
+    const prReadyNotice = {
+      version: 1,
+      kind: 'server_notice',
+      notice_id: MERGE_NOTICE_ID,
+      audience: 'for_the_record',
+      topic: 'pr_merge_when_cleared',
+      notice_type: 'merge_when_cleared_fallback',
+      summary: 'Pull request #1241 in DevSpecAI/DevSpecV2 is clear at 1234567 and ready to merge.',
+      prompt:
+        'Pull request #1241 (feat/track-1 -> staging) in DevSpecAI/DevSpecV2 is clear at commit 1234567890abcdef1234567890abcdef12345678: DevSpec\'s check and all commit checks on this pull request have passed.\nMerge when cleared is enabled, and the repository\'s GitHub App installation has not yet granted the write permissions DevSpec needs to merge on the server (pull_requests, contents, workflows).\nMerge this cleared pull request now using your owner\'s credentials pinned to 1234567890abcdef1234567890abcdef12345678:\n  gh pr merge 1241 --repo DevSpecAI/DevSpecV2 --merge --match-head-commit 1234567890abcdef1234567890abcdef12345678\nDo not merge if the pull request has moved to a newer commit than 1234567890abcdef1234567890abcdef12345678.',
+      contract_uri: INGRESS_RESOURCE,
+      records: [
+        {
+          label: 'Pull request',
+          record_type: 'pull_request',
+          record_id: 'ed8b2ac8-38cf-46e7-9ebd-80e52f4473e6',
+          title: 'PR #1241 in DevSpecAI/DevSpecV2',
+          text: 'Pull request #1241 in DevSpecAI/DevSpecV2 is clear at 1234567 and ready to merge.',
+          url: null,
+        },
+      ],
+      allowed_outcomes: [],
+      allowed_tools: ['get_pull_request', 'get_task', 'record_implementation', 'add_implementation_note', 'bash', 'read'],
+    }
+    try {
+      const envelope = {
+        ...NOTICE_ENVELOPE,
+        envelope_id: '60000000-0000-4000-8000-0000000000a6',
+        system_notices: [prReadyNotice],
+      }
+      const writeRecord = (_cid, rec) => {
+        fs.appendFileSync(file, JSON.stringify(rec) + '\n', { mode: 0o600 })
+        return true
+      }
+      const appended = appendCanonicalInbox(CONNECTION, envelope, scanPersistedInboxRecords(''), {
+        sessionId: null,
+        channel: 'system_notice',
+        writeRecord,
+      })
+      assert.equal(appended.ok, true)
+      assert.equal(appended.appended, true)
+      const [batch] = parseInboxBatches(fs.readFileSync(file, 'utf8').trim().split('\n'), CONNECTION)
+      const events = buildCanonicalSystemNoticeEvents(batch, { inboxFile: file })
+      assert.equal(events[0].type, 'system_notice')
+      assert.equal(events[0].kind, 'server_notice')
+      assert.equal(events[0].topic, 'pr_merge_when_cleared')
+      assert.equal(events[0].notice_type, 'merge_when_cleared_fallback')
+      assert.equal(events[0].audience, 'for_the_record')
+      assert.match(events[0].content, /\[DevSpec System Notice: pr_merge_when_cleared \/ merge_when_cleared_fallback\]/)
+      assert.match(events[0].content, /Merge this cleared pull request now using your owner's credentials/)
+      assert.match(events[0].content, /gh pr merge 1241 --repo DevSpecAI\/DevSpecV2 --merge --match-head-commit/)
+      assert.match(events[0].content, /Allowed tools: get_pull_request, get_task, record_implementation/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 })
 
 
-// Item d0b8eeb1: a check job or notice that waits for the running turn is set aside, and
-// the scan carries on past it. These run the real wait stream against a real inbox.
-describe('queued work waits for its turn and holds nothing else up (item d0b8eeb1)', () => {
+// Item 108de10f (decision b8abe2bb): a check job or a notice about the agent's own work
+// is delivered as it arrives, like everything else on the stream. Claude Code hands a
+// Monitor line to a working agent at its next step, so neither waits for the turn to
+// end, and everything waiting at one moment is printed in one pass and arrives together.
+// These run the real wait stream against a real inbox.
+describe('check jobs and notices are delivered as they arrive, turn or no turn (item 108de10f)', () => {
   const NOTICE_A = '71000000-0000-4000-8000-0000000000a1'
   const NOTICE_B = '71000000-0000-4000-8000-0000000000b2'
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -1905,13 +2070,13 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
     const { prompt, dismissed_by_user_id, dismissed_at, ...base } = readerDismissal().event
     return interactionAnswerRecord({
       connectionId: CONNECTION, sessionId: DISMISSAL_A, disposition: 'delivered', attemptId: TURN,
-      event: { ...base, kind: 'devspec.interaction_event', response_id: OWNER, answer: 'answer behind a check', answered_at: dismissed_at },
+      event: { ...base, kind: 'devspec.interaction_event', response_id: OWNER, answer: 'answer among the checks', answered_at: dismissed_at },
     })
   }
 
   /** One connection's files, and a wait stream on them that can be stopped and started again. */
-  function connectionHome() {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-queue-'))
+  function connectionHome(stateExtra = {}) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-arrival-'))
     const dir = path.join(home, '.devspec', 'remote-control', 'connections')
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
     const stateFile = path.join(dir, `${CONNECTION}.json`)
@@ -1919,12 +2084,13 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
     const turnFile = path.join(dir, `${CONNECTION}.turn`)
     fs.writeFileSync(
       stateFile,
-      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0 }),
+      JSON.stringify({ enabled: true, connection_id: CONNECTION, session_id: null, inbox_byte_offset: 0, ...stateExtra }),
       { mode: 0o600 },
     )
     fs.writeFileSync(inbox, '', { mode: 0o600 })
     // Everything every listener started here printed, in order.
     let stdout = ''
+    let stderr = ''
     let child = null
     let closed = null
     const events = () => stdout.split('\n').slice(0, -1).map((line) => JSON.parse(line))
@@ -1938,42 +2104,49 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
     }
     return {
       dir,
+      /** Append one inbox record; returns its byte range and the inbox size after it. */
       append(record) {
+        const start = fs.statSync(inbox).size
         fs.appendFileSync(inbox, JSON.stringify(record) + '\n')
-        return fs.statSync(inbox).size
+        const end = fs.statSync(inbox).size
+        return { start, end }
       },
-      /** Claude Code is working on a turn (the marker UserPromptSubmit or a holding Stop writes). */
+      /** Claude Code is working on a turn (the marker a prompt or a holding Stop writes). */
       turn(marker = { startedAt: Date.now() }) {
         fs.writeFileSync(turnFile, JSON.stringify(marker), { mode: 0o600 })
       },
-      endTurn() {
-        fs.rmSync(turnFile, { force: true })
+      turnMarker: () => {
+        try { return fs.readFileSync(turnFile, 'utf8') } catch { return null }
       },
       state: () => JSON.parse(fs.readFileSync(stateFile, 'utf8')),
-      held() {
-        return this.state().inbox_held_records ?? []
+      patchState(patch) {
+        fs.writeFileSync(stateFile, JSON.stringify({ ...this.state(), ...patch }), { mode: 0o600 })
       },
       commands: () => events().filter((e) => e.type === 'owner_message').map((e) => e.message.message_id),
       answers: () => events().filter((e) => e.type === 'question_answer'),
       /** Check jobs and notices, in the order they reached the model. */
-      queued: () =>
+      checksAndNotices: () =>
         events()
           .filter((e) => e.type === 'check_job' || e.type === 'system_notice')
           .map((e) => e.check_job_id ?? e.notice_id),
-      async start({ pickupMs = 400 } = {}) {
-        let stderr = ''
+      /** Everything that reached the model, by id, in order. */
+      arrivals: () =>
+        events()
+          .filter((e) => ['check_job', 'system_notice', 'owner_message', 'question_answer'].includes(e.type))
+          .map((e) => e.check_job_id ?? e.notice_id ?? e.message?.message_id ?? e.type),
+      /** How many deliveries each pass over the inbox made, as the stream counted them. */
+      passes: () => [...stderr.matchAll(/streamed wake \((\d+) msg\)/g)].map((match) => Number(match[1])),
+      async start({ arm = '--pending' } = {}) {
+        const armed = stderr.length
         child = spawn(
           process.execPath,
-          [WAIT_SCRIPT, '--connection-id', CONNECTION, '--stream', '--pending', '--poll-ms', '20', '--owner-pid', String(process.pid)],
-          {
-            env: { ...process.env, HOME: home, USERPROFILE: home, DEVSPEC_WAIT_TURN_PICKUP_MS: String(pickupMs) },
-            stdio: ['ignore', 'pipe', 'pipe'],
-          },
+          [WAIT_SCRIPT, '--connection-id', CONNECTION, '--stream', arm, '--poll-ms', '20', '--owner-pid', String(process.pid)],
+          { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'pipe', 'pipe'] },
         )
         child.stdout.on('data', (chunk) => { stdout += chunk })
         child.stderr.on('data', (chunk) => { stderr += chunk })
         closed = new Promise((resolve) => child.once('close', resolve))
-        await until(() => stderr.includes('watching'), 'the listener to arm')
+        await until(() => stderr.slice(armed).includes('watching'), 'the listener to arm')
       },
       stop,
       async cleanup() {
@@ -1983,93 +2156,97 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
     }
   }
 
-  it('a room command behind a check job held for the running turn is delivered at once, and the check follows the turn', async () => {
+  it('every check job and notice waiting while a turn runs is delivered in one pass, in arrival order', async () => {
     const conn = connectionHome()
     try {
-      conn.turn()
-      const check = checkJob('ahead-of-command')
-      conn.append(check)
-      await conn.start()
-      await until(() => conn.held().length === 1, 'the check to be held')
-
-      const command = canonicalInboxBatch('behind-check', 'command behind a held check')
-      const end = conn.append(command)
-      // The review's probe: this command used to wait for the turn to end.
-      await until(() => conn.commands().includes(command.execute_message_ids[0]), 'the command', 1500)
-      await until(() => conn.state().inbox_byte_offset === end, 'the cursor past the command')
-      assert.deepEqual(conn.queued(), [], 'the check still waits for the running turn')
-
-      conn.endTurn()
-      await until(() => conn.queued().length === 1, 'the check once the turn ends')
-      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id])
-      await until(() => conn.held().length === 0, 'the held list to empty')
-      assert.equal(conn.commands().length, 1, 'the command is not delivered again')
-    } finally {
-      await conn.cleanup()
-    }
-  })
-
-  it('a control and an answer to the agent’s own question behind held work are taken at once', async () => {
-    const conn = connectionHome()
-    try {
-      conn.turn()
-      conn.append(checkJob('ahead-of-control'))
-      conn.append(noticeRecord(NOTICE_A))
-      await conn.start()
-      await until(() => conn.held().length === 2, 'the check and the notice to be held')
-
-      // A control emits nothing here (the poller relays it to the hooks module); taking
-      // it means the cursor passes it, so nothing reports it sitting unread.
-      const controlEnd = conn.append(canonicalControlBatch())
-      await until(() => conn.state().inbox_byte_offset === controlEnd, 'the cursor past the control', 1500)
-      assert.equal(countUnconsumedCommands(CONNECTION, conn.state().inbox_byte_offset, conn.dir), 0)
-
-      const answerEnd = conn.append(answerRecord())
-      await until(() => conn.answers().length === 1, 'the answer', 1500)
-      await until(() => conn.state().inbox_byte_offset === answerEnd, 'the cursor past the answer')
-      // What the Stop hook and the command handoff ask before closing the question.
-      assert.equal(continuationDelivered({ inbox_offset_after: answerEnd }, conn.state().inbox_byte_offset), true)
-
-      assert.deepEqual(conn.queued(), [], 'the check and the notice still wait')
-      assert.equal(conn.held().length, 2)
-    } finally {
-      await conn.cleanup()
-    }
-  })
-
-  it('held check jobs and notices go one per turn, in the order they arrived, once the running turn ends', async () => {
-    const conn = connectionHome()
-    const pickupMs = 400
-    try {
-      conn.turn()
+      // The turn is running throughout: it never ends in this test.
+      const marker = JSON.stringify({ startedAt: Date.now() })
+      conn.turn(JSON.parse(marker))
       const first = checkJob('first')
       const second = checkJob('second')
+      const command = canonicalInboxBatch('between', 'a command between them')
       conn.append(first)
       conn.append(noticeRecord(NOTICE_A))
-      conn.append(canonicalInboxBatch('between', 'a command between them'))
-      conn.append(second)
-      await conn.start({ pickupMs })
-      await until(() => conn.held().length === 3, 'all three to be held')
-      await sleep(150)
-      assert.deepEqual(conn.queued(), [])
-      assert.equal(conn.commands().length, 1, 'the command between them did not wait')
-
-      const order = [first.dispatch.check_job_id, NOTICE_A, second.dispatch.check_job_id]
-      for (let n = 1; n <= order.length; n++) {
-        conn.endTurn()
-        await until(() => conn.queued().length === n, `queued record ${n}`)
-        // Claude Code takes it as its next turn; the rest wait for that one.
-        conn.turn()
-        await sleep(pickupMs + 250)
-        assert.deepEqual(conn.queued(), order.slice(0, n), `one per turn, in arrival order (after ${n})`)
-        assert.equal(conn.held().length, order.length - n)
-      }
+      conn.append(command)
+      const { end } = conn.append(second)
+      await conn.start()
+      await until(() => conn.arrivals().length === 4, 'all four records')
+      assert.deepEqual(
+        conn.arrivals(),
+        [first.dispatch.check_job_id, NOTICE_A, command.execute_message_ids[0], second.dispatch.check_job_id],
+        'in the order they arrived, the command in its place among them',
+      )
+      await until(() => conn.state().inbox_byte_offset === end, 'the cursor at the end of the inbox')
+      // One pass handed over all four: nothing was paced out, one per turn or otherwise.
+      assert.deepEqual(conn.passes(), [4])
+      // Delivering is all the stream does: the turn is still the one that was running.
+      assert.equal(conn.turnMarker(), marker)
+      // Nothing is left for a Stop or the poller to report as unread.
+      assert.equal(countUnconsumedCommands(CONNECTION, conn.state().inbox_byte_offset, conn.dir), 0)
+      assert.equal(Object.hasOwn(conn.state(), 'inbox_held_records'), false, 'nothing is held, so nothing is recorded as held')
     } finally {
       await conn.cleanup()
     }
   })
 
-  it('a restarted listener delivers each held record once and never replays what it delivered past them', async () => {
+  it('a check job or notice that arrives during a turn is delivered then, never at the turn\'s end', async () => {
+    const conn = connectionHome()
+    try {
+      conn.turn()
+      await conn.start()
+      const check = checkJob('mid-turn')
+      conn.append(check)
+      await until(() => conn.checksAndNotices().length === 1, 'the check job while the turn runs', 1500)
+      conn.append(noticeRecord(NOTICE_A))
+      await until(() => conn.checksAndNotices().length === 2, 'the notice while the turn still runs', 1500)
+      assert.deepEqual(conn.checksAndNotices(), [check.dispatch.check_job_id, NOTICE_A])
+      assert.notEqual(conn.turnMarker(), null, 'the turn never ended')
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('an idle agent is handed everything waiting at once, as before, with no wait between records', async () => {
+    const conn = connectionHome()
+    try {
+      const first = checkJob('idle-first')
+      const second = checkJob('idle-second')
+      conn.append(first)
+      conn.append(second)
+      conn.append(noticeRecord(NOTICE_B))
+      await conn.start()
+      await until(() => conn.checksAndNotices().length === 3, 'all three')
+      assert.deepEqual(conn.checksAndNotices(), [first.dispatch.check_job_id, second.dispatch.check_job_id, NOTICE_B])
+      assert.deepEqual(conn.passes(), [3])
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('a control and an answer to the agent’s own question keep their place among checks and notices', async () => {
+    const conn = connectionHome()
+    try {
+      conn.turn()
+      const check = checkJob('ahead-of-control')
+      conn.append(check)
+      // A control emits nothing here (the poller relays it to the hooks module); taking
+      // it means the cursor passes it, so nothing reports it sitting unread.
+      conn.append(canonicalControlBatch())
+      const answer = conn.append(answerRecord())
+      const { end } = conn.append(noticeRecord(NOTICE_A))
+      await conn.start()
+      await until(() => conn.arrivals().length === 3, 'the check, the answer and the notice')
+      assert.deepEqual(conn.arrivals(), [check.dispatch.check_job_id, 'question_answer', NOTICE_A])
+      await until(() => conn.state().inbox_byte_offset === end, 'the cursor past everything')
+      assert.equal(countUnconsumedCommands(CONNECTION, conn.state().inbox_byte_offset, conn.dir), 0)
+      // What the Stop hook and the command handoff ask before closing the question.
+      assert.equal(continuationDelivered({ inbox_offset_after: answer.end }, conn.state().inbox_byte_offset), true)
+    } finally {
+      await conn.cleanup()
+    }
+  })
+
+  it('a restarted listener delivers nothing twice and loses nothing that arrived while it was down', async () => {
     const conn = connectionHome()
     try {
       conn.turn()
@@ -2077,82 +2254,67 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
       const command = canonicalInboxBatch('restart-command', 'command delivered before the restart')
       conn.append(check)
       conn.append(command)
+      await conn.start()
+      await until(() => conn.arrivals().length === 2, 'the check and the command')
+
+      await conn.stop()
       conn.append(noticeRecord(NOTICE_B))
       await conn.start()
-      await until(() => conn.commands().length === 1 && conn.held().length === 2, 'the command, and both held')
-
-      // Restart while the turn is still running: nothing is replayed, nothing jumps the turn.
-      await conn.stop()
-      await conn.start()
+      await until(() => conn.arrivals().length === 3, 'the notice that arrived while no listener ran')
       await sleep(200)
-      assert.equal(conn.commands().length, 1, 'the delivered command is not replayed')
-      assert.deepEqual(conn.queued(), [])
-
-      // The new listener owns the queue: the check goes when the turn ends.
-      conn.endTurn()
-      await until(() => conn.queued().length === 1, 'the check from the restarted listener')
-      conn.turn()
-      await until(() => conn.held().length === 1, 'only the notice left held')
-
-      // Restart again between the two: the check is not delivered twice, the notice not lost.
-      await conn.stop()
-      await conn.start()
-      await sleep(200)
-      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id])
-      conn.endTurn()
-      await until(() => conn.queued().length === 2, 'the notice after the second restart')
-      await sleep(200)
-      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id, NOTICE_B])
-      assert.equal(conn.commands().length, 1)
-      assert.equal(conn.held().length, 0)
+      assert.deepEqual(conn.arrivals(), [check.dispatch.check_job_id, command.execute_message_ids[0], NOTICE_B])
     } finally {
       await conn.cleanup()
     }
   })
 
-  it('a turn held open only for background work does not hold queued work back; a running one does', async () => {
+  // A listener before 0.58.0 held check jobs and notices back until the turn ended, and
+  // kept their byte ranges in the state file beside a cursor that had moved past them.
+  it('what an older listener still held is delivered once, ahead of anything newer, and its list is cleared', async () => {
     const conn = connectionHome()
-    const pickupMs = 400
     try {
-      // The Stop kept the command open for its background job: Claude Code is idle.
-      const startedAt = Date.now() - 10 * 60_000
-      conn.turn({ startedAt, held: true })
-      const check = checkJob('while-held')
-      conn.append(check)
-      conn.append(noticeRecord(NOTICE_A))
-      await conn.start({ pickupMs })
-      await until(() => conn.queued().length === 1, 'the check while the turn is only held')
-      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id])
+      conn.turn()
+      const heldCheck = checkJob('held-by-older-listener')
+      const delivered = canonicalInboxBatch('older-delivered', 'command the older listener delivered')
+      const heldCheckRange = conn.append(heldCheck)
+      conn.append(delivered)
+      const heldNoticeRange = conn.append(noticeRecord(NOTICE_A))
+      // The older listener's state: cursor past all three, the two it held named beside it.
+      conn.patchState({ inbox_byte_offset: heldNoticeRange.end, inbox_held_records: [heldCheckRange, heldNoticeRange] })
+      const newer = checkJob('arrived-since')
+      conn.append(newer)
 
-      // Claude Code takes the check as a prompt, which rewrites the marker without `held`.
-      conn.turn({ startedAt })
-      await sleep(pickupMs + 250)
-      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id], 'the notice waits for the running turn')
+      await conn.start()
+      await until(() => conn.checksAndNotices().length === 3, 'the two held records and the newer check')
+      assert.deepEqual(conn.checksAndNotices(), [heldCheck.dispatch.check_job_id, NOTICE_A, newer.dispatch.check_job_id])
+      assert.deepEqual(conn.commands(), [], 'the command the older listener delivered is not replayed')
+      await until(() => conn.state().inbox_held_records?.length === 0, 'the older list to be cleared')
 
-      // That turn's Stop holds the command again for the background job still running.
-      conn.turn({ startedAt, held: true })
-      await until(() => conn.queued().length === 2, 'the notice once the turn is only held again')
-      assert.deepEqual(conn.queued(), [check.dispatch.check_job_id, NOTICE_A])
+      // Once: the next listener finds nothing owed.
+      await conn.stop()
+      await conn.start()
+      await sleep(200)
+      assert.equal(conn.checksAndNotices().length, 3)
     } finally {
       await conn.cleanup()
     }
   })
 
-  it('isConnectionTurnRunning reads the marker: running counts, held and absent do not', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-turn-running-'))
-    const marker = path.join(dir, `${CONNECTION}.turn`)
+  it('a first arm discards what an older listener held with the rest of the backlog', async () => {
+    const conn = connectionHome()
     try {
-      assert.equal(isConnectionTurnRunning(CONNECTION, dir), false, 'no marker')
-      fs.writeFileSync(marker, JSON.stringify({ startedAt: Date.now() }), { mode: 0o600 })
-      assert.equal(isConnectionTurnRunning(CONNECTION, dir), true)
-      fs.writeFileSync(marker, JSON.stringify({ startedAt: Date.now(), held: true }), { mode: 0o600 })
-      assert.equal(isConnectionTurnRunning(CONNECTION, dir), false)
+      const range = conn.append(checkJob('held-then-discarded'))
+      conn.patchState({ inbox_byte_offset: range.end, inbox_held_records: [range] })
+      await conn.start({ arm: '--from-end' })
+      await until(() => conn.state().inbox_held_records?.length === 0, 'the older list to be cleared')
+      await sleep(150)
+      assert.deepEqual(conn.arrivals(), [])
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true })
+      await conn.cleanup()
     }
   })
 
-  it('reads back only held ranges that still name one whole queued record before the cursor', () => {
+  it('reads back only held ranges that still name one whole check job or notice before the cursor', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-held-ranges-'))
     const file = path.join(dir, 'inbox.jsonl')
     try {
@@ -2178,7 +2340,6 @@ describe('queued work waits for its turn and holds nothing else up (item d0b8eeb
         [[a.start, a.end, 'check_job'], [n.start, n.end, 'canonical_system_notices']],
         'in arrival order; a command, a record past the cursor and ranges overlapping a held one are dropped',
       )
-      assert.deepEqual(heldRecordRanges(held), [a, n])
       assert.deepEqual(heldInboxRecords(file, [{ start: a.start + 1, end: a.end }], cursor, CONNECTION), [], 'part of a record')
       assert.deepEqual(heldInboxRecords(file, [{ start: c.start, end: n.end }], cursor, CONNECTION), [], 'two records in one range')
       assert.deepEqual(heldInboxRecords(file, undefined, cursor, CONNECTION), [])

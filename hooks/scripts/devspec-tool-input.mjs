@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { versionedConnectionArguments, connectionVersionHook } from './connection-version.mjs'
 import { conversationScopeHook } from './conversation-project.mjs'
-import { resolveDevspecMcpAuth } from './resolve-mcp-auth.mjs'
+import { credentialMcpUrl } from './resolve-mcp-auth.mjs'
 import { ownConnectionId, withOwnConnection } from './own-connection.mjs'
 import { stampRequest } from './request-ref.mjs'
 import { isNoticeReply, prepareNoticeReply } from './notice-reply.mjs'
@@ -14,7 +14,7 @@ export function prepareDevspecToolInput(input, { env = process.env, home } = {})
   if (typeof input.session_id !== 'string' || !input.session_id) return connectionVersionHook(input)
   const endpoint = input.tool_name.startsWith('mcp__plugin_devspec_') && env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL
     ? env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL
-    : resolveDevspecMcpAuth(input.cwd || process.cwd(), { env }).mcp_url
+    : credentialMcpUrl(env)
   const scoped = conversationScopeHook(input, { endpoint, home })
   if (scoped?.hookSpecificOutput?.permissionDecision === 'deny') return scoped
   const prepared = scoped?.hookSpecificOutput?.updatedInput ?? input.tool_input

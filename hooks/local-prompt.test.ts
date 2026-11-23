@@ -13,15 +13,14 @@ const CONVERSATION_ID = 'cb68f9e2-9c97-426a-92c9-3354acdc6930'
 const CONNECTION_ID = '40fb7b3f-cfe4-4468-9485-42e7ed2ce2a3'
 const BOND = `${HOME}/.devspec/remote-control/local/claude-code/${CONVERSATION_ID}.json`
 
-// The manifest requires a token, and Claude Code admits the module only with
-// options that fit it.
-const OPTIONS = { options: { devspec_token: 'dvs_local_prompt_test' } }
+// The manifest's own defaults: nothing is required since browser sign-in (item 47f0dbdf).
+const OPTIONS = {}
 
 type TestOn = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
 
 function harness(on: TestOn, files: Map<string, string>, { runFails = false } = {}) {
   mock.env(on, { HOME })
-  const seen = { order: [] as string[], runs: [] as Array<{ argv: readonly string[]; stdin: unknown }> }
+  const seen = { order: [] as string[], runs: [] as Array<{ argv: readonly string[]; stdin: unknown }>, recalls: 0 }
   on('fs.read', ($, e) => {
     const text = files.get(e.path)
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -29,6 +28,11 @@ function harness(on: TestOn, files: Map<string, string>, { runFails = false } = 
   })
   on('session.id', () => ({ value: CONVERSATION_ID }))
   on('process.run', ($, e) => {
+    // The prompt's recall runs beside the mirror (turn-recall.test.ts); counted apart.
+    if (String(e.argv[1]).endsWith('/hooks/scripts/turn-recall.mjs')) {
+      seen.recalls++
+      return { value: { exitCode: 0, stdout: '{}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     seen.order.push('mirror')
     seen.runs.push({ argv: e.argv, stdin: e.init?.stdin })
     if (runFails) throw new Error('spawn node ENOENT')

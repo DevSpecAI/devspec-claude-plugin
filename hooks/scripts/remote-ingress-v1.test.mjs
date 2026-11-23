@@ -2,7 +2,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  isProjectIncidentsProjectionV1,
+  isSystemNoticeV1,
   isUnreadableSystemNoticeV1,
+  NOTICE_AUDIENCES,
   READABLE_SYSTEM_NOTICE_KINDS,
   normalizeRemoteIngressV1,
   renderAdvisoryContext,
@@ -16,7 +19,17 @@ import {
   REMOTE_INGRESS_SYSTEM_NOTICE_CONTRACT_VERSION,
   REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION,
 } from './remote-ingress-v1.mjs'
-import { remoteIngressNegotiationArguments } from './devspec-remote-poll.mjs'
+import {
+  appendCanonicalInbox,
+  remoteIngressNegotiationArguments,
+  roomChangesSince,
+  writeRoomState,
+} from './devspec-remote-poll.mjs'
+import {
+  buildCanonicalCommandEvents,
+  HOST_NOTIFICATION_LINE_MAX_CHARS,
+  parseInboxBatches,
+} from './devspec-remote-wait.mjs'
 
 const CONNECTION = '10000000-0000-4000-8000-000000000001'
 const OWNER = '20000000-0000-4000-8000-000000000002'
@@ -714,24 +727,69 @@ describe('strict 1.4 system notices', () => {
     assert.equal(result.envelope.system_notices[0].records.length, 2)
   })
 
-  // The channel version this plugin negotiates (2: the one that carries findings)
-  // is not the shape version inside each notice. DevSpec's version 2 adds kinds and
-  // changes none, so a server_notice on a version-2 channel still says `version: 1`
-  // and must be read in full, exactly as before (1fd34942, item 0b26f6ea).
-  it('reads a version-1 server_notice body delivered over the version-2 channel it asks for', () => {
-    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 2)
-    const notice = serverNotice()
-    assert.equal(notice.version, 1)
-    const result = normalizeRemoteIngressV1(noticed({
-      commands: [],
-      command_message_ids: [],
-      wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
-      system_notices: [notice],
-      window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
-    }), CONNECTION)
-    assert.equal(result.ok, true)
-    assert.deepEqual(result.envelope.system_notices, [notice])
-    assert.equal(isUnreadableSystemNoticeV1(notice), false)
+  // The channel version this plugin negotiates is not the shape version inside each
+  // notice. DevSpec's version 2 adds kinds and changes none, and version 3 adds one
+  // field to every kind, `audience` (item a868f41f), so a notice on the version-3
+  // channel still says `version: 1` and must be read in full (1fd34942, item 0b26f6ea).
+  it('reads a labelled version-1 server_notice body delivered over the version-3 channel it asks for', () => {
+    assert.equal(remoteIngressNegotiationArguments().system_notice_version, 3)
+    assert.deepEqual(NOTICE_AUDIENCES, ['needs_person', 'for_the_record'])
+    for (const audience of NOTICE_AUDIENCES) {
+      const notice = serverNotice({ audience })
+      assert.equal(notice.version, 1)
+      const result = normalizeRemoteIngressV1(noticed({
+        commands: [],
+        command_message_ids: [],
+        wake: { kind: 'system_notice', active: true, reason_id: 'exact_connection_system_notice' },
+        system_notices: [notice],
+        window: metadata([], { policy_version: REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION }),
+      }), CONNECTION)
+      assert.equal(result.ok, true, audience)
+      assert.deepEqual(result.envelope.system_notices, [notice])
+      assert.equal(isUnreadableSystemNoticeV1(notice), false)
+    }
+  })
+
+  it('takes DevSpec\'s label on every kind it reads, and refuses any other value for it', () => {
+    const unlinked = {
+      version: 1,
+      kind: 'unlinked_commit_item_review',
+      notice_id: '71000000-0000-4000-8000-000000000002',
+      commit_sha: 'a'.repeat(40),
+      task_id: '81000000-0000-4000-8000-000000000003',
+      task_title: 'Sign in with a passkey',
+      branch: 'feat/passkeys',
+      contract_uri: 'devspec://product/remote-ingress-contract',
+      allowed_outcomes: ['correct_item', 'link_item', 'resolve_duplicate', 'dismiss_item', 'confirm_item_correct', 'defer_follow_up'],
+      allowed_tools: ['get_task', 'update_task', 'link_tasks', 'supersede_task'],
+    }
+    for (const audience of NOTICE_AUDIENCES) {
+      assert.equal(isSystemNoticeV1({ ...unlinked, audience }), true, `unlinked ${audience}`)
+      assert.equal(isSystemNoticeV1(serverNotice({ audience })), true, `server ${audience}`)
+    }
+    for (const audience of [null, '', 'later', 'NEEDS_PERSON', 'nobody', 1, ['for_the_record']]) {
+      assert.equal(isSystemNoticeV1({ ...unlinked, audience }), false, `unlinked ${JSON.stringify(audience)}`)
+      assert.equal(isSystemNoticeV1(serverNotice({ audience })), false, `server ${JSON.stringify(audience)}`)
+    }
+    // The label is the one key version 3 adds; any other still fails closed.
+    assert.equal(isSystemNoticeV1(serverNotice({ audience: 'for_the_record', priority: 'high' })), false)
+    assert.equal(isSystemNoticeV1({ ...unlinked, audience: 'for_the_record', ask: 'Approve it' }), false)
+  })
+
+  // A notice the poller wrote to the inbox before this version asked for 3 has no
+  // label. It is read as it always was, as DevSpec reads one queued before labels
+  // existed: an unknown never makes a notice quiet.
+  it('still reads an unlabelled notice written before this plugin asked for version 3', () => {
+    assert.equal(isSystemNoticeV1(serverNotice()), true)
+  })
+
+  // A record's link may be as long as DevSpec allows it to be (1,000 characters,
+  // ServerNoticeRecordV1Schema). A shorter limit here turned such a notice into
+  // "not readable by this plugin version" (item 4cc685f1).
+  it('reads a record whose link is as long as DevSpec allows, and no longer', () => {
+    const withUrl = (length) => serverNotice({ records: [{ ...serverNotice().records[0], url: `https://devspec.example/${'a'.repeat(length - 24)}` }] })
+    assert.equal(isSystemNoticeV1(withUrl(1000)), true)
+    assert.equal(isSystemNoticeV1(withUrl(1001)), false)
   })
 
   it('rejects malformed server_notice payloads (missing records, extra keys, bad contract_uri)', () => {
@@ -779,5 +837,89 @@ describe('strict 1.4 system notices', () => {
       assert.equal(isUnreadableSystemNoticeV1(bad) && !READABLE_SYSTEM_NOTICE_KINDS.includes(bad.kind), false)
       assert.equal(normalizeRemoteIngressV1(env([bad]), CONNECTION).ok, false)
     }
+  })
+})
+
+describe('passive project_incidents projection (7115301e)', () => {
+  function sampleProjectIncidents() {
+    return {
+      version: 1,
+      authority: 'advisory_read_awareness',
+      recent_resolved_window_minutes: 60,
+      active: [
+        {
+          id: '91000000-0000-4000-8000-000000000001',
+          short_code: '91000000',
+          kind: 'checks_failing',
+          kind_label: 'Checks failing',
+          title: 'CI typecheck failing on staging',
+          summary: 'Shared type error in packages/core',
+          state: 'handled',
+          since: '2026-11-12T01:00:00.000Z',
+          last_seen_at: '2026-11-12T01:15:00.000Z',
+          status_line: 'Being handled by Claude Code · Quiet Otter',
+          handler: {
+            kind: 'agent_connection',
+            label: 'Claude Code · Quiet Otter',
+            user_id: null,
+            connection_id: CONNECTION,
+            run_id: null,
+            expires_at: '2026-11-12T01:45:00.000Z',
+          },
+          decision_prompt: null,
+          blocked_pull_request_count: 2,
+          blocked_task_count: 1,
+        },
+      ],
+      recently_resolved: [
+        {
+          id: '92000000-0000-4000-8000-000000000002',
+          short_code: '92000000',
+          kind: 'deploy_failed',
+          kind_label: 'Deployment failed',
+          title: 'Vercel production build failed',
+          state: 'cleared',
+          resolved_at: '2026-11-12T00:50:00.000Z',
+          resolution_kind: 'signal_cleared',
+          resolution_summary: 'Green deployment succeeded',
+        },
+      ],
+      truncated: { active_omitted: 0, resolved_omitted: 0 },
+      note: 'Background awareness only.',
+    }
+  }
+
+  it('validates canonical projections, writes room_state, and keeps Monitor lines within 500 chars', () => {
+    const projection = sampleProjectIncidents()
+    assert.equal(isProjectIncidentsProjectionV1(projection), true)
+    assert.equal(isProjectIncidentsProjectionV1({ ...projection, active: [], recently_resolved: [] }), false)
+
+    let writtenDoc = null
+    const pollRes = { session_id: TURN, ingress: envelope(), project_incidents: projection }
+    writeRoomState(CONNECTION, pollRes, {}, { write: (_path, doc) => { writtenDoc = doc } })
+    assert.equal(writtenDoc.sections.project_incidents, 'present')
+    assert.deepEqual(writtenDoc.project_incidents, projection)
+
+    const diff = roomChangesSince(pollRes, null, {})
+    assert.ok(diff.changed.includes('project_incidents'))
+
+    const lines = []
+    const index = { envelopeIds: new Set(), commandMessageIds: new Set(), controlIds: new Set(), systemNoticeIds: new Set() }
+    appendCanonicalInbox(CONNECTION, envelope(), index, {
+      sessionId: TURN,
+      channel: 'command',
+      projectIncidents: projection,
+      writeRecord: (_conn, rec) => {
+        lines.push(JSON.stringify(rec))
+        return true
+      },
+    })
+    const [batch] = parseInboxBatches(lines, CONNECTION)
+    const events = buildCanonicalCommandEvents(batch)
+    const incEvent = events.find((e) => e.type === 'project_incidents')
+    assert.ok(incEvent)
+    assert.equal(incEvent.advisory, true)
+    assert.equal(incEvent.executable, false)
+    assert.ok(JSON.stringify(incEvent).length <= HOST_NOTIFICATION_LINE_MAX_CHARS)
   })
 })

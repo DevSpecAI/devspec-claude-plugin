@@ -1,5 +1,132 @@
 # Changelog
 
+## 0.60.5 - 2026-11-21
+
+- **A commit is no longer stopped because DevSpec could not be reached when Claude claimed a task.** If Claude claims a task and the plugin cannot record the claim, for example because the claim's reply was too large to read and DevSpec could not be reached to look the task up, Claude's next commit now goes through, with a note on how to link it to the task. Before, every commit without a task reference was stopped until then, even while you were offline.
+- A commit is still never tagged with an older task while a newer claim could not be recorded. If DevSpec did confirm the newer claim, the commit is stopped and Claude is asked which task it belongs to, as before. With several tasks claimed, a commit is still stopped and Claude is asked which one, and with one claimed, Claude's commits are still tagged with it automatically.
+- Checking a commit still makes no call to DevSpec: whether the claim was confirmed is settled when Claude claims the task.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.60.4 - 2026-11-20
+
+- **Going ahead on a decision conflict follows what DevSpec accepts.** The notice-handling prompt no longer tells Claude that a bare **Go ahead** on work that conflicts with a decision, convention or requirement is refused until the record is edited first. When you let the work go ahead, DevSpec accepts the answer and marks the overruled record as needing an update.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.60.3 - 2026-11-20
+
+- **A commit made when no task is claimed now goes through, with a note, instead of being stopped.** Updates and automation work that need no task commit normally. The note tells Claude the commit carries no task reference, and that if the work does belong to a task, claiming it before the next commit gets the reference added automatically.
+- With one task claimed, Claude's commits are still tagged with it automatically. With several claimed, a commit is still stopped and Claude is asked which task it belongs to, because the plugin never guesses.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.60.2 - 2026-11-20
+
+- **Claude now suggests turning a recurring problem into a requirement when one comes up.** Before, the instructions told Claude that a requirement is only ever asked for, so it waited for you to use the word "requirement" yourself. Now, when you point out a mistake that keeps creeping back in across tasks, or state a non-negotiable project-wide "always" or "never" rule that can be checked against what future work actually delivers, Claude explains what a requirement is and asks whether you want to record one — while still never saving a requirement without your yes.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.60.1 - 2026-11-20
+
+- **Claude's instructions defer to DevSpec on held work.** When work is held, and when work that reverses a decision can be kept, Claude now follows what DevSpec tells it at that moment instead of a copy of the rule written into the plugin, so its guidance stays right when DevSpec's rules change.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.60.0 - 2026-11-20
+
+- **Updating from a version before 0.54.0? Run `/devspec:devspec.login` once after you update.** Claude Code signs in to DevSpec through your browser, and is signed out of DevSpec until you do (see 0.54.0).
+- **A message sent while Claude Code is busy is now started.** When you send Claude Code a message from DevSpec while it is already working, it receives the message at its next step, and DevSpec now shows that message as being worked on. Before, DevSpec could leave it showing as waiting for the whole turn. Claude Code now tells DevSpec which message it has started each time it picks one up, and which ones it has finished when a turn ends, so a message that arrives just as a turn ends is never marked finished before Claude Code has seen it.
+- **Checks move on when Anthropic stops Claude Code for a usage limit.** If a turn ends because Anthropic refused Claude Code for a usage or rate limit, Claude Code tells DevSpec, and for the next 15 minutes checks go to another agent instead of waiting on this one. The first turn that runs again clears it.
+- **Merge when cleared now switches on.** Claude switches on DevSpec's Merge when cleared as it records its work on a task, or as it records its review of a Dependabot or Renovate update. Earlier versions told it to switch it on in a place that did nothing.
+- **Held work clears the way DevSpec clears it.** When work is held because it breaks a requirement or clashes with a decision by accident, Claude fixes it on its branch and records the work again, and DevSpec's next check clears the hold with no one's OK needed. Only work that reverses someone's decision waits for an OK.
+- **Checks on Claude's own changes.** DevSpec offers a check to a spare agent first, and to the agent that made the change only when none is free. Claude no longer expects every check on its own work to come to it, and rules any that DevSpec says are still waiting for it before carrying on.
+- **More of DevSpec works in a session you drive from your phone or the web without stopping for approval:** reading and updating the project's inventory, recording a review of a Dependabot or Renovate update, reading tasks, decisions, conventions, discussion points, automation runs and a task's testing brief, and spinning off a task. Inventory changes and dependency reviews are recorded for the person who asked, like every other DevSpec change.
+- **Tickets from other tools.** When a task resolves a ticket, issue or error from another tool, Claude links it to the task.
+- **Notices with long links are shown.** A notice from DevSpec whose link was longer than 500 characters showed as unreadable; it is now shown like any other.
+- **The README's data-handling section is up to date.** It now says that the text of each substantive prompt is sent to DevSpec to find the project records that bear on it, lists the folders the plugin writes for recall and commit tracking, and describes where each hook runs today.
+- `/devspec:devspec.remote` now suggests `--name` for choosing the agent's codename.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.59.0 - 2026-11-19
+
+- **A connected Claude Code that is waiting for work now listens instead of asking.** With remote control on, the plugin keeps one connection open to DevSpec, and DevSpec tells it the moment something arrives for it. While nothing is happening, it no longer asks DevSpec every 25 to 30 seconds whether anything has changed. It checks in once every 45 seconds, so DevSpec can keep showing it as connected. This takes a large share of routine load off DevSpec for every agent that sits connected and idle.
+- **Messages still arrive straight away.** When DevSpec pushes something, the plugin fetches it at once. When you start working in the terminal, or a turn ends, the plugin tells DevSpec within about a second, as before.
+- **Nothing is missed if the open connection drops.** The plugin reconnects. If it cannot, it goes back to asking DevSpec every 25 to 30 seconds, the way earlier versions did.
+- Update the plugin and start a new conversation to pick this up. A conversation that is already connected keeps the earlier behaviour until it is restarted.
+
+## 0.58.0 - 2026-11-16
+
+- **Checks and notices reach Claude Code at its next step.** When DevSpec sends a check to rule, or a notice about Claude Code's own work, while Claude Code is busy, it now arrives as soon as the step in progress finishes. Until now it waited for the whole turn to end. It never arrives part-way through a step, and when Claude Code is idle it arrives straight away, as before.
+- **Everything waiting arrives together.** All the checks and notices waiting at that moment are handed over at once, so Claude Code deals with them in one pause and then carries on with what it was doing. They used to arrive one per turn.
+- **The request in progress is left alone.** A check or notice that arrives while Claude Code is answering someone changes nothing about that request: its work is still recorded for the person who asked, the room shows the same working state, and nothing extra is posted in the room. Taking a check and recording its rulings count as the check's own work, whoever's request is in progress.
+- **Claude Code is told where to read how a check is ruled before it takes one.** The message announcing a check now points to DevSpec's own instruction for ruling it, which covers handing a check to a helper agent so its entries stay out of the main conversation.
+- Commands, Stop and other controls, and answers to a question Claude asked are delivered as before.
+- A check or notice that an earlier version was still holding back when its listener stopped is handed over once, the next time the listener starts.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.57.1 - 2026-11-15
+
+- **Project recall gets 5 seconds instead of 3.** After a quiet spell the first lookup on a prompt can take over 2.5 seconds, and at the old 2.8-second limit that prompt went ahead with no cards. The request is now abandoned at 4.8 s and the helper exits by itself at 5 s; DevSpec's own limit moved up in step and now counts from when the request reached it, so it has answered or given up before the plugin stops waiting. A lookup that comes back sooner is used as soon as it arrives, so the normal case is no slower, and signed out, no project, or DevSpec slow or down still lets the prompt through with nothing added.
+- Claude Code's own time limits for the plugin's prompt hooks were raised to match, so the plugin, not Claude Code, decides when to give up.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.57.0 - 2026-11-13
+
+- **Claude asks before it records a decision.** When a choice looks like a decision, Claude asks you whether it was deliberate and why, and records it only when you confirm, with the reason you gave. A no, or no answer, records nothing. It never records a decision on its own initiative or guesses the reason from the code. A task's intent is written in your own everyday words, with your reason.
+- **Requirements.** Before recording a requirement, Claude explains what one is: a standing rule that every later piece of work is checked against, unlike a decision, which later work can revisit. It records one only when someone asks for it. A Maintainer's or the project lead's yes records it straight away; anyone else's yes is a proposal. Before handing work in, Claude checks it against the requirements that apply, reads the documents they link in full, and records which requirements it saw the work meet.
+- **When a save overlaps an existing record.** If a new memory or task closely matches an existing one, Claude prefers to update or extend the existing record, talks a previously turned-down idea through with you before reviving it, and creates a separate record only when one is genuinely meant. Before writing a guide or runbook, it looks for an existing one first.
+- Claude can use DevSpec's requirement tools without stopping for approval in a session you drive from your phone or the web, and each requirement change is recorded for the person who asked.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.56.0 - 2026-11-13
+
+- **Project recall at every substantive turn.** Before a prompt you type (or send through Claude Code's Remote Control, or an SDK turn) and before a DevSpec command this conversation receives, Claude Code asks DevSpec which of the project's records bear on it and adds DevSpec's cards after the prompt: every requirement that applies, standing documents and runbooks, decisions and conventions, active, deferred and turned-down plans, and past shipped work. The plugin passes DevSpec's block through as written, so record kinds DevSpec adds later need no plugin update. Nothing is added when nothing qualifies, and never for a slash command, a short acknowledgement, a /loop firing, another session's message, a check job or a notice. There is no file-edit hook.
+- **Once per conversation, unless it changes.** The cards a conversation was shown are kept by kind, id and version in `~/.devspec/recall/claude-code/<conversation>.json` (readable only by you; at most 512 entries and 32 KB; files untouched for 30 days are removed), so an unchanged record is not shown again and an edited one is. Compaction clears them, so the records can return after the conversation was summarised.
+- **One delivery per prompt.** The hooks module adds the cards (`prompt.submit` context, at the turn's tail, beside the room's copy of the prompt rather than after it); the `UserPromptSubmit` command hook does it only on Claude Code builds without hooks modules. A DevSpec command is recalled on its whole text from the room transcript, even when Claude Code shows the model only its first 500 characters, and once however many notifications carry it.
+- **Never in the way.** Signed out, no project for the folder, DevSpec slow or down: the prompt goes ahead with nothing added. The request is abandoned at 2.8 s and the helper exits by itself at 3 s. It reads the sign-in without renewing it; a renewal that is due runs in its own process.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.55.3 - 2026-11-12
+
+- **Claude knows about open incidents.** When something in your project is broken and DevSpec has an open incident for it, Claude sees it alongside each command and in the room, so it does not start a second fix for the same breakage. It never wakes an idle Claude Code. Claude can read, report and work on incidents when you ask, without stopping for approval in a session you drive remotely. When follow-up on a failed check or deployment runs into a breakage Claude cannot fix on its own branch, it reports an incident linked to the blocked pull request and task.
+- Commits that are not linked to any task are tracked by DevSpec itself; Claude's instructions no longer describe taking ownership of them.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.55.2 - 2026-11-12
+
+- **Claude stays quiet in the room once a notice is settled.** When DevSpec tells Claude about something in its own work that the conversation has already settled, Claude deals with it without posting. It replies in the room only when a choice, a hold, a rejection or a block still needs a person, or when what it changed touched someone else's record.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.55.1 - 2026-11-12
+
+- **Checks that are already settled no longer wake Claude Code.** When a check waited behind a running turn, Claude Code now asks DevSpec whether it still needs ruling just before handing it over, and skips it if DevSpec has settled or withdrawn it. If DevSpec cannot be reached, the check is handed over as before, so none is lost.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.55.0 - 2026-11-09
+
+- **Every change goes through a pull request.** Claude builds each change on its own branch and opens a pull request into the repository's tracking branch wherever pull requests are supported, small changes and unprotected branches included. It never merges before DevSpec's check has passed, and ends its turn instead of watching checks, so it stays free for the checks DevSpec sends it. This version also asked Claude to switch on DevSpec's Merge when cleared, but named the wrong place to do it, so it did not take effect; 0.60.0 fixes that.
+- **A one-time nudge to merge.** When a pull request with Merge when cleared has passed every check on its current commit and DevSpec's GitHub App cannot merge it itself, DevSpec asks Claude once to merge that exact commit with your GitHub credentials.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.54.1 - 2026-11-08
+
+- **Browser sign-in polish.** The page you return to after approving Claude Code shows the DevSpec logo and suits light and dark mode, `/devspec:devspec.login` puts the browser link on its own line with a clearer hint about `--code` on a remote machine, and the confirmation tells you to restart Claude Code to finish connecting.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.54.0 - 2026-11-08
+
+- **Updating from an earlier version? Run `/devspec:devspec.login` once after you update.** Claude Code now signs in to DevSpec through your browser, and is signed out of DevSpec until you do.
+- Run `/devspec:devspec.login`, approve Claude Code on DevSpec's page, and that one sign-in serves Claude Code's own DevSpec tools, remote control and commit tracking. It renews itself before it expires and lasts until you run `/devspec:devspec.logout` or disconnect Claude Code on DevSpec's Agent setup page. After signing in, reconnect DevSpec's tools in `/mcp` (choose devspec, then Reconnect) or start a new session.
+- On a machine your browser cannot reach, such as over SSH, the login command shows a link instead of opening a browser. Approve it anywhere, then paste back the code DevSpec's page shows. `/devspec:devspec.login --code` chooses this yourself.
+- Staging and production sign-ins are kept side by side, so switching the plugin's DevSpec server never needs a fresh sign-in. The sign-in is saved in `~/.devspec/claude-code/auth.json`, readable only by you, and only for the server that approved it.
+- When the sign-in stops working, Claude Code says so plainly: at startup if you are not signed in to the plugin's server, if the sign-in has ended, or if DevSpec says Claude Code was disconnected, and whenever DevSpec refuses it during remote control. Each message says to run `/devspec:devspec.login`. A remote control connection whose sign-in is refused now stops and tells you, rather than retrying out of sight.
+- Retired: the plugin's token setting and reading DevSpec tokens from a project `.mcp.json` or `~/.claude.json`, with the warnings that went with them.
+- Update the plugin and start a new conversation to pick this up.
+
+## 0.53.0 - 2026-11-07
+
+- Claude Code can now rule three more kinds of DevSpec check: open tasks that may be out of date because a discussion point was settled, open tasks that may be out of date because a Goal or one of its outcomes changed, and the whole-backlog out-of-date scan started from the Tasks page. Each one says what it is when it arrives, for example "an out-of-date check is waiting, raised by the settled discussion point …". Claude rules them like any other check. The plugin now asks DevSpec for version 2 of check jobs, which carries these. Checks no longer show a high-risk count, because version 2 does not send one.
+- DevSpec now labels every notice it sends Claude Code about its own work: either it needs a person, or it is for the record. Claude replies in the room only to notices that need a person. A for-the-record notice, such as a pending edit going live or a duplicate of your own task, arrives with no way to reply to it in the room. Any housekeeping it asks for is done quietly, because the outcome is already on the record and in Review. If DevSpec turns down a reply because it was about for-the-record notices only, that is expected, and nothing is retried or reported.
+- Claude no longer posts in the room about ruling checks. The plugin's instructions now point to DevSpec's own rules for when to speak about notices and checks, instead of repeating them. That includes not telling you about folding a duplicate of your own task into the existing one. If a change Claude makes for a for-the-record notice touches someone else's record, DevSpec marks the result and Claude tells you what it changed.
+- This version needs a DevSpec server with check jobs version 2 and notice labels.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.52.6 - 2026-11-05
 
 - The four hooks that report your commits (after a tool runs, and when a turn or subagent stops or fails) are now plain command lines that run the plugin's own commit-observer script with a fixed argument, like every other hook. They used to read the conversation id out of the hook input with search patterns first, which the Anthropic plugin directory reads as a possible unpinned package launcher. The check for a waiting commit now happens inside the script, which stops before loading anything else when nothing is waiting. Commits are reported exactly as before.

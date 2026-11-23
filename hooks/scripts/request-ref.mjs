@@ -6,8 +6,10 @@
  * `request_ref` is a host-only parameter DevSpec hides from the model; a tool that
  * does not declare it simply drops it. The model never states attribution: a
  * request_ref it wrote is dropped before the host's is stamped. A call whose
- * subject is a connection is left unstamped. Nothing known stamps nothing, which
- * leaves DevSpec to resolve who asked itself.
+ * subject is a connection is left unstamped, and so is a check's own work (taking
+ * a check job, recording its rulings), which serves no request whatever turn it
+ * happens in. Nothing known stamps nothing, which leaves DevSpec to resolve who
+ * asked itself.
  *
  * When the turn carries more than one person's request and the agent has not said
  * which it is working on, a write that records who asked is refused, with the
@@ -22,6 +24,15 @@ import { readRequestState, requestRefForWrite, selectableRequests, servableCarri
 const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive|complete|request)$/
 
 /**
+ * A check's own work (item 108de10f, decision b8abe2bb). A check job reaches the
+ * agent at its next step, so it is usually taken and ruled inside the turn of the
+ * command whose change it is about, or by a helper that turn started. Neither call
+ * is that command's work or anyone's request, so neither names one
+ * (`semantics.check_job.own_work` in devspec://product/remote-ingress-contract).
+ */
+export const CHECK_OWN_WORK_TOOLS = new Set(['claim_check_job', 'record_check_rulings'])
+
+/**
  * The DevSpec tools that record who asked for a write and take `request_ref` (the
  * server's `provenance: 'work_claim'` tools). server-tool-names.test.mjs checks
  * this against a devspecv2 checkout beside the plugin.
@@ -29,13 +40,15 @@ const CONNECTION_SUBJECT = /(?:^|_)connection(?:_|$)|^report_(?:pickup|keepalive
 export const REQUEST_REF_TOOLS = new Set([
   'add_commit_reference', 'add_implementation_note', 'archive_resource', 'classify_criterion',
   'create_task', 'create_automation', 'create_resource', 'delete_automation',
-  'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_goals', 'manage_knowledge_links',
+  'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_goals', 'manage_incident', 'manage_knowledge_links',
   'decide_proposal', 'manage_protected_intent', 'record_completed_work', 'record_criterion_verdicts',
-  'record_duplicate_nonmatch', 'record_implementation', 'record_memory',
-  'release_work_item', 'reopen_task', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag', 'resolve_task_flag',
-  'retract_memory', 'spin_off_task', 'supersede_task', 'supersede_memory',
-  'supersede_resource', 'unlink_tasks', 'update_task', 'update_automation',
-  'update_memory', 'update_resource', 'write_project_instruction_rule',
+  'record_dependency_review', 'record_duplicate_nonmatch', 'record_implementation', 'record_inventory_entry',
+  'record_memory', 'record_requirement',
+  'release_work_item', 'reopen_task', 'report_incident', 'resolve_duplicate', 'resolve_memory_flag', 'resolve_resource_flag', 'resolve_task_flag',
+  'retract_inventory_entry', 'retract_memory', 'retract_requirement', 'revise_inventory_entry',
+  'spin_off_task', 'supersede_task', 'supersede_memory',
+  'supersede_requirement', 'supersede_resource', 'unlink_tasks', 'update_task', 'update_automation',
+  'update_memory', 'update_requirement', 'update_resource', 'write_project_instruction_rule',
 ])
 
 /**
@@ -49,7 +62,7 @@ export function stampRequest(toolName, args, connectionId, agentId = null, { hom
     const { request_ref: _written, ...rest } = args
     own = rest
   }
-  if (!connectionId || CONNECTION_SUBJECT.test(toolName)) return { args: own }
+  if (!connectionId || CONNECTION_SUBJECT.test(toolName) || CHECK_OWN_WORK_TOOLS.has(toolName)) return { args: own }
   const dir = path.join(home, '.devspec', 'remote-control', 'connections')
   const state = readRequestState(connectionId, { dir })
   const agent = typeof agentId === 'string' && agentId ? agentId : null

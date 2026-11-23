@@ -44,9 +44,17 @@ export const REMOTE_INGRESS_SYSTEM_NOTICE_POLICY_VERSION = '2026-08-22.1'
  * The shape version each notice carries in its own `version` field. It is not the
  * channel version the poller negotiates (`SYSTEM_NOTICE_CHANNEL_VERSION` in
  * devspec-remote-poll.mjs): channel version 2 adds the `server_notice` kind and
- * changes no shape, so every notice is still `version: 1` (1fd34942).
+ * changes no shape, so every notice is still `version: 1` (1fd34942). Channel
+ * version 3 adds one field to every kind, `audience`, and still leaves the body at
+ * `version: 1` (item a868f41f).
  */
 export const SYSTEM_NOTICE_VERSION = 1
+/**
+ * DevSpec's label on every notice from channel version 3 (item a868f41f): whether it
+ * needs a person or is for the record. What each means is the served contract's
+ * `semantics.notice_audience`, never this plugin's to decide.
+ */
+export const NOTICE_AUDIENCES = Object.freeze(['needs_person', 'for_the_record'])
 export const SENDER_STYLE_VERSION = 1
 export const REMOTE_INGRESS_SCOPE_CONTRACT_VERSION = '1.2.0'
 export const REMOTE_INGRESS_SCOPE_POLICY_VERSION = '2026-08-19.3'
@@ -681,6 +689,125 @@ export function isStillToDiscussProjectionV1(value) {
   )
 }
 
+const PROJECT_INCIDENTS_PROJECTION_VERSION = 1
+const PROJECT_INCIDENTS_MAX_ACTIVE = 25
+const PROJECT_INCIDENTS_MAX_RECENT_RESOLVED = 10
+const INCIDENT_SHORT_CODE = /^[0-9a-f]{8}$/i
+const INCIDENT_KINDS = new Set([
+  'deploy_failed',
+  'checks_failing',
+  'security_advisory',
+  'unlinked_work',
+  'undo_requested',
+  'followup_failed',
+  'reported',
+])
+const ACTIVE_INCIDENT_STATES = new Set(['open', 'handled', 'awaiting_followup', 'needs_decision'])
+const INCIDENT_HANDLER_KINDS = new Set(['person', 'agent_connection', 'automation_run'])
+
+function incidentHandler(value) {
+  return (
+    exactKeys(value, ['kind', 'label', 'user_id', 'connection_id', 'run_id', 'expires_at']) &&
+    INCIDENT_HANDLER_KINDS.has(value.kind) &&
+    nullable(value.label, (s) => nonempty(s) && s.length <= 240) &&
+    nullable(value.user_id, uuid) &&
+    nullable(value.connection_id, uuid) &&
+    nullable(value.run_id, uuid) &&
+    nullable(value.expires_at, datetime)
+  )
+}
+
+function activeIncidentSummary(value) {
+  return (
+    exactKeys(value, [
+      'id',
+      'short_code',
+      'kind',
+      'kind_label',
+      'title',
+      'summary',
+      'state',
+      'since',
+      'last_seen_at',
+      'status_line',
+      'handler',
+      'decision_prompt',
+      'blocked_pull_request_count',
+      'blocked_task_count',
+    ]) &&
+    uuid(value.id) &&
+    typeof value.short_code === 'string' && INCIDENT_SHORT_CODE.test(value.short_code) &&
+    INCIDENT_KINDS.has(value.kind) &&
+    nonempty(value.kind_label) && value.kind_label.length <= 120 &&
+    nonempty(value.title) && value.title.length <= 500 &&
+    nullable(value.summary, (s) => nonempty(s) && s.length <= 500) &&
+    ACTIVE_INCIDENT_STATES.has(value.state) &&
+    datetime(value.since) &&
+    datetime(value.last_seen_at) &&
+    nonempty(value.status_line) && value.status_line.length <= 500 &&
+    nullable(value.handler, incidentHandler) &&
+    nullable(value.decision_prompt, (s) => nonempty(s) && s.length <= 500) &&
+    nonnegativeInt(value.blocked_pull_request_count) &&
+    nonnegativeInt(value.blocked_task_count)
+  )
+}
+
+function resolvedIncidentSummary(value) {
+  return (
+    exactKeys(value, [
+      'id',
+      'short_code',
+      'kind',
+      'kind_label',
+      'title',
+      'state',
+      'resolved_at',
+      'resolution_kind',
+      'resolution_summary',
+    ]) &&
+    uuid(value.id) &&
+    typeof value.short_code === 'string' && INCIDENT_SHORT_CODE.test(value.short_code) &&
+    INCIDENT_KINDS.has(value.kind) &&
+    nonempty(value.kind_label) && value.kind_label.length <= 120 &&
+    nonempty(value.title) && value.title.length <= 500 &&
+    (value.state === 'cleared' || value.state === 'closed') &&
+    datetime(value.resolved_at) &&
+    nullable(value.resolution_kind, (s) => nonempty(s) && s.length <= 120) &&
+    nullable(value.resolution_summary, (s) => nonempty(s) && s.length <= 500)
+  )
+}
+
+/** Passive project incidents projection carried beside changed poll responses (7115301e). */
+export function isProjectIncidentsProjectionV1(value) {
+  return (
+    exactKeys(value, [
+      'version',
+      'authority',
+      'recent_resolved_window_minutes',
+      'active',
+      'recently_resolved',
+      'truncated',
+      'note',
+    ]) &&
+    value.version === PROJECT_INCIDENTS_PROJECTION_VERSION &&
+    value.authority === 'advisory_read_awareness' &&
+    positiveInt(value.recent_resolved_window_minutes) &&
+    Array.isArray(value.active) &&
+    value.active.length <= PROJECT_INCIDENTS_MAX_ACTIVE &&
+    value.active.every(activeIncidentSummary) &&
+    new Set(value.active.map((row) => row.id)).size === value.active.length &&
+    Array.isArray(value.recently_resolved) &&
+    value.recently_resolved.length <= PROJECT_INCIDENTS_MAX_RECENT_RESOLVED &&
+    value.recently_resolved.every(resolvedIncidentSummary) &&
+    new Set(value.recently_resolved.map((row) => row.id)).size === value.recently_resolved.length &&
+    value.active.length + value.recently_resolved.length >= 1 &&
+    exactKeys(value.truncated, ['active_omitted', 'resolved_omitted']) &&
+    nonnegativeInt(value.truncated.active_omitted) &&
+    nonnegativeInt(value.truncated.resolved_omitted) &&
+    nonempty(value.note) && value.note.length <= 500
+  )
+}
+
 const FULL_LOWERCASE_SHA = /^[0-9a-f]{40}$/
 const UNLINKED_COMMIT_NOTICE_OUTCOMES = [
   'correct_item',
@@ -705,6 +832,11 @@ function exactStringTuple(value, expected) {
   )
 }
 
+/**
+ * One record a server notice names, held to DevSpec's own limits for it
+ * (ServerNoticeRecordV1Schema in packages/core/src/connections/system-notices.ts):
+ * a notice within them must never fail closed here.
+ */
 function serverNoticeRecord(value) {
   return (
     exactKeys(value, ['label', 'record_type', 'record_id', 'title', 'text', 'url']) &&
@@ -713,20 +845,32 @@ function serverNoticeRecord(value) {
     nonempty(value.record_id) && value.record_id.length <= 200 &&
     nullable(value.title, (title) => nonempty(title) && title.length <= 500) &&
     nonempty(value.text) && value.text.length <= 8000 &&
-    nullable(value.url, (url) => nonempty(url) && url.length <= 500)
+    nullable(value.url, (url) => nonempty(url) && url.length <= 1000)
   )
+}
+
+/**
+ * `audience`, the one field channel version 3 adds to every kind, as exactly one of
+ * DevSpec's two labels. It may be absent: a notice the poller wrote to the inbox
+ * before this plugin asked for 3 has none, and is handled as it always was, the way
+ * DevSpec reads a notice queued before labels existed (an unknown never makes a
+ * notice quiet). Any other value, or any other added key, still fails closed.
+ */
+function noticeAudienceOk(value) {
+  return !Object.hasOwn(value, 'audience') || NOTICE_AUDIENCES.includes(value.audience)
 }
 
 export function isSystemNoticeV1(value) {
   if (!record(value) || value.version !== SYSTEM_NOTICE_VERSION || value.contract_uri !== REMOTE_INGRESS_RESOURCE_URI) {
     return false
   }
+  if (!noticeAudienceOk(value)) return false
   if (value.kind === 'unlinked_commit_item_review') {
     return (
-      exactKeys(value, [
+      optionalExactKeys(value, [
         'version', 'kind', 'notice_id', 'commit_sha', 'task_id',
         'task_title', 'branch', 'contract_uri', 'allowed_outcomes', 'allowed_tools',
-      ]) &&
+      ], ['audience']) &&
       uuid(value.notice_id) &&
       typeof value.commit_sha === 'string' && FULL_LOWERCASE_SHA.test(value.commit_sha) &&
       uuid(value.task_id) &&
@@ -738,10 +882,10 @@ export function isSystemNoticeV1(value) {
   }
   if (value.kind === 'server_notice') {
     return (
-      exactKeys(value, [
+      optionalExactKeys(value, [
         'version', 'kind', 'notice_id', 'topic', 'notice_type',
         'summary', 'prompt', 'contract_uri', 'records', 'allowed_outcomes', 'allowed_tools',
-      ]) &&
+      ], ['audience']) &&
       uuid(value.notice_id) &&
       nonempty(value.topic) && value.topic.length <= 120 &&
       nonempty(value.notice_type) && value.notice_type.length <= 120 &&

@@ -30,9 +30,10 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { mcpToolsCall } from './mcp-call.mjs'
+import { mcpToolsCall, PLUGIN_HEADER, pluginHeaderValue } from './mcp-call.mjs'
 import { openRequest } from './requests.mjs'
-import { distinctTokenPairs, enumerateCredentialPairs, hostTokenFromEnv } from './resolve-mcp-auth.mjs'
+import { connectionCredential } from './resolve-mcp-auth.mjs'
+import { refusedCredentialMessage } from './sign-in-notices.mjs'
 import { AGENT_NAME } from './agent-identity.mjs'
 import { captureInstructionContext } from './instruction-tiers.mjs'
 import { carriedControls, carriedControlsPath, pendingControlPath } from './control-relay.mjs'
@@ -52,6 +53,7 @@ import {
   isSessionEventsV1,
   isSessionPollsProjection,
   isStillToDiscussProjectionV1,
+  isProjectIncidentsProjectionV1,
   isRemoteCommandProjectScope,
   normalizeRemoteIngressV1,
   REMOTE_INGRESS_RESOURCE_URI,
@@ -94,6 +96,8 @@ import {
 import { DISMISSAL_KIND, questionEventStartVersion, questionEventAck, questionEventAckArguments, questionEventOffers, persistedDismissalDisposition } from './question-dismissal-events.mjs'
 import { attachmentFromPoll } from './local-turn.mjs'
 import { readTurnActivity, turnIsLive } from './turn-liveness.mjs'
+import { clearTurnCommands, completionArguments, deliveredCommands, pickupArguments, recordTurnCommands } from './turn-commands.mjs'
+import { usageRefusalArguments } from './usage-refusal.mjs'
 import {
   commandHandoffDecision,
   commandHandoffKey,
@@ -116,8 +120,13 @@ export const ACTIVE_PLAN_PROJECTION_VERSION = 1
  * finding and the Agents page shows it "Not receiving findings" (1fd34942, item
  * 0b26f6ea). Version 2 adds kinds and changes none: every notice still arrives with
  * its own `version: 1` body, validated by `isSystemNoticeV1` in remote-ingress-v1.mjs.
+ *
+ * 3 adds DevSpec's label to every notice, `audience: 'needs_person' | 'for_the_record'`
+ * (item a868f41f), and changes nothing else. The wait stream shows a for-the-record
+ * notice without the call that replies to it in the room; what the label means is
+ * the served contract's `semantics.notice_audience`.
  */
-export const SYSTEM_NOTICE_CHANNEL_VERSION = 2
+export const SYSTEM_NOTICE_CHANNEL_VERSION = 3
 export const SENDER_STYLE_VERSION = 1
 /**
  * Check jobs on the wake channel (item f7b8c8d3, DevSpec item 55d71b0c, decision
@@ -128,8 +137,14 @@ export const SENDER_STYLE_VERSION = 1
  * untaken or unfinished job when the agent's turn ends; this host's busy is its turn,
  * from Claude Code's own prompt and Stop hooks (mirror-turn.mjs), which the poller
  * re-asserts while that turn is live.
+ *
+ * Version 2 (DevSpec item 1d89fe56): the envelope drops `high_risk`, and a job may
+ * also name a settled discussion point, a Goal, or the manual whole-backlog
+ * out-of-date scan. The version sets the exact envelope and which records a job may
+ * name (the served contract's `semantics.check_job.envelope` and `.records`), so this
+ * poller reads version 2 only: a job its version does not carry is never sent.
  */
-export const CHECK_JOB_VERSION = 1
+export const CHECK_JOB_VERSION = 2
 
 /**
  * The ingress ladder we ask for, and it is nested: each tier requires the one
@@ -379,6 +394,8 @@ function clearTurnMarker(connectionId) {
   } catch {
     /* ignore — next tick re-reads it anyway */
   }
+  // Nothing is working, so the commands that turn started are already closed.
+  clearTurnCommands(connectionId, { dir: CONNECTIONS_DIR })
 }
 
 /**
@@ -624,19 +641,25 @@ export function validateAutomationRunDispatch(dispatch, connectionId) {
 }
 
 /**
- * The check-job wake envelope, exactly (CHECK_JOB_WAKE_KEYS in DevSpec's
- * coherence/check-jobs.ts, item 55d71b0c): inbox metadata only, never record text.
- * Which record, which kind of check, how many entries and how many of those are high
- * risk, and whether this agent made the change. The job itself (what to rule, by
- * which definition) is only ever read through claim_check_job.
+ * The check-job wake envelope of version 2, exactly (CHECK_JOB_WAKE_KEYS[2] in
+ * DevSpec's coherence/check-jobs.ts, items 55d71b0c and 1d89fe56): inbox metadata
+ * only, never record text. Which record, which kind of check, how many entries, and
+ * whether this agent made the change. The job itself (what to rule, by which
+ * definition) is only ever read through claim_check_job.
  */
 const CHECK_JOB_KEYS = [
-  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'high_risk', 'yours',
+  'id', 'kind', 'check_job_id', 'check_kind', 'record', 'entries', 'yours',
   'offered_at', 'delivery_connection_id',
 ]
 const CHECK_JOB_RECORD_KEYS = ['type', 'id', 'title']
 const CHECK_KINDS = ['conflict', 'conflict_decisions', 'duplicate', 'staleness']
-const CHECK_RECORD_TYPES = ['task', 'memory', 'artifact', 'proposal']
+/**
+ * What a version-2 job may name: a task, a decision (memory), a document (artifact)
+ * or a pending version (proposal), and, new in 2, the settled discussion point or
+ * Goal an open-task out-of-date check was raised by, or the manual whole-backlog
+ * out-of-date scan's own record.
+ */
+export const CHECK_RECORD_TYPES = Object.freeze(['task', 'memory', 'artifact', 'proposal', 'discussion_point', 'goal', 'backlog_scan'])
 
 function hasExactKeys(value, keys) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
@@ -663,7 +686,6 @@ export function validateCheckJobDispatch(dispatch, connectionId) {
     // A record with no title arrives with an empty one, never a missing key.
     typeof record.title === 'string' &&
     Number.isInteger(dispatch.entries) && dispatch.entries >= 0 &&
-    Number.isInteger(dispatch.high_risk) && dispatch.high_risk >= 0 && dispatch.high_risk <= dispatch.entries &&
     typeof dispatch.yours === 'boolean' &&
     typeof dispatch.offered_at === 'string' && !Number.isNaN(Date.parse(dispatch.offered_at)) &&
     dispatch.delivery_connection_id === connectionId
@@ -812,6 +834,7 @@ export function appendCanonicalInbox(
     instructionContextFile = null,
     channel = 'context',
     questionHandoff = null,
+    projectIncidents = null,
     writeRecord = appendDurableRecord,
   } = {},
 ) {
@@ -870,6 +893,9 @@ export function appendCanonicalInbox(
     ...(channel === 'command' && questionHandoff && executeMessageIds.includes(questionHandoff.source_message_id)
       ? { question_handoff: questionHandoff }
       : {}),
+    ...(channel === 'command' && isProjectIncidentsProjectionV1(projectIncidents)
+      ? { project_incidents: projectIncidents }
+      : {}),
   }
   if (!writeRecord(connectionId, record)) return { ok: false, appended: false }
   index.envelopeIds.add(ingress.envelope_id)
@@ -900,6 +926,7 @@ export function appendWakeDispatches(
   index,
   sessionId,
   writeRecord = appendDurableRecord,
+  { projectIncidents = null } = {},
 ) {
   const validated = []
   for (const offered of Array.isArray(dispatches) ? dispatches : []) {
@@ -907,6 +934,7 @@ export function appendWakeDispatches(
     if (!parsed.ok) return { ok: false, appended: 0, checkJobs: 0, error: parsed.error }
     validated.push(parsed.dispatch)
   }
+  const validIncidents = isProjectIncidentsProjectionV1(projectIncidents) ? projectIncidents : null
   let appended = 0
   let checkJobs = 0
   for (const dispatch of validated) {
@@ -919,6 +947,7 @@ export function appendWakeDispatches(
       received_at: new Date().toISOString(),
       dispatch_cursor: dispatchCursor,
       dispatch,
+      ...(type === 'automation_run' && validIncidents ? { project_incidents: validIncidents } : {}),
     }
     if (!writeRecord(connectionId, record)) {
       return { ok: false, appended, checkJobs, error: `${type} inbox persistence failed` }
@@ -943,6 +972,24 @@ export function disabledStatePatch(reason) {
     // truth (brief e691c68a) — and devspec-remote-wait.mjs:533 reads this flag.
     ended_from_ui: reason === 'ui' || reason === 'ended_from_ui',
     end_reason: reason,
+  }
+}
+
+/**
+ * Stand this connection down because its DevSpec sign-in no longer works, recording the
+ * plain sentence for the person. The wake reader (devspec-remote-wait.mjs) prints it
+ * once as this connection's last event, so a refused sign-in is never silent. A person
+ * fixes it by signing in again and reconnecting; nothing here retries.
+ */
+export function standDownSignedOut(connectionId, message, paths = {}) {
+  const said = typeof message === 'string' && message.trim()
+    ? message.trim()
+    : 'DevSpec no longer accepts this sign-in. Run /devspec:devspec.login to sign in again.'
+  process.stderr.write(`devspec-remote-poll: sign-in refused — standing down: ${said}\n`)
+  try {
+    patchConnectionState(connectionId, { ...disabledStatePatch('signed_out'), end_message: said }, paths)
+  } catch (e) {
+    process.stderr.write(`devspec-remote-poll: failed to disable state: ${e.message}\n`)
   }
 }
 
@@ -1033,6 +1080,7 @@ export function roomChangesSince(res, activity, seen = {}) {
     session_polls: isSessionPollsProjection(res?.session_polls) ? JSON.stringify(res.session_polls) : null,
     still_to_discuss: isStillToDiscussProjectionV1(res?.still_to_discuss) ? JSON.stringify(res.still_to_discuss) : null,
     active_session_plans: isActiveSessionPlansProjectionV1(plans) ? JSON.stringify(plans) : null,
+    project_incidents: isProjectIncidentsProjectionV1(res?.project_incidents) ? JSON.stringify(res.project_incidents) : null,
     // The references and how many events are held: a new event is a change.
     session_activity: activity ? JSON.stringify({ items: activity.items, events: activity.events.length }) : null,
   }
@@ -1084,6 +1132,7 @@ export function writeRoomState(
   const polls = isSessionPollsProjection(res?.session_polls) ? res.session_polls : null
   const discuss = isStillToDiscussProjectionV1(res?.still_to_discuss) ? res.still_to_discuss : null
   const plans = isActiveSessionPlansProjectionV1(ingress?.active_session_plans) ? ingress.active_session_plans : null
+  const incidents = isProjectIncidentsProjectionV1(res?.project_incidents) ? res.project_incidents : null
   const notices = Array.isArray(ingress?.system_notices) ? ingress.system_notices : null
   const body = {
     advisory: true,
@@ -1096,6 +1145,7 @@ export function writeRoomState(
     session_polls: polls,
     still_to_discuss: discuss,
     active_session_plans: plans,
+    project_incidents: incidents,
     system_notices: notices ?? [],
     session_activity: activity,
     transcript,
@@ -1103,6 +1153,7 @@ export function writeRoomState(
       session_polls: polls ? 'present' : 'none_or_unavailable',
       still_to_discuss: discuss ? 'present' : 'none_or_unavailable',
       active_session_plans: plans ? 'present' : ingress ? 'none' : 'not_sent',
+      project_incidents: incidents ? 'present' : 'none_or_unavailable',
       system_notices: notices === null ? 'not_sent' : notices.length > 0 ? 'present' : 'none',
       // References and observed changes. `unavailable` means the last read failed;
       // what was seen before still stands as history.
@@ -1273,13 +1324,12 @@ export function splitRoomWindow({ commands, ownerAmbient, roomContext, seed = fa
 
 /**
  * Map a turn-active transition (previous loop tick → this loop tick) to the
- * connection activity verb the poller emits DIRECTLY (item 71a8b201). This is the
- * clean end state: the poller drives the activity state machine from its own
- * turn-active signal instead of leaving the server to translate the legacy
- * busy-heartbeat (syncActivityFromBusy). Driven by the poller's turn marker, so it
- * is host-agnostic (Grok works too — no per-host Stop hook needed).
+ * connection activity verb the poller emits DIRECTLY (item 71a8b201): the poller
+ * drives the activity state machine from its own turn-active signal, because busy
+ * never starts a room command (DevSpec item 6d767a58).
  *
- *   false → true  = a turn just started (owner-command pickup / local turn) → 'pickup'
+ *   false → true  = a turn just started (room commands, already named as they
+ *                   were handed over, or a turn no command started)          → 'pickup'
  *   true  → true  = still working this turn (per heartbeat/loop tick)        → 'keepalive'
  *   true  → false = the turn ended (marker cleared by Stop / wait re-arm)    → 'complete'
  *   false → false = idle, nothing to report                                  → null
@@ -1473,6 +1523,282 @@ function deliverAdvisory(connectionId, advisoryMsgs, sessionId) {
   appendInbox(connectionId, delivered, { type: 'advisory_context', sessionId })
 }
 
+// ---------------------------------------------------------------------------
+// SSE Push Channel (parity with Pi push-channel.ts, falls back to poll_connection)
+// ---------------------------------------------------------------------------
+
+export const PUSH_RECONNECT_BACKOFF_MS = [1_000, 4_000, 10_000]
+export const PUSH_HEALTHY_MS = 30_000
+export const PUSH_SAFETY_MS = 45_000
+export const PUSH_LOCAL_CHECK_MS = 1_000
+
+export function createPushGate({
+  safetyMs = PUSH_SAFETY_MS,
+  localCheckMs = PUSH_LOCAL_CHECK_MS,
+} = {}) {
+  let connected = false
+  let wakePending = false
+  let wakeWaiter = null
+
+  const notify = () => {
+    if (wakeWaiter) {
+      const fn = wakeWaiter
+      wakeWaiter = null
+      fn()
+    }
+  }
+
+  return {
+    isConnected: () => connected,
+    hasWakePending: () => wakePending,
+    onEvent(evt) {
+      if (!evt) return
+      if (evt.kind === 'hello') {
+        connected = true
+        return
+      }
+      if (
+        evt.kind === 'wake' ||
+        evt.kind === 'ended' ||
+        evt.kind === 'system_notice' ||
+        evt.kind === 'interaction_event' ||
+        evt.kind === 'question_dismissal_event'
+      ) {
+        wakePending = true
+        notify()
+      }
+    },
+    onDisconnect() {
+      connected = false
+      notify()
+    },
+    consumePollWaitMs(fallbackWaitMs) {
+      const waitMs = wakePending || connected ? 0 : fallbackWaitMs
+      wakePending = false
+      return waitMs
+    },
+    async waitIfIdle({ shouldWakeImmediately } = {}) {
+      if (!connected || wakePending) return
+      if (typeof shouldWakeImmediately === 'function' && shouldWakeImmediately()) return
+      await new Promise((resolve) => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          clearTimeout(safetyTimer)
+          clearInterval(localTimer)
+          if (wakeWaiter === finish) wakeWaiter = null
+          resolve()
+        }
+        wakeWaiter = finish
+        const safetyTimer = setTimeout(finish, safetyMs)
+        const localTimer = setInterval(() => {
+          if (!connected || wakePending) {
+            finish()
+            return
+          }
+          if (typeof shouldWakeImmediately === 'function' && shouldWakeImmediately()) {
+            finish()
+          }
+        }, localCheckMs)
+      })
+    },
+  }
+}
+
+export function nextPushReconnectDelayMs({ attempt, openedAtMs, nowMs = Date.now() }) {
+  const effectiveAttempt =
+    openedAtMs !== null && openedAtMs !== undefined && nowMs - openedAtMs >= PUSH_HEALTHY_MS
+      ? 0
+      : attempt
+  if (effectiveAttempt >= PUSH_RECONNECT_BACKOFF_MS.length) {
+    return { delayMs: null, nextAttempt: effectiveAttempt + 1 }
+  }
+  return {
+    delayMs: PUSH_RECONNECT_BACKOFF_MS[effectiveAttempt],
+    nextAttempt: effectiveAttempt + 1,
+  }
+}
+
+export function pushChannelUrl(mcpUrl, connectionId, options = {}) {
+  const base = String(mcpUrl || '').replace(/\/$/, '')
+  const params = new URLSearchParams({
+    connection_id: String(connectionId || ''),
+    system_notice_version: String(options.systemNoticeVersion ?? SYSTEM_NOTICE_CHANNEL_VERSION),
+    interaction_event_version: String(options.interactionEventVersion ?? 1),
+    question_dismissal_event_version: String(options.questionDismissalEventVersion ?? 1),
+    check_job_version: String(options.checkJobVersion ?? CHECK_JOB_VERSION),
+  })
+  return `${base}/connection-stream?${params.toString()}`
+}
+
+export function parseSseFrame(block) {
+  let eventName = 'message'
+  const dataLines = []
+  let sawComment = false
+
+  for (const rawLine of String(block || '').split(/\r?\n/)) {
+    if (!rawLine) continue
+    if (rawLine.startsWith(':')) {
+      sawComment = true
+      continue
+    }
+    const colon = rawLine.indexOf(':')
+    const field = colon === -1 ? rawLine : rawLine.slice(0, colon)
+    let value = colon === -1 ? '' : rawLine.slice(colon + 1)
+    if (value.startsWith(' ')) value = value.slice(1)
+    if (field === 'event') eventName = value
+    else if (field === 'data') dataLines.push(value)
+  }
+
+  if (dataLines.length === 0 && sawComment) {
+    return { kind: 'comment' }
+  }
+  const data = dataLines.join('\n')
+  if (eventName === 'hello') return { kind: 'hello' }
+  if (eventName === 'wake') return { kind: 'wake' }
+  if (eventName === 'ended') {
+    try {
+      const parsed = data ? JSON.parse(data) : {}
+      return {
+        kind: 'ended',
+        endReason: typeof parsed.end_reason === 'string' ? parsed.end_reason : null,
+      }
+    } catch {
+      return { kind: 'ended', endReason: null }
+    }
+  }
+  if (eventName === 'system_notice') {
+    try {
+      const parsed = data ? JSON.parse(data) : null
+      return parsed && typeof parsed === 'object' ? { kind: 'system_notice', notice: parsed } : null
+    } catch {
+      return null
+    }
+  }
+  if (eventName === 'interaction_event') {
+    try {
+      const parsed = data ? JSON.parse(data) : null
+      return parsed && typeof parsed === 'object' ? { kind: 'interaction_event', event: parsed } : null
+    } catch {
+      return null
+    }
+  }
+  if (eventName === 'question_dismissal_event') {
+    try {
+      const parsed = data ? JSON.parse(data) : null
+      return parsed && typeof parsed === 'object'
+        ? { kind: 'question_dismissal_event', event: parsed }
+        : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+export function openPushChannel({
+  mcpUrl,
+  token,
+  connectionId,
+  connectionCapability = null,
+  onEvent,
+  onDisconnect,
+  onFallback,
+  fetchImpl = fetch,
+}) {
+  let closed = false
+  let controller = null
+  let reconnectTimer = null
+  let attempt = 0
+
+  const stop = () => {
+    closed = true
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    if (controller) {
+      controller.abort()
+      controller = null
+    }
+  }
+
+  const scheduleReconnect = (openedAtMs, reason) => {
+    if (closed) return
+    onDisconnect?.(reason)
+    const { delayMs, nextAttempt } = nextPushReconnectDelayMs({ attempt, openedAtMs })
+    attempt = nextAttempt
+    if (delayMs === null) {
+      onFallback?.(`push_reconnect_exhausted:${reason}`)
+      return
+    }
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      void connect()
+    }, delayMs)
+  }
+
+  const connect = async () => {
+    if (closed) return
+    controller = new AbortController()
+    let openedAtMs = null
+    try {
+      const pluginVal = pluginHeaderValue()
+      const cap = typeof connectionCapability === 'function' ? connectionCapability() : connectionCapability
+      const res = await fetchImpl(pushChannelUrl(mcpUrl, connectionId), {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${typeof token === 'function' ? token() : token}`,
+          Accept: 'text/event-stream',
+          ...(pluginVal ? { [PLUGIN_HEADER]: pluginVal } : {}),
+          ...(cap ? { 'x-devspec-connection-capability': cap } : {}),
+        },
+        signal: controller.signal,
+      })
+      const contentType = res.headers?.get?.('content-type') || ''
+      if (!res.ok || !contentType.includes('text/event-stream') || !res.body) {
+        onDisconnect?.(`push_http_${res.status}`)
+        onFallback?.(`push_http_${res.status}`)
+        return
+      }
+      openedAtMs = Date.now()
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (!closed) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let sep = buffer.indexOf('\n\n')
+        while (sep !== -1) {
+          const rawFrame = buffer.slice(0, sep)
+          buffer = buffer.slice(sep + 2)
+          const parsed = parseSseFrame(rawFrame)
+          if (parsed && parsed.kind !== 'comment') {
+            onEvent?.(parsed)
+            if (parsed.kind === 'ended') {
+              stop()
+              return
+            }
+          }
+          sep = buffer.indexOf('\n\n')
+        }
+      }
+      if (!closed) {
+        scheduleReconnect(openedAtMs, 'eof')
+      }
+    } catch (err) {
+      if (closed) return
+      const msg = err instanceof Error ? err.message : String(err)
+      scheduleReconnect(openedAtMs, msg)
+    }
+  }
+
+  void connect()
+  return { close: stop }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   let connectionId = args.connectionId || null
@@ -1489,30 +1815,20 @@ async function main() {
     process.exit(1)
   }
 
-  let token = state?.token || null
-  let mcpUrl = state?.mcp_url || null
-  if (!token) {
-    // Write caches the proven pair. Without it, guessing among multiple keys is
-    // how the poller used to heartbeat the wrong identity (item 8bb707fd).
-    const { pairs } = enumerateCredentialPairs(state?.cwd || process.cwd(), {
-      hostToken: hostTokenFromEnv(process.env),
-    })
-    const only = distinctTokenPairs(pairs)
-    if (only.length !== 1) {
-      process.stderr.write(
-        'devspec-remote-poll: no proven token in state. Re-run connect / write — the poller will not guess among multiple DevSpec keys.\n',
-      )
-      process.exit(1)
+  // The credential this connection was registered with, as it is now (item 47f0dbdf).
+  // A browser sign-in's access token changes at every renewal, so it is fetched again
+  // before every call below rather than held from here; the identity never changes.
+  const initialCredential = await connectionCredential(state ?? {})
+  if (!initialCredential.ok) {
+    process.stderr.write(`devspec-remote-poll: ${initialCredential.error || 'no DevSpec credential for this connection'}\n`)
+    if (initialCredential.reason === 'signed_out' || initialCredential.reason === 'identity_changed') {
+      standDownSignedOut(connectionId, initialCredential.error)
     }
-    token = only[0].token
-    mcpUrl = only[0].mcp_url
-  }
-  if (!token) {
-    process.stderr.write(
-      'devspec-remote-poll: no token. Run remote-control-state.mjs write after connect, or set DEVSPEC_MCP_TOKEN.\n',
-    )
     process.exit(1)
   }
+  let token = initialCredential.token
+  let mcpUrl = initialCredential.mcp_url
+  const credentialSource = initialCredential.source
   mcpUrl = mcpUrl || 'https://api.devspec.ai/api/mcp'
   // Identity is a fixed property of THIS plugin — never trust state/args for it.
   const agentName = AGENT_NAME
@@ -1571,12 +1887,20 @@ async function main() {
     })
   }
 
-  // Emit a connection-scoped activity verb DIRECTLY (item 71a8b201). Best-effort:
-  // this is ADDITIVE to the busy-heartbeat above (the server's syncActivityFromBusy
-  // translation stays the safety net during rollout), so a failed verb must NEVER
-  // break the poll loop — log to stderr and move on. attempt_id is omitted; the
-  // server resolves this connection's current attempt (pickup opens one for a
-  // locally-initiated turn; keepalive/complete refresh/close the working attempt).
+  // Emit a connection-scoped activity verb DIRECTLY (item 71a8b201). Best-effort: a
+  // failed verb must NEVER break the poll loop — log to stderr and move on. Busy
+  // never starts a room command (DevSpec item 6d767a58), so these verbs are what
+  // start and end the turn's activity:
+  //
+  // - pickup: a turn the poller started by handing over room commands was already
+  //   named as it did (nameCommandPickups), so nothing more is sent. Any other turn
+  //   (an automation run, a background job's wake) is the connection's current one.
+  // - keepalive: the working attempt, whichever it is.
+  // - complete: the backstop for a turn whose end no Stop hook reported. It names
+  //   the commands this poller started that turn with; a turn it started none for
+  //   finishes only an activity no command started (turn-commands.mjs), because a
+  //   command the prompt hook named is the Stop hook's to finish, and one delivered
+  //   just as the turn ended belongs to the next turn.
   //
   // While an exact directed-question continuation is open, the generic verbs are the
   // wrong writer for it (see interactionActivityPlan): pickup/complete would touch an
@@ -1585,6 +1909,12 @@ async function main() {
   // Working stays truthful for as long as the model really is working.
   async function emitActivityVerb(verb) {
     if (!verb) return
+    // The turn is over however its end is reported: what it started goes with it.
+    const startedThisTurn = verb === 'complete' ? turnCommandsNamed : []
+    if (verb === 'complete') {
+      turnCommandsNamed = []
+      turnStartNamed = false
+    }
     const plan = interactionActivityPlan({ verb, continuation: interactionContinuation })
     if (plan.kind === 'suppress') return
     if (plan.kind === 'exact_keepalive') {
@@ -1593,34 +1923,57 @@ async function main() {
     }
     const name = ACTIVITY_VERB_TOOL[verb]
     if (!name) return
-    try {
-      await mcpToolsCall({
-        mcpUrl,
-        token,
-        name,
-        arguments: {
-          connection_id: connectionId,
-          // Name the reason. A completion with none lands as `done`/NULL, which is
-          // indistinguishable from the server's own not-busy sweep — and that ambiguity
-          // is exactly why a 40-minute delay could not be attributed to anything
-          // (item 79c4aa63). This path is the poller seeing the turn marker disappear.
-          ...(verb === 'complete' ? { reason: 'turn_marker_cleared' } : {}),
-        },
-        timeoutMs: 10_000,
-      })
-    } catch (e) {
-      process.stderr.write(`devspec-remote-poll: activity verb ${verb} (${name}) failed: ${e.message}\n`)
-      // The server has no working attempt for us, so our turn marker is stale —
-      // something already completed this turn (typically the agent's own
-      // complete_turn). Keep re-asserting busy and the indicator flickers between
-      // our keepalive and that completion until the turn stops looking live. Drop the marker
-      // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
-      if (isNoWorkingAttemptRefusal(e)) {
-        clearTurnMarker(connectionId)
-        process.stderr.write(
-          'devspec-remote-poll: server reports no working attempt — clearing the stale turn marker\n',
-        )
+    if (verb === 'pickup' && turnStartNamed) {
+      turnStartNamed = false
+      return
+    }
+    // Name the reason. A completion with none lands as `done`/NULL, which is
+    // indistinguishable from the server's own not-busy sweep — and that ambiguity is
+    // exactly why a 40-minute delay could not be attributed to anything (item
+    // 79c4aa63). This path is the poller seeing the turn marker disappear.
+    const calls = verb === 'complete'
+      ? completionArguments({ connectionId, commands: startedThisTurn, reason: 'turn_marker_cleared' })
+      : [{ connection_id: connectionId }]
+    for (const args of calls) {
+      try {
+        await mcpToolsCall({ mcpUrl, token, name, arguments: args, timeoutMs: 10_000 })
+      } catch (e) {
+        activityVerbFailed(verb, name, e)
       }
+    }
+  }
+
+  /**
+   * Start each room command this poller hands over to start a turn, by name
+   * (turn-commands.mjs), and keep them for the turn's end. Best-effort, in the order
+   * they were sent: a pickup that does not land leaves the command waiting, as it was.
+   */
+  async function nameCommandPickups(commands) {
+    if (commands.length === 0) return
+    recordTurnCommands(connectionId, commands, { dir: CONNECTIONS_DIR })
+    turnCommandsNamed.push(...commands)
+    turnStartNamed = true
+    for (const command of commands) {
+      try {
+        await mcpToolsCall({ mcpUrl, token, name: 'report_pickup', arguments: pickupArguments(connectionId, command), timeoutMs: 10_000 })
+      } catch (e) {
+        process.stderr.write(`devspec-remote-poll: report_pickup for message ${command.messageId} failed: ${e.message}\n`)
+      }
+    }
+  }
+
+  function activityVerbFailed(verb, name, e) {
+    process.stderr.write(`devspec-remote-poll: activity verb ${verb} (${name}) failed: ${e.message}\n`)
+    // The server has no working attempt for us, so our turn marker is stale —
+    // something already completed this turn (typically the agent's own
+    // complete_turn). Keep re-asserting busy and the indicator flickers between
+    // our keepalive and that completion until the turn stops looking live. Drop the marker
+    // instead: the next tick reads turnActive=false and settles (item 55d1bac8).
+    if (isNoWorkingAttemptRefusal(e)) {
+      clearTurnMarker(connectionId)
+      process.stderr.write(
+        'devspec-remote-poll: server reports no working attempt — clearing the stale turn marker\n',
+      )
     }
   }
 
@@ -1684,6 +2037,14 @@ async function main() {
   const persistedInbox = readInboxDeliveryIndex(connectionId, sessionId)
   let lastTier = null
   let lastBusySent = null
+  // The usage refusal the last poll reported (usage-refusal.mjs), so a cleared one is
+  // sent as null once rather than never.
+  let lastUsageRefusalSent = null
+  // The room commands this poller named as it handed them over to start a turn
+  // (turn-commands.mjs). That turn's start is then already reported, and its end, if
+  // the poller is the one to see it, names them.
+  let turnCommandsNamed = []
+  let turnStartNamed = false
   // Which room-file sections the last delivered command was told had changed, as
   // serialised JSON (roomChangesSince). Empty on boot, so a reconnecting agent is
   // told once what the room holds rather than never.
@@ -2070,6 +2431,10 @@ async function main() {
       catchUp,
     })
     const handoff = offersNegotiable && !ack ? pendingCommandHandoff : null
+    // Anthropic refusing this agent for usage, recorded by the StopFailure hook
+    // (usage-refusal.mjs): every poll says so while it stands, so DevSpec sends this
+    // agent's check jobs to another agent.
+    const usageRefusal = usageRefusalArguments(listenerState?.usage_refused_until, lastUsageRefusalSent, Date.now())
     if (handoff) {
       sentCommandHandoff = { ready: handoff, question_id: interactionContinuation?.question_id ?? null }
       lastSentHandoffKey = commandHandoffKey(handoff)
@@ -2101,6 +2466,7 @@ async function main() {
         ...(catchUp ? { catch_up: true } : {}),
         ...(listenerArmed !== null ? { listener_armed: listenerArmed } : {}),
         unread_commands: unreadCommands,
+        ...usageRefusal,
       },
       // A held request MUST have a client ceiling — fetch has no default timeout, so
       // a silently-dropped connection would wedge the loop with no heartbeat at all.
@@ -2110,6 +2476,7 @@ async function main() {
       // showing Live for the length of a hold after the terminal is gone.
       isAlive: () => !ownerAnchor || ownerAlive(ownerAnchor),
     })
+    if (Object.hasOwn(usageRefusal, 'usage_refused_until')) lastUsageRefusalSent = usageRefusal.usage_refused_until
     // Only a poll that actually returned carried the ACK. A thrown poll leaves it
     // queued, and a lost ACK is recovered by the dedupe path on redelivery anyway —
     // at-least-once means the answer is never the thing that gets lost.
@@ -2276,6 +2643,7 @@ async function main() {
       questionHandoff: sentCommandHandoff?.question_id
         ? { question_id: sentCommandHandoff.question_id, source_message_id: sentCommandHandoff.ready.source_message_id }
         : null,
+      projectIncidents: isProjectIncidentsProjectionV1(res?.project_incidents) ? res.project_incidents : null,
     })
     if (!persisted.ok) return { ok: false, delivered: false }
 
@@ -2310,7 +2678,13 @@ async function main() {
         authoritative: false,
         executable: false,
       }) + '\n')
+      // Commands that start a turn are started by name as they are handed over. One
+      // handed over while a turn is running reaches the model at its next step, and the
+      // prompt hook names it then (mirror-turn.mjs): naming it here would start it
+      // before the model has it, and a turn ending meanwhile would finish it unseen.
+      const startsTurn = !turnIsLive(readTurnMarker(connectionId), { activity: readTurnActivity(connectionId, CONNECTIONS_DIR) })
       writeTurnMarker(connectionId)
+      if (startsTurn) await nameCommandPickups(deliveredCommands(ingress, persisted.executeMessageIds))
       patchState({ last_owner_wake_at: new Date().toISOString() })
       if (persisted.handedOff) {
         // The server retired the question's attempt in the same transaction that opened
@@ -2362,6 +2736,12 @@ async function main() {
       nextDispatchCursor,
       persistedInbox,
       sessionId,
+      appendDurableRecord,
+      {
+        projectIncidents: isProjectIncidentsProjectionV1(res?.project_incidents)
+          ? res.project_incidents
+          : null,
+      },
     )
     if (!persisted.ok) {
       process.stderr.write(`devspec-remote-poll: rejected dispatch (${persisted.error})\n`)
@@ -2388,11 +2768,12 @@ async function main() {
       writeTurnMarker(connectionId)
     }
     // A check job opens no turn here. Busy follows the turn the wake starts (or
-    // the one it is delivered into), from Claude Code's own prompt and Stop hooks,
-    // so it never says Working before the agent is, and never restarts a running
-    // turn's clock, which would detach that turn's own background work
-    // (mirror-turn.mjs). DevSpec drops an untaken job when a turn ends, so busy
-    // has to be the turn and nothing else.
+    // the one it is delivered into, which it leaves as it is: item 108de10f), from
+    // Claude Code's own prompt and Stop hooks, so it never says Working before the
+    // agent is, and never restarts a running turn's clock, which would detach that
+    // turn's own background work (mirror-turn.mjs). DevSpec reads busy to decide
+    // when a job has been left (`semantics.check_job.busy` in the remote ingress
+    // contract), so busy has to be the turn and nothing else.
     if (persisted.checkJobs > 0) {
       process.stdout.write(JSON.stringify({
         type: 'wake',
@@ -2410,6 +2791,23 @@ async function main() {
     `devspec-remote-poll: long-poll mode connection=${connectionId} session=${sessionId || '(none)'} inbox=${inboxPathForConnection(connectionId)}\n`,
   )
 
+  function handlePermanentEnd(reason = 'ended_from_ui') {
+    if (shuttingDown) return
+    shuttingDown = true
+    disableLocalState({ connectionId, reason })
+    process.stdout.write(
+      JSON.stringify({
+        type: 'session_ended',
+        reason,
+        recoverable: false,
+        connection_id: connectionId,
+        message: 'Remote control was ended. Local poller stopping; do not restart.',
+      }) + '\n',
+    )
+    process.stderr.write(`devspec-remote-poll: ended (${reason}) — disabling and exiting\n`)
+    process.exit(1)
+  }
+
   // Turn-active state carried across loop ticks so we emit activity verbs on the
   // TRANSITION (see verbForTurnTransition): pickup on start, keepalive each tick
   // while active, complete on end. Starts false (no turn at boot).
@@ -2424,11 +2822,72 @@ async function main() {
   // clean poll, so only a SUSTAINED absence stands the poller down (brief e691c68a).
   let consecutiveRecoverableEnds = 0
 
+  const pushGate = createPushGate()
+  if (process.env.DEVSPEC_DISABLE_SSE !== '1') {
+    openPushChannel({
+      mcpUrl,
+      token: () => token,
+      connectionId,
+      connectionCapability: () => connectionCapability,
+      onEvent: (evt) => {
+        pushGate.onEvent(evt)
+        if (evt.kind === 'ended') {
+          if (evt.endReason && PERMANENT_END_REASONS.includes(evt.endReason)) {
+            handlePermanentEnd(evt.endReason)
+          }
+        }
+      },
+      onDisconnect: () => {
+        pushGate.onDisconnect()
+      },
+      onFallback: (reason) => {
+        pushGate.onDisconnect()
+        process.stderr.write(
+          `devspec-remote-poll: SSE push unavailable (${reason}) — using poll_connection\n`,
+        )
+      },
+    })
+  }
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    if (
+      !needsSeed &&
+      !catchUpCursor &&
+      !redrainRequested &&
+      !pendingInteractionAck &&
+      !pendingControlAck &&
+      !pendingCommandHandoff
+    ) {
+      await pushGate.waitIfIdle({
+        shouldWakeImmediately: () => {
+          const s = readState(connectionId)
+          if (s && s.enabled === false) return true
+          if (ownerAnchor && !ownerAlive(ownerAnchor)) return true
+          const m = readTurnMarker(connectionId)
+          const liveNow = turnIsLive(m, { activity: readTurnActivity(connectionId, CONNECTIONS_DIR) })
+          if (liveNow !== prevTurnActive) return true
+          const nextCont = activeContinuation(s?.interaction_continuation, {
+            connectionId,
+            sessionId,
+          })
+          if (Boolean(nextCont) !== Boolean(interactionContinuation)) return true
+          return false
+        },
+      })
+    }
+
     const liveState = readState(connectionId)
     if (liveState && liveState.enabled === false) {
       process.stderr.write('devspec-remote-poll: disabled — exiting\n')
+      process.exit(1)
+    }
+    // The current token for this connection's own sign-in, renewed past half its life.
+    const credentialNow = await connectionCredential(liveState ?? state ?? {})
+    if (credentialNow.ok) {
+      token = credentialNow.token
+    } else if (credentialNow.reason === 'signed_out' || credentialNow.reason === 'identity_changed') {
+      standDownSignedOut(connectionId, credentialNow.error)
       process.exit(1)
     }
     refreshSessionTitle(liveState)
@@ -2482,13 +2941,12 @@ async function main() {
     if (turnActive) busyArg = true
     else if (lastBusySent === true) busyArg = false
 
-    // ADDITIVE (item 71a8b201): emit the connection activity verb DIRECTLY off the
-    // turn-active transition (pickup / keepalive / complete). This is ON TOP of the
-    // busy signal the poll carries — both feed the same server-side activity attempt
-    // idempotently, so leaving the busy path untouched keeps the server's
-    // syncActivityFromBusy translation as the safety net during rollout. One tick =
-    // one keepalive (≈25s while a turn runs, well inside the 5-minute working lease).
-    // Best-effort inside emitActivityVerb — a failed verb never breaks the loop.
+    // Emit the connection activity verb off the turn-active transition (pickup /
+    // keepalive / complete, item 71a8b201). The busy signal the poll carries keeps an
+    // activity alive but never starts a room command (DevSpec item 6d767a58), so these
+    // verbs are what start and end one (emitActivityVerb). One tick = one keepalive
+    // (≈25s while a turn runs, well inside the 5-minute working lease). Best-effort
+    // inside emitActivityVerb — a failed verb never breaks the loop.
     await emitActivityVerb(verbForTurnTransition(prevTurnActive, turnActive))
     prevTurnActive = turnActive
 
@@ -2509,8 +2967,9 @@ async function main() {
 
     let res = null
     try {
+      const effectiveWaitMs = pushGate.consumePollWaitMs(tier.waitMs)
       res = await pollOnce({
-        waitMs: tier.waitMs,
+        waitMs: effectiveWaitMs,
         busy: busyArg,
         checkTier: tier.checkTier,
         catchUp: needsSeed,
@@ -2535,6 +2994,21 @@ async function main() {
         needsSeed = true
         patchState({ catch_up_cursor: null })
         continue
+      }
+      // DevSpec refused the credential itself (the person disconnected Claude Code on the
+      // Agent setup page, or the sign-in is no longer valid): retrying cannot fix that,
+      // so stand down and say what to do, once, where the model will see it.
+      const refused = refusedCredentialMessage(e, { endpoint: mcpUrl, source: credentialSource })
+      if (refused) {
+        // Another process may have renewed the sign-in while this call was in flight:
+        // a newer token for the same sign-in is worth one more try before giving up.
+        const renewed = await connectionCredential(readState(connectionId) ?? state ?? {})
+        if (e?.serverCode !== 'signed_out' && renewed.ok && renewed.token !== token) {
+          token = renewed.token
+          continue
+        }
+        standDownSignedOut(connectionId, refused)
+        process.exit(1)
       }
       consecutiveErrors++
       const rateLimited = /rate limit/i.test(e?.message || '')

@@ -34,7 +34,7 @@
  * Usage:
  *   node remote-control-state.mjs write --connection-id <uuid> [--session <uuid>]
  *       [--agent "Claude Code"] [--cwd <path>] [--codename "Colorful Possum"]
- *       [--title "…"] [--local-id <id>] [--owner-pid <pid>] [--host-token <bearer>] [--no-poller]
+ *       [--title "…"] [--local-id <id>] [--owner-pid <pid>] [--no-poller]
  *   node remote-control-state.mjs ensure-poller --connection-id <uuid> [--session <uuid>] [--owner-pid <pid>]
  *   node remote-control-state.mjs disable --connection-id <uuid>
  *   node remote-control-state.mjs disable-local [--agent "Claude Code"] [--local-id <id>]
@@ -59,11 +59,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mcpToolsCall } from './mcp-call.mjs'
 import {
-  enumerateCredentialPairs,
-  hostTokenFromEnv,
-  proveCredentialPair,
+  connectionCredential,
+  credentialRecord,
+  recordedIdentity,
   resolveDevspecMcpAuth,
-  tokensWarningFix,
 } from './resolve-mcp-auth.mjs'
 import {
   AGENT_NAME,
@@ -84,6 +83,7 @@ import {
 import { takeTiersFor, CHANNEL_LIMITS, CHANNEL_RESERVE } from './instruction-tiers.mjs'
 import { roomStatePath, transcriptPaths } from './room-transcript.mjs'
 import { isEntryPoint } from './entry-point.mjs'
+import { status as signInStatus } from './devspec-login.mjs'
 
 const DEVSPEC_DIR = path.join(os.homedir(), '.devspec')
 const LEGACY_PATH = path.join(DEVSPEC_DIR, 'remote-control.json')
@@ -165,7 +165,8 @@ export function redactConnectionState(state) {
     end_reason: state.end_reason || null,
     ended_from_ui: state.ended_from_ui === true,
     updated_at: state.updated_at || null,
-    token_present: typeof state.token === 'string' && state.token.length > 0,
+    // A credential is recorded: the environment token itself, or which browser sign-in.
+    token_present: recordedIdentity(state) !== null,
     connection_capability_present:
       typeof state.connection_capability === 'string' && state.connection_capability.length > 0,
     reconnect: {
@@ -196,8 +197,6 @@ function parseArgs(argv) {
       out['max-age-minutes'] = argv[++i]
     } else if (a === '--owner-pid') {
       out['owner-pid'] = argv[++i]
-    } else if (a === '--host-token' || a === '--host_token') {
-      out['host-token'] = argv[++i]
     } else if (a === '--no-poller' || a === '--skip-poller') {
       out.noPoller = true
     } else if (a === '--force-new' || a === '--new') {
@@ -552,10 +551,10 @@ function disableConnectionState(
  * it. The liveness sweep only ends session-attached connections, so a
  * sessionless one stayed open for good.
  *
- * It uses the credential pair `write` proved and cached for this connection,
- * and only when both halves are there: the key and the server address travel
- * together or not at all (8bb707fd). Guessing a default address would send
- * this key to a server it was never proven against. Same call and end reason
+ * It uses the credential recorded for this connection, as it is now
+ * (`connectionCredential`: the same browser sign-in, renewed, or the same
+ * environment token), and only with the server address recorded beside it: the
+ * credential and the address travel together or not at all (8bb707fd). Same call and end reason
  * as `/devspec:devspec.remote-stop`. `local_stop` is a recoverable end, so a
  * later reconnect from the same conversation can still pick the id back up.
  *
@@ -565,17 +564,17 @@ function disableConnectionState(
 export async function reportConnectionEnded(connectionId, { call = mcpToolsCall, timeoutMs = 5_000 } = {}) {
   if (!connectionId) return { sent: false, reason: 'no_connection' }
   const state = readJson(connectionPath(connectionId)) || {}
-  const token = typeof state.token === 'string' && state.token ? state.token : null
   const mcpUrl = typeof state.mcp_url === 'string' && state.mcp_url ? state.mcp_url : null
-  if (!token || !mcpUrl) {
-    const outcome = { sent: false, reason: 'no_credential_pair' }
+  const credential = recordedIdentity(state) && mcpUrl ? await connectionCredential(state) : null
+  if (!credential?.ok) {
+    const outcome = { sent: false, reason: credential ? credential.reason : 'no_credential_pair' }
     appendConnectionAudit(connectionId, 'connection_end_not_reported', outcome)
     return outcome
   }
   try {
     await call({
-      mcpUrl,
-      token,
+      mcpUrl: credential.mcp_url,
+      token: credential.token,
       name: 'heartbeat_connection',
       arguments: { connection_id: connectionId, status: 'offline', end_reason: 'local_stop' },
       timeoutMs,
@@ -919,16 +918,6 @@ export function resolveLocalAction({
  * persisted so the NEXT register on this conversation can echo it and receive
  * `instructions_unchanged` instead of the full tier texts again (item e98b2859).
  */
-async function heartbeatOwnsConnection(pair, connectionId) {
-  await mcpToolsCall({
-    mcpUrl: pair.mcp_url,
-    token: pair.token,
-    name: 'heartbeat_connection',
-    arguments: { connection_id: connectionId, status: 'live' },
-    timeoutMs: 15_000,
-  })
-}
-
 export async function writeConnectionState({
   connectionId,
   sessionId,
@@ -939,42 +928,17 @@ export async function writeConnectionState({
   codename,
   title,
   url,
-  hostToken: hostTokenArg,
+  credential = null,
   connectionCapability,
   instructionTiers = null,
   noPoller = false,
   env = process.env,
-  probe = heartbeatOwnsConnection,
 }) {
   void url
   const resolvedCwd = cwd || process.cwd()
-  // Token symmetry (item 74b29c76 + 8bb707fd): enumerate coherent pairs, then
-  // prove which token owns the just-registered connection before the poller starts.
-  const hostToken =
-    (typeof hostTokenArg === 'string' && hostTokenArg.trim() ? hostTokenArg.trim() : null) ||
-    hostTokenFromEnv(env)
-  const { pairs } = enumerateCredentialPairs(resolvedCwd, { hostToken, env })
-  const proven = await proveCredentialPair(pairs, { connectionId, probe })
-  const fallback = resolveDevspecMcpAuth(resolvedCwd, { hostToken, env })
-  const auth = proven.pair
-    ? {
-        ok: true,
-        token: proven.pair.token,
-        mcp_url: proven.pair.mcp_url,
-        source: proven.pair.source,
-      }
-    : {
-        ok: false,
-        token: null,
-        mcp_url: fallback.mcp_url,
-        source: fallback.source || fallback.error || null,
-        error:
-          proven.error === 'no_proven_pair'
-            ? `No reachable DevSpec key owns this connection. ${tokensWarningFix(fallback.mcp_url)}`
-            : proven.error === 'unproven'
-              ? 'This machine has more than one DevSpec key; the poller will not start until one is proven to own this connection.'
-              : fallback.error,
-      }
+  // One credential source (item 47f0dbdf): the one connect registered with, or the one
+  // this process resolves now. Nothing to choose among, so nothing to prove.
+  const auth = credential?.ok ? credential : await resolveDevspecMcpAuth(resolvedCwd, { env })
   const prev = readJson(connectionPath(connectionId)) || {}
   const agentName = agent || prev.agent_name || AGENT_NAME
   const localId = localIdArg ?? detectLocalId({}, env).local_id
@@ -996,17 +960,16 @@ export async function writeConnectionState({
     agent_name: agentName,
     local_id: localId ?? prev.local_id ?? null,
     owner_pid: ownerPid,
+    ...credentialRecord(auth),
     mcp_url: auth.ok
       ? auth.mcp_url
       : (auth.mcp_url || prev.mcp_url || 'https://api.devspec.ai/api/mcp'),
-    token: auth.ok ? auth.token : undefined,
     connection_capability:
       connectionCapability === undefined
         ? prev.connection_capability
         : (typeof connectionCapability === 'string' && connectionCapability
             ? connectionCapability
             : undefined),
-    auth_source: auth.source || auth.error || prev.auth_source || null,
     auth_ok: !!auth.ok,
     auth_proven: !!auth.ok,
     cwd: resolvedCwd,
@@ -1052,14 +1015,13 @@ export async function writeConnectionState({
     mcp_url: state.mcp_url,
     auth_ok: state.auth_ok,
     auth_source: state.auth_source,
-    token_present: !!state.token,
+    token_present: recordedIdentity(state) !== null,
     connection_capability_present: !!state.connection_capability,
     local_id: localId,
     owner_pid: ownerPid,
     bond_path: bond ? localBondPath(agentName, localId) : null,
   }
   if (!state.auth_ok) result.warning = auth.error
-  if (proven.warning) result.warning_tokens = proven.warning
   if (!localId) {
     result.warning_local =
       'No --local-id / conversation env; soft-reconnect and already_live will not work until write is called with a local id.'
@@ -1068,14 +1030,14 @@ export async function writeConnectionState({
   const wantPoller = state.auth_ok && !noPoller
   if (wantPoller) {
     // Only THIS connection's poller is touched here — never another's (item 7e35d818).
-    // Same token/url/owner → the live poller keeps serving this connection
+    // Same credential/url/owner → the live poller keeps serving this connection
     // (session attach/detach reaches it via the server heartbeat echo), so a
     // `write --session` never restarts it. Only a real identity change takes
     // the kill→respawn path — and even then the dying poller exits silently
     // (item b9e02835).
     const reuseRunning =
-      !!prev.token &&
-      prev.token === state.token &&
+      recordedIdentity(prev) !== null &&
+      recordedIdentity(prev) === recordedIdentity(state) &&
       (prev.mcp_url || null) === (state.mcp_url || null) &&
       (Number(prev.owner_pid) || null) === (Number(state.owner_pid) || null)
     const poller = ensurePollerForConnection(connectionId, {
@@ -1155,15 +1117,8 @@ if (isMain) {
   const cmd = args._[0] || 'read'
 
   if (cmd === 'resolve-auth') {
-    const hostToken =
-      (typeof args['host-token'] === 'string' && args['host-token'].trim()
-        ? args['host-token'].trim()
-        : null) || hostTokenFromEnv(process.env)
-    const auth = resolveDevspecMcpAuth(args.cwd || process.cwd(), { hostToken })
-    if (process.argv.includes('--mask') && auth.token) {
-      auth.token_preview = auth.token.slice(0, 8) + '…' + auth.token.slice(-4)
-      delete auth.token
-    }
+    // Diagnostics: which server and which credential source. Never the token.
+    const { token: _token, principal: _principal, ...auth } = await resolveDevspecMcpAuth(args.cwd || process.cwd())
     process.stdout.write(JSON.stringify(auth, null, 2) + '\n')
     process.exit(auth.ok ? 0 : 1)
   }
@@ -1500,6 +1455,9 @@ if (isMain) {
       // that says how complete it is and holds the current polls, plans and activity.
       ...(view.session_id ? [`transcript: ${transcriptPaths(connectionId, view.session_id, CONNECTIONS_DIR).transcript}`] : []),
       `room_state: ${roomStatePath(connectionId, CONNECTIONS_DIR)}`,
+      // How this computer is signed in to DevSpec (item 47f0dbdf), so a refused sign-in
+      // is never a mystery: one line, never a token.
+      `sign_in: ${signInStatus()}`,
     ]
     if (tierText) lines.push(tierText.trimEnd())
     // Orient restates where the rules are, so the model can always go back to them
@@ -1635,14 +1593,10 @@ if (isMain) {
       codename: args.codename,
       title: args.title,
       url: args.url,
-      hostToken: args['host-token'],
       noPoller: !!args.noPoller,
     })
     if (result.warning_poller) {
       process.stderr.write(`remote-control-state: ensure-poller failed — ${result.warning_poller}\n`)
-    }
-    if (result.warning_tokens) {
-      process.stderr.write(`remote-control-state: ${result.warning_tokens}\n`)
     }
 
     process.stdout.write(JSON.stringify(result, null, 2) + '\n')

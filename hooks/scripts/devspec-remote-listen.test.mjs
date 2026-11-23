@@ -125,25 +125,39 @@ describe('connect_at_startup', () => {
 })
 
 describe('the listener finds its settings whichever starts first', () => {
-  it('does not wait for a file when the environment already carries the key', async () => {
+  it('does not wait for a file when the environment already carries the server', async () => {
     const config = await readStartupConfig('s-1', {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_env' },
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'https://x/api/mcp' },
       waitMs: 10_000,
       sleepFn: () => { throw new Error('must not wait') },
     })
     assert.equal(config, null)
   })
 
-  it('reads the file the SessionStart hook filed', async () => {
+  it('waits for the file even when DEVSPEC_MCP_TOKEN is set: the server still comes from it', async () => {
+    const dir = tmpDir('devspec-startup-env-')
+    let waited = 0
+    const config = await readStartupConfig('s-1b', {
+      env: { DEVSPEC_MCP_TOKEN: 'dvs_env' },
+      dir,
+      waitMs: 1,
+      sleepFn: async () => { waited += 1; await new Promise((resolve) => setTimeout(resolve, 2)) },
+    })
+    assert.equal(config, null)
+    assert.ok(waited >= 1)
+  })
+
+  it('reads the file the SessionStart hook filed, which holds no credential', async () => {
     const dir = tmpDir('devspec-startup-')
-    assert.equal(writeSessionSettings('s-2', { token: 'dvs_file', mcp_url: 'https://x/api/mcp' }, { dir }), true)
+    assert.equal(writeSessionSettings('s-2', { mcp_url: 'https://x/api/mcp', connect_at_startup: 'true' }, { dir }), true)
     const mode = fs.statSync(sessionSettingsPath('s-2', dir)).mode & 0o777
-    assert.equal(mode, 0o600, 'the file carries a bearer and must be owner-only')
+    assert.equal(mode, 0o600, 'the file is owner-only')
     const config = await readStartupConfig('s-2', { env: {}, dir, waitMs: 0 })
-    assert.equal(config.token, 'dvs_file')
+    assert.equal(config.mcp_url, 'https://x/api/mcp')
+    assert.equal(config.token, undefined)
     const env = envWithStartupConfig({ OTHER: '1' }, config)
-    assert.equal(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN, 'dvs_file')
     assert.equal(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL, 'https://x/api/mcp')
+    assert.equal(env.CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN, undefined)
     assert.equal(env.OTHER, '1')
   })
 
@@ -153,19 +167,15 @@ describe('the listener finds its settings whichever starts first', () => {
     assert.equal(config, null)
   })
 
-  it('files token and URL together, and never without a token', () => {
+  it('files the server and the startup choice, and nothing for a process handed neither', () => {
     assert.equal(pluginSettingsFromHookEnv({}), null)
-    assert.deepEqual(pluginSettingsFromHookEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_a' }), {
-      token: 'dvs_a',
-      mcp_url: 'https://api.devspec.ai/api/mcp',
+    assert.deepEqual(pluginSettingsFromHookEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'https://x/api/mcp' }), {
+      mcp_url: 'https://x/api/mcp',
     })
-    assert.equal(
-      pluginSettingsFromHookEnv({
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_a',
-        CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false',
-      }).connect_at_startup,
-      'false',
-    )
+    assert.deepEqual(pluginSettingsFromHookEnv({ CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false' }), {
+      mcp_url: 'https://api.devspec.ai/api/mcp',
+      connect_at_startup: 'false',
+    })
   })
 })
 
@@ -243,7 +253,7 @@ describe('the listener never speaks on stdout', () => {
         USERPROFILE: home,
         CLAUDE_CODE_SESSION_ID: 'listen-test-conv',
         CLAUDE_PID: String(process.pid),
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_unused',
+        DEVSPEC_MCP_TOKEN: 'dvs_unused',
         CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'http://127.0.0.1:1/api/mcp',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -377,14 +387,15 @@ describe('/clear keeps a connection whose startup listener survives it', () => {
       stdin: { session_id: NEW, source: 'startup' },
       env: {
         CLAUDE_PID: String(process.pid),
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_hook',
         CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'https://s/api/mcp',
       },
     })
     const file = path.join(home, '.devspec', 'remote-control', 'startup', `${NEW}.json`)
-    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, 'dvs_hook')
+    const filed = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.equal(filed.mcp_url, 'https://s/api/mcp')
+    assert.equal(filed.token, undefined, 'no credential is filed: the plugin signs in through the browser')
     assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-    // The listener finds it by its own conversation id, with no key in its environment.
+    // The listener finds it by its own conversation id, with nothing in its environment.
     const config = await readStartupConfig(NEW, { env: {}, dir: path.dirname(file), waitMs: 0 })
     assert.equal(config.mcp_url, 'https://s/api/mcp')
     await runHook('session-env-credentials.mjs', ['session-end'], {
@@ -401,7 +412,7 @@ describe('/clear keeps a connection whose startup listener survives it', () => {
     const { stdout } = await runHook('remote-session-lifecycle.mjs', ['session-start'], {
       home,
       stdin: { session_id: NEW, source: 'clear' },
-      env: { CLAUDE_PID: String(process.pid), CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_q' },
+      env: { CLAUDE_PID: String(process.pid), DEVSPEC_MCP_TOKEN: 'dvs_q' },
     })
     assert.equal(stdout, '')
   })
@@ -411,7 +422,7 @@ describe('/clear keeps a connection whose startup listener survives it', () => {
     const linked = tmpDir('devspec-note-linked-')
     fs.mkdirSync(path.join(linked, '.devspec'))
     fs.writeFileSync(path.join(linked, '.devspec', 'project.json'), JSON.stringify({ project_id: 'p-1' }))
-    const env = { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_n' }
+    const env = { DEVSPEC_MCP_TOKEN: 'dvs_n' }
     const { stdout } = await runHook('remote-session-lifecycle.mjs', ['session-start'], {
       home,
       cwd: linked,
@@ -430,6 +441,16 @@ describe('/clear keeps a connection whose startup listener survives it', () => {
       env: { ...env, CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP: 'false' },
     })
     assert.equal(off.stdout, '', 'switched off: no note')
+
+    // Not signed in (no saved sign-in, no DEVSPEC_MCP_TOKEN): the listener cannot connect,
+    // so no note; the sign-in notice says what to do instead.
+    const signedOut = await runHook('remote-session-lifecycle.mjs', ['session-start'], {
+      home,
+      cwd: linked,
+      stdin: { session_id: NEW, source: 'startup', cwd: linked },
+      env: {},
+    })
+    assert.equal(signedOut.stdout, '', 'not signed in: no note')
   })
 })
 
@@ -452,11 +473,6 @@ describe('/devspec.remote says which wake path is active', () => {
     assert.match(block, /ALREADY ARMED — Claude Code started this connection's listener/)
     assert.doesNotMatch(block, /ARM THE WAKE STREAM NOW/)
   })
-  it('passes on the missing-key notice the session-start hook left, and only then (item 721f9c67)', async () => {
-    const { PLUGIN_SETTINGS_KEY_MISSING_MESSAGE } = await import('./session-env-credentials.mjs')
-    assert.ok(renderStatusBlock({ ...summary, plugin_settings_key_missing: true }, { listenerArmed: true }).includes(`warning: ${PLUGIN_SETTINGS_KEY_MISSING_MESSAGE}`))
-    assert.ok(!renderStatusBlock(summary, { listenerArmed: true }).includes(PLUGIN_SETTINGS_KEY_MISSING_MESSAGE))
-  })
   it('does not claim Claude Code started a listener it did not', () => {
     const block = renderStatusBlock(summary, { listenerArmed: true, startupListener: false })
     assert.match(block, /ALREADY ARMED — a listener is already running/)
@@ -478,7 +494,7 @@ describe('the skill is loaded once per conversation, not once per message', () =
     const linked = tmpDir('devspec-note-once-')
     fs.mkdirSync(path.join(linked, '.devspec'))
     fs.writeFileSync(path.join(linked, '.devspec', 'project.json'), JSON.stringify({ project_id: 'p' }))
-    assert.match(startupNote({ env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_x' }, cwd: linked }), /once per conversation/)
+    assert.match(startupNote({ env: { DEVSPEC_MCP_TOKEN: 'dvs_x' }, cwd: linked }), /once per conversation/)
     const skill = fs.readFileSync(path.join(root, 'skills/devspec-remote-command/SKILL.md'), 'utf8')
     assert.match(skill, /Load this skill once per conversation/)
   })
@@ -591,7 +607,7 @@ describe('a folder linked mid-session connects without a restart (fa9b809b)', ()
         USERPROFILE: home,
         CLAUDE_CODE_SESSION_ID: 'listen-link-conv',
         CLAUDE_PID: String(process.pid),
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_unused',
+        DEVSPEC_MCP_TOKEN: 'dvs_unused',
         // Unreachable on purpose: once linked it tries to register and keeps retrying,
         // which must be just as silent as waiting.
         CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: 'http://127.0.0.1:1/api/mcp',

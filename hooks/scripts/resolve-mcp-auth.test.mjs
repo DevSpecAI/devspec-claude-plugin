@@ -1,419 +1,193 @@
 #!/usr/bin/env node
 /**
- * Unit tests for MCP token resolution order — focus on the host-token symmetry
- * fix (item 74b29c76): the poller must resolve the SAME bearer the host used for
- * register_connection, or every dispatch is rejected as "connection belongs to a
- * different token".
+ * Where the plugin's own scripts get their DevSpec server and credential (item 47f0dbdf):
+ * DEVSPEC_MCP_TOKEN for a machine with no browser, otherwise the plugin's browser sign-in
+ * for its configured server. Nothing else is a source any more: not a project .mcp.json,
+ * not ~/.claude.json, not a pasted plugin setting.
  * Run: node --test hooks/scripts/resolve-mcp-auth.test.mjs
  */
 import assert from 'node:assert/strict'
-import { after, before, describe, it } from 'node:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { afterEach, beforeEach, describe, it } from 'node:test'
+import { loginState, saveLogin } from './auth-store.mjs'
 import {
-  agentsSettingsUrl,
-  buildTokensWarning,
-  devspecAppOrigin,
-  enumerateCredentialPairs,
-  fingerprintToken,
-  hostTokenFromEnv,
-  proveCredentialPair,
+  configuredMcpUrl,
+  connectionCredential,
+  credentialMcpUrl,
+  credentialNotice,
+  credentialRecord,
+  hasCredential,
+  recordedIdentity,
   resolveDevspecMcpAuth,
-  tokensWarningFix,
 } from './resolve-mcp-auth.mjs'
+import { SignInEndedError } from './oauth.mjs'
 
 const PROD = 'https://api.devspec.ai/api/mcp'
+const STAGING = 'https://api.devspecstaging.com/api/mcp'
+const LOCAL = 'http://localhost:3000/api/mcp'
+const HOUR = 60 * 60 * 1000
+const STAGING_SETTING = { CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING }
 
-describe('resolveDevspecMcpAuth token precedence (host symmetry, item 74b29c76)', () => {
-  let tmp
-  const saved = {}
+const realHome = process.env.HOME
+let sandbox
+beforeEach(() => {
+  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-resolve-'))
+  process.env.HOME = sandbox
+})
+afterEach(() => {
+  process.env.HOME = realHome
+  fs.rmSync(sandbox, { recursive: true, force: true })
+})
 
-  before(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-auth-'))
-    fs.writeFileSync(
-      path.join(tmp, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          devspec: {
-            url: 'https://api.devspecstaging.com/api/mcp',
-            headers: { Authorization: 'Bearer from-mcp-json' },
-          },
-        },
-      }),
-    )
-    // Neutralise ambient env overrides so precedence is deterministic on any machine.
-    // The CLAUDE_PLUGIN_OPTION_* pairs matter too: the plugin exports its own userConfig
-    // into the session (item bb97c9f6), so a developer pointed at staging otherwise sees
-    // the host-token pair resolve to staging instead of the manifest default.
-    for (const k of [
-      'DEVSPEC_MCP_TOKEN',
-      'DEVSPEC_TOKEN',
-      'DEVSPEC_MCP_URL',
-      'CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN',
-      'CLAUDE_PLUGIN_OPTION_devspec_token',
-      'CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL',
-      'CLAUDE_PLUGIN_OPTION_devspec_mcp_url',
-      // A Bash command inside a Claude Code session also inherits the file the plugin's
-      // settings were exported to, which resolves a real key and URL. Run from an agent's
-      // own session, this test otherwise measured that session (item 9a4c0d6a).
-      'DEVSPEC_PLUGIN_SETTINGS_SESSION',
-    ]) {
-      saved[k] = process.env[k]
-      delete process.env[k]
-    }
+function signIn(endpoint, tag, issuedAt = Date.now()) {
+  return saveLogin({
+    endpoint,
+    tokens: { accessToken: `oat_${tag}`, refreshToken: `rt_${tag}`, issuedAt, expiresAt: issuedAt + 24 * HOUR },
+    issuer: 'https://issuer.test',
+    tokenEndpoint: 'https://issuer.test/oauth/token',
+    clientId: 'claude-client',
+    resource: endpoint,
+  })
+}
+
+describe('which server', () => {
+  it("is the plugin's server setting, production by default", () => {
+    assert.equal(configuredMcpUrl({}), PROD)
+    assert.equal(configuredMcpUrl(STAGING_SETTING), STAGING)
+    assert.equal(credentialMcpUrl(STAGING_SETTING), STAGING)
   })
 
-  after(() => {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k]
-      else process.env[k] = v
-    }
-    try {
-      fs.rmSync(tmp, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
-  })
-
-  it('host token wins over the project .mcp.json walk', () => {
-    const r = resolveDevspecMcpAuth(tmp, { hostToken: 'from-host' })
-    assert.equal(r.ok, true)
-    assert.equal(r.token, 'from-host')
-    assert.equal(r.source, 'host')
-    assert.equal(r.mcp_url, PROD, 'host token must not inherit the .mcp.json URL')
-  })
-
-  it('falls back to .mcp.json when no host token (backward compatible)', () => {
-    const r = resolveDevspecMcpAuth(tmp, {})
-    assert.equal(r.ok, true)
-    assert.equal(r.token, 'from-mcp-json')
-    assert.match(String(r.source), /\.mcp\.json$/)
-  })
-
-  it('a blank/whitespace host token is ignored (backward compatible)', () => {
-    const r = resolveDevspecMcpAuth(tmp, { hostToken: '   ' })
-    assert.equal(r.token, 'from-mcp-json')
-  })
-
-  /**
-   * A caller that already holds an environment resolves against THAT one. The commit
-   * provenance hook takes `env` for everything else it does, and credentials silently
-   * reading the ambient process instead would make the same call answer differently
-   * under test than in the field (item 6fa0241e).
-   */
-  it('resolves against an injected env instead of the ambient process', () => {
-    const injected = { DEVSPEC_MCP_TOKEN: 'from-injected-env', DEVSPEC_MCP_URL: 'https://injected.invalid/api/mcp' }
-    const r = resolveDevspecMcpAuth(tmp, { env: injected })
-    assert.equal(r.ok, true)
-    assert.equal(r.token, 'from-injected-env')
-    assert.equal(r.mcp_url, 'https://injected.invalid/api/mcp')
-    assert.equal(r.source, 'env')
-  })
-
-  it('an injected env without credentials does not borrow the ambient process', () => {
-    process.env.DEVSPEC_MCP_TOKEN = 'ambient-should-not-leak'
-    try {
-      const r = resolveDevspecMcpAuth(tmp, { env: {} })
-      assert.equal(r.token, 'from-mcp-json', 'the folder config, not the ambient env')
-    } finally {
-      delete process.env.DEVSPEC_MCP_TOKEN
-    }
-  })
-
-  it('explicit DEVSPEC_MCP_TOKEN still overrides even a host token', () => {
-    process.env.DEVSPEC_MCP_TOKEN = 'from-env'
-    try {
-      const r = resolveDevspecMcpAuth(tmp, { hostToken: 'from-host' })
-      assert.equal(r.token, 'from-env')
-      assert.equal(r.source, 'env')
-    } finally {
-      delete process.env.DEVSPEC_MCP_TOKEN
-    }
+  it('DEVSPEC_MCP_URL counts only as the environment token\'s pair', () => {
+    assert.equal(credentialMcpUrl({ ...STAGING_SETTING, DEVSPEC_MCP_URL: LOCAL }), STAGING)
+    assert.equal(credentialMcpUrl({ ...STAGING_SETTING, DEVSPEC_MCP_URL: LOCAL, DEVSPEC_MCP_TOKEN: 'dvs_env' }), LOCAL)
+    assert.equal(credentialMcpUrl({ ...STAGING_SETTING, DEVSPEC_MCP_TOKEN: 'dvs_env' }), STAGING, 'the token goes to the configured server')
   })
 })
 
-describe('hostTokenFromEnv', () => {
-  it('reads the plugin userConfig token Claude Code exports', () => {
-    assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'plug' }), 'plug')
-    assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_devspec_token: 'plug2' }), 'plug2')
+describe('which credential', () => {
+  it('is the browser sign-in for the configured server', async () => {
+    await signIn(PROD, 'prod')
+    await signIn(STAGING, 'staging')
+    const auth = await resolveDevspecMcpAuth('/anywhere', { env: STAGING_SETTING })
+    assert.equal(auth.ok, true)
+    assert.equal(auth.token, 'oat_staging')
+    assert.equal(auth.mcp_url, STAGING)
+    assert.equal(auth.source, 'login')
+    assert.match(auth.principal, /^[a-f0-9]{64}$/)
+    assert.equal((await resolveDevspecMcpAuth('/anywhere', { env: {} })).token, 'oat_prod')
   })
 
-  it('returns null where the plugin env is unset (dev-from-source / non-Claude plugins)', () => {
-    assert.equal(hostTokenFromEnv({}), null)
+  it('is DEVSPEC_MCP_TOKEN whenever it is set, over a sign-in', async () => {
+    await signIn(STAGING, 'staging')
+    const auth = await resolveDevspecMcpAuth('/anywhere', { env: { ...STAGING_SETTING, DEVSPEC_MCP_TOKEN: 'dvs_env' } })
+    assert.equal(auth.token, 'dvs_env')
+    assert.equal(auth.source, 'env')
+    assert.equal(auth.mcp_url, STAGING)
   })
 
-  it('trims and ignores blank', () => {
-    assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: '  x ' }), 'x')
-    assert.equal(hostTokenFromEnv({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: '   ' }), null)
+  it('never reads a token from a project .mcp.json, ~/.claude.json or the retired plugin setting', async () => {
+    const project = path.join(sandbox, 'project')
+    fs.mkdirSync(project)
+    const server = { devspec: { type: 'http', url: STAGING, headers: { Authorization: 'Bearer dvs_project' } } }
+    fs.writeFileSync(path.join(project, '.mcp.json'), JSON.stringify({ mcpServers: server }))
+    fs.writeFileSync(path.join(sandbox, '.claude.json'), JSON.stringify({ mcpServers: server, projects: { [project]: { mcpServers: server } } }))
+    const auth = await resolveDevspecMcpAuth(project, {
+      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_pasted', DEVSPEC_TOKEN: 'dvs_alias' },
+    })
+    assert.equal(auth.ok, false)
+    assert.equal(auth.token, undefined)
+    assert.equal(hasCredential({ CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_pasted' }), false)
+  })
+
+  it('says plainly what to do when there is none, or the sign-in has ended', async () => {
+    const none = await resolveDevspecMcpAuth('/anywhere', { env: STAGING_SETTING })
+    assert.equal(none.ok, false)
+    assert.equal(none.mcp_url, STAGING)
+    assert.equal(none.error, 'Claude Code is not signed in to DevSpec (staging). Run /devspec:devspec.login to sign in through your browser.')
+
+    await signIn(STAGING, 'old', Date.now() - 20 * HOUR)
+    const ended = await resolveDevspecMcpAuth('/anywhere', { env: STAGING_SETTING, refresh: async () => { throw new SignInEndedError('x') } })
+    assert.equal(ended.ok, false)
+    assert.match(ended.error, /^Your DevSpec sign-in \(staging\) has ended, for example because Claude Code was disconnected on https:\/\/app\.devspecstaging\.com\/settings\/agents\. Run \/devspec:devspec\.login to sign in again\.$/)
+    assert.equal(hasCredential(STAGING_SETTING), false)
   })
 })
 
-describe('credential pairs (item 8bb707fd — never cross-wire token and URL)', () => {
-  let tmp
-  const saved = {}
+describe('a live connection keeps its own identity', () => {
+  it('records which sign-in it was made with, never the sign-in\'s token', async () => {
+    await signIn(STAGING, 'first')
+    const auth = await resolveDevspecMcpAuth('/anywhere', { env: STAGING_SETTING })
+    const record = credentialRecord(auth)
+    assert.deepEqual(Object.keys(record).sort(), ['auth_source', 'mcp_url', 'principal', 'token'])
+    assert.equal(record.auth_source, 'login')
+    assert.equal(record.token, undefined)
+    assert.equal(record.principal, auth.principal)
+    assert.equal(recordedIdentity(record), auth.principal)
 
-  before(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-pairs-'))
-    fs.writeFileSync(
-      path.join(tmp, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          devspec: {
-            url: 'https://api.devspecstaging.com/api/mcp',
-            headers: { Authorization: 'Bearer dvs_project_staging' },
-          },
-        },
-      }),
-    )
-    for (const k of ['DEVSPEC_MCP_TOKEN', 'DEVSPEC_TOKEN', 'DEVSPEC_MCP_URL']) {
-      saved[k] = process.env[k]
-      delete process.env[k]
-    }
+    const envRecord = credentialRecord({ ok: true, token: 'dvs_env', mcp_url: STAGING, source: 'env', principal: 'p' })
+    assert.equal(envRecord.token, 'dvs_env', 'an environment token is kept exactly as before')
+    assert.equal(recordedIdentity(envRecord), 'dvs_env')
   })
 
-  after(() => {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k]
-      else process.env[k] = v
-    }
-    try {
-      fs.rmSync(tmp, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+  it('gets the current token of that same sign-in each time, renewed past half its life', async () => {
+    await signIn(STAGING, 'first', Date.now() - 13 * HOUR)
+    const record = { ...credentialRecord(await resolveDevspecMcpAuth('/x', { env: STAGING_SETTING })) }
+    const now = await connectionCredential(record, { refresh: async () => ({ accessToken: 'oat_renewed', refreshToken: 'rt_renewed', issuedAt: Date.now(), expiresAt: Date.now() + 24 * HOUR }) })
+    assert.equal(now.ok, true)
+    assert.equal(now.token, 'oat_renewed')
+    assert.equal(now.mcp_url, STAGING)
+    assert.equal(loginState(STAGING).login.accessToken, 'oat_renewed')
   })
 
-  it('enumerates plugin userConfig and .mcp.json as separate pairs', () => {
-    const { pairs } = enumerateCredentialPairs(tmp, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
-    })
-    const plugin = pairs.find((p) => p.source === 'plugin_user_config')
-    const project = pairs.find((p) => p.sourceLabel === 'project .mcp.json')
-    assert.equal(plugin.token, 'dvs_plugin_prod')
-    assert.equal(plugin.mcp_url, PROD)
-    assert.equal(project.token, 'dvs_project_staging')
-    assert.equal(project.mcp_url, 'https://api.devspecstaging.com/api/mcp')
+  it('never switches to a different sign-in, and says why', async () => {
+    await signIn(STAGING, 'first')
+    const record = credentialRecord(await resolveDevspecMcpAuth('/x', { env: STAGING_SETTING }))
+    await signIn(STAGING, 'someone-else')
+    const now = await connectionCredential(record)
+    assert.equal(now.ok, false)
+    assert.equal(now.reason, 'identity_changed')
+    assert.match(now.error, /different DevSpec sign-in/)
   })
 
-  it('plugin token does not inherit the .mcp.json URL', () => {
-    const r = resolveDevspecMcpAuth(tmp, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
-    })
-    // Without hostToken, .mcp.json still wins (staging) — that pair is coherent.
-    assert.equal(r.token, 'dvs_project_staging')
-    assert.equal(r.mcp_url, 'https://api.devspecstaging.com/api/mcp')
-
-    const host = resolveDevspecMcpAuth(tmp, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
-      hostToken: 'dvs_plugin_prod',
-    })
-    assert.equal(host.token, 'dvs_plugin_prod')
-    assert.equal(host.mcp_url, PROD)
+  it('reports a sign-in that has gone, for the poller to stand down on', async () => {
+    await signIn(STAGING, 'first')
+    const record = credentialRecord(await resolveDevspecMcpAuth('/x', { env: STAGING_SETTING }))
+    fs.rmSync(path.join(sandbox, '.devspec'), { recursive: true, force: true })
+    const now = await connectionCredential(record)
+    assert.equal(now.ok, false)
+    assert.equal(now.reason, 'signed_out')
+    assert.match(now.error, /not signed in to DevSpec \(staging\)/)
   })
 
-  it('env token uses env URL only — never the .mcp.json URL', () => {
-    const r = resolveDevspecMcpAuth(tmp, {
-      env: {
-        DEVSPEC_MCP_TOKEN: 'dvs_env_only',
-        DEVSPEC_MCP_URL: 'https://injected.invalid/api/mcp',
-      },
-    })
-    assert.equal(r.token, 'dvs_env_only')
-    assert.equal(r.mcp_url, 'https://injected.invalid/api/mcp')
-  })
-
-  it('warning names both sources with fingerprints and never the raw tokens', () => {
-    const { pairs } = enumerateCredentialPairs(tmp, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
-      hostToken: 'dvs_plugin_prod',
-    })
-    const warning = buildTokensWarning(pairs)
-    assert.match(warning, /plugin userConfig/)
-    assert.match(warning, /project \.mcp\.json/)
-    // The host pair (plugin → production) is the default pick, so the link is production's.
-    assert.ok(warning.includes('https://app.devspec.ai/settings/agents'), warning)
-    assert.doesNotMatch(warning, /You →|Coding agents/)
-    assert.ok(warning.includes(fingerprintToken('dvs_plugin_prod')))
-    assert.ok(warning.includes(fingerprintToken('dvs_project_staging')))
-    assert.doesNotMatch(warning, /dvs_plugin_prod|dvs_project_staging/)
-  })
-
-  it('skips the probe when only one distinct token is reachable', async () => {
-    let called = 0
-    const proven = await proveCredentialPair(
-      [{ source: 'env', sourceLabel: 'DEVSPEC_MCP_TOKEN', token: 'only', mcp_url: PROD }],
-      {
-        connectionId: 'conn-1',
-        probe: async () => {
-          called += 1
-        },
-      },
-    )
-    assert.equal(proven.pair.token, 'only')
-    assert.equal(proven.probed, false)
-    assert.equal(proven.warning, null)
-    assert.equal(called, 0)
-  })
-
-  it('falls through a "belongs to a different token" probe to the next pair', async () => {
-    const { pairs } = enumerateCredentialPairs(tmp, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
-      hostToken: 'dvs_plugin_prod',
-    })
-    const seen = []
-    const proven = await proveCredentialPair(pairs, {
-      connectionId: 'conn-1',
-      probe: async (pair) => {
-        seen.push(pair.token)
-        if (pair.token === 'dvs_plugin_prod') {
-          throw new Error('This connection belongs to a different token')
-        }
-      },
-    })
-    assert.deepEqual(seen, ['dvs_plugin_prod', 'dvs_project_staging'])
-    assert.equal(proven.pair.token, 'dvs_project_staging')
-    assert.equal(proven.pair.mcp_url, 'https://api.devspecstaging.com/api/mcp')
-    assert.equal(proven.probed, true)
-    // The proven pair lives on staging, so the link must too — never production.
-    assert.ok(proven.warning.includes('https://app.devspecstaging.com/settings/agents'), proven.warning)
-    assert.doesNotMatch(proven.warning, /app\.devspec\.ai/)
-    assert.doesNotMatch(proven.warning, /dvs_plugin_prod|dvs_project_staging/)
-  })
-
-  it('refuses an unproven pick when two tokens exist and no probe is supplied', async () => {
-    const { pairs } = enumerateCredentialPairs(tmp, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin_prod' },
-      hostToken: 'dvs_plugin_prod',
-    })
-    const proven = await proveCredentialPair(pairs, { connectionId: 'conn-1' })
-    assert.equal(proven.pair, null)
-    assert.equal(proven.error, 'unproven')
-    assert.match(proven.warning, /more than one DevSpec key/)
+  it('keeps an environment-token connection on the token it recorded', async () => {
+    const now = await connectionCredential({ token: 'dvs_recorded', auth_source: 'env', mcp_url: LOCAL }, { env: {} })
+    assert.deepEqual([now.ok, now.token, now.mcp_url], [true, 'dvs_recorded', LOCAL])
   })
 })
 
-describe('plugin userConfig URL (item 17f38cfa — one server, pointed once)', () => {
-  const STAGING = 'https://api.devspecstaging.com/api/mcp'
-  let empty
-
-  before(() => {
-    // A folder with NO .mcp.json — the customer shape, and the shape we move to
-    // once the project override is deleted.
-    empty = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-url-'))
+describe('what session start says', () => {
+  it('nothing while signed in', async () => {
+    await signIn(PROD, 'prod')
+    assert.equal(credentialNotice({}), null)
   })
 
-  after(() => {
-    try {
-      fs.rmSync(empty, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
-  })
-
-  it('defaults to production when the plugin URL is unset', () => {
-    const r = resolveDevspecMcpAuth(empty, {
-      env: { CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin' },
-    })
-    assert.equal(r.token, 'dvs_plugin')
-    assert.equal(r.mcp_url, PROD)
-  })
-
-  it('follows the plugin URL the host was configured with', () => {
-    const r = resolveDevspecMcpAuth(empty, {
-      env: {
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin',
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
-      },
-    })
-    assert.equal(r.token, 'dvs_plugin')
-    assert.equal(r.mcp_url, STAGING)
-  })
-
-  it('accepts the lowercase env spelling, like the token does', () => {
-    const r = resolveDevspecMcpAuth(empty, {
-      env: {
-        CLAUDE_PLUGIN_OPTION_devspec_token: 'dvs_plugin',
-        CLAUDE_PLUGIN_OPTION_devspec_mcp_url: STAGING,
-      },
-    })
-    assert.equal(r.mcp_url, STAGING)
-  })
-
-  it('keeps the host-token pair on the plugin URL, not production', () => {
-    // The regression this guards: register_connection runs on the plugin server at
-    // STAGING, so a poller that assumed production would heartbeat the wrong host.
-    const r = resolveDevspecMcpAuth(empty, {
-      env: {
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin',
-        CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
-      },
-      hostToken: 'dvs_plugin',
-    })
-    assert.equal(r.token, 'dvs_plugin')
-    assert.equal(r.mcp_url, STAGING)
-  })
-
-  it('still refuses to lend the plugin URL to a .mcp.json token', () => {
-    const withProject = fs.mkdtempSync(path.join(os.tmpdir(), 'devspec-mcp-url-proj-'))
-    fs.writeFileSync(
-      path.join(withProject, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          devspec: {
-            url: 'https://other.example/api/mcp',
-            headers: { Authorization: 'Bearer dvs_project' },
-          },
-        },
-      }),
-    )
-    try {
-      const { pairs } = enumerateCredentialPairs(withProject, {
-        env: {
-          CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN: 'dvs_plugin',
-          CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL: STAGING,
-        },
-      })
-      const plugin = pairs.find((p) => p.source === 'plugin_user_config')
-      const project = pairs.find((p) => p.sourceLabel === 'project .mcp.json')
-      assert.equal(plugin.mcp_url, STAGING)
-      assert.equal(project.mcp_url, 'https://other.example/api/mcp')
-    } finally {
-      fs.rmSync(withProject, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('links to the DevSpec app follow the MCP host in use', () => {
-  it('maps each deployment\'s api host to its app host', () => {
-    assert.equal(devspecAppOrigin(PROD), 'https://app.devspec.ai')
-    assert.equal(devspecAppOrigin('https://api.devspecstaging.com/api/mcp'), 'https://app.devspecstaging.com')
-  })
-
-  it('keeps a host that is not an api host, port included', () => {
-    assert.equal(devspecAppOrigin('http://localhost:3000/api/mcp'), 'http://localhost:3000')
-    assert.equal(devspecAppOrigin('https://app.devspecstaging.com/api/mcp'), 'https://app.devspecstaging.com')
-  })
-
-  it('falls back to production when the URL is missing or unreadable', () => {
-    assert.equal(devspecAppOrigin(undefined), 'https://app.devspec.ai')
-    assert.equal(devspecAppOrigin(null), 'https://app.devspec.ai')
-    assert.equal(devspecAppOrigin(''), 'https://app.devspec.ai')
-    assert.equal(devspecAppOrigin('not a url'), 'https://app.devspec.ai')
-    assert.equal(devspecAppOrigin('file:///etc/passwd'), 'https://app.devspec.ai')
-  })
-
-  it('builds the Agent setup link on that host', () => {
-    assert.equal(agentsSettingsUrl(PROD), 'https://app.devspec.ai/settings/agents')
+  it('to sign in when there is no sign-in for the chosen server, even with one for another', async () => {
+    await signIn(PROD, 'prod')
     assert.equal(
-      agentsSettingsUrl('https://api.devspecstaging.com/api/mcp'),
-      'https://app.devspecstaging.com/settings/agents',
+      credentialNotice(STAGING_SETTING),
+      'Claude Code is not signed in to DevSpec (staging). Run /devspec:devspec.login to sign in through your browser.',
     )
   })
 
-  it('the two-keys fix links the page instead of naming a breadcrumb', () => {
-    const fix = tokensWarningFix('https://api.devspecstaging.com/api/mcp')
-    assert.ok(fix.includes("Open DevSpec's Agent setup page at https://app.devspecstaging.com/settings/agents"), fix)
-    assert.doesNotMatch(fix, /You →|Coding agents|coding agent/i)
+  it('that DEVSPEC_MCP_TOKEN takes precedence over a saved sign-in, and how to remove it', async () => {
+    await signIn(PROD, 'prod')
+    const notice = credentialNotice({ DEVSPEC_MCP_TOKEN: 'dvs_env' })
+    assert.match(notice, /^DEVSPEC_MCP_TOKEN is set, so DevSpec's background features/)
+    assert.match(notice, /unset DEVSPEC_MCP_TOKEN|Environment Variables/)
+    assert.match(notice, /\/devspec:devspec\.logout/)
+    assert.equal(credentialNotice({ DEVSPEC_MCP_TOKEN: 'dvs_env', ...STAGING_SETTING }), null, 'no sign-in for that server to override')
+    assert.equal(credentialNotice({ DEVSPEC_MCP_TOKEN: 'dvs_env', DEVSPEC_MCP_URL: STAGING }), null, 'a token for another server overrides nothing')
   })
 })

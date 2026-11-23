@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * This session's plugin settings — the DevSpec key and server the person saved in
- * `/plugin` — for the processes Claude Code does not hand them to.
+ * This session's plugin settings — the DevSpec server and the connect-at-startup choice
+ * the person saved in `/plugin` — for the processes Claude Code does not hand them to.
  *
  * Claude Code gives `userConfig` to HOOKS only (as `CLAUDE_PLUGIN_OPTION_*`). Bash tool
  * calls, where every command in `commands/` runs, and plugin monitors such as the
@@ -11,42 +11,30 @@
  * (`PLUGIN_SETTINGS_SESSION_VAR`). A script that was not handed the settings reads
  * them back with `pluginSettingsFromEnv`.
  *
+ * No credential is filed here any more (item 47f0dbdf). The plugin signs in through the
+ * browser and keeps that login in its own file (`auth-store.mjs`); the server setting
+ * filed here only says WHICH of its logins to use.
+ *
  * ## Why a file and not the environment (item 4d40407b)
  *
- * The obvious route — exporting the key itself from `$CLAUDE_ENV_FILE` — put it on
- * the command line of every process Claude Code starts for the session. Measured on
- * Claude Code 2.1.301: the Bash tool reads the hook-written env files and splices
- * their TEXT into the shell's argv (`zsh -c "source <snapshot> && <env file text>
- * : && …"`), and the plugin monitor is started the same way. A command line cannot be
- * permissioned: on Linux any local account reads it from `/proc/<pid>/cmdline`, and
- * it lands in anything that captures a process list. Eleven processes on one
- * developer machine were carrying the key that way.
- *
- * What goes into the session environment instead is the conversation id, which is
- * not a secret. It is also a plain `export NAME='value'` with no path separator in
- * the value, which matters on Windows: there Claude Code's PowerShell tool reads the
- * env files by parsing them, keeps them only if every line is a plain assignment, and
- * drops any value containing `/` or `\`. A `. <file>` line would have silently
- * emptied every hook's session environment for PowerShell, and a path-valued variable
- * would never reach it.
+ * Claude Code splices the text of hook-written env files into the command line of every
+ * Bash tool call and monitor it starts (measured on 2.1.301), and on Windows its
+ * PowerShell tool keeps an env file only if every line is a plain assignment with no
+ * path separator in its value. A conversation id meets both constraints; anything else
+ * stays in the file.
  *
  * ## Where the file lives and who can read it
  *
- * `~/.devspec/remote-control/startup/<conversation-id>.json`, beside the plugin's
- * other remote-control state that holds bearer tokens. The directory is created
- * 0700 and the file is written 0600 by `writePrivateJson` (written aside, then
- * renamed, so it never exists at a looser mode; a looser existing file is replaced).
- * On Windows, POSIX modes do not apply: the file inherits the ACL of the user's
- * profile folder, which by default grants only that user, SYSTEM and Administrators.
+ * `~/.devspec/remote-control/startup/<conversation-id>.json`, directory 0700, file 0600
+ * (`writePrivateJson`: written aside, then renamed). On Windows the file inherits the ACL
+ * of the user's profile folder.
  *
  * ## How long it lives
  *
- * Written at every SessionStart — startup, resume, /clear and compaction — and
- * removed at SessionEnd by the same hook. A session that ends without SessionEnd (a
- * crash, a killed terminal) leaves its file behind; the next SessionStart on the
- * machine removes it once the Claude Code process that wrote it has gone
- * (`sweepSessionSettings` in `session-env-credentials.mjs`). The file is never the
- * only copy of anything: Claude Code keeps the key in its own credential store.
+ * Written at every SessionStart — startup, resume, /clear and compaction — and removed at
+ * SessionEnd by the same hook. A session that ends without SessionEnd leaves its file
+ * behind; the next SessionStart on the machine removes it once the Claude Code process
+ * that wrote it has gone (`sweepSessionSettings` in `session-env-credentials.mjs`).
  */
 
 import fs from 'node:fs'
@@ -54,7 +42,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readPrivateJsonResult, STATE_OK, writePrivateJson } from './private-state.mjs'
 
-/** Mirrors DEFAULT_PROD_URL in resolve-mcp-auth.mjs — the manifest's declared default. */
+/** The manifest's declared default for the server setting: DevSpec production. */
 export const DEFAULT_PLUGIN_MCP_URL = 'https://api.devspec.ai/api/mcp'
 
 /**
@@ -67,7 +55,6 @@ export const SESSION_SETTINGS_DIR = path.join(os.homedir(), '.devspec', 'remote-
 export const PLUGIN_SETTINGS_SESSION_VAR = 'DEVSPEC_PLUGIN_SETTINGS_SESSION'
 
 /** The names Claude Code uses for this plugin's `userConfig` keys, both spellings. */
-export const TOKEN_KEYS = ['CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN', 'CLAUDE_PLUGIN_OPTION_devspec_token']
 export const URL_KEYS = ['CLAUDE_PLUGIN_OPTION_DEVSPEC_MCP_URL', 'CLAUDE_PLUGIN_OPTION_devspec_mcp_url']
 export const STARTUP_KEYS = ['CLAUDE_PLUGIN_OPTION_CONNECT_AT_STARTUP', 'CLAUDE_PLUGIN_OPTION_connect_at_startup']
 
@@ -91,16 +78,15 @@ export function sessionSettingsPath(sessionId, dir = SESSION_SETTINGS_DIR) {
 }
 
 /**
- * The settings Claude Code handed a hook, in the file's shape, or null when the plugin
- * settings hold no key. Token and URL travel together or not at all (item 8bb707fd).
+ * The settings Claude Code handed a hook, in the file's shape, or null when this process
+ * was handed none (it is not a hook). The server defaults to the manifest's default.
  */
 export function pluginSettingsFromHookEnv(env = process.env) {
-  const token = firstValue(env, TOKEN_KEYS)
-  if (!token) return null
+  const mcpUrl = firstValue(env, URL_KEYS)
   const connectAtStartup = firstValue(env, STARTUP_KEYS)
+  if (mcpUrl === null && connectAtStartup === null) return null
   return {
-    token,
-    mcp_url: firstValue(env, URL_KEYS) || DEFAULT_PLUGIN_MCP_URL,
+    mcp_url: mcpUrl || DEFAULT_PLUGIN_MCP_URL,
     ...(connectAtStartup === null ? {} : { connect_at_startup: connectAtStartup }),
   }
 }
@@ -112,17 +98,16 @@ export function pluginSettingsFromHookEnv(env = process.env) {
  */
 export function writeSessionSettings(sessionId, settings, { dir = SESSION_SETTINGS_DIR, owner = null } = {}) {
   const file = sessionSettingsPath(sessionId, dir)
-  if (!file || !settings?.token) return false
+  if (!file || !settings) return false
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
     try {
       // mkdir's mode applies only when it creates the directory.
       fs.chmodSync(dir, 0o700)
     } catch {
-      /* the file's own 0600 is what protects the key */
+      /* the file's own 0600 still applies */
     }
     writePrivateJson(file, {
-      token: settings.token,
       mcp_url: settings.mcp_url || DEFAULT_PLUGIN_MCP_URL,
       ...(settings.connect_at_startup === undefined ? {} : { connect_at_startup: settings.connect_at_startup }),
       owner_pid: Number.isInteger(owner?.pid) && owner.pid > 1 ? owner.pid : null,
@@ -140,7 +125,7 @@ export function readSessionSettings(sessionId, { dir = SESSION_SETTINGS_DIR } = 
   const file = sessionSettingsPath(sessionId, dir)
   if (!file) return null
   const read = readPrivateJsonResult(file)
-  if (read.status !== STATE_OK || typeof read.value?.token !== 'string' || !read.value.token.trim()) return null
+  if (read.status !== STATE_OK || !read.value || typeof read.value !== 'object') return null
   return read.value
 }
 
@@ -156,23 +141,25 @@ export function removeSessionSettingsFile(sessionId, { dir = SESSION_SETTINGS_DI
 }
 
 /**
- * The plugin's own key and server, wherever this process can reach them, or null.
+ * The plugin's own server setting (and connect-at-startup choice), wherever this process
+ * can reach them, or null.
  *
  * A hook is handed them in its environment, and that wins. Anything else Claude Code
  * starts for the session — a Bash tool call, a monitor — finds the conversation id the
- * SessionStart hook exported and reads that conversation's file. Both answers are the
- * same pair, so `resolve-mcp-auth.mjs` keeps it at source 6 either way: where it is
- * read from changes, its precedence does not.
+ * SessionStart hook exported and reads that conversation's file.
  */
 export function pluginSettingsFromEnv(env = process.env, { dir = SESSION_SETTINGS_DIR } = {}) {
-  const fromHook = pluginSettingsFromHookEnv(env)
-  if (fromHook) return { ...fromHook, carried: 'hook_environment' }
+  // Only the server option proves this process was handed the settings: the session
+  // environment re-exports CONNECT_AT_STARTUP to every Bash tool call, which must still
+  // read the server from the conversation's file.
+  if (firstValue(env, URL_KEYS) !== null) return { ...pluginSettingsFromHookEnv(env), carried: 'hook_environment' }
   const sessionId = sanitizeSessionId(env?.[PLUGIN_SETTINGS_SESSION_VAR])
-  if (!sessionId) return null
-  const filed = readSessionSettings(sessionId, { dir })
-  if (!filed) return null
+  const filed = sessionId ? readSessionSettings(sessionId, { dir }) : null
+  if (!filed) {
+    const fromHook = pluginSettingsFromHookEnv(env)
+    return fromHook ? { ...fromHook, carried: 'hook_environment' } : null
+  }
   return {
-    token: filed.token.trim(),
     mcp_url: (typeof filed.mcp_url === 'string' && filed.mcp_url.trim()) || DEFAULT_PLUGIN_MCP_URL,
     ...(filed.connect_at_startup === undefined ? {} : { connect_at_startup: filed.connect_at_startup }),
     carried: 'session_file',

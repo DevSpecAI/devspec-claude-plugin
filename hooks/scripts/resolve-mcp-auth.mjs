@@ -1,408 +1,193 @@
 #!/usr/bin/env node
 /**
- * Resolve DevSpec MCP URL + Bearer token for remote-control hooks/poller.
+ * The DevSpec server and credential for everything this plugin's own scripts send:
+ * remote control, commit tracking, the listener, the poller and every hook (item 47f0dbdf).
  *
- * Credentials are enumerated as token+URL PAIRS from a single source. Never mix
- * a token from one place with a URL from another (item 8bb707fd): a plugin
- * userConfig token must not inherit the project `.mcp.json` URL.
+ * Two sources, in this order, and nothing else:
+ *   1. DEVSPEC_MCP_TOKEN — for machines with no browser (CI, cloud workers). It wins over
+ *      a browser sign-in. DEVSPEC_MCP_URL is read only as its pair; without it the token
+ *      goes to the plugin's configured server.
+ *   2. The plugin's own browser sign-in (`auth-store.mjs`) for the plugin's configured
+ *      server — the `devspec_mcp_url` setting, production by default — renewed once it is
+ *      past half its life.
  *
- * Lookup order (first token pair wins for the default pick):
- * 1. DEVSPEC_MCP_TOKEN / DEVSPEC_TOKEN (+ DEVSPEC_MCP_URL) — explicit human override.
- * 2. opts.hostToken — the bearer the HOST MCP client used to call register_connection,
- *    paired with THIS source's URL (plugin → prod default; never `.mcp.json`).
- * 3. Project .mcp.json (cwd and parents) — that file's token AND url.
- * 4. ~/.claude.json project entries that match cwd (mcpServers.devspec)
- * 5. ~/.claude.json top-level mcpServers.devspec
- * 6. The plugin's own userConfig token, paired with the plugin's OWN configured URL
- *    (defaulting to https://api.devspec.ai/api/mcp). A hook reads them from
- *    CLAUDE_PLUGIN_OPTION_DEVSPEC_TOKEN / _MCP_URL, which Claude Code hands it; a Bash
- *    tool call or monitor reads this conversation's private settings file, which the
- *    SessionStart hook names in DEVSPEC_PLUGIN_SETTINGS_SESSION (plugin-settings.mjs,
- *    item 4d40407b). Lowest priority so a developer's own .mcp.json (e.g. staging)
- *    still wins when no host token was supplied.
+ * The host's own DevSpec connection gets the same sign-in from `mcp-headers.mjs`, the
+ * `headersHelper` declared in plugin.json, so one login serves everything.
  *
- * At write time, proveCredentialPair heartbeats the just-registered connection
- * under each distinct token until one owns it. The poller caches that pair.
+ * Retired with browser sign-in: the pasted `devspec_token` setting, and reading tokens out
+ * of a project `.mcp.json` or `~/.claude.json` (items 8bb707fd, 74b29c76 existed to choose
+ * among several keys; with one source there is nothing left to choose or prove).
  *
- * Prints JSON: { ok, token?, mcp_url?, source?, error? }
- * Never prints the full token in human logs — only to stdout JSON for piping.
+ * CLI: prints `{ ok, mcp_url, source, error? }` — never the token.
  */
 
-import crypto from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { pluginSettingsFromEnv } from './plugin-settings.mjs'
+import { activeLogin, loginState, resolveCredential, TOKEN_ENV_VAR } from './auth-store.mjs'
+import { resourceKey } from './oauth.mjs'
+import { DEFAULT_PLUGIN_MCP_URL, pluginSettingsFromEnv } from './plugin-settings.mjs'
+import { envTokenOverridesLoginNotice, missingCredentialNotice } from './sign-in-notices.mjs'
 import { isEntryPoint } from './entry-point.mjs'
 
-const DEFAULT_PROD_URL = 'https://api.devspec.ai/api/mcp'
-const DEFAULT_APP_ORIGIN = 'https://app.devspec.ai'
-const WRONG_TOKEN_RE = /belongs to a different token/i
+export const DEFAULT_MCP_URL = DEFAULT_PLUGIN_MCP_URL
 
-export const DEFAULT_MCP_URL = DEFAULT_PROD_URL
-
-/**
- * The DevSpec web-app origin of the deployment an MCP URL points at.
- *
- * Every deployment serves MCP from its `api.` host and the app from `app.` on the
- * same root domain (api.devspec.ai ↔ app.devspec.ai, api.devspecstaging.com ↔
- * app.devspecstaging.com). Any other host — localhost, or a URL already on the app
- * host — is its own app origin. Anything unreadable falls back to production, the
- * same default the MCP URL itself has.
- *
- * Messages that send someone to a DevSpec page build their link from this, so a
- * plugin pointed at staging never links to production.
- */
-export function devspecAppOrigin(mcpUrl) {
-  let url
-  try {
-    url = new URL(String(mcpUrl ?? DEFAULT_PROD_URL))
-  } catch {
-    return DEFAULT_APP_ORIGIN
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return DEFAULT_APP_ORIGIN
-  if (url.hostname.startsWith('api.')) url.hostname = `app.${url.hostname.slice('api.'.length)}`
-  return url.origin
-}
-
-/** The personal Agent setup page (where the account's key is revealed), on that deployment. */
-export function agentsSettingsUrl(mcpUrl) {
-  return `${devspecAppOrigin(mcpUrl)}/settings/agents`
-}
-
-/** How to settle two disagreeing keys, linking the Agent setup page on the host in use. */
-export function tokensWarningFix(mcpUrl) {
-  return (
-    `Open DevSpec's Agent setup page at ${agentsSettingsUrl(mcpUrl)} to reveal the key you want, ` +
-    'then make the plugin key and the project .mcp.json key the same.'
-  )
-}
-
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch {
-    return null
-  }
-}
-
-function extractBearer(headers) {
-  if (!headers || typeof headers !== 'object') return null
-  const auth = headers.Authorization || headers.authorization
-  if (typeof auth !== 'string') return null
-  const m = auth.match(/^Bearer\s+(.+)$/i)
-  return m ? m[1].trim() : auth.trim() || null
-}
-
-function fromServerEntry(entry) {
-  if (!entry || typeof entry !== 'object') return null
-  const url = entry.url || entry.serverUrl || entry.server_url || null
-  const token = extractBearer(entry.headers) || entry.token || null
-  if (!url && !token) return null
-  return { mcp_url: url || DEFAULT_PROD_URL, token: token || null }
-}
-
-function walkMcpJson(startDir) {
-  let dir = path.resolve(startDir || process.cwd())
-  for (let i = 0; i < 12; i++) {
-    for (const name of ['.mcp.json', 'mcp.json']) {
-      const file = path.join(dir, name)
-      if (!fs.existsSync(file)) continue
-      const j = readJson(file)
-      const servers = j?.mcpServers || j?.mcp?.servers || {}
-      const entry = servers.devspec || servers.DevSpec || servers['devspec-mcp']
-      const got = fromServerEntry(entry)
-      if (got?.token) return { ...got, source: file }
-      if (got?.mcp_url) return { ...got, source: file }
-    }
-    const parent = path.dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  return null
-}
-
-function fromClaudeJson(cwd) {
-  const file = path.join(os.homedir(), '.claude.json')
-  const j = readJson(file)
-  if (!j) return null
-
-  const abs = path.resolve(cwd || process.cwd())
-
-  // Prefer project-scoped config matching cwd prefix (longest match wins)
-  const projects = j.projects || {}
-  const matches = Object.keys(projects)
-    .filter((p) => abs === p || abs.startsWith(p + path.sep) || p.startsWith(abs + path.sep))
-    .sort((a, b) => b.length - a.length)
-
-  for (const proj of matches) {
-    const servers = projects[proj]?.mcpServers || {}
-    const entry = servers.devspec || servers.DevSpec
-    const got = fromServerEntry(entry)
-    if (got?.token) return { ...got, source: `${file}#projects[${proj}]` }
-  }
-
-  // Any project entry named for this path substring
-  for (const [proj, cfg] of Object.entries(projects)) {
-    if (!proj.includes('devspec') && !abs.includes(path.basename(proj))) continue
-    const servers = cfg?.mcpServers || {}
-    const entry = servers.devspec || servers.DevSpec
-    const got = fromServerEntry(entry)
-    if (got?.token) return { ...got, source: `${file}#projects[${proj}]` }
-  }
-
-  const top = fromServerEntry((j.mcpServers || {}).devspec)
-  if (top?.token) return { ...top, source: `${file}#mcpServers` }
-
-  return null
-}
-
-function trimToken(value) {
+function trimmed(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-function pairIdentity(pair) {
-  return `${pair.token}\0${pair.mcp_url}`
+/** The environment token, when this process has one. */
+export function envToken(env = process.env) {
+  return trimmed(env?.[TOKEN_ENV_VAR])
 }
 
-/**
- * SHA-256 prefix — enough to tell two keys apart, never the secret itself.
- */
-export function fingerprintToken(token) {
-  if (typeof token !== 'string' || !token) return 'unknown'
-  return crypto.createHash('sha256').update(token, 'utf8').digest('hex').slice(0, 8)
-}
-
-/**
- * The bearer the HOST MCP client is expected to have used for register_connection,
- * drawn from what this process can reach. The one host-token carrier that reaches
- * hook/tool subprocesses is the plugin's userConfig token (see pluginSettingsFromEnv),
- * which IS the token the host uses for the plugin-declared `devspec` MCP server (so
- * register_connection runs on it). Pass the result as
- * resolveDevspecMcpAuth(cwd, { hostToken }) at connect/write time to keep the poller on
- * the same token. Returns null where the plugin settings are unreachable (a
- * dev-from-source .mcp.json setup, or the non-Claude local-poller plugins) → the
- * caller's resolution is unchanged.
- */
-export function hostTokenFromEnv(env = process.env) {
-  return trimToken(pluginSettingsFromEnv(env)?.token)
-}
-
-/**
- * The plugin's own pair: its token and the URL the plugin-declared `devspec` MCP server
- * is actually pointed at.
- *
- * `plugin.json` declares `"url": "${user_config.devspec_mcp_url}?model_tools=…"`, so the
- * host talks to whatever that userConfig field holds — production by default, staging for us.
- * Reading the same value keeps the poller on the SAME host as the server that ran
- * register_connection. Reading only the token and assuming production would recreate
- * exactly the cross-wiring item 8bb707fd removed, one field along. Both come from one
- * carrier — the hook environment or the conversation's settings file — never one of each.
- */
-function pluginPairFromEnv(env, opts) {
+/** The server the plugin is configured for — the one its sign-in and host connection use. */
+export function configuredMcpUrl(env = process.env, opts = {}) {
   const settings = pluginSettingsFromEnv(env, opts.pluginSettingsDir ? { dir: opts.pluginSettingsDir } : undefined)
-  const token = trimToken(settings?.token)
-  if (!token) return { token: null, mcp_url: DEFAULT_PROD_URL }
-  return { token, mcp_url: trimToken(settings.mcp_url) || DEFAULT_PROD_URL }
+  return trimmed(settings?.mcp_url) || DEFAULT_MCP_URL
 }
 
 /**
- * Every reachable credential as a { token, mcp_url } pair from ONE source.
- * First occurrence of an identical token+URL wins (precedence order).
+ * The server this process's credential is for: DEVSPEC_MCP_URL when the environment token
+ * is in use and names one, otherwise the configured server. Synchronous and offline.
  */
-export function enumerateCredentialPairs(cwd = process.cwd(), opts = {}) {
-  const env = opts.env || process.env
-  const pairs = []
-  const seen = new Set()
-
-  const push = (pair) => {
-    if (!pair?.token) return
-    const id = pairIdentity(pair)
-    if (seen.has(id)) return
-    seen.add(id)
-    pairs.push(pair)
-  }
-
-  const envToken = trimToken(env.DEVSPEC_MCP_TOKEN || env.DEVSPEC_TOKEN)
-  const envUrl = trimToken(env.DEVSPEC_MCP_URL) || DEFAULT_PROD_URL
-  const { token: pluginToken, mcp_url: pluginUrl } = pluginPairFromEnv(env, opts)
-  const hostToken =
-    typeof opts.hostToken === 'string' && opts.hostToken.trim() ? opts.hostToken.trim() : null
-  const fromProject = walkMcpJson(cwd)
-  const fromClaude = fromClaudeJson(cwd)
-
-  if (envToken) {
-    push({
-      source: 'env',
-      sourceLabel: 'DEVSPEC_MCP_TOKEN',
-      token: envToken,
-      mcp_url: envUrl,
-    })
-  }
-
-  if (hostToken) {
-    let mcp_url = pluginUrl
-    let sourceLabel = 'host MCP client'
-    if (hostToken === envToken) {
-      mcp_url = envUrl
-      sourceLabel = 'DEVSPEC_MCP_TOKEN'
-    } else if (pluginToken && hostToken === pluginToken) {
-      mcp_url = pluginUrl
-      sourceLabel = 'plugin userConfig'
-    } else if (fromProject?.token && hostToken === fromProject.token) {
-      mcp_url = fromProject.mcp_url || DEFAULT_PROD_URL
-      sourceLabel = 'project .mcp.json'
-    } else if (fromClaude?.token && hostToken === fromClaude.token) {
-      mcp_url = fromClaude.mcp_url || DEFAULT_PROD_URL
-      sourceLabel = '~/.claude.json'
-    }
-    push({
-      source: 'host',
-      sourceLabel,
-      token: hostToken,
-      mcp_url,
-    })
-  }
-
-  if (fromProject?.token) {
-    push({
-      source: fromProject.source,
-      sourceLabel: 'project .mcp.json',
-      token: fromProject.token,
-      mcp_url: fromProject.mcp_url || DEFAULT_PROD_URL,
-    })
-  }
-
-  if (fromClaude?.token) {
-    push({
-      source: fromClaude.source,
-      sourceLabel: '~/.claude.json',
-      token: fromClaude.token,
-      mcp_url: fromClaude.mcp_url || DEFAULT_PROD_URL,
-    })
-  }
-
-  if (pluginToken) {
-    push({
-      source: 'plugin_user_config',
-      sourceLabel: 'plugin userConfig',
-      token: pluginToken,
-      mcp_url: pluginUrl,
-    })
-  }
-
-  return { pairs, fromProject }
-}
-
-export function distinctTokenPairs(pairs) {
-  const seen = new Set()
-  const out = []
-  for (const pair of pairs || []) {
-    if (!pair?.token || seen.has(pair.token)) continue
-    seen.add(pair.token)
-    out.push(pair)
-  }
-  return out
+export function credentialMcpUrl(env = process.env, opts = {}) {
+  if (envToken(env)) return trimmed(env.DEVSPEC_MCP_URL) || configuredMcpUrl(env, opts)
+  return configuredMcpUrl(env, opts)
 }
 
 /**
- * `mcpUrl` is the host the link in the fix should point at: the proven pair's when
- * there is one, otherwise the default pick (the first pair, in precedence order).
+ * Whether a credential is available without asking the network: the environment token,
+ * or a saved sign-in for the configured server that has not ended. For deciding whether
+ * to offer something, never as proof the credential works.
  */
-export function buildTokensWarning(pairs, mcpUrl) {
-  const tokens = distinctTokenPairs(pairs)
-  if (tokens.length < 2) return null
-  const named = tokens
-    .map((pair) => `${pair.sourceLabel} (${fingerprintToken(pair.token)})`)
-    .join(', ')
-  return (
-    `This machine has more than one DevSpec key: ${named}. ` +
-    `Connect will use the key that owns this connection. ${tokensWarningFix(mcpUrl ?? tokens[0].mcp_url)}`
-  )
-}
-
-export function isWrongTokenError(err) {
-  const msg = err?.message || String(err || '')
-  return WRONG_TOKEN_RE.test(msg)
+export function hasCredential(env = process.env, opts = {}) {
+  if (envToken(env)) return true
+  return loginState(configuredMcpUrl(env, opts)).kind === 'active'
 }
 
 /**
- * Probe candidates with heartbeat_connection. Skip the probe when only one
- * distinct token is reachable (it is the only candidate).
+ * Resolve the credential now: `{ ok, token, mcp_url, source, principal, error? }`.
  *
- * `probe(pair, connectionId)` should throw on failure. A "belongs to a different
- * token" error falls through to the next pair; other errors also try the next
- * pair (a token sent to the wrong host looks like a network/auth failure).
+ * `source` is `env` or `login`; `principal` is the credential's stable identity
+ * (`auth-store.mjs` principalOf). On failure `error` is the plain sentence to show the
+ * person. `cwd` is accepted for callers' symmetry and no longer consulted: a folder's
+ * MCP configuration is not a source of credentials.
  */
-export async function proveCredentialPair(pairs, { connectionId, probe } = {}) {
-  const warning = buildTokensWarning(pairs)
-  const tokens = distinctTokenPairs(pairs)
-  if (tokens.length === 0) {
-    return { pair: null, probed: false, warning: null, error: 'no_token' }
-  }
-  if (tokens.length === 1) {
-    return { pair: tokens[0], probed: false, warning: null, error: null }
-  }
-  if (typeof probe !== 'function') {
-    return { pair: null, probed: false, warning, error: 'unproven' }
-  }
-  for (const pair of tokens) {
-    try {
-      await probe(pair, connectionId)
-      // The proven pair is the host this connection lives on; link that one.
-      return { pair, probed: true, warning: buildTokensWarning(pairs, pair.mcp_url), error: null }
-    } catch (err) {
-      if (isWrongTokenError(err)) continue
-      continue
-    }
-  }
-  return { pair: null, probed: true, warning, error: 'no_proven_pair' }
-}
-
-/**
- * `opts.env` exists so a caller that is already handed an environment can resolve
- * against THAT one instead of the ambient process — the commit-provenance hook takes
- * `env` for everything else it does, and credentials silently ignoring it would make
- * the same call answer differently under test than in the field. Defaults to
- * `process.env`, so every existing caller is unchanged.
- */
-export function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
+export async function resolveDevspecMcpAuth(cwd = process.cwd(), opts = {}) {
+  void cwd
   const env = opts.env || process.env
-  const envUrl = trimToken(env.DEVSPEC_MCP_URL)
-  const { pairs, fromProject } = enumerateCredentialPairs(cwd, opts)
-  const first = pairs.find((p) => p.token)
-  if (first) {
+  const mcpUrl = credentialMcpUrl(env, opts)
+  const credential = await resolveCredential({
+    env,
+    endpoint: mcpUrl,
+    ...(opts.refresh ? { refresh: opts.refresh } : {}),
+    ...(opts.lockWaitMs !== undefined ? { lockWaitMs: opts.lockWaitMs } : {}),
+  })
+  if (credential) {
     return {
       ok: true,
-      token: first.token,
-      mcp_url: first.mcp_url,
-      source: first.source,
+      token: credential.token,
+      mcp_url: mcpUrl,
+      source: credential.source,
+      principal: credential.principal,
     }
   }
-
-  // URL-only from project file (token missing)
-  if (fromProject?.mcp_url) {
-    return {
-      ok: false,
-      mcp_url: fromProject.mcp_url,
-      source: fromProject.source,
-      error:
-        'Found DevSpec MCP URL but no Bearer token. Set DEVSPEC_MCP_TOKEN or add headers.Authorization on the devspec server in .mcp.json.',
-    }
-  }
-
   return {
     ok: false,
-    mcp_url: envUrl || DEFAULT_PROD_URL,
-    error:
-      'No DevSpec MCP token found. Provide your token via the plugin configuration, set DEVSPEC_MCP_TOKEN, or configure mcpServers.devspec.headers.Authorization in project .mcp.json.',
+    mcp_url: mcpUrl,
+    source: null,
+    error: missingCredentialNotice(loginState(mcpUrl), mcpUrl),
   }
 }
 
-// CLI
+/**
+ * The credential a connection was registered with, as it is NOW (item 47f0dbdf).
+ *
+ * Long-lived consumers (the poller, the listener, a hook acting for a live connection)
+ * call this every time they talk to DevSpec instead of holding a token from the start,
+ * because a browser sign-in's access token changes at every renewal. They never switch
+ * identity: a connection made with a browser sign-in is served only by that same sign-in
+ * (its `principal`), and one made with DEVSPEC_MCP_TOKEN keeps the token it recorded.
+ *
+ * A state that recorded neither (a caller with no connection yet) resolves afresh.
+ * Returns `{ ok, token, mcp_url, source, principal }` or `{ ok: false, reason, error }`.
+ */
+export async function connectionCredential(state, opts = {}) {
+  const env = opts.env || process.env
+  const recordedUrl = trimmed(state?.mcp_url)
+  if (state?.auth_source === 'login' && trimmed(state?.principal) && recordedUrl) {
+    const active = await activeLogin(recordedUrl, {
+      ...(opts.refresh ? { refresh: opts.refresh } : {}),
+      ...(opts.lockWaitMs !== undefined ? { lockWaitMs: opts.lockWaitMs } : {}),
+    })
+    if (!active) {
+      return { ok: false, reason: 'signed_out', mcp_url: recordedUrl, error: missingCredentialNotice(loginState(recordedUrl), recordedUrl) }
+    }
+    if (active.principal !== state.principal) {
+      return {
+        ok: false,
+        reason: 'identity_changed',
+        mcp_url: recordedUrl,
+        error: 'This connection was made with a different DevSpec sign-in. Connect again with /devspec:devspec.remote.',
+      }
+    }
+    return { ok: true, token: active.token, mcp_url: recordedUrl, source: 'login', principal: active.principal }
+  }
+  if (trimmed(state?.token)) {
+    return {
+      ok: true,
+      token: state.token.trim(),
+      mcp_url: recordedUrl || credentialMcpUrl(env, opts),
+      source: state.auth_source === 'env' ? 'env' : 'recorded',
+      principal: trimmed(state.principal) || null,
+    }
+  }
+  const fresh = await resolveDevspecMcpAuth(state?.cwd || process.cwd(), opts)
+  if (!fresh.ok) return { ok: false, reason: 'no_credential', mcp_url: fresh.mcp_url, error: fresh.error }
+  return fresh
+}
+
+/**
+ * What to record on a connection for its credential: everything `connectionCredential`
+ * needs later, and the token itself only when it came from the environment (a browser
+ * sign-in's token would be stale within a day, and the login file already keeps it).
+ */
+export function credentialRecord(credential) {
+  if (!credential?.ok) return { token: undefined, principal: undefined, auth_source: null }
+  return {
+    mcp_url: credential.mcp_url,
+    auth_source: credential.source === 'login' ? 'login' : 'env',
+    principal: credential.principal ?? undefined,
+    token: credential.source === 'login' ? undefined : credential.token,
+  }
+}
+
+/** The identity a connection's record names, for comparing two records without the network. */
+export function recordedIdentity(state) {
+  if (!state) return null
+  if (state.auth_source === 'login') return trimmed(state.principal)
+  return trimmed(state.token) || trimmed(state.principal)
+}
+
+/**
+ * The session-start sentence about the credential, or null when there is nothing to say.
+ * Offline: reads only the environment and the login file.
+ */
+export function credentialNotice(env = process.env, opts = {}) {
+  const mcpUrl = configuredMcpUrl(env, opts)
+  const state = loginState(mcpUrl)
+  if (envToken(env)) {
+    const envUrl = credentialMcpUrl(env, opts)
+    // The environment token only overrides a sign-in for the same server.
+    return state.kind !== 'none' && resourceKey(envUrl) === resourceKey(mcpUrl)
+      ? envTokenOverridesLoginNotice()
+      : null
+  }
+  return state.kind === 'active' ? null : missingCredentialNotice(state, mcpUrl)
+}
+
+// CLI: diagnostics only. Never prints a token.
 if (isEntryPoint(import.meta.url)) {
-  // Reflect the same host-token preference the write path uses, for diagnostics.
-  const result = resolveDevspecMcpAuth(process.cwd(), { hostToken: hostTokenFromEnv(process.env) })
-  process.stdout.write(JSON.stringify(result) + '\n')
+  const result = await resolveDevspecMcpAuth(process.cwd())
+  const { token: _token, principal: _principal, ...shown } = result
+  process.stdout.write(JSON.stringify(shown) + '\n')
   process.exit(result.ok ? 0 : 1)
 }

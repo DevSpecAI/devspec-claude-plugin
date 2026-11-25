@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.60.6 - 2026-11-25
+
+- **Claude can now read, propose, confirm, and remove Inventory Map connections in remote sessions without stopping for approval.** Connection changes are attributed to the person who asked, just like other Inventory writes.
+- **Updated Inventory guidance.** Claude's remote instructions now cover looking up curated platform fields (`profile_for_provider` / `profile_for_resource_type`), attaching matching Documents and Memories as companions, handling duplicate pre-screening previews (`preview_required` / `preview_ack`), and proposing verified connections with codebase/config evidence via `manage_inventory_connections`.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.5 - 2026-11-21
 
 - **A commit is no longer stopped because DevSpec could not be reached when Claude claimed a task.** If Claude claims a task and the plugin cannot record the claim, for example because the claim's reply was too large to read and DevSpec could not be reached to look the task up, Claude's next commit now goes through, with a note on how to link it to the task. Before, every commit without a task reference was stopped until then, even while you were offline.

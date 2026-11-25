@@ -40,7 +40,7 @@ export const CHECK_OWN_WORK_TOOLS = new Set(['claim_check_job', 'record_check_ru
 export const REQUEST_REF_TOOLS = new Set([
   'add_commit_reference', 'add_implementation_note', 'archive_resource', 'classify_criterion',
   'create_task', 'create_automation', 'create_resource', 'delete_automation',
-  'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_goals', 'manage_incident', 'manage_knowledge_links',
+  'fail_work_item', 'import_instruction_rules', 'link_tasks', 'manage_goals', 'manage_incident', 'manage_inventory_connections', 'manage_knowledge_links',
   'decide_proposal', 'manage_protected_intent', 'record_completed_work', 'record_criterion_verdicts',
   'record_dependency_review', 'record_duplicate_nonmatch', 'record_implementation', 'record_inventory_entry',
   'record_memory', 'record_requirement',

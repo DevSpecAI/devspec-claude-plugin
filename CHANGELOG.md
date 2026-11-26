@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.60.7 - 2026-11-26
+
+- **Inventory Map connections are now recorded directly as live editable links.** Updated Claude's remote Inventory guidance to use `manage_inventory_connections` with `action: "record"` (with codebase/config evidence) so verified connections go straight onto the Inventory Map without a confirmation gate.
+- Update the plugin and start a new conversation to pick this up.
+
 ## 0.60.6 - 2026-11-25
 
 - **Claude can now read, propose, confirm, and remove Inventory Map connections in remote sessions without stopping for approval.** Connection changes are attributed to the person who asked, just like other Inventory writes.

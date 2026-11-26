@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.60.8 - 2026-11-26
+
+- **A message sent while Claude is still catching up on a room no longer waits up to 45 seconds.** When Claude joins or resumes a busy room, it reads the room's earlier messages page by page. A message that arrived during that catch-up used to be forgotten by the next page, so Claude slept until its safety timer before noticing it. Now Claude remembers every nudge from DevSpec until it has actually read the latest messages, and checks again straight after catching up.
+- **A check-in that fails or times out is retried after its short back-off**, instead of Claude going back to sleep until the next nudge or the 45-second safety timer.
+- An answer to one of Claude's own questions no longer counts as having read the room, and an idle Claude makes no more check-ins than before.
+- Update the plugin to pick this up; it applies to the next connection.
+
 ## 0.60.7 - 2026-11-26
 
 - **Inventory Map connections are now recorded directly as live editable links.** Updated Claude's remote Inventory guidance to use `manage_inventory_connections` with `action: "record"` (with codebase/config evidence) so verified connections go straight onto the Inventory Map without a confirmation gate.

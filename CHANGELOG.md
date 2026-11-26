@@ -4,7 +4,7 @@
 
 - **A message sent while Claude is still catching up on a room no longer waits up to 45 seconds.** When Claude joins or resumes a busy room, it reads the room's earlier messages page by page. A message that arrived during that catch-up used to be forgotten by the next page, so Claude slept until its safety timer before noticing it. Now Claude remembers every nudge from DevSpec until it has actually read the latest messages, and checks again straight after catching up.
 - **A check-in that fails or times out is retried after its short back-off**, instead of Claude going back to sleep until the next nudge or the 45-second safety timer.
-- An answer to one of Claude's own questions no longer counts as having read the room, and an idle Claude makes no more check-ins than before.
+- An answer to one of Claude's own questions no longer counts as having read the room, nor does a "nothing new" answer DevSpec could not actually check, or a check-in whose check jobs or automation runs could not be saved; each of those keeps the nudge for the next check-in. An idle Claude makes no more check-ins than before.
 - Update the plugin to pick this up; it applies to the next connection.
 
 ## 0.60.7 - 2026-11-26

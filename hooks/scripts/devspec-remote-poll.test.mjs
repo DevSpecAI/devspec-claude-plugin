@@ -50,6 +50,7 @@ import {
   PUSH_HEALTHY_MS,
   PUSH_SAFETY_MS,
   createPushGate,
+  pollCheckedNothing,
   nextPushReconnectDelayMs,
   openPushChannel,
   parseSseFrame,
@@ -1726,6 +1727,17 @@ describe('SSE push channel (parseSseFrame, pushChannelUrl, nextPushReconnectDela
       void poll // event-only reply: the room was not read, so nothing is acknowledged
       assert.equal(gate.hasWakePending(), true)
       assert.equal(await sleepsFor(gate), false)
+    })
+
+    // DevSpec's final check found a quiet answer that checked nothing was being
+    // counted as having read the room: the server keeps holding through a failed
+    // marker read and can still answer changed:false.
+    it('a quiet answer the server could not check is a failed poll; a quiet answer from an older server is not', () => {
+      assert.equal(pollCheckedNothing({ changed: false, marker_read: 'unavailable' }), true)
+      assert.equal(pollCheckedNothing({ changed: false, marker_read: 'ok' }), false)
+      assert.equal(pollCheckedNothing({ changed: false }), false, 'no field: an older server, taken as checked to avoid a re-poll loop')
+      assert.equal(pollCheckedNothing({ changed: true, marker_read: 'unavailable' }), false)
+      assert.equal(pollCheckedNothing(null), false)
     })
 
     it('an idle gate stays asleep until the safety timer, and acknowledging never runs ahead of wakes', async () => {

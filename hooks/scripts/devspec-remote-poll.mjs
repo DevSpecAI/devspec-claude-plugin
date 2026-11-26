@@ -1245,6 +1245,18 @@ export function emptyTurnBackoffMs(consecutive, maxMs) {
   return Math.min(maxMs, 1_000 * 2 ** Math.min(consecutive - 1, 5))
 }
 
+/**
+ * Did DevSpec answer "nothing new" without having checked the room (item 01221e49)?
+ * A failed marker read keeps a held poll going rather than ending the connection,
+ * so the server can answer changed:false having read nothing; it says so with
+ * marker_read: 'unavailable'. A server that predates the field sends none, and
+ * that answer is taken as checked, exactly as before: treating absence as failure
+ * would re-poll every quiet answer from an older server at once, a hot loop.
+ */
+export function pollCheckedNothing(res) {
+  return res?.changed === false && res?.marker_read === 'unavailable'
+}
+
 /** Backoff after a failed poll. Rate-limit responses start higher; both cap at 30s. */
 export function errorBackoffMs(consecutive, { rateLimited = false } = {}) {
   const n = Math.max(1, Number.isFinite(consecutive) ? consecutive : 1)
@@ -3000,9 +3012,15 @@ async function main() {
         checkTier: tier.checkTier,
         catchUp: needsSeed,
       })
-      consecutiveErrors = 0
       // The poll carried the busy assertion server-side, so it is now sent.
       if (busyArg !== null) lastBusySent = busyArg
+      // "Nothing new" from a poll that could not check the room is a failed poll:
+      // it takes the failure path below, so its wake stays owed and the retry
+      // waits out the growing back-off rather than hammering a struggling server.
+      if (pollCheckedNothing(res)) {
+        throw new Error('DevSpec answered without checking the room (marker_read: unavailable)')
+      }
+      consecutiveErrors = 0
     } catch (e) {
       // Nothing was read, so the next lap polls again after the back-off below
       // instead of sleeping until the next wake or the safety timer.
@@ -3191,9 +3209,10 @@ async function main() {
       if (canonical.ok) {
         needsSeed = redrainRequested
         redrainRequested = false
-        // The room page was read and applied. An event-only answer (the lane above)
-        // or a rejected page answers no wake (requirement 3ea2b201).
-        if (!historyPage) pushGate.acknowledge(poll.ticket)
+        // The room page was read and applied, and so was the run/check-job batch
+        // beside it. An event-only answer (the lane above), a rejected page or an
+        // unsaved batch answers no wake (requirement 3ea2b201).
+        if (!historyPage && automations.ok) pushGate.acknowledge(poll.ticket)
       }
       // A message held behind our answered question: when the answer is settled, the
       // next poll carries the readiness, and that is worth making at once.

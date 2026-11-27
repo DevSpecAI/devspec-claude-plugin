@@ -1245,6 +1245,18 @@ export function emptyTurnBackoffMs(consecutive, maxMs) {
   return Math.min(maxMs, 1_000 * 2 ** Math.min(consecutive - 1, 5))
 }
 
+/**
+ * Did DevSpec answer "nothing new" without having checked the room (item 01221e49)?
+ * A failed marker read keeps a held poll going rather than ending the connection,
+ * so the server can answer changed:false having read nothing; it says so with
+ * marker_read: 'unavailable'. A server that predates the field sends none, and
+ * that answer is taken as checked, exactly as before: treating absence as failure
+ * would re-poll every quiet answer from an older server at once, a hot loop.
+ */
+export function pollCheckedNothing(res) {
+  return res?.changed === false && res?.marker_read === 'unavailable'
+}
+
 /** Backoff after a failed poll. Rate-limit responses start higher; both cap at 30s. */
 export function errorBackoffMs(consecutive, { rateLimited = false } = {}) {
   const n = Math.max(1, Number.isFinite(consecutive) ? consecutive : 1)
@@ -1537,9 +1549,17 @@ export function createPushGate({
   localCheckMs = PUSH_LOCAL_CHECK_MS,
 } = {}) {
   let connected = false
-  let wakePending = false
+  // Wakes are COUNTED, and a wake stays pending until a poll that started after it
+  // read the live end of the room and applied what it found (item 01221e49). A
+  // single flag cleared at the start of every poll lost the wake whenever that poll
+  // could not have seen the new message: a backward history page during catch-up,
+  // a failed or timed-out poll, an event-only answer. The agent then slept until
+  // the safety timer although DevSpec had already said something was waiting.
+  let produced = 0
+  let acknowledged = 0
   let wakeWaiter = null
 
+  const pending = () => produced > acknowledged
   const notify = () => {
     if (wakeWaiter) {
       const fn = wakeWaiter
@@ -1550,7 +1570,7 @@ export function createPushGate({
 
   return {
     isConnected: () => connected,
-    hasWakePending: () => wakePending,
+    hasWakePending: pending,
     onEvent(evt) {
       if (!evt) return
       if (evt.kind === 'hello') {
@@ -1564,7 +1584,7 @@ export function createPushGate({
         evt.kind === 'interaction_event' ||
         evt.kind === 'question_dismissal_event'
       ) {
-        wakePending = true
+        produced += 1
         notify()
       }
     },
@@ -1572,13 +1592,28 @@ export function createPushGate({
       connected = false
       notify()
     },
-    consumePollWaitMs(fallbackWaitMs) {
-      const waitMs = wakePending || connected ? 0 : fallbackWaitMs
-      wakePending = false
-      return waitMs
+    /** A poll is owed without any frame: the last one failed, or could not be applied. */
+    requestPoll() {
+      produced += 1
+      notify()
+    },
+    /**
+     * Start a poll. waitMs is how long the server may hold it (none while a wake is
+     * pending or the push channel is open); ticket is the count of wakes this poll
+     * can answer, since anything committed before them is visible to it.
+     */
+    beginPoll(fallbackWaitMs) {
+      return { waitMs: pending() || connected ? 0 : fallbackWaitMs, ticket: produced }
+    },
+    /**
+     * The poll holding this ticket read the live end of the room and applied it.
+     * Wakes that arrived while it ran stay pending, so they get one more poll.
+     */
+    acknowledge(ticket) {
+      if (Number.isFinite(ticket) && ticket > acknowledged) acknowledged = Math.min(ticket, produced)
     },
     async waitIfIdle({ shouldWakeImmediately } = {}) {
-      if (!connected || wakePending) return
+      if (!connected || pending()) return
       if (typeof shouldWakeImmediately === 'function' && shouldWakeImmediately()) return
       await new Promise((resolve) => {
         let settled = false
@@ -1593,7 +1628,7 @@ export function createPushGate({
         wakeWaiter = finish
         const safetyTimer = setTimeout(finish, safetyMs)
         const localTimer = setInterval(() => {
-          if (!connected || wakePending) {
+          if (!connected || pending()) {
             finish()
             return
           }
@@ -2966,18 +3001,30 @@ async function main() {
     if (needsSeed && transcriptStore && !transcriptStore.backfill.draining) beginDrain(transcriptStore)
 
     let res = null
+    // A backward history page cannot see a message that arrived after the drain
+    // began, so it never answers a wake; the seed and live polls do.
+    const historyPage = Boolean(catchUpCursor)
+    const poll = pushGate.beginPoll(tier.waitMs)
     try {
-      const effectiveWaitMs = pushGate.consumePollWaitMs(tier.waitMs)
       res = await pollOnce({
-        waitMs: effectiveWaitMs,
+        waitMs: poll.waitMs,
         busy: busyArg,
         checkTier: tier.checkTier,
         catchUp: needsSeed,
       })
-      consecutiveErrors = 0
       // The poll carried the busy assertion server-side, so it is now sent.
       if (busyArg !== null) lastBusySent = busyArg
+      // "Nothing new" from a poll that could not check the room is a failed poll:
+      // it takes the failure path below, so its wake stays owed and the retry
+      // waits out the growing back-off rather than hammering a struggling server.
+      if (pollCheckedNothing(res)) {
+        throw new Error('DevSpec answered without checking the room (marker_read: unavailable)')
+      }
+      consecutiveErrors = 0
     } catch (e) {
+      // Nothing was read, so the next lap polls again after the back-off below
+      // instead of sleeping until the next wake or the safety timer.
+      pushGate.requestPoll()
       if (e?.code === 'owner_gone') {
         // The hold was aborted because the agent process died mid-poll — same
         // teardown as the top-of-loop check, just without waiting out the hold.
@@ -3029,6 +3076,7 @@ async function main() {
       // poll_connection briefly cannot see a row that is perfectly alive, and the
       // old code disabled the agent permanently on the strength of it. Ride it out.
       consecutiveRecoverableEnds++
+      pushGate.requestPoll()
       const label = terminal.reason ? `${terminal.status} (${terminal.reason})` : terminal.status
       if (consecutiveRecoverableEnds < RECOVERABLE_TERMINAL_MAX) {
         const backoff = errorBackoffMs(consecutiveRecoverableEnds)
@@ -3161,6 +3209,10 @@ async function main() {
       if (canonical.ok) {
         needsSeed = redrainRequested
         redrainRequested = false
+        // The room page was read and applied, and so was the run/check-job batch
+        // beside it. An event-only answer (the lane above), a rejected page or an
+        // unsaved batch answers no wake (requirement 3ea2b201).
+        if (!historyPage && automations.ok) pushGate.acknowledge(poll.ticket)
       }
       // A message held behind our answered question: when the answer is settled, the
       // next poll carries the readiness, and that is worth making at once.
@@ -3199,6 +3251,8 @@ async function main() {
     }
     needsSeed = false
     consecutiveEmpty = 0
+    // A live read that found nothing waiting answers every wake it could see.
+    if (!historyPage) pushGate.acknowledge(poll.ticket)
   }
 }
 

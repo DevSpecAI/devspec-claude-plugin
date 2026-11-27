@@ -50,6 +50,7 @@ import {
   PUSH_HEALTHY_MS,
   PUSH_SAFETY_MS,
   createPushGate,
+  pollCheckedNothing,
   nextPushReconnectDelayMs,
   openPushChannel,
   parseSseFrame,
@@ -1627,16 +1628,16 @@ describe('SSE push channel (parseSseFrame, pushChannelUrl, nextPushReconnectDela
     const gate = createPushGate({ safetyMs: 80, localCheckMs: 10 })
 
     assert.equal(gate.isConnected(), false)
-    assert.equal(gate.consumePollWaitMs(25_000), 25_000)
+    assert.equal(gate.beginPoll(25_000).waitMs, 25_000)
 
     gate.onEvent({ kind: 'hello' })
     assert.equal(gate.isConnected(), true)
-    assert.equal(gate.consumePollWaitMs(25_000), 0)
+    assert.equal(gate.beginPoll(25_000).waitMs, 0)
 
     const startSafety = Date.now()
     await gate.waitIfIdle()
     assert.ok(Date.now() - startSafety >= 55, 'waitIfIdle sleeps until safetyMs when quiet')
-    assert.equal(gate.consumePollWaitMs(25_000), 0)
+    assert.equal(gate.beginPoll(25_000).waitMs, 0)
 
     for (const kind of ['wake', 'system_notice', 'interaction_event', 'question_dismissal_event']) {
       const gateFrame = createPushGate({ safetyMs: 5_000, localCheckMs: 500 })
@@ -1645,7 +1646,7 @@ describe('SSE push channel (parseSseFrame, pushChannelUrl, nextPushReconnectDela
       const t0 = Date.now()
       await gateFrame.waitIfIdle()
       assert.ok(Date.now() - t0 < 500, `SSE ${kind} frame wakes waitIfIdle immediately`)
-      assert.equal(gateFrame.consumePollWaitMs(25_000), 0)
+      assert.equal(gateFrame.beginPoll(25_000).waitMs, 0)
     }
 
     let localTurnChanged = false
@@ -1657,7 +1658,7 @@ describe('SSE push channel (parseSseFrame, pushChannelUrl, nextPushReconnectDela
     const tLocal = Date.now()
     await gateLocal.waitIfIdle({ shouldWakeImmediately: () => localTurnChanged })
     assert.ok(Date.now() - tLocal < 500, 'local state change wakes waitIfIdle immediately')
-    assert.equal(gateLocal.consumePollWaitMs(25_000), 0)
+    assert.equal(gateLocal.beginPoll(25_000).waitMs, 0)
 
     const gateDrop = createPushGate({ safetyMs: 5_000, localCheckMs: 500 })
     gateDrop.onEvent({ kind: 'hello' })
@@ -1666,6 +1667,89 @@ describe('SSE push channel (parseSseFrame, pushChannelUrl, nextPushReconnectDela
     await gateDrop.waitIfIdle()
     assert.ok(Date.now() - tDrop < 500, 'disconnect wakes waitIfIdle immediately')
     assert.equal(gateDrop.isConnected(), false)
-    assert.equal(gateDrop.consumePollWaitMs(25_000), 25_000)
+    assert.equal(gateDrop.beginPoll(25_000).waitMs, 25_000)
+  })
+
+  // Item 01221e49: a wake is answered only by a poll that could have seen it.
+  // Cosmic Hawk (Antigravity, same design) waited 66 and 69 s after a resume: a
+  // message arrived mid catch-up and the next history page cleared the flag.
+  describe('wakes stay pending until a live poll answers them (01221e49)', () => {
+    function connectedGate() {
+      const gate = createPushGate({ safetyMs: 5_000, localCheckMs: 10 })
+      gate.onEvent({ kind: 'hello' })
+      return gate
+    }
+
+    async function sleepsFor(gate, ms = 60) {
+      const t0 = Date.now()
+      await Promise.race([gate.waitIfIdle(), new Promise((r) => setTimeout(r, ms))])
+      return Date.now() - t0 >= ms - 5
+    }
+
+    it('a wake that lands while a history page is being read is still pending when catch-up ends', async () => {
+      const gate = connectedGate()
+      const page = gate.beginPoll(25_000) // a backward page: never acknowledged
+      gate.onEvent({ kind: 'wake' }) // the person's message arrives mid catch-up
+      void page
+      assert.equal(gate.hasWakePending(), true)
+      assert.equal(await sleepsFor(gate), false, 'the next lap polls at once instead of sleeping')
+    })
+
+    it('a wake that arrives while a live poll runs gets exactly one more poll', async () => {
+      const gate = connectedGate()
+      gate.onEvent({ kind: 'wake' })
+      const first = gate.beginPoll(25_000)
+      gate.onEvent({ kind: 'wake' }) // landed after the poll started: it may not have seen it
+      gate.acknowledge(first.ticket)
+      assert.equal(gate.hasWakePending(), true)
+      const second = gate.beginPoll(25_000)
+      gate.acknowledge(second.ticket)
+      assert.equal(gate.hasWakePending(), false)
+      assert.equal(await sleepsFor(gate), true, 'nothing more is owed')
+    })
+
+    it('a failed poll leaves a poll owed, even when no wake started it', async () => {
+      const gate = connectedGate()
+      const poll = gate.beginPoll(25_000) // the safety timer's poll
+      void poll // ...fails: the loop asks for another instead of acknowledging
+      gate.requestPoll()
+      assert.equal(await sleepsFor(gate), false)
+      const retry = gate.beginPoll(25_000)
+      gate.acknowledge(retry.ticket)
+      assert.equal(gate.hasWakePending(), false)
+    })
+
+    it('an answer that only carried a question event answers no wake', async () => {
+      const gate = connectedGate()
+      gate.onEvent({ kind: 'interaction_event' })
+      gate.onEvent({ kind: 'wake' })
+      const poll = gate.beginPoll(25_000)
+      void poll // event-only reply: the room was not read, so nothing is acknowledged
+      assert.equal(gate.hasWakePending(), true)
+      assert.equal(await sleepsFor(gate), false)
+    })
+
+    // DevSpec's final check found a quiet answer that checked nothing was being
+    // counted as having read the room: the server keeps holding through a failed
+    // marker read and can still answer changed:false.
+    it('a quiet answer the server could not check is a failed poll; a quiet answer from an older server is not', () => {
+      assert.equal(pollCheckedNothing({ changed: false, marker_read: 'unavailable' }), true)
+      assert.equal(pollCheckedNothing({ changed: false, marker_read: 'ok' }), false)
+      assert.equal(pollCheckedNothing({ changed: false }), false, 'no field: an older server, taken as checked to avoid a re-poll loop')
+      assert.equal(pollCheckedNothing({ changed: true, marker_read: 'unavailable' }), false)
+      assert.equal(pollCheckedNothing(null), false)
+    })
+
+    it('an idle gate stays asleep until the safety timer, and acknowledging never runs ahead of wakes', async () => {
+      const gate = createPushGate({ safetyMs: 80, localCheckMs: 10 })
+      gate.onEvent({ kind: 'hello' })
+      gate.acknowledge(5) // a ticket from nowhere cannot pre-acknowledge future wakes
+      gate.onEvent({ kind: 'wake' })
+      assert.equal(gate.hasWakePending(), true)
+      gate.acknowledge(gate.beginPoll(25_000).ticket)
+      const t0 = Date.now()
+      await gate.waitIfIdle()
+      assert.ok(Date.now() - t0 >= 70, 'quiet: sleeps to the safety timer')
+    })
   })
 })
